@@ -12,6 +12,9 @@ Each project runs in its own tmux session. The menu can create, switch, and
 close workspaces; switch or restart the agent; create terminals; and open the
 project in Finder, Zed, or VS Code.
 
+Keyboard selection is limited to workspace rows. The command header is
+mouse-driven: click a command once to run it.
+
 ## Requirements
 
 The automatic dependency installer supports macOS and Linux systems with

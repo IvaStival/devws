@@ -192,23 +192,25 @@ close_workspace() {
 while tmux list-sessions >/dev/null 2>&1; do
   current="$(tmux display-message -p '#S' 2>/dev/null)"
   selected="$(
-    {
-      printf 'new\t\033[32m+ New workspace\033[0m\n'
-      printf 'switch-agent\t\033[36m⇄ Switch agent\033[0m\n'
-      printf 'restart-agent\t\033[36m↻ Restart agent\033[0m\n'
-      printf 'new-terminal\t\033[36m▣ New terminal\033[0m\n'
-      printf 'open-folder\t\033[36m⌂ Open folder\033[0m\n'
-      printf 'close\t\033[31m× Close workspace\033[0m\n'
-      printf 'spacer\t\n'
-      printf 'divider\t\033[2m────────────────────────\033[0m\n'
-      workspace_rows "$current"
-    } |
+    workspace_rows "$current" |
       fzf --height=100% --layout=reverse --ansi \
         --delimiter=$'\t' --with-nth=2.. \
         --bind='load:last' \
-        --header='WORKSPACE COMMANDS / OPEN WORKSPACES' --prompt='> ' \
+        --bind='click-header:transform:
+          case "$FZF_CLICK_HEADER_LINE" in
+            2) printf "print(new)+accept\n" ;;
+            3) printf "print(switch-agent)+accept\n" ;;
+            4) printf "print(restart-agent)+accept\n" ;;
+            5) printf "print(new-terminal)+accept\n" ;;
+            6) printf "print(open-folder)+accept\n" ;;
+            7) printf "print(close)+accept\n" ;;
+          esac' \
+        --header=$'WORKSPACE COMMANDS\n\033[32m+ New workspace\033[0m\n\033[36m⇄ Switch agent\033[0m\n\033[36m↻ Restart agent\033[0m\n\033[36m▣ New terminal\033[0m\n\033[36m⌂ Open folder\033[0m\n\033[31m× Close workspace\033[0m\n\n\033[2mOPEN WORKSPACES\033[0m' \
+        --prompt='> ' \
         --info=inline --no-separator --border=none --margin=0 --padding=0
   )"
+  # Header actions add their command before fzf's current workspace output.
+  selected="${selected%%$'\n'*}"
 
   case "${selected%%$'\t'*}" in
     new) new_workspace ;;
@@ -217,7 +219,6 @@ while tmux list-sessions >/dev/null 2>&1; do
     new-terminal) new_terminal ;;
     open-folder) open_folder ;;
     close) close_workspace ;;
-    spacer|divider) ;;
     '') ;;
     workspace:*)
       workspace="${selected%%$'\t'*}"
