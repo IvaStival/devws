@@ -205,7 +205,7 @@ while tmux list-sessions >/dev/null 2>&1; do
     } |
       fzf --height=100% --layout=reverse --ansi \
         --delimiter=$'\t' --with-nth=2.. \
-        --bind='start:last' \
+        --bind='load:last' \
         --header='WORKSPACE COMMANDS / OPEN WORKSPACES' --prompt='> ' \
         --info=inline --no-separator --border=none --margin=0 --padding=0
   )"
