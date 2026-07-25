@@ -1,0 +1,93 @@
+# devws shell integration
+
+devws() {
+  if [[ "${1:-}" == "menu" ]]; then
+    devws-menu "${2:-toggle}" "${3:-}"
+    return
+  fi
+
+  local project_root="${1:-$PWD}"
+  local agent="${2:-}"
+  local agent_config="$HOME/.tmuxinator/.env"
+
+  if [[ -r "$agent_config" ]]; then
+    source "$agent_config"
+  fi
+
+  local -a available_agents
+  available_agents=(${=DEVWS_AGENTS:-claude codex})
+
+  if [[ -z "$agent" && -t 0 && -t 1 && -x "$(command -v fzf)" ]]; then
+    agent="$(printf '%s\n' "${available_agents[@]}" | fzf \
+      --height=~10 --layout=reverse --prompt='Agent > ')"
+    [[ -n "$agent" ]] || return 0
+  fi
+  agent="${agent:-${DEVWS_DEFAULT_AGENT:-${available_agents[1]}}}"
+
+  if (( ${available_agents[(Ie)$agent]} == 0 )); then
+    print -u2 "devws: unknown agent '$agent' (choose: ${available_agents[*]})"
+    return 2
+  fi
+
+  tmuxinator start dev project_root="$project_root" agent="$agent"
+  [[ -n "$TMUX" ]] && "$HOME/.tmuxinator/refresh_devws_pickers.sh"
+}
+
+devws-menu() {
+  local action="${1:-toggle}"
+  local session="${2:-}"
+  local window picker
+
+  if [[ -z "$TMUX" ]]; then
+    print -u2 "devws menu: run this command inside tmux"
+    return 1
+  fi
+
+  session="${session:-$(tmux display-message -p '#S')}"
+  [[ "$session" == dev-* ]] || session="dev-$session"
+  window="$session:workspace"
+
+  if ! tmux list-windows -t "$session" -F '#{window_name}' 2>/dev/null |
+      grep -qx 'workspace'; then
+    print -u2 "devws menu: workspace window not found in '$session'"
+    return 1
+  fi
+
+  picker="$(
+    tmux list-panes -t "$window" -F '#{pane_id}|#{pane_title}' 2>/dev/null |
+      awk -F '|' '$2 == "devws-picker" { print $1; exit }'
+  )"
+
+  case "$action" in
+    open)
+      [[ -n "$picker" ]] && return 0
+      tmux split-window -d -f -h -b -l 25% -t "$window" \
+        "$HOME/.tmuxinator/session_picker.sh"
+      ;;
+    close)
+      [[ -z "$picker" ]] || tmux kill-pane -t "$picker"
+      ;;
+    toggle)
+      if [[ -n "$picker" ]]; then
+        tmux kill-pane -t "$picker"
+      else
+        tmux split-window -d -f -h -b -l 25% -t "$window" \
+          "$HOME/.tmuxinator/session_picker.sh"
+      fi
+      ;;
+    *)
+      print -u2 "usage: devws menu {open|close|toggle} [workspace]"
+      return 2
+      ;;
+  esac
+}
+
+# Use a compact prompt inside devws panes only.
+if [[ -n "$TMUX" ]] && [[ "$(tmux display-message -p '#S' 2>/dev/null)" == dev-* ]]; then
+  autoload -Uz vcs_info
+  precmd_functions+=(vcs_info)
+  zstyle ':vcs_info:git:*' formats ' %F{yellow}‹%b›%f'
+  setopt PROMPT_SUBST
+  PROMPT='╭─%B%F{blue}%1~%f%b${vcs_info_msg_0_}
+╰─➤ '
+fi
