@@ -12,6 +12,8 @@ Each project runs in its own tmux session. The menu can create, switch, and
 close workspaces; switch or restart the agent; switch the editor; create
 terminals; and open the project in Finder, Zed, or VS Code.
 
+![devws application panel showing the workspace menu, editor, AI agent, and terminal panes](docs/images/application-panel.png)
+
 Keyboard selection is limited to workspace rows. The command header is
 mouse-driven: click a command once to run it.
 
