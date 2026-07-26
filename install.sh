@@ -52,13 +52,37 @@ install_dependencies() {
 
 timestamp="$(date +%Y%m%d-%H%M%S)"
 backup_root="$HOME/.devws-backups/$timestamp"
+state_root="$HOME/.devws-state"
+backup_state="$state_root/backup-root"
 backed_up=0
+
+mkdir -p "$state_root"
+if [[ -f "$backup_state" ]]; then
+  IFS= read -r backup_root < "$backup_state"
+else
+  if [[ -L "$HOME/.tmux.conf" ]] &&
+      [[ "$(readlink "$HOME/.tmux.conf")" == "$ROOT/config/tmux/tmux.conf" ]]; then
+    for legacy_backup in "$HOME"/.devws-backups/*; do
+      [[ -d "$legacy_backup" ]] || continue
+      backup_root="$legacy_backup"
+    done
+    if [[ "$backup_root" != "$HOME/.devws-backups/$timestamp" ]]; then
+      warn "Recovered backup state from existing installation: $backup_root"
+    fi
+  fi
+  printf '%s\n' "$backup_root" > "$backup_state"
+fi
 
 backup_path() {
   local destination="$1"
   local relative="${destination#"$HOME"/}"
   local backup="$backup_root/$relative"
 
+  if [[ -e "$backup" ]] || [[ -L "$backup" ]]; then
+    warn "Kept existing pre-devws backup at $backup"
+    warn "Skipped $destination to avoid overwriting either configuration"
+    return 1
+  fi
   mkdir -p "$(dirname "$backup")"
   mv "$destination" "$backup"
   backed_up=1
@@ -74,7 +98,7 @@ link_file() {
     return
   fi
   if [[ -e "$destination" ]] || [[ -L "$destination" ]]; then
-    backup_path "$destination"
+    backup_path "$destination" || return
   fi
   ln -s "$source" "$destination"
   ok "$destination"

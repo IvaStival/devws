@@ -135,16 +135,20 @@ Run:
 source ~/.zshrc
 ```
 
-The script removes the configuration symlinks created by this checkout and
-its shell integration from `~/.zshrc`. It leaves files that are no longer
-devws-managed untouched, removes only directories that are empty, and
-preserves backups in `~/.devws-backups/`.
+During installation, devws records its backup state before replacing any
+configuration. The uninstall script removes the configuration symlinks
+created by this checkout, restores the files that were in their place before
+installation, and removes the shell integration from `~/.zshrc`.
+
+Files that are no longer devws-managed are left untouched. If one conflicts
+with a configuration that needs to be restored, the previous configuration
+remains in `~/.devws-backups/` and the script reports its location. Only empty
+configuration directories are removed.
 
 Dependencies installed with `./install.sh --deps` are also preserved because
 Homebrew packages, LunarVim, and tmux plugin manager may be shared with other
-tools. Remove those separately if they are no longer needed. Restore any
-configuration replaced during installation from
-`~/.devws-backups/<timestamp>/`.
+tools or may have existed before devws. Remove those separately only if they
+are no longer needed.
 
 The installer and uninstaller never modify Git remotes or GitHub
 configuration.
