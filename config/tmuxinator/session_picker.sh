@@ -17,11 +17,12 @@ dev_sessions() {
 
 workspace_rows() {
   local current="$1"
-  local session agent root branch state
+  local session agent editor root branch state
 
-  while IFS='|' read -r session agent root; do
+  while IFS='|' read -r session agent editor root; do
     case "$session" in dev-*) ;; *) continue ;; esac
     agent="${agent:-unknown}"
+    editor="${editor:-lvim}"
 
     branch=""
     state="  "
@@ -37,13 +38,14 @@ workspace_rows() {
     fi
 
     if [ "$session" = "$current" ]; then
-      printf 'workspace:%s\t%b\033[1;30;46m\033[1;33;46m*\033[1;30;46m %s  [%s]%s\033[0m\n' \
-        "$session" "$state" "$session" "$agent" "$branch"
+      printf 'workspace:%s\t%b\033[1;30;46m\033[1;33;46m*\033[1;30;46m %s  [%s · %s]%s\033[0m\n' \
+        "$session" "$state" "$session" "$agent" "$editor" "$branch"
     else
-      printf 'workspace:%s\t%b  %s  [%s]%s\n' \
-        "$session" "$state" "$session" "$agent" "$branch"
+      printf 'workspace:%s\t%b  %s  [%s · %s]%s\n' \
+        "$session" "$state" "$session" "$agent" "$editor" "$branch"
     fi
-  done < <(tmux list-sessions -F '#{session_name}|#{@devws_agent}|#{@devws_root}' 2>/dev/null)
+  done < <(tmux list-sessions \
+    -F '#{session_name}|#{@devws_agent}|#{@devws_editor}|#{@devws_root}' 2>/dev/null)
 }
 
 refresh_pickers() {
@@ -60,6 +62,18 @@ choose_agent() {
         --header='Choose the agent for the new workspace'
   )"
   [ -n "$agent" ] && printf '%s\n' "$agent"
+}
+
+choose_editor() {
+  local editors="${DEVWS_EDITORS:-lvim nvim vim code zed}"
+  local editor
+
+  editor="$(
+    printf '%s\n' $editors |
+      fzf --height=~10 --layout=reverse --prompt='Editor > ' \
+        --header='Choose the editor for the workspace'
+  )"
+  [ -n "$editor" ] && printf '%s\n' "$editor"
 }
 
 agent_pane() {
@@ -87,6 +101,31 @@ agent_pane() {
   return 1
 }
 
+editor_pane() {
+  local session="$1"
+  local pane role command
+
+  while IFS='|' read -r pane role command; do
+    if [ "$role" = editor ]; then
+      printf '%s\n' "$pane"
+      return 0
+    fi
+  done < <(tmux list-panes -t "$session" \
+    -F '#{pane_id}|#{@devws_role}|#{pane_current_command}' 2>/dev/null)
+
+  # Compatibility for workspaces created before editor_runner.sh existed.
+  while IFS='|' read -r pane role command; do
+    case "$command" in
+      lvim|nvim|vim|code|zed)
+        printf '%s\n' "$pane"
+        return 0
+        ;;
+    esac
+  done < <(tmux list-panes -t "$session" \
+    -F '#{pane_id}|#{@devws_role}|#{pane_current_command}' 2>/dev/null)
+  return 1
+}
+
 switch_agent() {
   local session pane agent root
   session="$(tmux display-message -p '#S')"
@@ -98,6 +137,20 @@ switch_agent() {
   tmux set-option -t "$session" @devws_agent "$agent"
   tmux respawn-pane -k -t "$pane" -c "${root:-$PWD}" \
     "$HOME/.tmuxinator/agent_runner.sh $agent"
+  refresh_pickers
+}
+
+switch_editor() {
+  local session pane editor root
+  session="$(tmux display-message -p '#S')"
+  pane="$(editor_pane "$session")" || return
+  editor="$(choose_editor)" || return
+  [ -n "$editor" ] || return
+  root="$(tmux show-options -t "$session" -v @devws_root 2>/dev/null)"
+
+  tmux set-option -t "$session" @devws_editor "$editor"
+  tmux respawn-pane -k -t "$pane" -c "${root:-$PWD}" \
+    "$HOME/.tmuxinator/editor_runner.sh $editor"
   refresh_pickers
 }
 
@@ -143,11 +196,15 @@ open_folder() {
 }
 
 new_workspace() {
-  local entered_path project_root agent
+  local entered_path project_root agent editor
 
   printf '\033c'
   printf 'New workspace\n\n'
-  read -e -r -p 'Folder path: ' entered_path
+  # Keep Ctrl-C local to this prompt so cancelling workspace creation returns
+  # to the picker instead of terminating the sidebar.
+  trap 'trap - INT; printf "\n"; return 130' INT
+  read -e -r -p 'Folder path (Ctrl-C to cancel): ' entered_path
+  trap - INT
   [ -n "$entered_path" ] || return
 
   # Bash readline supplies Tab completion. Resolve the result before passing it
@@ -165,7 +222,10 @@ new_workspace() {
   agent="$(choose_agent)" || return
   [ -n "$agent" ] || return
 
-  tmuxinator start dev project_root="$project_root" agent="$agent"
+  editor="$(choose_editor)" || return
+  [ -n "$editor" ] || return
+
+  tmuxinator start dev project_root="$project_root" agent="$agent" editor="$editor"
   refresh_pickers
 }
 
@@ -200,12 +260,13 @@ while tmux list-sessions >/dev/null 2>&1; do
           case "$FZF_CLICK_HEADER_LINE" in
             2) printf "print(new)+accept\n" ;;
             3) printf "print(switch-agent)+accept\n" ;;
-            4) printf "print(restart-agent)+accept\n" ;;
-            5) printf "print(new-terminal)+accept\n" ;;
-            6) printf "print(open-folder)+accept\n" ;;
-            7) printf "print(close)+accept\n" ;;
+            4) printf "print(switch-editor)+accept\n" ;;
+            5) printf "print(restart-agent)+accept\n" ;;
+            6) printf "print(new-terminal)+accept\n" ;;
+            7) printf "print(open-folder)+accept\n" ;;
+            8) printf "print(close)+accept\n" ;;
           esac' \
-        --header=$'WORKSPACE COMMANDS\n\033[32m+ New workspace\033[0m\n\033[36m⇄ Switch agent\033[0m\n\033[36m↻ Restart agent\033[0m\n\033[36m▣ New terminal\033[0m\n\033[36m⌂ Open folder\033[0m\n\033[31m× Close workspace\033[0m\n\n\033[2mOPEN WORKSPACES\033[0m' \
+        --header=$'WORKSPACE COMMANDS\n\033[32m+ New workspace\033[0m\n\033[36m⇄ Switch agent\033[0m\n\033[36m⇄ Switch editor\033[0m\n\033[36m↻ Restart agent\033[0m\n\033[36m▣ New terminal\033[0m\n\033[36m⌂ Open folder\033[0m\n\033[31m× Close workspace\033[0m\n\n\033[2mOPEN WORKSPACES\033[0m' \
         --prompt='> ' \
         --info=inline --no-separator --border=none --margin=0 --padding=0
   )"
@@ -215,6 +276,7 @@ while tmux list-sessions >/dev/null 2>&1; do
   case "${selected%%$'\t'*}" in
     new) new_workspace ;;
     switch-agent) switch_agent ;;
+    switch-editor) switch_editor ;;
     restart-agent) restart_agent ;;
     new-terminal) new_terminal ;;
     open-folder) open_folder ;;

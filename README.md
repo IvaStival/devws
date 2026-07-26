@@ -3,14 +3,14 @@
 `devws` turns a project folder into a persistent terminal workspace with:
 
 - a full-height workspace switcher and command menu;
-- LunarVim;
+- an editor pane (LunarVim, Neovim, Vim, VS Code, or Zed);
 - a Claude Code or Codex agent pane;
 - a regular terminal pane;
 - Git branch and clean/dirty status in the workspace list.
 
 Each project runs in its own tmux session. The menu can create, switch, and
-close workspaces; switch or restart the agent; create terminals; and open the
-project in Finder, Zed, or VS Code.
+close workspaces; switch or restart the agent; switch the editor; create
+terminals; and open the project in Finder, Zed, or VS Code.
 
 Keyboard selection is limited to workspace rows. The command header is
 mouse-driven: click a command once to run it.
@@ -40,6 +40,10 @@ you must select it in your terminal profile.
 Optional GUI integrations are Finder (macOS), Zed, and VS Code. The menu hides
 no errors if Zed or VS Code is unavailable; those actions simply do nothing.
 
+Vim, Neovim, VS Code, and Zed are optional alternate editors. Only LunarVim is
+installed by the dependency installer; picking another editor requires it to
+already be on `PATH`.
+
 ## Install
 
 Clone the repository, then run:
@@ -57,21 +61,22 @@ original location after installation. Existing managed files are moved to a
 timestamped directory under `~/.devws-backups/` before replacement.
 
 Install either Codex or Claude Code separately, authenticate it, and edit
-`config/tmuxinator/.env` if you want to change the available/default agent.
+`config/tmuxinator/.env` if you want to change the available/default agent or
+editor.
 
 ## Use
 
-Start a workspace with the interactive agent picker:
+Start a workspace with the interactive agent and editor picker:
 
 ```sh
 devws ~/Projects/my-app
 ```
 
-Choose an agent directly:
+Choose an agent and editor directly:
 
 ```sh
-devws ~/Projects/my-app codex
-devws ~/Projects/my-app claude
+devws ~/Projects/my-app codex nvim
+devws ~/Projects/my-app claude lvim
 ```
 
 Control the left workspace menu from any pane:
@@ -99,7 +104,7 @@ Inside LunarVim, its separate file explorer can be controlled with
 
 ## Configuration
 
-- Agents: `config/tmuxinator/.env`
+- Agents and editors: `config/tmuxinator/.env`
 - Workspace layout: `config/tmuxinator/dev.yml`
 - Workspace menu: `config/tmuxinator/session_picker.sh`
 - LunarVim: `config/lvim/config.lua`

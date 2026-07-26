@@ -8,6 +8,7 @@ devws() {
 
   local project_root="${1:-$PWD}"
   local agent="${2:-}"
+  local editor="${3:-}"
   local agent_config="$HOME/.tmuxinator/.env"
 
   if [[ -r "$agent_config" ]]; then
@@ -29,7 +30,22 @@ devws() {
     return 2
   fi
 
-  tmuxinator start dev project_root="$project_root" agent="$agent"
+  local -a available_editors
+  available_editors=(${=DEVWS_EDITORS:-lvim nvim vim code zed})
+
+  if [[ -z "$editor" && -t 0 && -t 1 && -x "$(command -v fzf)" ]]; then
+    editor="$(printf '%s\n' "${available_editors[@]}" | fzf \
+      --height=~10 --layout=reverse --prompt='Editor > ')"
+    [[ -n "$editor" ]] || return 0
+  fi
+  editor="${editor:-${DEVWS_DEFAULT_EDITOR:-${available_editors[1]}}}"
+
+  if (( ${available_editors[(Ie)$editor]} == 0 )); then
+    print -u2 "devws: unknown editor '$editor' (choose: ${available_editors[*]})"
+    return 2
+  fi
+
+  tmuxinator start dev project_root="$project_root" agent="$agent" editor="$editor"
   [[ -n "$TMUX" ]] && "$HOME/.tmuxinator/refresh_devws_pickers.sh"
 }
 

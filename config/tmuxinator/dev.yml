@@ -1,7 +1,7 @@
 name: dev-<%= File.basename(@settings["project_root"] || Dir.pwd) %>
 root: <%= @settings["project_root"] || Dir.pwd %>
 
-pre_window: tmux set-option status-position top; tmux set-option status-left-length 40; tmux set-option status-left "[#{s/^dev-//:session_name}]"; tmux set-option @devws_agent "<%= @settings["agent"] || "claude" %>"; tmux set-option @devws_root "$PWD"; tmux set-option -w pane-border-indicators off; clear
+pre_window: tmux set-option status-position top; tmux set-option status-left-length 40; tmux set-option status-left "[#{s/^dev-//:session_name}]"; tmux set-option @devws_agent "<%= @settings["agent"] || "claude" %>"; tmux set-option @devws_editor "<%= @settings["editor"] || "lvim" %>"; tmux set-option @devws_root "$PWD"; tmux set-option -w pane-border-indicators off; clear
 
 windows:
   - workspace:
@@ -13,6 +13,6 @@ windows:
       layout: "12f9,200x50,0,0{25x50,0,0,58,174x50,26,0[174x24,26,0,57,174x25,26,25{86x25,26,25,59,87x25,113,25,60}]}"
       panes:
         - picker: ~/.tmuxinator/session_picker.sh
-        - editor: lvim .
+        - editor: ~/.tmuxinator/editor_runner.sh <%= @settings["editor"] || "lvim" %>
         - agent: ~/.tmuxinator/agent_runner.sh <%= @settings["agent"] || "claude" %>
         - terminal:
