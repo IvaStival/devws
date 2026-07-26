@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 bash -n "$ROOT/install.sh"
+bash -n "$ROOT/delete.sh"
 for file in "$ROOT"/config/tmux/*.sh "$ROOT"/config/tmuxinator/*.sh; do
   bash -n "$file"
 done
@@ -22,7 +23,7 @@ if command -v luac >/dev/null 2>&1; then
   luac -p "$ROOT/config/lvim/config.lua"
 fi
 
-for file in "$ROOT/install.sh" "$ROOT/scripts/check.sh" \
+for file in "$ROOT/install.sh" "$ROOT/delete.sh" "$ROOT/scripts/check.sh" \
             "$ROOT"/config/tmux/*.sh "$ROOT"/config/tmuxinator/*.sh; do
   [[ -x "$file" ]] || {
     printf 'Not executable: %s\n' "$file" >&2

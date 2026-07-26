@@ -128,8 +128,23 @@ This checks Bash/Zsh syntax, the tmuxinator ERB/YAML template, Lua syntax when
 
 ## Uninstall
 
-Remove the `# devws terminal workspace` block from `~/.zshrc`, delete the
-symlinks installed by this project, and restore the desired files from
+Run:
+
+```sh
+./delete.sh
+source ~/.zshrc
+```
+
+The script removes the configuration symlinks created by this checkout and
+its shell integration from `~/.zshrc`. It leaves files that are no longer
+devws-managed untouched, removes only directories that are empty, and
+preserves backups in `~/.devws-backups/`.
+
+Dependencies installed with `./install.sh --deps` are also preserved because
+Homebrew packages, LunarVim, and tmux plugin manager may be shared with other
+tools. Remove those separately if they are no longer needed. Restore any
+configuration replaced during installation from
 `~/.devws-backups/<timestamp>/`.
 
-The installer never modifies Git remotes or GitHub configuration.
+The installer and uninstaller never modify Git remotes or GitHub
+configuration.
