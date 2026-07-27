@@ -24,17 +24,27 @@ case "${1:-} ${2:-}" in
     printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_BIN/fzf"
     chmod +x "$FAKE_BIN/fzf"
     ;;
+  "uninstall glow")
+    rm -f "$FAKE_BIN/glow"
+    ;;
   "uninstall fzf")
     rm -f "$FAKE_BIN/fzf"
     ;;
   "list --formula")
     [[ "${3:-}" == "tmuxinator" && "${BREW_TMUXINATOR:-0}" == 1 ]] ||
-      [[ "${3:-}" == "fzf" && -x "$FAKE_BIN/fzf" ]]
+      [[ "${3:-}" == "fzf" && -x "$FAKE_BIN/fzf" ]] ||
+      [[ "${3:-}" == "glow" && -x "$FAKE_BIN/glow" ]]
     ;;
   "outdated --quiet")
     [[ "${3:-}" == "tmuxinator" &&
        "${BREW_TMUXINATOR_OUTDATED:-0}" == 1 ]] &&
       printf 'tmuxinator\n'
+    ;;
+  bundle*)
+    if [[ ! -x "$FAKE_BIN/glow" ]]; then
+      printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_BIN/glow"
+      chmod +x "$FAKE_BIN/glow"
+    fi
     ;;
 esac
 EOF
@@ -141,6 +151,45 @@ test_non_homebrew_tmuxinator_is_preserved() {
     fail "non-Homebrew tmuxinator preservation was not reported"
 }
 
+test_owned_glow_is_removed() {
+  local test_home="$TEST_ROOT/owned-glow"
+  local fake_bin="$test_home/bin"
+  mkdir -p "$test_home/.tmux/plugins/tpm"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+  make_command "$fake_bin/lvim"
+
+  run_install "$test_home" "$fake_bin" --deps >/dev/null 2>&1
+  grep -qx 'glow' "$test_home/.devws-state/installed-dependencies" ||
+    fail "devws-installed Glow was not recorded"
+
+  HOME="$test_home" FAKE_BIN="$fake_bin" BREW_LOG="$test_home/brew.log" \
+    PATH="$fake_bin:/usr/bin:/bin" "$ROOT/delete.sh" >/dev/null
+  grep -q '^uninstall glow$' "$test_home/brew.log" ||
+    fail "owned Glow was not uninstalled"
+}
+
+test_preexisting_glow_is_preserved() {
+  local test_home="$TEST_ROOT/preexisting-glow"
+  local fake_bin="$test_home/bin"
+  mkdir -p "$test_home/.tmux/plugins/tpm"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+  make_command "$fake_bin/glow"
+  make_command "$fake_bin/lvim"
+
+  run_install "$test_home" "$fake_bin" --deps >/dev/null 2>&1
+  if [[ -f "$test_home/.devws-state/installed-dependencies" ]]; then
+    ! grep -qx 'glow' "$test_home/.devws-state/installed-dependencies" ||
+      fail "pre-existing Glow was recorded as owned"
+  fi
+
+  HOME="$test_home" FAKE_BIN="$fake_bin" BREW_LOG="$test_home/brew.log" \
+    PATH="$fake_bin:/usr/bin:/bin" "$ROOT/delete.sh" >/dev/null
+  ! grep -q '^uninstall glow$' "$test_home/brew.log" ||
+    fail "pre-existing Glow was uninstalled"
+}
+
 test_picker_fails_once_without_fzf() {
   local test_home="$TEST_ROOT/picker"
   local output
@@ -161,6 +210,8 @@ test_owned_fzf_is_removed
 test_preexisting_fzf_is_preserved
 test_homebrew_tmuxinator_is_upgraded
 test_non_homebrew_tmuxinator_is_preserved
+test_owned_glow_is_removed
+test_preexisting_glow_is_preserved
 test_picker_fails_once_without_fzf
 
 printf 'Install lifecycle tests passed.\n'

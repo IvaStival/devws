@@ -7,6 +7,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bash -n "$ROOT/install.sh"
 bash -n "$ROOT/delete.sh"
 bash -n "$ROOT/scripts/test_install_lifecycle.sh"
+bash -n "$ROOT/scripts/test_markdown_viewer.sh"
 for file in "$ROOT"/config/tmux/*.sh "$ROOT"/config/tmuxinator/*.sh; do
   bash -n "$file"
 done
@@ -26,6 +27,7 @@ fi
 
 for file in "$ROOT/install.sh" "$ROOT/delete.sh" "$ROOT/scripts/check.sh" \
             "$ROOT/scripts/test_install_lifecycle.sh" \
+            "$ROOT/scripts/test_markdown_viewer.sh" \
             "$ROOT"/config/tmux/*.sh "$ROOT"/config/tmuxinator/*.sh; do
   [[ -x "$file" ]] || {
     printf 'Not executable: %s\n' "$file" >&2
@@ -34,5 +36,6 @@ for file in "$ROOT/install.sh" "$ROOT/delete.sh" "$ROOT/scripts/check.sh" \
 done
 
 "$ROOT/scripts/test_install_lifecycle.sh"
+"$ROOT/scripts/test_markdown_viewer.sh"
 
 printf 'All checks passed.\n'

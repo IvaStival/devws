@@ -199,6 +199,24 @@ restart_agent() {
     "$HOME/.tmuxinator/agent_runner.sh $agent"
 }
 
+initialize_agent() {
+  local session agent root message
+  session="$(tmux display-message -p '#S')"
+  agent="$(tmux show-options -t "$session" -v @devws_agent 2>/dev/null)"
+  root="$(tmux show-options -t "$session" -v @devws_root 2>/dev/null)"
+  agent="${agent:-${DEVWS_DEFAULT_AGENT:-claude}}"
+
+  case "$agent" in
+    claude|codex) ;;
+    *) agent="${DEVWS_DEFAULT_AGENT:-claude}" ;;
+  esac
+  if message="$("$HOME/.tmuxinator/init_agent.sh" "$root" "$agent" 2>&1)"; then
+    tmux display-message "$message"
+  else
+    tmux display-message "Initialize agent failed: $message"
+  fi
+}
+
 new_terminal() {
   local session root terminal_pane
   session="$(tmux display-message -p '#S')"
@@ -304,12 +322,13 @@ while tmux list-sessions >/dev/null 2>&1; do
             2) printf "print(new)+accept\n" ;;
             3) printf "print(switch-agent)+accept\n" ;;
             4) printf "print(switch-editor)+accept\n" ;;
-            5) printf "print(restart-agent)+accept\n" ;;
-            6) printf "print(new-terminal)+accept\n" ;;
-            7) printf "print(open-folder)+accept\n" ;;
-            8) printf "print(close)+accept\n" ;;
+            5) printf "print(initialize-agent)+accept\n" ;;
+            6) printf "print(restart-agent)+accept\n" ;;
+            7) printf "print(new-terminal)+accept\n" ;;
+            8) printf "print(open-folder)+accept\n" ;;
+            9) printf "print(close)+accept\n" ;;
           esac' \
-        --header=$'WORKSPACE COMMANDS\n\033[32m+ New workspace\033[0m\n\033[36m⇄ Switch agent\033[0m\n\033[36m⇄ Switch editor\033[0m\n\033[36m↻ Restart agent\033[0m\n\033[36m▣ New terminal\033[0m\n\033[36m⌂ Open folder\033[0m\n\033[31m× Close workspace\033[0m\n\n\033[2mOPEN WORKSPACES\033[0m' \
+        --header=$'WORKSPACE COMMANDS\n\033[32m+ New workspace\033[0m\n\033[36m⇄ Switch agent\033[0m\n\033[36m⇄ Switch editor\033[0m\n\033[35m◇ Initialize agent\033[0m\n\033[36m↻ Restart agent\033[0m\n\033[36m▣ New terminal\033[0m\n\033[36m⌂ Open folder\033[0m\n\033[31m× Close workspace\033[0m\n\n\033[2mOPEN WORKSPACES\033[0m' \
         --prompt='> ' \
         --info=inline --no-separator --border=none --margin=0 --padding=0
   )"
@@ -320,6 +339,7 @@ while tmux list-sessions >/dev/null 2>&1; do
     new) new_workspace ;;
     switch-agent) switch_agent ;;
     switch-editor) switch_editor ;;
+    initialize-agent) initialize_agent ;;
     restart-agent) restart_agent ;;
     new-terminal) new_terminal ;;
     open-folder) open_folder ;;

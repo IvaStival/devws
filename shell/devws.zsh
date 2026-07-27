@@ -1,6 +1,12 @@
 # devws shell integration
 
 devws() {
+  if [[ "${1:-}" == "md" ]]; then
+    shift
+    devws-markdown "$@"
+    return
+  fi
+
   if [[ "${1:-}" == "menu" ]]; then
     devws-menu "${2:-toggle}" "${3:-}"
     return
@@ -47,6 +53,56 @@ devws() {
 
   tmuxinator start dev project_root="$project_root" agent="$agent" editor="$editor"
   [[ -n "$TMUX" ]] && "$HOME/.tmuxinator/refresh_devws_pickers.sh"
+}
+
+devws-markdown() {
+  local markdown_file
+
+  if (( $# > 1 )); then
+    print -u2 "usage: devws md [file.md]"
+    return 2
+  fi
+  if ! command -v glow >/dev/null 2>&1; then
+    print -u2 "devws md: Glow is required; run ./install.sh --deps"
+    return 127
+  fi
+
+  if (( $# == 1 )); then
+    markdown_file="$1"
+  else
+    if ! command -v fzf >/dev/null 2>&1; then
+      print -u2 "devws md: fzf is required for interactive selection"
+      return 127
+    fi
+    markdown_file="$(
+      find . -type f \
+        \( -iname '*.md' -o -iname '*.markdown' \) \
+        ! -path '*/.git/*' -print |
+        LC_ALL=C sort |
+        fzf --height=~60% --layout=reverse \
+          --prompt='Markdown > ' \
+          --header='Choose a Markdown file to open with Glow'
+    )"
+    [[ -n "$markdown_file" ]] || return 0
+  fi
+
+  if [[ ! -f "$markdown_file" ]]; then
+    print -u2 "devws md: file not found: $markdown_file"
+    return 2
+  fi
+  if [[ ! -r "$markdown_file" ]]; then
+    print -u2 "devws md: file is not readable: $markdown_file"
+    return 2
+  fi
+  case "${markdown_file:l}" in
+    *.md|*.markdown) ;;
+    *)
+      print -u2 "devws md: expected a .md or .markdown file"
+      return 2
+      ;;
+  esac
+
+  command glow -p "$markdown_file"
 }
 
 devws-menu() {

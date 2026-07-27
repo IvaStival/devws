@@ -226,3 +226,45 @@ vim.api.nvim_create_autocmd("FileType", {
     })
   end,
 })
+
+local function preview_markdown_with_glow()
+  if vim.bo.filetype ~= "markdown" then
+    vim.notify("Glow preview is available only for Markdown buffers", vim.log.levels.WARN)
+    return
+  end
+  if vim.fn.executable("glow") ~= 1 then
+    vim.notify("Glow is required; run ./install.sh --deps", vim.log.levels.ERROR)
+    return
+  end
+
+  local markdown_file = vim.api.nvim_buf_get_name(0)
+  if markdown_file == "" then
+    vim.notify("Save the Markdown file before previewing it", vim.log.levels.WARN)
+    return
+  end
+  if vim.bo.modified then
+    vim.cmd.write()
+  end
+
+  vim.cmd("botright 90vsplit")
+  local preview_window = vim.api.nvim_get_current_win()
+  local preview_buffer = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_buf(preview_window, preview_buffer)
+  vim.bo[preview_buffer].bufhidden = "wipe"
+
+  vim.fn.termopen({ "glow", "-p", markdown_file }, {
+    on_exit = function()
+      if vim.api.nvim_win_is_valid(preview_window) then
+        vim.api.nvim_win_close(preview_window, true)
+      end
+    end,
+  })
+
+  vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter", "TermLeave" }, {
+    buffer = preview_buffer,
+    command = "startinsert",
+  })
+  vim.cmd.startinsert()
+end
+
+lvim.keys.normal_mode["<leader>mp"] = preview_markdown_with_glow
