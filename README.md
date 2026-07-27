@@ -55,12 +55,24 @@ Clone the repository, then run:
 source ~/.zshrc
 ```
 
-`--deps` installs the Brewfile, LunarVim, and tmux plugin manager. If your
+`fzf` is required for the workspace picker and is checked on every install. If
+it is missing, the installer asks permission before installing it with
+Homebrew and stops without changing configuration when permission is denied.
+
+Every install upgrades an outdated Homebrew-managed tmuxinator automatically.
+A tmuxinator installed by another package manager is left unchanged. `--deps`
+installs the Brewfile, LunarVim, and tmux plugin manager. If your other
 dependencies are already installed, use `./install.sh`.
 
 The installer creates symlinks into the clone. Keep the cloned folder in its
 original location after installation. Existing managed files are moved to a
 timestamped directory under `~/.devws-backups/` before replacement.
+
+When installation finishes, run the highlighted reload command it prints:
+
+```sh
+source ~/.zshrc
+```
 
 Install either Codex or Claude Code separately, authenticate it, and edit
 `config/tmuxinator/.env` if you want to change the available/default agent or
@@ -146,10 +158,11 @@ with a configuration that needs to be restored, the previous configuration
 remains in `~/.devws-backups/` and the script reports its location. Only empty
 configuration directories are removed.
 
-Dependencies installed with `./install.sh --deps` are also preserved because
-Homebrew packages, LunarVim, and tmux plugin manager may be shared with other
-tools or may have existed before devws. Remove those separately only if they
-are no longer needed.
+If devws installed `fzf` after receiving permission, `delete.sh` removes it.
+A pre-existing `fzf` is never removed. Other dependencies installed with
+`./install.sh --deps` are preserved because Homebrew packages, LunarVim, and
+tmux plugin manager may be shared with other tools or may have existed before
+devws. Remove those separately only if they are no longer needed.
 
 The installer and uninstaller never modify Git remotes or GitHub
 configuration.

@@ -6,6 +6,11 @@ set -u
 config="$HOME/.tmuxinator/.env"
 [ -r "$config" ] && . "$config"
 
+if ! command -v fzf >/dev/null 2>&1; then
+  printf 'devws picker: fzf is required; run the devws installer and restart tmux.\n' >&2
+  exit 127
+fi
+
 # Always title this script's own pane. Without an explicit target tmux titles
 # the client's active pane, which may be the editor or terminal.
 tmux select-pane -t "$TMUX_PANE" -T devws-picker 2>/dev/null

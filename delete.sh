@@ -5,12 +5,48 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 state_root="$HOME/.devws-state"
 backup_state="$state_root/backup-root"
+dependency_state="$state_root/installed-dependencies"
 backup_root=""
 restore_pending=0
 
 info() { printf '\033[36m[devws]\033[0m %s\n' "$*"; }
 ok() { printf '\033[32m[done]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[warn]\033[0m %s\n' "$*" >&2; }
+
+remove_dependency_record() {
+  local dependency="$1"
+  local temporary
+
+  [[ -f "$dependency_state" ]] || return
+  temporary="$(mktemp "${TMPDIR:-/tmp}/devws-dependencies.XXXXXX")"
+  grep -Fvx "$dependency" "$dependency_state" > "$temporary" || true
+  if [[ -s "$temporary" ]]; then
+    mv "$temporary" "$dependency_state"
+  else
+    rm "$temporary" "$dependency_state"
+  fi
+}
+
+remove_owned_fzf() {
+  [[ -f "$dependency_state" ]] ||
+    return 0
+  grep -Fqx "fzf" "$dependency_state" ||
+    return 0
+
+  if ! command -v brew >/dev/null 2>&1; then
+    warn "Kept devws-installed fzf because Homebrew is unavailable"
+    return
+  fi
+  if brew list --formula fzf >/dev/null 2>&1; then
+    info "Removing fzf installed by devws"
+    if ! brew uninstall fzf; then
+      warn "Could not remove fzf; keeping its ownership state for retry"
+      return
+    fi
+    ok "Removed fzf"
+  fi
+  remove_dependency_record "fzf"
+}
 
 if [[ -f "$backup_state" ]]; then
   IFS= read -r backup_root < "$backup_state"
@@ -126,6 +162,7 @@ restore_link "$ROOT/config/lvim/queries/markdown/highlights.scm" \
   "$HOME/.config/lvim/queries/markdown/highlights.scm"
 
 remove_zshrc_block
+remove_owned_fzf
 
 rmdir "$HOME/.config/lvim/queries/markdown" 2>/dev/null || true
 rmdir "$HOME/.config/lvim/queries" 2>/dev/null || true
@@ -135,10 +172,10 @@ rmdir "$HOME/.tmux" 2>/dev/null || true
 
 if [[ "$restore_pending" == 0 ]]; then
   rm -f "$backup_state"
-  rmdir "$state_root" 2>/dev/null || true
 fi
+rmdir "$state_root" 2>/dev/null || true
 
 ok "Uninstall complete"
 printf 'Previous configurations were restored when available.\n'
-printf 'Shared applications and dependencies were preserved.\n'
+printf 'Pre-existing applications and dependencies were preserved.\n'
 printf 'Reload your shell: source ~/.zshrc\n'

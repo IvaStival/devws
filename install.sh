@@ -4,6 +4,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WITH_DEPS=0
+state_root="$HOME/.devws-state"
+dependency_state="$state_root/installed-dependencies"
 
 usage() {
   cat <<'EOF'
@@ -24,6 +26,67 @@ done
 info() { printf '\033[36m[devws]\033[0m %s\n' "$*"; }
 ok() { printf '\033[32m[done]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[warn]\033[0m %s\n' "$*" >&2; }
+
+record_installed_dependency() {
+  local dependency="$1"
+
+  mkdir -p "$state_root"
+  if [[ ! -f "$dependency_state" ]] ||
+      ! grep -Fqx "$dependency" "$dependency_state"; then
+    printf '%s\n' "$dependency" >> "$dependency_state"
+  fi
+}
+
+ensure_fzf() {
+  local reply
+
+  command -v fzf >/dev/null 2>&1 && return
+
+  warn "fzf is required but is not installed or is unavailable on PATH"
+  if ! command -v brew >/dev/null 2>&1; then
+    printf 'Install Homebrew from https://brew.sh, then rerun the installer.\n' >&2
+    exit 1
+  fi
+
+  printf 'Install fzf with Homebrew now? [y/N] '
+  if ! IFS= read -r reply; then
+    printf '\nInstallation stopped before configuration was changed.\n' >&2
+    exit 1
+  fi
+  case "$reply" in
+    y|Y|yes|YES|Yes) ;;
+    *)
+      printf 'Installation stopped before configuration was changed.\n' >&2
+      exit 1
+      ;;
+  esac
+
+  info "Installing fzf"
+  brew install fzf
+  if ! command -v fzf >/dev/null 2>&1; then
+    printf 'fzf was installed but is still unavailable on PATH.\n' >&2
+    printf 'Restart your shell and rerun ./install.sh\n' >&2
+    exit 1
+  fi
+  record_installed_dependency "fzf"
+  ok "Installed fzf"
+}
+
+upgrade_tmuxinator_if_needed() {
+  if ! command -v brew >/dev/null 2>&1; then
+    command -v tmuxinator >/dev/null 2>&1 &&
+      warn "Cannot check tmuxinator updates because Homebrew is unavailable"
+    return
+  fi
+  if brew list --formula tmuxinator >/dev/null 2>&1; then
+    if brew outdated --quiet tmuxinator | grep -q .; then
+      info "Upgrading Homebrew tmuxinator"
+      brew upgrade tmuxinator
+    fi
+  elif command -v tmuxinator >/dev/null 2>&1; then
+    warn "Existing tmuxinator is not managed by Homebrew; leaving it unchanged"
+  fi
+}
 
 install_dependencies() {
   if ! command -v brew >/dev/null 2>&1; then
@@ -52,9 +115,11 @@ install_dependencies() {
 
 timestamp="$(date +%Y%m%d-%H%M%S)"
 backup_root="$HOME/.devws-backups/$timestamp"
-state_root="$HOME/.devws-state"
 backup_state="$state_root/backup-root"
 backed_up=0
+
+ensure_fzf
+upgrade_tmuxinator_if_needed
 
 mkdir -p "$state_root"
 if [[ -f "$backup_state" ]]; then
@@ -151,5 +216,8 @@ if [[ "$backed_up" == 1 ]]; then
 fi
 
 ok "Installation complete"
-printf 'Reload your shell: source ~/.zshrc\n'
+printf '\n\n'
+printf '\033[1;33mReload your shell before using devws:\033[0m\n'
+printf '\033[1;36m  source ~/.zshrc\033[0m\n'
+printf '\n'
 printf 'Start a workspace: devws /path/to/project\n'
