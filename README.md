@@ -12,8 +12,6 @@ Each project runs in its own tmux session. The menu can create, switch, and
 close workspaces; switch or restart the agent; switch the editor; create
 terminals; and open the project in Finder, Zed, or VS Code.
 
-![devws application panel showing the workspace menu, editor, AI agent, and terminal panes](docs/images/application-panel.png)
-
 Keyboard selection is limited to workspace rows. The command header is
 mouse-driven: click a command once to run it.
 
@@ -100,7 +98,8 @@ Inside LunarVim, its separate file explorer can be controlled with
 
 ## Menu indicators
 
-- `*` marks the active workspace.
+- A dark gray background marks the active workspace.
+- A lighter opaque gray background marks the selected workspace.
 - Yellow `●` means the Git working tree has uncommitted or untracked changes.
 - Green `✓` means the Git working tree is clean.
 
