@@ -27,25 +27,27 @@ remove_dependency_record() {
   fi
 }
 
-remove_owned_fzf() {
+remove_owned_homebrew_dependency() {
+  local dependency="$1"
+
   [[ -f "$dependency_state" ]] ||
     return 0
-  grep -Fqx "fzf" "$dependency_state" ||
+  grep -Fqx "$dependency" "$dependency_state" ||
     return 0
 
   if ! command -v brew >/dev/null 2>&1; then
-    warn "Kept devws-installed fzf because Homebrew is unavailable"
+    warn "Kept devws-installed $dependency because Homebrew is unavailable"
     return
   fi
-  if brew list --formula fzf >/dev/null 2>&1; then
-    info "Removing fzf installed by devws"
-    if ! brew uninstall fzf; then
-      warn "Could not remove fzf; keeping its ownership state for retry"
+  if brew list --formula "$dependency" >/dev/null 2>&1; then
+    info "Removing $dependency installed by devws"
+    if ! brew uninstall "$dependency"; then
+      warn "Could not remove $dependency; keeping its ownership state for retry"
       return
     fi
-    ok "Removed fzf"
+    ok "Removed $dependency"
   fi
-  remove_dependency_record "fzf"
+  remove_dependency_record "$dependency"
 }
 
 if [[ -f "$backup_state" ]]; then
@@ -162,7 +164,8 @@ restore_link "$ROOT/config/lvim/queries/markdown/highlights.scm" \
   "$HOME/.config/lvim/queries/markdown/highlights.scm"
 
 remove_zshrc_block
-remove_owned_fzf
+remove_owned_homebrew_dependency "fzf"
+remove_owned_homebrew_dependency "glow"
 
 rmdir "$HOME/.config/lvim/queries/markdown" 2>/dev/null || true
 rmdir "$HOME/.config/lvim/queries" 2>/dev/null || true

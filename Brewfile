@@ -1,5 +1,6 @@
 brew "fzf"
 brew "git"
+brew "glow"
 brew "neovim"
 brew "tmux"
 brew "tmuxinator"

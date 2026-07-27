@@ -89,14 +89,25 @@ upgrade_tmuxinator_if_needed() {
 }
 
 install_dependencies() {
+  local glow_was_installed=0
+
   if ! command -v brew >/dev/null 2>&1; then
     printf 'Homebrew is required for automatic dependency installation.\n' >&2
     printf 'Install it from https://brew.sh, then rerun ./install.sh --deps\n' >&2
     exit 1
   fi
 
+  command -v glow >/dev/null 2>&1 && glow_was_installed=1
+
   info "Installing core packages from Brewfile"
   brew bundle --file="$ROOT/Brewfile"
+  if ! command -v glow >/dev/null 2>&1; then
+    printf 'Glow installation failed or Glow is unavailable on PATH.\n' >&2
+    exit 1
+  fi
+  if [[ "$glow_was_installed" == 0 ]]; then
+    record_installed_dependency "glow"
+  fi
 
   if ! command -v lvim >/dev/null 2>&1; then
     info "Installing LunarVim"

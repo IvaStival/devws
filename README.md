@@ -10,7 +10,8 @@
 
 Each project runs in its own tmux session. The menu can create, switch, and
 close workspaces; switch or restart the agent; switch the editor; create
-terminals; and open the project in Finder, Zed, or VS Code.
+terminals; initialize project instructions for the active agent; and open the
+project in Finder, Zed, or VS Code.
 
 ![devws workspace panel with multi-line workspace details](docs/images/application-panel.png)
 
@@ -29,6 +30,7 @@ Core dependencies:
 - tmux 3.2 or newer
 - tmuxinator
 - fzf
+- Glow
 - Neovim and LunarVim
 - `tree`
 - Ruby (used by tmuxinator)
@@ -110,6 +112,40 @@ devws menu open my-app
 Inside LunarVim, its separate file explorer can be controlled with
 `:NvimTreeOpen`, `:NvimTreeClose`, or `:NvimTreeToggle`.
 
+### Initialize an agent
+
+Click **Initialize agent** in the workspace menu to seed the current project
+for the workspace's active agent:
+
+- Claude creates `CLAUDE.md` and `.claude/skills/`.
+- Codex creates `AGENTS.md` and `.agents/skills/`.
+
+The shared template includes reusable TDD, SOLID, naming, simplicity, testing,
+and planning rules. Existing instruction files and skills are never
+overwritten.
+
+## Markdown preview
+
+Open a Markdown file with Glow:
+
+```sh
+devws md README.md
+```
+
+Run the command without a path to choose a `.md` or `.markdown` file below the
+current directory with `fzf`:
+
+```sh
+devws md
+```
+
+Inside LunarVim, press `<leader>mp` while editing a Markdown file. Modified
+files are saved before Glow opens in a temporary terminal split; exiting Glow
+closes that split.
+
+Glow is installed by `./install.sh --deps` through Homebrew on macOS and
+Linux. Both entry points report how to install it when it is unavailable.
+
 ## Menu indicators
 
 - A dark gray background marks the active workspace.
@@ -158,11 +194,12 @@ with a configuration that needs to be restored, the previous configuration
 remains in `~/.devws-backups/` and the script reports its location. Only empty
 configuration directories are removed.
 
-If devws installed `fzf` after receiving permission, `delete.sh` removes it.
-A pre-existing `fzf` is never removed. Other dependencies installed with
-`./install.sh --deps` are preserved because Homebrew packages, LunarVim, and
-tmux plugin manager may be shared with other tools or may have existed before
-devws. Remove those separately only if they are no longer needed.
+If devws installed `fzf` after receiving permission or installed Glow through
+`./install.sh --deps`, `delete.sh` removes those owned packages. Pre-existing
+installations are never removed. Other dependencies installed with `--deps`
+are preserved because Homebrew packages, LunarVim, and tmux plugin manager may
+be shared with other tools or may have existed before devws. Remove those
+separately only if they are no longer needed.
 
 The installer and uninstaller never modify Git remotes or GitHub
 configuration.
