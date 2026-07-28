@@ -57,6 +57,7 @@ devws() {
 
 devws-markdown() {
   local markdown_file
+  local self_dir="${${(%):-%x}:A:h}"
 
   if (( $# > 1 )); then
     print -u2 "usage: devws md [file.md]"
@@ -101,6 +102,9 @@ devws-markdown() {
       return 2
       ;;
   esac
+
+  local mermaid_script="$self_dir/render_mermaid_preview.sh"
+  [[ -x "$mermaid_script" ]] && "$mermaid_script" "$markdown_file"
 
   command glow -p "$markdown_file"
 }
