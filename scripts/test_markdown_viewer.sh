@@ -25,15 +25,21 @@ EOF
 cat > "$FZF_INPUT"
 printf '%s\n' "$FZF_SELECTION"
 EOF
-  chmod +x "$fake_bin/glow" "$fake_bin/fzf"
+  cat > "$fake_bin/open" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >> "$OPEN_LOG"
+EOF
+  chmod +x "$fake_bin/glow" "$fake_bin/fzf" "$fake_bin/open"
 }
 
 run_devws() {
   local fake_bin="$1"
   local project="$2"
   shift 2
+  rm -f "$TEST_ROOT/open.log"
   HOME="$TEST_ROOT/home" TMUX="" GLOW_LOG="$TEST_ROOT/glow.log" \
     FZF_INPUT="$TEST_ROOT/fzf-input" FZF_SELECTION="${FZF_SELECTION:-}" \
+    OPEN_LOG="$TEST_ROOT/open.log" \
     PATH="$fake_bin:/usr/bin:/bin" \
     "$ZSH_BIN" -c 'source "$1"; cd "$2"; shift 2; devws md "$@"' \
     -- "$ROOT/shell/devws.zsh" "$project" "$@"
@@ -83,6 +89,43 @@ test_invalid_extension_is_rejected() {
   fi
 }
 
+test_mermaid_fence_opens_browser() {
+  local project="$TEST_ROOT/mermaid"
+  local fake_bin="$project/bin"
+  mkdir -p "$project"
+  cat > "$project/README.md" <<'EOF'
+# Diagram
+
+```mermaid
+flowchart TB
+A-->B
+```
+EOF
+  make_fake_commands "$fake_bin"
+
+  run_devws "$fake_bin" "$project" "README.md"
+  [[ -s "$TEST_ROOT/open.log" ]] ||
+    fail "Mermaid fence did not trigger a browser open"
+  local opened_path
+  opened_path="$(cat "$TEST_ROOT/open.log")"
+  [[ "$opened_path" == *.html ]] ||
+    fail "browser was not opened with an HTML file"
+  [[ -f "$opened_path" ]] ||
+    fail "generated Mermaid preview HTML file does not exist"
+}
+
+test_no_mermaid_fence_skips_browser() {
+  local project="$TEST_ROOT/no-mermaid"
+  local fake_bin="$project/bin"
+  mkdir -p "$project"
+  printf '# Guide\n\nJust text, no diagrams.\n' > "$project/README.md"
+  make_fake_commands "$fake_bin"
+
+  run_devws "$fake_bin" "$project" "README.md"
+  [[ ! -s "$TEST_ROOT/open.log" ]] ||
+    fail "browser should not open for a file without a Mermaid fence"
+}
+
 test_missing_glow_is_reported() {
   local project="$TEST_ROOT/missing"
   local fake_bin="$project/bin"
@@ -100,6 +143,8 @@ test_missing_glow_is_reported() {
 test_direct_file_with_spaces
 test_interactive_picker
 test_invalid_extension_is_rejected
+test_mermaid_fence_opens_browser
+test_no_mermaid_fence_skips_browser
 test_missing_glow_is_reported
 
 printf 'Markdown viewer tests passed.\n'

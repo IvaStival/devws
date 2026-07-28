@@ -146,6 +146,14 @@ closes that split.
 Glow is installed by `./install.sh --deps` through Homebrew on macOS and
 Linux. Both entry points report how to install it when it is unavailable.
 
+Glow renders Markdown as terminal text, so it cannot draw Mermaid diagrams —
+a ```` ```mermaid ```` fence shows up as plain code. When a file contains one,
+both entry points additionally open a rendered preview in your default
+browser (`open` on macOS, `xdg-open` on Linux) alongside the Glow preview.
+That preview loads its Markdown/Mermaid renderer from a CDN, so it requires
+internet access; files without a Mermaid fence are unaffected and only use
+Glow, exactly as before.
+
 ## Menu indicators
 
 - A dark gray background marks the active workspace.
@@ -161,6 +169,7 @@ Linux. Both entry points report how to install it when it is unavailable.
 - LunarVim: `config/lvim/config.lua`
 - tmux: `config/tmux/tmux.conf`
 - Shell command and prompt: `shell/devws.zsh`
+- Mermaid diagram preview: `shell/render_mermaid_preview.sh`
 
 After changing a symlinked config, restart the relevant program. Reload shell
 changes with `source ~/.zshrc`; reload tmux with

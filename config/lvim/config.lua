@@ -227,6 +227,25 @@ vim.api.nvim_create_autocmd("FileType", {
   end,
 })
 
+-- config.lua is symlinked into ~/.config/lvim/config.lua by install.sh, so its
+-- own source path must be resolved through that symlink to find sibling files
+-- (like shell/render_mermaid_preview.sh) back in the repo clone.
+local function repo_root()
+  local this_file = debug.getinfo(1, "S").source:sub(2)
+  local real_file = vim.loop.fs_realpath(this_file) or this_file
+  return vim.fn.fnamemodify(real_file, ":h:h:h")
+end
+
+-- Glow can't render Mermaid diagrams graphically; this opens a CDN-backed
+-- HTML preview in the system browser as well, but only when the file
+-- actually has a Mermaid fence (the script no-ops otherwise).
+local function run_mermaid_preview(markdown_file)
+  local script = repo_root() .. "/shell/render_mermaid_preview.sh"
+  if vim.fn.executable(script) == 1 then
+    vim.fn.system({ script, markdown_file })
+  end
+end
+
 local function preview_markdown_with_glow()
   if vim.bo.filetype ~= "markdown" then
     vim.notify("Glow preview is available only for Markdown buffers", vim.log.levels.WARN)
@@ -245,6 +264,8 @@ local function preview_markdown_with_glow()
   if vim.bo.modified then
     vim.cmd.write()
   end
+
+  run_mermaid_preview(markdown_file)
 
   vim.cmd("botright 90vsplit")
   local preview_window = vim.api.nvim_get_current_win()
