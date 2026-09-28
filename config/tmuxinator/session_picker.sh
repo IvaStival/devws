@@ -85,6 +85,10 @@ refresh_pickers() {
   "$HOME/.tmuxinator/refresh_devws_pickers.sh"
 }
 
+save_state() {
+  "$HOME/.tmuxinator/save_state.sh"
+}
+
 choose_agent() {
   local agents="${DEVWS_AGENTS:-claude codex}"
   local agent
@@ -170,6 +174,7 @@ switch_agent() {
   tmux set-option -t "$session" @devws_agent "$agent"
   tmux respawn-pane -k -t "$pane" -c "${root:-$PWD}" \
     "$HOME/.tmuxinator/agent_runner.sh $agent"
+  save_state
   refresh_pickers
 }
 
@@ -184,6 +189,7 @@ switch_editor() {
   tmux set-option -t "$session" @devws_editor "$editor"
   tmux respawn-pane -k -t "$pane" -c "${root:-$PWD}" \
     "$HOME/.tmuxinator/editor_runner.sh $editor"
+  save_state
   refresh_pickers
 }
 
@@ -217,16 +223,30 @@ initialize_agent() {
   fi
 }
 
+terminal_pane() {
+  local session="$1"
+
+  # @devws_role is authoritative; the title only survives in workspaces created
+  # before the terminal pane started marking itself.
+  tmux list-panes -t "$session" \
+    -F '#{pane_id}|#{@devws_role}|#{pane_title}' 2>/dev/null |
+    awk -F '|' '
+      $2 == "terminal" { print $1; exit }
+      $3 == "terminal" { fallback = $1 }
+      END { if (fallback != "") print fallback }'
+}
+
 new_terminal() {
-  local session root terminal_pane
+  local session root pane added
   session="$(tmux display-message -p '#S')"
   root="$(tmux show-options -t "$session" -v @devws_root 2>/dev/null)"
-  terminal_pane="$(
-    tmux list-panes -t "$session" -F '#{pane_id}|#{pane_title}' |
-      awk -F '|' '$2 == "terminal" { print $1; exit }'
-  )"
-  [ -n "$terminal_pane" ] || return
-  tmux split-window -h -t "$terminal_pane" -c "${root:-$PWD}"
+  pane="$(terminal_pane "$session")"
+  [ -n "$pane" ] || return
+  added="$(
+    tmux split-window -h -t "$pane" -c "${root:-$PWD}" -P -F '#{pane_id}'
+  )" || return
+  tmux set-option -p -t "$added" @devws_role extra 2>/dev/null
+  save_state
 }
 
 open_folder() {
@@ -277,6 +297,7 @@ new_workspace() {
   [ -n "$editor" ] || return
 
   tmuxinator start dev project_root="$project_root" agent="$agent" editor="$editor"
+  save_state
   refresh_pickers
 }
 
@@ -297,7 +318,7 @@ close_workspace() {
   # Run through the tmux server so closing the workspace containing this
   # sidebar does not terminate the refresh command along with the pane.
   tmux run-shell -b \
-    "tmux kill-session -t $quoted_target; '$HOME/.tmuxinator/refresh_devws_pickers.sh'"
+    "tmux kill-session -t $quoted_target; '$HOME/.tmuxinator/save_state.sh'; '$HOME/.tmuxinator/refresh_devws_pickers.sh'"
 }
 
 while tmux list-sessions >/dev/null 2>&1; do

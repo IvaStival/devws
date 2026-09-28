@@ -15,4 +15,6 @@ windows:
         - picker: ~/.tmuxinator/session_picker.sh
         - editor: ~/.tmuxinator/editor_runner.sh <%= @settings["editor"] || "lvim" %>
         - agent: ~/.tmuxinator/agent_runner.sh <%= @settings["agent"] || "claude" %>
-        - terminal:
+        # The shell replaces this pane's title as soon as it draws a prompt, so
+        # the role is recorded as a pane option instead.
+        - terminal: tmux set-option -p -t "$TMUX_PANE" @devws_role terminal; clear

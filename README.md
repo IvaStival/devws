@@ -112,6 +112,40 @@ devws menu open my-app
 Inside LunarVim, its separate file explorer can be controlled with
 `:NvimTreeOpen`, `:NvimTreeClose`, or `:NvimTreeToggle`.
 
+### Session persistence
+
+Open workspaces are saved automatically, so a reboot or an iTerm2/tmux crash
+does not cost you the arrangement. Saved per workspace:
+
+- the workspace folder, agent, and editor
+- the pane layout and each pane's working directory
+- extra terminals created from the workspace menu
+- whether the workspace menu was open or closed
+
+State lives in `~/.devws-state/sessions.tsv` and is rewritten whenever a
+workspace is created or closed, a client detaches, the agent or editor is
+swapped, a terminal is added, or the menu is toggled.
+
+The first `devws` run that finds no tmux server reopens the saved workspaces
+before starting the one you asked for, then attaches you to it. Restore and
+save can also be driven by hand:
+
+```sh
+devws restore              # reopen the saved workspaces and attach
+devws restore --no-attach  # reopen them in the background
+devws save                 # snapshot the current workspaces now
+devws fresh                # forget the saved workspaces
+```
+
+Set `DEVWS_AUTO_RESTORE=0` in `config/tmuxinator/.env` to turn the automatic
+restore off and keep only the explicit commands.
+
+Three limits are worth knowing: a workspace whose folder no longer exists is
+skipped with a message; an agent or editor that is no longer listed in
+`.env` falls back to the configured default; and programs other than the agent
+and the editor are not restarted — restored terminals come back at a shell
+prompt in their saved directory.
+
 ### Initialize an agent
 
 Click **Initialize agent** in the workspace menu to seed the current project
@@ -163,7 +197,8 @@ Glow, exactly as before.
 
 ## Configuration
 
-- Agents and editors: `config/tmuxinator/.env`
+- Agents and editors, automatic restore: `config/tmuxinator/.env`
+- Saved workspaces: `~/.devws-state/sessions.tsv`
 - Workspace layout: `config/tmuxinator/dev.yml`
 - Workspace menu: `config/tmuxinator/session_picker.sh`
 - LunarVim: `config/lvim/config.lua`
@@ -197,6 +232,8 @@ During installation, devws records its backup state before replacing any
 configuration. The uninstall script removes the configuration symlinks
 created by this checkout, restores the files that were in their place before
 installation, and removes the shell integration from `~/.zshrc`.
+
+The saved workspace state in `~/.devws-state/` is removed.
 
 Files that are no longer devws-managed are left untouched. If one conflicts
 with a configuration that needs to be restored, the previous configuration

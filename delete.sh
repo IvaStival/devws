@@ -167,6 +167,9 @@ remove_zshrc_block
 remove_owned_homebrew_dependency "fzf"
 remove_owned_homebrew_dependency "glow"
 
+rm -f "$state_root/sessions.tsv"
+rmdir "$state_root/restore.lock" 2>/dev/null || true
+
 rmdir "$HOME/.config/lvim/queries/markdown" 2>/dev/null || true
 rmdir "$HOME/.config/lvim/queries" 2>/dev/null || true
 rmdir "$HOME/.config/lvim" 2>/dev/null || true

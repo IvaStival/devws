@@ -12,7 +12,31 @@ devws() {
     return
   fi
 
-  local project_root="${1:-$PWD}"
+  if [[ "${1:-}" == "restore" ]]; then
+    devws-restore "${@:2}"
+    return
+  fi
+
+  if [[ "${1:-}" == "save" ]]; then
+    "$HOME/.tmuxinator/save_state.sh"
+    return
+  fi
+
+  if [[ "${1:-}" == "fresh" ]]; then
+    rm -f "$HOME/.devws-state/sessions.tsv"
+    print "devws: saved workspaces cleared"
+    return
+  fi
+
+  local project_root
+  # Resolve to an absolute, symlink-free path before handing it to
+  # tmuxinator. A relative value (e.g. "." from `devws .`) would otherwise
+  # be stored as-is and re-resolved inconsistently by tmux later, producing
+  # broken pane working directories.
+  if ! project_root="$(cd "${1:-$PWD}" 2>/dev/null && pwd -P)"; then
+    print -u2 "devws: folder does not exist: ${1:-$PWD}"
+    return 1
+  fi
   local agent="${2:-}"
   local editor="${3:-}"
   local agent_config="$HOME/.tmuxinator/.env"
@@ -51,8 +75,48 @@ devws() {
     return 2
   fi
 
+  # After a reboot or a crash there is no tmux server: rebuild the saved
+  # workspaces before adding the requested one. A no-op while a server is
+  # running, so a workspace that was deliberately closed is never resurrected.
+  if [[ "${DEVWS_AUTO_RESTORE:-1}" != 0 ]] &&
+      ! tmux list-sessions >/dev/null 2>&1 &&
+      [[ -s "$HOME/.devws-state/sessions.tsv" ]]; then
+    "$HOME/.tmuxinator/restore_state.sh" >/dev/null
+  fi
+
   tmuxinator start dev project_root="$project_root" agent="$agent" editor="$editor"
+  "$HOME/.tmuxinator/save_state.sh"
   [[ -n "$TMUX" ]] && "$HOME/.tmuxinator/refresh_devws_pickers.sh"
+}
+
+devws-restore() {
+  local attach=1
+  local restored first
+
+  if [[ "${1:-}" == "--no-attach" ]]; then
+    attach=0
+  elif (( $# > 0 )); then
+    print -u2 "usage: devws restore [--no-attach]"
+    return 2
+  fi
+
+  restored="$("$HOME/.tmuxinator/restore_state.sh")" || return
+  first="${restored%%$'\n'*}"
+
+  if [[ -z "$first" ]]; then
+    print "devws: no workspaces to restore"
+    return 0
+  fi
+
+  "$HOME/.tmuxinator/refresh_devws_pickers.sh"
+  print "devws: restored ${(w)#restored} workspace(s)"
+
+  (( attach )) || return 0
+  if [[ -n "$TMUX" ]]; then
+    tmux switch-client -t "$first"
+  elif [[ -t 1 ]]; then
+    tmux attach -t "$first"
+  fi
 }
 
 devws-markdown() {
@@ -156,6 +220,8 @@ devws-menu() {
       return 2
       ;;
   esac
+
+  "$HOME/.tmuxinator/save_state.sh"
 }
 
 # Use a compact prompt inside devws panes only.
