@@ -4,20 +4,23 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WITH_DEPS=0
+WITH_ITERM_KEYS=0
 state_root="$HOME/.devws-state"
 dependency_state="$state_root/installed-dependencies"
 
 usage() {
   cat <<'EOF'
-Usage: ./install.sh [--deps]
+Usage: ./install.sh [--deps] [--iterm-keys]
 
-  --deps  Install Homebrew packages, LunarVim, and tmux plugin manager.
+  --deps        Install Homebrew packages, LunarVim, and tmux plugin manager.
+  --iterm-keys  Map Shift+Enter to a newline in iTerm2 (quit iTerm2 first).
 EOF
 }
 
 for arg in "$@"; do
   case "$arg" in
     --deps) WITH_DEPS=1 ;;
+    --iterm-keys) WITH_ITERM_KEYS=1 ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'Unknown option: %s\n' "$arg" >&2; usage >&2; exit 2 ;;
   esac
@@ -199,6 +202,36 @@ link_file "$ROOT/config/lvim/config.lua" "$HOME/.config/lvim/config.lua"
 link_file "$ROOT/config/lvim/lazy-lock.json" "$HOME/.config/lvim/lazy-lock.json"
 link_file "$ROOT/config/lvim/queries/markdown/highlights.scm" \
   "$HOME/.config/lvim/queries/markdown/highlights.scm"
+
+setup_iterm_keys() {
+  local reply
+
+  [[ "$(uname -s)" == "Darwin" ]] || return 0
+  [[ -d /Applications/iTerm.app ]] || return 0
+
+  if [[ "$WITH_ITERM_KEYS" == 1 ]]; then
+    "$ROOT/scripts/setup_iterm_keys.sh" || true
+    return 0
+  fi
+  # Only offer it when it is not already configured and someone is there to answer.
+  if /usr/libexec/PlistBuddy -c 'Print :GlobalKeyMap:0xd-0x20000' \
+      "$HOME/Library/Preferences/com.googlecode.iterm2.plist" >/dev/null 2>&1; then
+    return 0
+  fi
+  [[ -t 0 ]] || return 0
+
+  printf 'Map Shift+Enter to a newline in iTerm2 now? [y/N] '
+  if ! IFS= read -r reply; then
+    printf '\nLeaving the iTerm2 key map unchanged.\n' >&2
+    return 0
+  fi
+  case "$reply" in
+    y|Y|yes|YES|Yes) "$ROOT/scripts/setup_iterm_keys.sh" || true ;;
+    *) info "Skipped the iTerm2 key map; run ./install.sh --iterm-keys later" ;;
+  esac
+}
+
+setup_iterm_keys
 
 zshrc="$HOME/.zshrc"
 source_line="source \"$ROOT/shell/devws.zsh\""

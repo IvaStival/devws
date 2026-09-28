@@ -48,6 +48,26 @@ Vim, Neovim, VS Code, and Zed are optional alternate editors. Only LunarVim is
 installed by the dependency installer; picking another editor requires it to
 already be on `PATH`.
 
+### Shift+Enter in iTerm2
+
+iTerm2 sends a plain carriage return for both Enter and Shift+Enter, so nothing
+downstream — shell, tmux, or agent — can tell them apart, and Shift+Enter
+submits instead of inserting a newline. The installer offers to fix this, or
+run it on its own:
+
+```sh
+./install.sh --iterm-keys   # or: make install-iterm-keys
+```
+
+**Quit iTerm2 first.** It keeps its preferences in memory and rewrites them on
+quit, which would discard the change. Reopen iTerm2 afterwards to pick it up.
+
+The mapping sends `ESC CR` (hex `0x1b 0x0d`, the same bytes as Option+Enter) for
+Shift+Enter, added to iTerm2's global key map alongside its built-in bindings. If
+an agent ignores it, `scripts/setup_iterm_keys.sh` documents two alternatives at
+the top: `0x0a` (Ctrl-J) and the CSI-u sequence `[13;2u`. `delete.sh` removes the
+mapping again.
+
 ## Install
 
 Clone the repository, then run:
@@ -199,6 +219,7 @@ Glow, exactly as before.
 
 - Agents and editors, automatic restore: `config/tmuxinator/.env`
 - Saved workspaces: `~/.devws-state/sessions.tsv`
+- iTerm2 Shift+Enter mapping: `scripts/setup_iterm_keys.sh`
 - Workspace layout: `config/tmuxinator/dev.yml`
 - Workspace menu: `config/tmuxinator/session_picker.sh`
 - LunarVim: `config/lvim/config.lua`
@@ -233,7 +254,9 @@ configuration. The uninstall script removes the configuration symlinks
 created by this checkout, restores the files that were in their place before
 installation, and removes the shell integration from `~/.zshrc`.
 
-The saved workspace state in `~/.devws-state/` is removed.
+The saved workspace state in `~/.devws-state/` is removed, and the iTerm2
+Shift+Enter mapping is deleted when devws is the one that added it. Quit iTerm2
+before uninstalling so that removal can take effect.
 
 Files that are no longer devws-managed are left untouched. If one conflicts
 with a configuration that needs to be restored, the previous configuration

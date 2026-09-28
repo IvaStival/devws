@@ -50,6 +50,55 @@ remove_owned_homebrew_dependency() {
   remove_dependency_record "$dependency"
 }
 
+remove_iterm_keys() {
+  local domain="com.googlecode.iterm2"
+  local live_prefs="$HOME/Library/Preferences/com.googlecode.iterm2.plist"
+  local bundled_map="/Applications/iTerm.app/Contents/Resources/DefaultGlobalKeyMap.plist"
+  local ownership_state="$state_root/iterm-keys"
+  local custom_prefs="" custom_folder work merged key
+
+  [[ -f "$ownership_state" ]] || return 0
+  IFS= read -r key < "$ownership_state"
+  [[ -n "$key" ]] || { rm -f "$ownership_state"; return 0; }
+
+  if pgrep -xq iTerm2; then
+    warn "Quit iTerm2 and rerun ./delete.sh to remove the Shift+Enter key map"
+    return 0
+  fi
+
+  if [[ "$(defaults read "$domain" LoadPrefsFromCustomFolder 2>/dev/null || true)" == 1 ]]; then
+    custom_folder="$(defaults read "$domain" PrefsCustomFolder 2>/dev/null || true)"
+    [[ -n "$custom_folder" ]] && [[ -f "$custom_folder/$domain.plist" ]] &&
+      custom_prefs="$custom_folder/$domain.plist"
+  fi
+
+  work="$(mktemp -d "${TMPDIR:-/tmp}/devws-iterm-keys.XXXXXX")"
+  merged="$work/GlobalKeyMap.plist"
+  if plutil -extract GlobalKeyMap xml1 -o "$merged" "$live_prefs" 2>/dev/null ||
+      { [[ -n "$custom_prefs" ]] &&
+        plutil -extract GlobalKeyMap xml1 -o "$merged" "$custom_prefs" 2>/dev/null; }; then
+    /usr/libexec/PlistBuddy -c "Delete :$key" "$merged" >/dev/null 2>&1 || true
+    # Leaving nothing but iTerm2's own defaults is the same as never having set
+    # the preference, so unset it and let iTerm2 fall back to the bundled map.
+    if [[ -f "$bundled_map" ]] &&
+        diff -q <(plutil -convert xml1 -o - "$merged") \
+                <(plutil -convert xml1 -o - "$bundled_map") >/dev/null 2>&1; then
+      defaults delete "$domain" GlobalKeyMap 2>/dev/null || true
+    else
+      defaults write "$domain" GlobalKeyMap "$(plutil -convert xml1 -o - "$merged")"
+    fi
+    if [[ -n "$custom_prefs" ]]; then
+      cp "$custom_prefs" "$work/custom.plist"
+      /usr/libexec/PlistBuddy -c "Delete :GlobalKeyMap:$key" "$work/custom.plist" \
+        >/dev/null 2>&1 || true
+      cat "$work/custom.plist" > "$custom_prefs"
+    fi
+    ok "Removed the devws Shift+Enter key map from iTerm2"
+  fi
+  rm -rf "$work"
+  rm -f "$ownership_state"
+}
+
 if [[ -f "$backup_state" ]]; then
   IFS= read -r backup_root < "$backup_state"
   case "$backup_root" in
@@ -166,6 +215,7 @@ restore_link "$ROOT/config/lvim/queries/markdown/highlights.scm" \
 remove_zshrc_block
 remove_owned_homebrew_dependency "fzf"
 remove_owned_homebrew_dependency "glow"
+remove_iterm_keys
 
 rm -f "$state_root/sessions.tsv"
 rmdir "$state_root/restore.lock" 2>/dev/null || true
