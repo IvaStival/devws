@@ -289,3 +289,52 @@ local function preview_markdown_with_glow()
 end
 
 lvim.keys.normal_mode["<leader>mp"] = preview_markdown_with_glow
+
+-- Agents edit files from another tmux pane, so uncommitted changes are
+-- highlighted in full (line background plus changed words) instead of only in
+-- the sign column, making it easy to read what the agent touched.
+lvim.builtin.gitsigns.opts.linehl = true
+lvim.builtin.gitsigns.opts.word_diff = true
+
+-- The colorscheme's diff backgrounds are too bright to read text on. A dark
+-- green, like `git diff`, keeps the code's own colours legible; changed lines
+-- use it too, since git diff shows a change as added lines.
+local function set_change_highlights()
+  local line_green = "#1f3a2a"
+  local word_green = "#2f6b40"
+  vim.api.nvim_set_hl(0, "GitSignsAddLn", { bg = line_green })
+  vim.api.nvim_set_hl(0, "GitSignsChangeLn", { bg = line_green })
+  vim.api.nvim_set_hl(0, "GitSignsAddLnInline", { bg = word_green })
+  vim.api.nvim_set_hl(0, "GitSignsChangeLnInline", { bg = word_green })
+end
+
+set_change_highlights()
+vim.api.nvim_create_autocmd("ColorScheme", { callback = set_change_highlights })
+
+local function toggle_change_highlights()
+  local gitsigns = require("gitsigns")
+  gitsigns.toggle_linehl()
+  gitsigns.toggle_word_diff()
+end
+
+lvim.builtin.which_key.mappings["g"]["h"] = { toggle_change_highlights, "Toggle change highlights" }
+
+-- Highlights are only useful if the buffer shows the agent's latest write.
+-- 'autoread' reloads unmodified buffers, but Neovim only notices disk changes
+-- on :checktime, and focus events never fire while the cursor sits in the
+-- agent's pane, so a timer polls as well.
+vim.o.autoread = true
+
+local function reload_changed_buffers()
+  if vim.fn.mode() == "c" or vim.fn.getcmdwintype() ~= "" then
+    return
+  end
+  vim.cmd("silent! checktime")
+end
+
+vim.api.nvim_create_autocmd({ "FocusGained", "BufEnter", "CursorHold", "CursorHoldI" }, {
+  callback = reload_changed_buffers,
+})
+
+local reload_timer = vim.uv.new_timer()
+reload_timer:start(1000, 1000, vim.schedule_wrap(reload_changed_buffers))
