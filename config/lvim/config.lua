@@ -246,7 +246,37 @@ local function run_mermaid_preview(markdown_file)
   end
 end
 
+-- The preview replaces the Markdown source in the same window, and the same
+-- key swaps the source back. Glow renders once without its pager into a
+-- job-less terminal buffer, so the preview stays in normal mode: Vim motions
+-- scroll it and <leader>mp still reaches this mapping instead of the pager.
+local function render_markdown_with_glow(markdown_file, width)
+  -- Glow drops its colours when stdout is not a TTY unless forced to keep them.
+  local result = vim.system(
+    { "glow", "--style", "dark", "--width", tostring(width), markdown_file },
+    { text = true, env = { CLICOLOR_FORCE = "1" } }
+  ):wait()
+  if result.code ~= 0 then
+    return nil, result.stderr
+  end
+  return result.stdout
+end
+
+local function close_markdown_preview(window)
+  local preview = vim.w[window].markdown_preview
+  vim.w[window].markdown_preview = nil
+  if vim.api.nvim_buf_is_valid(preview.source_buffer) then
+    vim.api.nvim_win_set_buf(window, preview.source_buffer)
+  end
+end
+
 local function preview_markdown_with_glow()
+  local window = vim.api.nvim_get_current_win()
+  if vim.w[window].markdown_preview then
+    close_markdown_preview(window)
+    return
+  end
+
   if vim.bo.filetype ~= "markdown" then
     vim.notify("Glow preview is available only for Markdown buffers", vim.log.levels.WARN)
     return
@@ -265,27 +295,35 @@ local function preview_markdown_with_glow()
     vim.cmd.write()
   end
 
+  local rendered, render_error = render_markdown_with_glow(markdown_file, vim.api.nvim_win_get_width(window) - 2)
+  if not rendered then
+    vim.notify("Glow failed: " .. (render_error or "unknown error"), vim.log.levels.ERROR)
+    return
+  end
+
   run_mermaid_preview(markdown_file)
 
-  vim.cmd("botright 90vsplit")
-  local preview_window = vim.api.nvim_get_current_win()
+  local source_buffer = vim.api.nvim_get_current_buf()
   local preview_buffer = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_win_set_buf(preview_window, preview_buffer)
   vim.bo[preview_buffer].bufhidden = "wipe"
+  vim.api.nvim_win_set_buf(window, preview_buffer)
+  vim.w[window].markdown_preview = { source_buffer = source_buffer }
 
-  vim.fn.termopen({ "glow", "-p", markdown_file }, {
-    on_exit = function()
-      if vim.api.nvim_win_is_valid(preview_window) then
-        vim.api.nvim_win_close(preview_window, true)
+  local terminal = vim.api.nvim_open_term(preview_buffer, {})
+  vim.api.nvim_chan_send(terminal, (rendered:gsub("\n", "\r\n")))
+  vim.api.nvim_win_set_cursor(window, { 1, 0 })
+
+  -- Leaving the preview any other way (:bnext, picking a file in the tree)
+  -- must not leave a stale marker that would swallow the next <leader>mp.
+  vim.api.nvim_create_autocmd("BufWinLeave", {
+    buffer = preview_buffer,
+    once = true,
+    callback = function()
+      if vim.api.nvim_win_is_valid(window) and vim.w[window].markdown_preview then
+        vim.w[window].markdown_preview = nil
       end
     end,
   })
-
-  vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter", "TermLeave" }, {
-    buffer = preview_buffer,
-    command = "startinsert",
-  })
-  vim.cmd.startinsert()
 end
 
 lvim.keys.normal_mode["<leader>mp"] = preview_markdown_with_glow

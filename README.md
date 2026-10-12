@@ -200,8 +200,9 @@ devws md
 ```
 
 Inside LunarVim, press `<leader>mp` while editing a Markdown file. Modified
-files are saved before Glow opens in a temporary terminal split; exiting Glow
-closes that split.
+files are saved, then the rendered Markdown replaces the source in the same
+window; scroll it with the usual Vim motions and press `<leader>mp` again to
+return to the source.
 
 Glow is installed by `./install.sh --deps` through Homebrew on macOS and
 Linux. Both entry points report how to install it when it is unavailable.
