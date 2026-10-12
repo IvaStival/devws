@@ -129,6 +129,12 @@ Target another open workspace by folder/session name:
 devws menu open my-app
 ```
 
+Switch the current workspace between the default layout (editor on top, agent
+and terminal side by side below) and a full-height editor with the agent above
+the terminal on the right: choose **▥ Toggle layout** in the workspace menu or
+press `C-b \`. Panes keep running and the chosen layout is saved with the
+workspace.
+
 Inside LunarVim, its separate file explorer can be controlled with
 `:NvimTreeOpen`, `:NvimTreeClose`, or `:NvimTreeToggle`.
 
@@ -221,6 +227,7 @@ Glow, exactly as before.
 - Saved workspaces: `~/.devws-state/sessions.tsv`
 - iTerm2 Shift+Enter mapping: `scripts/setup_iterm_keys.sh`
 - Workspace layout: `config/tmuxinator/dev.yml`
+- Layout toggle: `config/tmuxinator/toggle_layout.sh`
 - Workspace menu: `config/tmuxinator/session_picker.sh`
 - LunarVim: `config/lvim/config.lua`
 - tmux: `config/tmux/tmux.conf`

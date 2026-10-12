@@ -249,6 +249,10 @@ new_terminal() {
   save_state
 }
 
+toggle_layout() {
+  "$HOME/.tmuxinator/toggle_layout.sh" "$(tmux display-message -p '#S')"
+}
+
 open_folder() {
   local session root choice
   session="$(tmux display-message -p '#S')"
@@ -346,10 +350,11 @@ while tmux list-sessions >/dev/null 2>&1; do
             5) printf "print(initialize-agent)+accept\n" ;;
             6) printf "print(restart-agent)+accept\n" ;;
             7) printf "print(new-terminal)+accept\n" ;;
-            8) printf "print(open-folder)+accept\n" ;;
-            9) printf "print(close)+accept\n" ;;
+            8) printf "print(toggle-layout)+accept\n" ;;
+            9) printf "print(open-folder)+accept\n" ;;
+            10) printf "print(close)+accept\n" ;;
           esac' \
-        --header=$'WORKSPACE COMMANDS\n\033[32m+ New workspace\033[0m\n\033[36m⇄ Switch agent\033[0m\n\033[36m⇄ Switch editor\033[0m\n\033[35m◇ Initialize agent\033[0m\n\033[36m↻ Restart agent\033[0m\n\033[36m▣ New terminal\033[0m\n\033[36m⌂ Open folder\033[0m\n\033[31m× Close workspace\033[0m\n\n\033[2mOPEN WORKSPACES\033[0m' \
+        --header=$'WORKSPACE COMMANDS\n\033[32m+ New workspace\033[0m\n\033[36m⇄ Switch agent\033[0m\n\033[36m⇄ Switch editor\033[0m\n\033[35m◇ Initialize agent\033[0m\n\033[36m↻ Restart agent\033[0m\n\033[36m▣ New terminal\033[0m\n\033[36m▥ Toggle layout\033[0m\n\033[36m⌂ Open folder\033[0m\n\033[31m× Close workspace\033[0m\n\n\033[2mOPEN WORKSPACES\033[0m' \
         --prompt='> ' \
         --info=inline --no-separator --border=none --margin=0 --padding=0
   )"
@@ -363,6 +368,7 @@ while tmux list-sessions >/dev/null 2>&1; do
     initialize-agent) initialize_agent ;;
     restart-agent) restart_agent ;;
     new-terminal) new_terminal ;;
+    toggle-layout) toggle_layout ;;
     open-folder) open_folder ;;
     close) close_workspace ;;
     '') ;;
