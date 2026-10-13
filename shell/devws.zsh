@@ -1,5 +1,13 @@
 # devws shell integration
 
+# Neovim (with the devws LazyVim config) is the default text editor for tools
+# that open one, such as git or crontab. A value set before this file is
+# sourced wins.
+if command -v nvim >/dev/null 2>&1; then
+  export EDITOR="${EDITOR:-nvim}"
+  export VISUAL="${VISUAL:-nvim}"
+fi
+
 devws() {
   if [[ "${1:-}" == "md" ]]; then
     shift
