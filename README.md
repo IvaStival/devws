@@ -6,12 +6,14 @@
 - an editor pane (Neovim with LazyVim, Vim, VS Code, or Zed);
 - a Claude Code or Codex agent pane;
 - a regular terminal pane;
+- two layouts to switch between, and agent/terminal panes that minimize to
+  small bars while you code;
 - Git branch and clean/dirty status in the workspace list.
 
 Each project runs in its own tmux session. The menu can create, switch, and
 close workspaces; switch or restart the agent; switch the editor; create
-terminals; initialize project instructions for the active agent; and open the
-project in Finder, Zed, or VS Code.
+terminals; toggle the layout; initialize project instructions for the active
+agent; and open the project in Finder, Zed, or VS Code.
 
 ![devws workspace panel with multi-line workspace details](docs/images/application-panel.png)
 
@@ -138,23 +140,96 @@ Target another open workspace by folder/session name:
 devws menu open my-app
 ```
 
-Switch the current workspace between the default layout (editor on top, agent
-and terminal side by side below) and a full-height editor with the agent above
-the terminal on the right: choose **▥ Toggle layout** in the workspace menu or
-press `C-b \`. Panes keep running and the chosen layout is saved with the
+### Layouts
+
+Each workspace can switch between two arrangements at any time. Choose
+**▥ Toggle layout** in the workspace menu or press `C-b \`:
+
+```
+default                       full-height editor
+┌──┬───────────────┐          ┌──┬─────────┬───────┐
+│m │    editor     │          │m │         │ agent │
+│e ├───────┬───────┤    ⇄     │e │ editor  ├───────┤
+│n │ agent │ term  │          │n │         │ term  │
+└──┴───────┴───────┘          └──┴─────────┴───────┘
+```
+
+Panes are moved, not restarted, so the editor, agent and shell keep running,
+and focus stays where it was. Extra terminals move with the terminal. New
+workspaces open in the default layout; the current one is saved with the
 workspace.
 
-The agent and terminal panes have a header (`▾ Agent · claude`,
-`▾ Terminal`). Click either header, or press `C-b _`, to minimize both to small
-bars (`▸`) so the editor gets the space; do it again to bring them back at
-their previous size. Both keep running while minimized. Dragging a header still
-resizes the panes.
+### Minimize the agent and terminal
 
-Inside Neovim, `Space e` shows or hides the file explorer, which also opens on
-its own when the editor starts on a folder. Uncommitted changes are highlighted
-in dark green so edits made by the agent stand out; `Space g v` turns the
-highlights off and on. Files the agent changes reload automatically. Press
-`Space` and wait to see every LazyVim shortcut.
+The agent and terminal panes have a header: `▾ 󰚩 Agent · claude` and
+`▾  Terminal`. Click either header, or press `C-b _`, to minimize both so the
+editor gets the space; do it again to bring them back at their previous size.
+
+```
+default layout, minimized
+├──▸ Agent──────────────────┬──▸ Term─────────────────
+│ Agent · claude · minimized — click the header or press C-b _
+
+full-height editor, minimized: a 9-column strip on the right
+┬──▸ Agent
+│
+├──▸ Term
+│
+```
+
+- In the default layout the bottom row shrinks to one line; in the full-height
+  editor layout the right column shrinks to a strip just wide enough for
+  `▸ Agent`. Minimized headers are plain text, without icons, to keep the
+  bars small.
+- The real agent and terminal keep running in a background window
+  (`devws-minimized`, hidden from the status bar); placeholders stand in for
+  them until you restore.
+- Focus moves to the editor if it was on a pane being minimized.
+- Toggling the layout, and the menu's agent and terminal commands, restore the
+  panes first.
+- A click toggles only when the mouse is released without dragging, so
+  dragging a header still resizes the panes.
+- The icons need a Nerd Font (see Requirements). The editor gets a blank
+  header line too, because tmux enables headers for a whole window.
+
+Workspaces opened before this feature have no headers; turn them on with
+`tmux set -w -t <session>: pane-border-status top`, or reopen the workspace.
+
+### Editor: Neovim with LazyVim
+
+The default editor is Neovim configured with [LazyVim](https://www.lazyvim.org)
+(`config/nvim/`). devws adds a few things for working next to an agent:
+
+- Uncommitted changes are highlighted with a dark-green background, and the
+  changed words more strongly, so the agent's edits stand out.
+- Files the agent changes on disk reload automatically within a second.
+- `<leader>mp` previews Markdown (see [Markdown preview](#markdown-preview)).
+- PHP uses intelephense, plus phpactor for "go to implementation".
+
+The leader key is `Space`; press it and wait to see every shortcut. The ones
+used most:
+
+| Keys | Action |
+| ---- | ------ |
+| `Space e` | Show or hide the file explorer (opens on its own for `nvim .`) |
+| `Space f f` | Find a file by name |
+| `Space /` | Search text in the project |
+| `gd` / `gr` / `gI` | Go to definition / references / implementation |
+| `K` | Show documentation for the symbol under the cursor |
+| `Ctrl-o` / `Ctrl-i` | Jump back / forward |
+| `Space g v` | Turn the change highlights off and on |
+| `Space m p` | Toggle the Markdown preview |
+
+### tmux shortcuts added by devws
+
+The tmux prefix is `C-b` (tmux's default key set is restored by
+`config/tmux/default-keys.conf`).
+
+| Keys | Action |
+| ---- | ------ |
+| `C-b \` | Toggle the workspace layout |
+| `C-b _` | Minimize or restore the agent and terminal |
+| Click a header | Minimize or restore the agent and terminal |
 
 ### Session persistence
 
@@ -162,7 +237,8 @@ Open workspaces are saved automatically, so a reboot or an iTerm2/tmux crash
 does not cost you the arrangement. Saved per workspace:
 
 - the workspace folder, agent, and editor
-- the pane layout and each pane's working directory
+- the pane layout (including the full-height editor layout) and each pane's
+  working directory
 - extra terminals created from the workspace menu
 - whether the workspace menu was open or closed
 
@@ -188,7 +264,9 @@ Three limits are worth knowing: a workspace whose folder no longer exists is
 skipped with a message; an agent or editor that is no longer listed in
 `.env` falls back to the configured default; and programs other than the agent
 and the editor are not restarted — restored terminals come back at a shell
-prompt in their saved directory.
+prompt in their saved directory. A workspace saved while minimized comes back
+with small agent and terminal panes; click a header or press `C-b _` to expand
+them.
 
 ### Initialize an agent
 
@@ -247,7 +325,8 @@ Glow, exactly as before.
 - iTerm2 Shift+Enter mapping: `scripts/setup_iterm_keys.sh`
 - Workspace layout: `config/tmuxinator/dev.yml`
 - Layout toggle: `config/tmuxinator/toggle_layout.sh`
-- Minimize agent and terminal: `config/tmuxinator/minimize_panes.sh`
+- Minimize agent and terminal: `config/tmuxinator/minimize_panes.sh` (placeholder: `minimized_placeholder.sh`)
+- Pane headers and devws key bindings: end of `config/tmux/tmux.conf`
 - Workspace menu: `config/tmuxinator/session_picker.sh`
 - Neovim (LazyVim): `config/nvim/`
 - tmux: `config/tmux/tmux.conf`
@@ -264,8 +343,11 @@ changes with `source ~/.zshrc`; reload tmux with
 make check
 ```
 
-This checks Bash/Zsh syntax, the tmuxinator ERB/YAML template, Lua syntax when
-`luac` is available, and executable permissions.
+This checks Bash/Zsh syntax, the tmuxinator ERB/YAML template, Lua syntax of
+the Neovim config when `luac` is available, and executable permissions, then
+runs the test suites in `scripts/`: install/uninstall, Markdown viewer,
+workspace save/restore, layout toggle, minimize (including real mouse clicks
+on an isolated tmux server), and the iTerm2 key map.
 
 ## Uninstall
 
