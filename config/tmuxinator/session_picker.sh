@@ -262,6 +262,35 @@ toggle_layout() {
   "$HOME/.tmuxinator/toggle_layout.sh" "$(tmux display-message -p '#S')"
 }
 
+open_database() {
+  "$HOME/.tmuxinator/open_database.sh" "$(tmux display-message -p '#S')"
+}
+
+# Picks the folder whose .env the database pane connects to, for projects
+# that keep their app in a subfolder or have several.
+choose_database_folder() {
+  local session root choices choice folder
+  session="$(tmux display-message -p '#S')"
+  root="$(tmux show-options -t "$session" -v @devws_root 2>/dev/null)"
+  [ -d "$root" ] || return
+  . "$HOME/.tmuxinator/database_url.sh"
+
+  choices="$(database_folder_choices "$root")"
+  choice="$(
+    { printf 'Automatic\tfind the database settings by itself\n'
+      printf '%s\n' "$choices"; } |
+      fzf --height=100% --layout=reverse --prompt='Database folder > ' \
+        --delimiter=$'\t' --tabstop=24 \
+        --header=".env folders in $(basename "$root")" \
+        --info=inline --no-separator --border=none --margin=0 --padding=0
+  )" || return
+  folder="${choice%%$'\t'*}"
+  [ "$folder" = Automatic ] && folder=""
+  remember_database_folder "$root" "$folder" || return
+  "$HOME/.tmuxinator/open_database.sh" "$session" --reconnect
+  tmux display-message "Database folder: ${folder:-automatic}"
+}
+
 open_folder() {
   local session root choice
   session="$(tmux display-message -p '#S')"
@@ -360,10 +389,12 @@ while tmux list-sessions >/dev/null 2>&1; do
             6) printf "print(restart-agent)+accept\n" ;;
             7) printf "print(new-terminal)+accept\n" ;;
             8) printf "print(toggle-layout)+accept\n" ;;
-            9) printf "print(open-folder)+accept\n" ;;
-            10) printf "print(close)+accept\n" ;;
+            9) printf "print(open-database)+accept\n" ;;
+            10) printf "print(database-folder)+accept\n" ;;
+            11) printf "print(open-folder)+accept\n" ;;
+            12) printf "print(close)+accept\n" ;;
           esac' \
-        --header=$'WORKSPACE COMMANDS\n\033[32m+ New workspace\033[0m\n\033[36m⇄ Switch agent\033[0m\n\033[36m⇄ Switch editor\033[0m\n\033[35m◇ Initialize agent\033[0m\n\033[36m↻ Restart agent\033[0m\n\033[36m▣ New terminal\033[0m\n\033[36m▥ Toggle layout\033[0m\n\033[36m⌂ Open folder\033[0m\n\033[31m× Close workspace\033[0m\n\n\033[2mOPEN WORKSPACES\033[0m' \
+        --header=$'WORKSPACE COMMANDS\n\033[32m+ New workspace\033[0m\n\033[36m⇄ Switch agent\033[0m\n\033[36m⇄ Switch editor\033[0m\n\033[35m◇ Initialize agent\033[0m\n\033[36m↻ Restart agent\033[0m\n\033[36m▣ New terminal\033[0m\n\033[36m▥ Toggle layout\033[0m\n\033[36m⛁ Database\033[0m\n\033[36m⛁ Database folder\033[0m\n\033[36m⌂ Open folder\033[0m\n\033[31m× Close workspace\033[0m\n\n\033[2mOPEN WORKSPACES\033[0m' \
         --prompt='> ' \
         --info=inline --no-separator --border=none --margin=0 --padding=0
   )"
@@ -378,6 +409,8 @@ while tmux list-sessions >/dev/null 2>&1; do
     restart-agent) restart_agent ;;
     new-terminal) new_terminal ;;
     toggle-layout) toggle_layout ;;
+    open-database) open_database ;;
+    database-folder) choose_database_folder ;;
     open-folder) open_folder ;;
     close) close_workspace ;;
     '') ;;

@@ -219,7 +219,7 @@ remove_owned_homebrew_dependency "fzf"
 remove_owned_homebrew_dependency "glow"
 remove_iterm_keys
 
-rm -f "$state_root/sessions.tsv"
+rm -f "$state_root/sessions.tsv" "$state_root/database-folders"
 rmdir "$state_root/restore.lock" 2>/dev/null || true
 
 rmdir "$HOME/.config/lvim/queries/markdown" 2>/dev/null || true

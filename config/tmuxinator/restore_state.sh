@@ -6,6 +6,7 @@
 
 set -u
 
+script_dir="$(dirname "$0")"
 state_root="$HOME/.devws-state"
 state_file="$state_root/sessions.tsv"
 lock_dir="$state_root/restore.lock"
@@ -145,6 +146,13 @@ flush_workspace() {
     done
   fi
 
+  # The database pane is reopened before the layout is applied, which only
+  # happens when the pane count matches the saved one.
+  if [ "$pending_database" = 1 ]; then
+    "$script_dir/open_database.sh" "$pending_session" --no-focus >/dev/null 2>&1 ||
+      printf 'devws restore: %s: could not reopen the database pane\n' "$pending_session" >&2
+  fi
+
   if [ -n "$pending_layout" ]; then
     count="$(tmux list-panes -t "$pending_session:" -F 1 2>/dev/null | grep -c .)"
     if [ "$count" = "$pending_panes" ]; then
@@ -175,6 +183,7 @@ while IFS="$tab" read -r -u 3 record field2 field3 field4 field5 field6 field7; 
       pending_panes=0
       pending_terminal_cwd=""
       pending_extras=""
+      pending_database=0
       start_workspace
       ;;
     P)
@@ -183,6 +192,7 @@ while IFS="$tab" read -r -u 3 record field2 field3 field4 field5 field6 field7; 
       case "$field4" in
         extra) pending_extras="${pending_extras}${field5}"$'\n' ;;
         terminal) pending_terminal_cwd="$field5" ;;
+        database) pending_database=1 ;;
       esac
       ;;
     *) continue ;;

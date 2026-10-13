@@ -2,6 +2,8 @@
 # Flip a devws workspace between its two arrangements:
 #   stacked (default): editor on top, agent and terminal side by side below.
 #   side:              editor full height, agent above terminal on the right.
+# An open database pane follows: right of the editor when stacked, below it
+# in the side layout.
 #
 # Panes are moved with join-pane rather than by applying a layout string, so
 # the editor, agent and shell keep running, and it works whatever the number of
@@ -22,10 +24,9 @@ fail() {
 
 . "$script_dir/workspace_panes.sh"
 
-# Minimized panes are expanded first: while minimized the real agent and
-# terminal live in a hidden window, and the toggle should produce full-size
-# panes anyway.
-"$script_dir/minimize_panes.sh" "$session" restore ||
+# Minimized panes are expanded first: while minimized the real panes live in a
+# hidden window, and the toggle should produce full-size panes anyway.
+"$script_dir/minimize_panes.sh" "$session" restore all ||
   fail "could not restore minimized panes"
 
 load_workspace_panes "$session" || fail "session $session not found"
@@ -36,6 +37,7 @@ terminal="$(pane_with_role terminal)"
 [ -n "$agent" ] || fail "agent pane not found"
 [ -n "$terminal" ] || fail "terminal pane not found"
 extras="$(extra_panes)"
+database="$(pane_with_role database)"
 
 move_pane() {
   tmux join-pane -d "$@" 2>/dev/null || fail "could not move pane ($*)"
@@ -53,7 +55,10 @@ move_extras_beside_terminal() {
   done
 }
 
-if is_side_layout "$editor" "$agent"; then
+was_side_layout=0
+is_side_layout "$editor" "$agent" && was_side_layout=1
+
+if [ "$was_side_layout" = 1 ]; then
   move_pane -v -l 50% -s "$agent" -t "$editor"
   move_pane -h -l 50% -s "$terminal" -t "$agent"
 else
@@ -61,6 +66,15 @@ else
   move_pane -v -l 50% -s "$terminal" -t "$agent"
 fi
 move_extras_beside_terminal
+
+# Moved last, once agent and terminal have left the editor's row or column.
+if [ -n "$database" ]; then
+  if [ "$was_side_layout" = 1 ]; then
+    move_pane -h -l 40% -s "$database" -t "$editor"
+  else
+    move_pane -v -l 35% -s "$database" -t "$editor"
+  fi
+fi
 
 if [ -x "$script_dir/save_state.sh" ]; then
   "$script_dir/save_state.sh"

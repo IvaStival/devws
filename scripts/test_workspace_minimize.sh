@@ -176,6 +176,19 @@ test_layout_toggle_expands_minimized_panes() {
     fail "layout toggle left the panes minimized"
 }
 
+test_hidden_window_stays_in_its_session() {
+  local session="dev-older"
+  create_workspace "$session"
+  # A newer session becomes tmux's "current" one when no client is attached.
+  create_workspace "dev-newer"
+
+  "$MINIMIZE" "$session"
+  tmux list-windows -t "$session" -F '#{window_name}' | grep -qx devws-minimized ||
+    fail "the hidden window was created in another session"
+  [[ -n "$(pane_id "$session" agent)" ]] ||
+    fail "the minimized agent left its own session"
+}
+
 # A real client, running inside a second tmux server, so headers are drawn
 # and mouse events go through tmux's own key bindings.
 attach_client() {
@@ -273,6 +286,7 @@ test_side_minimize_and_restore
 test_restore_falls_back_when_panes_changed
 test_focus_leaves_minimized_pane
 test_layout_toggle_expands_minimized_panes
+test_hidden_window_stays_in_its_session
 test_headers_and_mouse
 
 printf 'Workspace minimize tests passed.\n'

@@ -8,12 +8,14 @@
 - a regular terminal pane;
 - two layouts to switch between, and agent/terminal panes that minimize to
   small bars while you code;
+- a database pane connected to the project's database from its `.env`;
 - Git branch and clean/dirty status in the workspace list.
 
 Each project runs in its own tmux session. The menu can create, switch, and
 close workspaces; switch or restart the agent; switch the editor; create
-terminals; toggle the layout; initialize project instructions for the active
-agent; and open the project in Finder, Zed, or VS Code.
+terminals; toggle the layout; open the project's database; initialize project
+instructions for the active agent; and open the project in Finder, Zed, or VS
+Code.
 
 ![devws workspace panel with multi-line workspace details](docs/images/application-panel.png)
 
@@ -33,6 +35,8 @@ Core dependencies:
 - tmuxinator
 - fzf
 - Glow
+- [Harlequin](https://harlequin.sh) with its MySQL and Postgres adapters
+  (database pane), installed with [uv](https://docs.astral.sh/uv/)
 - Neovim 0.11.2 or newer, set up with [LazyVim](https://www.lazyvim.org)
 - ripgrep, fd, and the tree-sitter CLI (used by LazyVim)
 - `tree`
@@ -206,6 +210,11 @@ The default editor is Neovim configured with [LazyVim](https://www.lazyvim.org)
 - `<leader>mp` previews Markdown (see [Markdown preview](#markdown-preview)).
 - PHP uses intelephense, plus phpactor for "go to implementation".
 
+devws also makes Neovim the default text editor for tools that open one (such
+as `crontab -e` or the tmux config shortcut) by setting `EDITOR` and `VISUAL`
+to `nvim`, unless you set them yourself before `devws.zsh` is sourced. Git
+uses its own `core.editor` setting when one is configured.
+
 The leader key is `Space`; press it and wait to see every shortcut. The ones
 used most:
 
@@ -220,6 +229,62 @@ used most:
 | `Space g v` | Turn the change highlights off and on |
 | `Space m p` | Toggle the Markdown preview |
 
+### Database pane
+
+Choose **⛁ Database** in the workspace menu, or press `C-b B`, to open
+[Harlequin](https://harlequin.sh) beside the editor, connected to the project's
+database. It goes where there is room for it:
+
+```
+default layout                    full-height editor
+┌──┬─────────┬──────────┐         ┌──┬─────────────┬───────┐
+│m │ editor  │ database │         │m │   editor    │ agent │
+│e ├─────────┴──┬───────┤         │e ├─────────────┼───────┤
+│n │   agent    │ term  │         │n │  database   │ term  │
+└──┴────────────┴───────┘         └──┴─────────────┴───────┘
+```
+
+Running it again focuses the open pane. Harlequin shows the tables and
+columns in its **Data Catalog** on the left, a **Query Editor** on top and the
+**Query Results** grid below, in the same Tokyo Night colours as LazyVim.
+Selecting a table puts its name in the editor; run a query with `Ctrl+Enter`
+(or **Run Query**). `F1` lists every key, `Ctrl+Q` quits and closes the pane.
+
+The connection comes from a `.env` file, read when the pane opens. devws uses
+the project root's `.env` when it has database settings, otherwise one in a
+direct subfolder (such as `backend/.env`, skipping `node_modules` and
+`vendor`), and asks when several qualify. To choose the folder yourself, use
+**⛁ Database folder** in the workspace menu: it lists every folder with a
+`.env` (up to three levels down, database settings first) plus **Automatic**.
+The choice is remembered per project, and an open database pane reconnects to
+it straight away.
+
+The settings read from that `.env`:
+
+- `DATABASE_URL` or `DB_URL`, when set;
+- otherwise Laravel's `DB_CONNECTION` (`mysql`, `mariadb`, `pgsql`, `sqlite`)
+  with `DB_HOST` (default `127.0.0.1`), `DB_PORT` (default 3306/5432),
+  `DB_DATABASE`, `DB_USERNAME` and `DB_PASSWORD`.
+
+SQLite works from `DB_CONNECTION=sqlite` (the file in `DB_DATABASE`, or
+`database/database.sqlite`) and from `sqlite:///absolute/path`,
+`sqlite://relative/path` or `file:` URLs; relative paths are resolved in the
+project. If the file does not exist the pane says so instead of letting
+Harlequin create an empty database there.
+
+Without database settings the pane says so and points at **⛁ Database
+folder**. The password is handed to Harlequin through an environment variable
+that a throwaway config refers to, so it does not appear in the process list
+or on disk; the config is removed as soon as Harlequin has read it. Hosts that
+only exist inside Docker, such as a Sail service called `mysql`, are not
+reachable from the pane; point `DB_HOST` at a published port instead.
+Harlequin has no MongoDB support.
+
+The database pane has its own header (`▾ 󰆼 Database · mysql`). Clicking it
+hides the database to a bar (`▸ DB`) and back, independently of the agent and
+terminal. Toggling the layout moves it to its place in the other layout, and
+it is reopened when a saved workspace is restored.
+
 ### tmux shortcuts added by devws
 
 The tmux prefix is `C-b` (tmux's default key set is restored by
@@ -229,7 +294,8 @@ The tmux prefix is `C-b` (tmux's default key set is restored by
 | ---- | ------ |
 | `C-b \` | Toggle the workspace layout |
 | `C-b _` | Minimize or restore the agent and terminal |
-| Click a header | Minimize or restore the agent and terminal |
+| `C-b B` | Open the database pane, or focus it |
+| Click a header | Minimize or restore that pane group (agent and terminal, or database) |
 
 ### Session persistence
 
@@ -240,6 +306,7 @@ does not cost you the arrangement. Saved per workspace:
 - the pane layout (including the full-height editor layout) and each pane's
   working directory
 - extra terminals created from the workspace menu
+- whether the database pane was open
 - whether the workspace menu was open or closed
 
 State lives in `~/.devws-state/sessions.tsv` and is rewritten whenever a
@@ -327,6 +394,8 @@ Glow, exactly as before.
 - Layout toggle: `config/tmuxinator/toggle_layout.sh`
 - Minimize agent and terminal: `config/tmuxinator/minimize_panes.sh` (placeholder: `minimized_placeholder.sh`)
 - Pane headers and devws key bindings: end of `config/tmux/tmux.conf`
+- Database pane (Harlequin): `config/tmuxinator/open_database.sh`,
+  `database_runner.sh`, and `.env` parsing in `database_url.sh`
 - Workspace menu: `config/tmuxinator/session_picker.sh`
 - Neovim (LazyVim): `config/nvim/`
 - tmux: `config/tmux/tmux.conf`
@@ -346,8 +415,9 @@ make check
 This checks Bash/Zsh syntax, the tmuxinator ERB/YAML template, Lua syntax of
 the Neovim config when `luac` is available, and executable permissions, then
 runs the test suites in `scripts/`: install/uninstall, Markdown viewer,
-workspace save/restore, layout toggle, minimize (including real mouse clicks
-on an isolated tmux server), and the iTerm2 key map.
+workspace save/restore, layout toggle, minimize and the database pane
+(including real mouse clicks on an isolated tmux server), and the iTerm2 key
+map.
 
 ## Uninstall
 

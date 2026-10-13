@@ -12,7 +12,7 @@ usage() {
   cat <<'EOF'
 Usage: ./install.sh [--deps] [--iterm-keys]
 
-  --deps        Install Homebrew packages and tmux plugin manager.
+  --deps        Install Homebrew packages, Harlequin and tmux plugin manager.
   --iterm-keys  Map Shift+Enter to a newline in iTerm2 (quit iTerm2 first).
 EOF
 }
@@ -110,6 +110,19 @@ install_dependencies() {
   fi
   if [[ "$glow_was_installed" == 0 ]]; then
     record_installed_dependency "glow"
+  fi
+
+  # Harlequin (the database pane) is a Python app installed with uv, which
+  # also brings its MySQL and Postgres adapters; Homebrew's package has none.
+  if ! command -v harlequin >/dev/null 2>&1; then
+    command -v uv >/dev/null 2>&1 || brew install uv
+    if command -v uv >/dev/null 2>&1; then
+      info "Installing Harlequin"
+      uv tool install 'harlequin[postgres,mysql]' ||
+        warn "Harlequin installation failed; the database pane will not open"
+    else
+      warn "uv is unavailable, so Harlequin was not installed"
+    fi
   fi
 
   if [[ ! -d "$HOME/.tmux/plugins/tpm" ]]; then
@@ -265,6 +278,9 @@ if [[ ! -d "$HOME/.tmux/plugins/tpm" ]]; then
 fi
 if ! command -v nvim >/dev/null 2>&1; then
   warn "Neovim is missing; run ./install.sh --deps"
+fi
+if ! command -v harlequin >/dev/null 2>&1; then
+  warn "Harlequin (database pane) is missing; run ./install.sh --deps"
 fi
 if ! command -v claude >/dev/null 2>&1 &&
     ! command -v codex >/dev/null 2>&1; then

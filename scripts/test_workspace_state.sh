@@ -273,6 +273,42 @@ test_restore_falls_back_to_default_agent() {
     fail "the fallback should be reported on stderr"
 }
 
+test_restore_reopens_database_pane() {
+  setup
+  mkdir -p "$TEST_ROOT/project-one"
+  printf '#devws-state\t1\nW\tdev-one\t%s\tclaude\tnvim\t1\tLAYOUT-ONE\n' \
+    "$TEST_ROOT/project-one" > "$(state_file)"
+  printf 'P\tdev-one\t%s\t%s\t%s\n' 1 editor "$TEST_ROOT/project-one" \
+    2 database "$TEST_ROOT/project-one" >> "$(state_file)"
+  write_panes dev-one \
+    "%picker-one|1||devws-picker|$TEST_ROOT/project-one" \
+    "%editor-one|2|editor||$TEST_ROOT/project-one" \
+    "%terminal-one|3|terminal||$TEST_ROOT/project-one"
+  cat > "$TEST_ROOT/home/.tmuxinator/open_database.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TEST_ROOT/open_database.log"
+EOF
+  chmod +x "$TEST_ROOT/home/.tmuxinator/open_database.sh"
+  run_restore
+
+  grep -qx 'dev-one --no-focus' "$TEST_ROOT/open_database.log" 2>/dev/null ||
+    fail "a saved database pane was not reopened in the background"
+}
+
+test_save_records_minimized_database() {
+  setup
+  local one="$TEST_ROOT/project-one"
+  mkdir -p "$one"
+  printf 'dev-one\t%s\tclaude\tnvim\n' "$one" > "$TEST_ROOT/sessions"
+  FIXTURE_SESSIONS="$TEST_ROOT/sessions"
+  write_panes dev-one \
+    "%editor-one|1|editor||$one" \
+    "%db-one|2|minimized-database||$one"
+  run_save
+  grep -q "^P${TAB}dev-one${TAB}2${TAB}database${TAB}" "$(state_file)" ||
+    fail "a minimized database pane should be saved as the database"
+}
+
 test_restore_closes_picker() {
   setup
   mkdir -p "$TEST_ROOT/project-two"
@@ -297,6 +333,8 @@ test_save_skips_during_restore
 test_restore_replays_workspaces
 test_restore_skips_open_and_missing
 test_restore_falls_back_to_default_agent
+test_restore_reopens_database_pane
+test_save_records_minimized_database
 test_restore_closes_picker
 
 printf 'Workspace state tests passed.\n'
