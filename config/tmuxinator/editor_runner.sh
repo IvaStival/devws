@@ -6,9 +6,9 @@ set -u
 config="$HOME/.tmuxinator/.env"
 [ -r "$config" ] && . "$config"
 
-editor="${1:-${DEVWS_DEFAULT_EDITOR:-lvim}}"
+editor="${1:-${DEVWS_DEFAULT_EDITOR:-nvim}}"
 allowed=0
-for candidate in ${DEVWS_EDITORS:-lvim nvim vim code zed}; do
+for candidate in ${DEVWS_EDITORS:-nvim vim code zed}; do
   if [ "$candidate" = "$editor" ]; then
     allowed=1
     break

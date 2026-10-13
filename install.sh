@@ -12,7 +12,7 @@ usage() {
   cat <<'EOF'
 Usage: ./install.sh [--deps] [--iterm-keys]
 
-  --deps        Install Homebrew packages, LunarVim, and tmux plugin manager.
+  --deps        Install Homebrew packages and tmux plugin manager.
   --iterm-keys  Map Shift+Enter to a newline in iTerm2 (quit iTerm2 first).
 EOF
 }
@@ -112,13 +112,6 @@ install_dependencies() {
     record_installed_dependency "glow"
   fi
 
-  if ! command -v lvim >/dev/null 2>&1; then
-    info "Installing LunarVim"
-    LV_BRANCH=master bash <(
-      curl -fsSL https://raw.githubusercontent.com/lunarvim/lunarvim/master/utils/installer/install.sh
-    )
-  fi
-
   if [[ ! -d "$HOME/.tmux/plugins/tpm" ]]; then
     info "Installing tmux plugin manager"
     mkdir -p "$HOME/.tmux/plugins"
@@ -198,10 +191,33 @@ for file in "$ROOT"/config/tmuxinator/* "$ROOT"/config/tmuxinator/.env; do
   link_file "$file" "$HOME/.tmuxinator/$(basename "$file")"
 done
 
-link_file "$ROOT/config/lvim/config.lua" "$HOME/.config/lvim/config.lua"
-link_file "$ROOT/config/lvim/lazy-lock.json" "$HOME/.config/lvim/lazy-lock.json"
-link_file "$ROOT/config/lvim/queries/markdown/highlights.scm" \
+# LazyVim writes lazy-lock.json and lazyvim.json into its config folder, so
+# the whole folder is linked and those files are tracked in the repo.
+link_file "$ROOT/config/nvim" "$HOME/.config/nvim"
+
+# devws used to configure LunarVim. Its links point at files that no longer
+# exist, so they are removed and any configuration they replaced is restored.
+retire_link() {
+  local source="$1"
+  local destination="$2"
+  local backup="$backup_root/${destination#"$HOME"/}"
+
+  [[ -L "$destination" ]] && [[ "$(readlink "$destination")" == "$source" ]] ||
+    return 0
+  rm "$destination"
+  if [[ -e "$backup" ]] || [[ -L "$backup" ]]; then
+    mv "$backup" "$destination"
+    ok "Restored $destination from $backup"
+  else
+    ok "Removed $destination"
+  fi
+}
+
+retire_link "$ROOT/config/lvim/config.lua" "$HOME/.config/lvim/config.lua"
+retire_link "$ROOT/config/lvim/lazy-lock.json" "$HOME/.config/lvim/lazy-lock.json"
+retire_link "$ROOT/config/lvim/queries/markdown/highlights.scm" \
   "$HOME/.config/lvim/queries/markdown/highlights.scm"
+rmdir "$HOME/.config/lvim/queries/markdown" "$HOME/.config/lvim/queries" 2>/dev/null || true
 
 setup_iterm_keys() {
   local reply
@@ -247,8 +263,8 @@ fi
 if [[ ! -d "$HOME/.tmux/plugins/tpm" ]]; then
   warn "tmux plugin manager is missing; run ./install.sh --deps"
 fi
-if ! command -v lvim >/dev/null 2>&1; then
-  warn "LunarVim is missing; run ./install.sh --deps"
+if ! command -v nvim >/dev/null 2>&1; then
+  warn "Neovim is missing; run ./install.sh --deps"
 fi
 if ! command -v claude >/dev/null 2>&1 &&
     ! command -v codex >/dev/null 2>&1; then

@@ -27,7 +27,9 @@ ruby -rerb -ryaml -e '
 ' "$ROOT/config/tmuxinator/dev.yml"
 
 if command -v luac >/dev/null 2>&1; then
-  luac -p "$ROOT/config/lvim/config.lua"
+  while IFS= read -r -d '' lua_file; do
+    luac -p "$lua_file"
+  done < <(find "$ROOT/config/nvim" -name '*.lua' -print0)
 fi
 
 for file in "$ROOT/install.sh" "$ROOT/delete.sh" "$ROOT/scripts/check.sh" \

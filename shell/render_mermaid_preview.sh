@@ -3,7 +3,7 @@
 # Detects a Mermaid fenced code block in a Markdown file and, if found, opens
 # a self-contained CDN-backed HTML preview of the whole file in the system
 # browser. Glow cannot render diagrams graphically, so this covers what it
-# can't. Called from shell/devws.zsh (devws md) and config/lvim/config.lua
+# can't. Called from shell/devws.zsh (devws md) and config/nvim/lua/devws/markdown_preview.lua
 # (<leader>mp), alongside — not instead of — the Glow preview.
 
 set -euo pipefail

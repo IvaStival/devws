@@ -100,8 +100,8 @@ start_workspace() {
 
   agent="$(valid_choice "$pending_agent" "${DEVWS_AGENTS:-claude codex}" \
     "${DEVWS_DEFAULT_AGENT:-claude}")"
-  editor="$(valid_choice "$pending_editor" "${DEVWS_EDITORS:-lvim nvim vim code zed}" \
-    "${DEVWS_DEFAULT_EDITOR:-lvim}")"
+  editor="$(valid_choice "$pending_editor" "${DEVWS_EDITORS:-nvim vim code zed}" \
+    "${DEVWS_DEFAULT_EDITOR:-nvim}")"
   [ "$agent" = "$pending_agent" ] ||
     printf 'devws restore: %s: unknown agent "%s"; using %s\n' \
       "$pending_session" "$pending_agent" "$agent" >&2

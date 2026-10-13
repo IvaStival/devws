@@ -3,7 +3,7 @@
 `devws` turns a project folder into a persistent terminal workspace with:
 
 - a full-height workspace switcher and command menu;
-- an editor pane (LunarVim, Neovim, Vim, VS Code, or Zed);
+- an editor pane (Neovim with LazyVim, Vim, VS Code, or Zed);
 - a Claude Code or Codex agent pane;
 - a regular terminal pane;
 - Git branch and clean/dirty status in the workspace list.
@@ -31,7 +31,8 @@ Core dependencies:
 - tmuxinator
 - fzf
 - Glow
-- Neovim and LunarVim
+- Neovim 0.11.2 or newer, set up with [LazyVim](https://www.lazyvim.org)
+- ripgrep, fd, and the tree-sitter CLI (used by LazyVim)
 - `tree`
 - Ruby (used by tmuxinator)
 - one AI agent: [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
@@ -44,9 +45,17 @@ you must select it in your terminal profile.
 Optional GUI integrations are Finder (macOS), Zed, and VS Code. The menu hides
 no errors if Zed or VS Code is unavailable; those actions simply do nothing.
 
-Vim, Neovim, VS Code, and Zed are optional alternate editors. Only LunarVim is
-installed by the dependency installer; picking another editor requires it to
-already be on `PATH`.
+Vim, VS Code, and Zed are optional alternate editors. Only Neovim is installed
+by the dependency installer; picking another editor requires it to already be
+on `PATH`.
+
+LazyVim needs no separate install: `~/.config/nvim` links to `config/nvim`,
+and the first `nvim` start downloads LazyVim, its plugins, language servers and
+parsers. Plugin versions are pinned by `config/nvim/lazy-lock.json`; update them
+with `:Lazy update` and commit the lock file to move every machine forward.
+devws no longer uses LunarVim. Installing removes the old devws links in
+`~/.config/lvim` and restores what was there before; uninstall LunarVim
+yourself if you no longer need it.
 
 ### Shift+Enter in iTerm2
 
@@ -83,7 +92,7 @@ Homebrew and stops without changing configuration when permission is denied.
 
 Every install upgrades an outdated Homebrew-managed tmuxinator automatically.
 A tmuxinator installed by another package manager is left unchanged. `--deps`
-installs the Brewfile, LunarVim, and tmux plugin manager. If your other
+installs the Brewfile and tmux plugin manager. If your other
 dependencies are already installed, use `./install.sh`.
 
 The installer creates symlinks into the clone. Keep the cloned folder in its
@@ -112,7 +121,7 @@ Choose an agent and editor directly:
 
 ```sh
 devws ~/Projects/my-app codex nvim
-devws ~/Projects/my-app claude lvim
+devws ~/Projects/my-app claude nvim
 ```
 
 Control the left workspace menu from any pane:
@@ -135,8 +144,11 @@ the terminal on the right: choose **▥ Toggle layout** in the workspace menu or
 press `C-b \`. Panes keep running and the chosen layout is saved with the
 workspace.
 
-Inside LunarVim, its separate file explorer can be controlled with
-`:NvimTreeOpen`, `:NvimTreeClose`, or `:NvimTreeToggle`.
+Inside Neovim, `Space e` shows or hides the file explorer, which also opens on
+its own when the editor starts on a folder. Uncommitted changes are highlighted
+in dark green so edits made by the agent stand out; `Space g v` turns the
+highlights off and on. Files the agent changes reload automatically. Press
+`Space` and wait to see every LazyVim shortcut.
 
 ### Session persistence
 
@@ -199,7 +211,7 @@ current directory with `fzf`:
 devws md
 ```
 
-Inside LunarVim, press `<leader>mp` while editing a Markdown file. Modified
+Inside Neovim, press `<leader>mp` while editing a Markdown file. Modified
 files are saved, then the rendered Markdown replaces the source in the same
 window; scroll it with the usual Vim motions and press `<leader>mp` again to
 return to the source.
@@ -230,7 +242,7 @@ Glow, exactly as before.
 - Workspace layout: `config/tmuxinator/dev.yml`
 - Layout toggle: `config/tmuxinator/toggle_layout.sh`
 - Workspace menu: `config/tmuxinator/session_picker.sh`
-- LunarVim: `config/lvim/config.lua`
+- Neovim (LazyVim): `config/nvim/`
 - tmux: `config/tmux/tmux.conf`
 - Shell command and prompt: `shell/devws.zsh`
 - Mermaid diagram preview: `shell/render_mermaid_preview.sh`
@@ -274,7 +286,7 @@ configuration directories are removed.
 If devws installed `fzf` after receiving permission or installed Glow through
 `./install.sh --deps`, `delete.sh` removes those owned packages. Pre-existing
 installations are never removed. Other dependencies installed with `--deps`
-are preserved because Homebrew packages, LunarVim, and tmux plugin manager may
+are preserved because Homebrew packages and tmux plugin manager may
 be shared with other tools or may have existed before devws. Remove those
 separately only if they are no longer needed.
 

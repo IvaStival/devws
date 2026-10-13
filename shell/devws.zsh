@@ -61,7 +61,7 @@ devws() {
   fi
 
   local -a available_editors
-  available_editors=(${=DEVWS_EDITORS:-lvim nvim vim code zed})
+  available_editors=(${=DEVWS_EDITORS:-nvim vim code zed})
 
   if [[ -z "$editor" && -t 0 && -t 1 && -x "$(command -v fzf)" ]]; then
     editor="$(printf '%s\n' "${available_editors[@]}" | fzf \

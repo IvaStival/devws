@@ -122,7 +122,7 @@ test_homebrew_tmuxinator_is_upgraded() {
   mkdir -p "$test_home/.tmux/plugins/tpm"
   make_fake_bin "$fake_bin"
   make_command "$fake_bin/fzf"
-  make_command "$fake_bin/lvim"
+  make_command "$fake_bin/nvim"
   make_command "$fake_bin/tmuxinator"
 
   HOME="$test_home" FAKE_BIN="$fake_bin" BREW_LOG="$test_home/brew.log" \
@@ -139,7 +139,7 @@ test_non_homebrew_tmuxinator_is_preserved() {
   mkdir -p "$test_home/.tmux/plugins/tpm"
   make_fake_bin "$fake_bin"
   make_command "$fake_bin/fzf"
-  make_command "$fake_bin/lvim"
+  make_command "$fake_bin/nvim"
   make_command "$fake_bin/tmuxinator"
 
   HOME="$test_home" FAKE_BIN="$fake_bin" BREW_LOG="$test_home/brew.log" \
@@ -157,7 +157,7 @@ test_owned_glow_is_removed() {
   mkdir -p "$test_home/.tmux/plugins/tpm"
   make_fake_bin "$fake_bin"
   make_command "$fake_bin/fzf"
-  make_command "$fake_bin/lvim"
+  make_command "$fake_bin/nvim"
 
   run_install "$test_home" "$fake_bin" --deps >/dev/null 2>&1
   grep -qx 'glow' "$test_home/.devws-state/installed-dependencies" ||
@@ -176,7 +176,7 @@ test_preexisting_glow_is_preserved() {
   make_fake_bin "$fake_bin"
   make_command "$fake_bin/fzf"
   make_command "$fake_bin/glow"
-  make_command "$fake_bin/lvim"
+  make_command "$fake_bin/nvim"
 
   run_install "$test_home" "$fake_bin" --deps >/dev/null 2>&1
   if [[ -f "$test_home/.devws-state/installed-dependencies" ]]; then
@@ -188,6 +188,51 @@ test_preexisting_glow_is_preserved() {
     PATH="$fake_bin:/usr/bin:/bin" "$ROOT/delete.sh" >/dev/null
   ! grep -q '^uninstall glow$' "$test_home/brew.log" ||
     fail "pre-existing Glow was uninstalled"
+}
+
+test_nvim_config_is_linked_and_restored() {
+  local test_home="$TEST_ROOT/nvim-config"
+  local fake_bin="$test_home/bin"
+  mkdir -p "$test_home/.config/nvim"
+  printf 'previous\n' > "$test_home/.config/nvim/init.lua"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+  make_command "$fake_bin/nvim"
+
+  run_install "$test_home" "$fake_bin" >/dev/null 2>&1
+  [[ "$(readlink "$test_home/.config/nvim")" == "$ROOT/config/nvim" ]] ||
+    fail "~/.config/nvim does not link to the repo's LazyVim config"
+
+  HOME="$test_home" FAKE_BIN="$fake_bin" BREW_LOG="$test_home/brew.log" \
+    PATH="$fake_bin:/usr/bin:/bin" "$ROOT/delete.sh" >/dev/null
+  [[ ! -L "$test_home/.config/nvim" ]] &&
+    [[ "$(cat "$test_home/.config/nvim/init.lua")" == "previous" ]] ||
+    fail "the previous ~/.config/nvim was not restored on delete"
+}
+
+test_lunarvim_links_are_retired() {
+  local test_home="$TEST_ROOT/retire-lvim"
+  local fake_bin="$test_home/bin"
+  local backup_root="$test_home/.devws-backups/old"
+  mkdir -p "$test_home/.config/lvim/queries/markdown" "$backup_root/.config/lvim" \
+    "$test_home/.devws-state"
+  printf '%s\n' "$backup_root" > "$test_home/.devws-state/backup-root"
+  printf 'mine\n' > "$backup_root/.config/lvim/config.lua"
+  ln -s "$ROOT/config/lvim/config.lua" "$test_home/.config/lvim/config.lua"
+  ln -s "$ROOT/config/lvim/lazy-lock.json" "$test_home/.config/lvim/lazy-lock.json"
+  ln -s "$ROOT/config/lvim/queries/markdown/highlights.scm" \
+    "$test_home/.config/lvim/queries/markdown/highlights.scm"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+  make_command "$fake_bin/nvim"
+
+  run_install "$test_home" "$fake_bin" >/dev/null 2>&1
+  [[ ! -L "$test_home/.config/lvim/config.lua" ]] &&
+    [[ "$(cat "$test_home/.config/lvim/config.lua")" == "mine" ]] ||
+    fail "the pre-devws LunarVim config was not restored"
+  [[ ! -e "$test_home/.config/lvim/lazy-lock.json" ]] &&
+    [[ ! -e "$test_home/.config/lvim/queries" ]] ||
+    fail "stale devws LunarVim links were left behind"
 }
 
 test_picker_fails_once_without_fzf() {
@@ -212,6 +257,8 @@ test_homebrew_tmuxinator_is_upgraded
 test_non_homebrew_tmuxinator_is_preserved
 test_owned_glow_is_removed
 test_preexisting_glow_is_preserved
+test_nvim_config_is_linked_and_restored
+test_lunarvim_links_are_retired
 test_picker_fails_once_without_fzf
 
 printf 'Install lifecycle tests passed.\n'

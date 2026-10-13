@@ -219,9 +219,11 @@ test_restore_replays_workspaces() {
   : > "$TEST_ROOT/tmux.log"
   run_restore
 
-  grep -q "^start --no-attach dev project_root=$TEST_ROOT/project-one agent=claude editor=lvim$" \
+  # dev-one was saved with LunarVim, which devws no longer offers, so it comes
+  # back with the default editor.
+  grep -q "^start --no-attach dev project_root=$TEST_ROOT/project-one agent=claude editor=nvim$" \
     "$TEST_ROOT/tmuxinator.log" ||
-    fail "dev-one was not replayed: $(cat "$TEST_ROOT/tmuxinator.log")"
+    fail "dev-one was not replayed with nvim: $(cat "$TEST_ROOT/tmuxinator.log")"
   grep -q "^start --no-attach dev project_root=$TEST_ROOT/project-two agent=codex editor=nvim$" \
     "$TEST_ROOT/tmuxinator.log" || fail "dev-two was not replayed"
   [[ "$(sed -n '1p' "$TEST_ROOT/tmuxinator.log")" == *project-one* ]] ||
@@ -265,7 +267,7 @@ test_restore_falls_back_to_default_agent() {
   write_panes dev-one "%terminal-one|1|terminal||$TEST_ROOT/project-one"
   run_restore
 
-  grep -q 'agent=claude editor=lvim' "$TEST_ROOT/tmuxinator.log" ||
+  grep -q 'agent=claude editor=nvim' "$TEST_ROOT/tmuxinator.log" ||
     fail "an unknown agent/editor should fall back to the configured defaults"
   grep -q 'unknown agent' "$TEST_ROOT/restore.err" ||
     fail "the fallback should be reported on stderr"

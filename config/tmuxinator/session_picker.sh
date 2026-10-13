@@ -102,7 +102,7 @@ choose_agent() {
 }
 
 choose_editor() {
-  local editors="${DEVWS_EDITORS:-lvim nvim vim code zed}"
+  local editors="${DEVWS_EDITORS:-nvim vim code zed}"
   local editor
 
   editor="$(
@@ -153,7 +153,7 @@ editor_pane() {
   # Compatibility for workspaces created before editor_runner.sh existed.
   while IFS='|' read -r pane role command; do
     case "$command" in
-      lvim|nvim|vim|code|zed)
+      nvim|vim|code|zed)
         printf '%s\n' "$pane"
         return 0
         ;;

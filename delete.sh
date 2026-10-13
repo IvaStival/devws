@@ -207,6 +207,8 @@ for file in "$ROOT"/config/tmuxinator/* "$ROOT"/config/tmuxinator/.env; do
   restore_link "$file" "$HOME/.tmuxinator/$(basename "$file")"
 done
 
+restore_link "$ROOT/config/nvim" "$HOME/.config/nvim"
+# Installs from before the LazyVim switch linked LunarVim files instead.
 restore_link "$ROOT/config/lvim/config.lua" "$HOME/.config/lvim/config.lua"
 restore_link "$ROOT/config/lvim/lazy-lock.json" "$HOME/.config/lvim/lazy-lock.json"
 restore_link "$ROOT/config/lvim/queries/markdown/highlights.scm" \
