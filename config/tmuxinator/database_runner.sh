@@ -44,12 +44,11 @@ if [ -n "$database_problem" ]; then
   exit 1
 fi
 if [ -z "$database_provider" ]; then
-  tmux set-option -p -t "$TMUX_PANE" @devws_db_kind "no database settings"
-  printf 'No database settings found in %s or its subfolders.\n' "$root"
-  printf 'Pick the folder with the .env under "Database folder" in the workspace menu.\n'
-  printf 'Press Enter to close.'
-  read -r
-  exit 1
+  # No .env settings: devdb opens the connection saved for this project, or its connection
+  # screen to set one up (saved by devdb, password in the Keychain; the .env is untouched).
+  tmux set-option -p -t "$TMUX_PANE" @devws_db_kind "saved connection"
+  unset DEVDB_URL
+  exec devdb --project "$root"
 fi
 tmux set-option -p -t "$TMUX_PANE" @devws_db_kind "$database_provider"
 

@@ -298,16 +298,19 @@ test_mongodb_project_opens_devdb_on_mongodb() {
     fail "the database pane does not record mongodb as its kind"
 }
 
-test_no_settings_shows_how_to_pick_a_folder() {
+test_no_settings_opens_the_connection_setup() {
   local session="dev-empty"
   local project="$TEST_ROOT/no-database"
   mkdir -p "$project"
+  rm -f "$CLIENT_LOG_DIR"/*
   create_workspace "$session"
   tmux set-option -t "$session" @devws_root "$project"
   "$SCRIPTS/open_database.sh" "$session" --no-focus
-  sleep 1
-  grep -q 'Database folder' <<< "$(tmux capture-pane -p -J -t "$(pane_id "$session" database)")" ||
-    fail "without database settings the pane does not point at the Database folder command"
+
+  wait_until database_connected || fail "devdb was not started for a project without settings"
+  [[ "$(tr '\n' ' ' < "$(client_log).args")" == "--project $project " ]] ||
+    fail "devdb was not asked to set up the project's connection: $(cat "$(client_log).args")"
+  [[ -z "$(cat "$(client_log).url")" ]] || fail "a connection URL was passed for a project without one"
 }
 
 test_runner_asks_between_several_databases() {
@@ -531,7 +534,7 @@ test_remembered_database_folder
 test_no_database_settings
 test_runner_connects_without_exposing_password
 test_mongodb_project_opens_devdb_on_mongodb
-test_no_settings_shows_how_to_pick_a_folder
+test_no_settings_opens_the_connection_setup
 test_closing_pane_ends_devdb
 test_runner_asks_between_several_databases
 test_remembered_folder_and_reconnect

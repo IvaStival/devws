@@ -285,8 +285,12 @@ SQLite works from `DB_CONNECTION=sqlite` (the file in `DB_DATABASE`, or
 project. If the file does not exist the pane says so instead of letting
 devdb create an empty database there.
 
-Without database settings the pane says so and points at **⛁ Database
-folder**. The connection, password included, is handed to devdb in the
+Without database settings the pane opens devdb's **connection screen**: choose
+SQLite, MySQL / MariaDB, PostgreSQL or MongoDB, fill in the file or the host,
+port, database, user and password, **Test connection**, then **Connect**. devdb
+saves it for the project (`~/.config/devdb/connections.json`, password in the
+macOS Keychain), so the pane opens it directly next time; the project's `.env`
+is never changed. **⛁ Database folder** still picks a `.env` in a subfolder. The connection, password included, is handed to devdb in the
 `DEVDB_URL` environment variable, so it never appears in the process list or
 on disk. Hosts that only exist inside Docker, such as a Sail service called
 `mysql`, are not reachable from the pane; point `DB_HOST` at a published port
