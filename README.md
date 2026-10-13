@@ -35,8 +35,9 @@ Core dependencies:
 - tmuxinator
 - fzf
 - Glow
-- [Harlequin](https://harlequin.sh) with its MySQL and Postgres adapters
-  (database pane), installed with [uv](https://docs.astral.sh/uv/)
+- [devdb](../devdb) for the database pane, installed with
+  [uv](https://docs.astral.sh/uv/) from its checkout (`~/Projects/devdb`, or
+  `DEVWS_DEVDB_SOURCE`)
 - Neovim 0.11.2 or newer, set up with [LazyVim](https://www.lazyvim.org)
 - ripgrep, fd, and the tree-sitter CLI (used by LazyVim)
 - `tree`
@@ -232,8 +233,9 @@ used most:
 ### Database pane
 
 Choose **⛁ Database** in the workspace menu, or press `C-b B`, to open
-[Harlequin](https://harlequin.sh) beside the editor, connected to the project's
-database. It goes where there is room for it:
+**devdb** beside the editor, connected to the project's database. devdb is a
+DataGrip-style client for SQLite, MySQL, PostgreSQL and MongoDB that lets you
+edit data in place. It goes where there is room for it:
 
 ```
 default layout                    full-height editor
@@ -244,11 +246,19 @@ default layout                    full-height editor
 └──┴────────────┴───────┘         └──┴─────────────┴───────┘
 ```
 
-Running it again focuses the open pane. Harlequin shows the tables and
-columns in its **Data Catalog** on the left, a **Query Editor** on top and the
-**Query Results** grid below, in the same Tokyo Night colours as LazyVim.
-Selecting a table puts its name in the editor; run a query with `Ctrl+Enter`
-(or **Run Query**). `F1` lists every key, `Ctrl+Q` quits and closes the pane.
+Running it again focuses the open pane. devdb lists the tables (or MongoDB
+collections) on the left and shows the first one's rows straight away, in the
+same Tokyo Night colours as LazyVim:
+
+- `Enter` (or clicking the selected cell) edits a cell, `+` adds a row, `d`
+  marks a row for deletion; changes stay highlighted until **`Ctrl+S`**
+  submits them all together, or **`Ctrl+R`** reverts them.
+- `/` filters (a SQL `WHERE` condition, or a JSON query for MongoDB),
+  clicking a header sorts, `[` / `]` page, `v` shows a long value in full.
+- The **Query** tab runs SQL, or a MongoDB command as JSON, with `Ctrl+J`.
+- `Ctrl+Q` quits and closes the pane, asking first when changes are pending.
+
+See devdb's README for everything it does.
 
 The connection comes from a `.env` file, read when the pane opens. devws uses
 the project root's `.env` when it has database settings, otherwise one in a
@@ -261,24 +271,26 @@ it straight away.
 
 The settings read from that `.env`:
 
-- `DATABASE_URL` or `DB_URL`, when set;
-- otherwise Laravel's `DB_CONNECTION` (`mysql`, `mariadb`, `pgsql`, `sqlite`)
-  with `DB_HOST` (default `127.0.0.1`), `DB_PORT` (default 3306/5432),
-  `DB_DATABASE`, `DB_USERNAME` and `DB_PASSWORD`.
+- a connection URL in `DATABASE_URL`, `DB_URL`, `MONGODB_URI`, `MONGODB_URL`
+  or `MONGO_URL`, when set;
+- otherwise Laravel's `DB_CONNECTION` (`mysql`, `mariadb`, `pgsql`, `sqlite`,
+  or `mongodb` from Laravel's MongoDB package) with `DB_HOST` (default
+  `127.0.0.1`), `DB_PORT` (default 3306 / 5432 / 27017), `DB_DATABASE`,
+  `DB_USERNAME` and `DB_PASSWORD`; for MongoDB also
+  `DB_AUTHENTICATION_DATABASE`.
 
 SQLite works from `DB_CONNECTION=sqlite` (the file in `DB_DATABASE`, or
 `database/database.sqlite`) and from `sqlite:///absolute/path`,
 `sqlite://relative/path` or `file:` URLs; relative paths are resolved in the
 project. If the file does not exist the pane says so instead of letting
-Harlequin create an empty database there.
+devdb create an empty database there.
 
 Without database settings the pane says so and points at **⛁ Database
-folder**. The password is handed to Harlequin through an environment variable
-that a throwaway config refers to, so it does not appear in the process list
-or on disk; the config is removed as soon as Harlequin has read it. Hosts that
-only exist inside Docker, such as a Sail service called `mysql`, are not
-reachable from the pane; point `DB_HOST` at a published port instead.
-Harlequin has no MongoDB support.
+folder**. The connection, password included, is handed to devdb in the
+`DEVDB_URL` environment variable, so it never appears in the process list or
+on disk. Hosts that only exist inside Docker, such as a Sail service called
+`mysql`, are not reachable from the pane; point `DB_HOST` at a published port
+instead.
 
 The database pane has its own header (`▾ 󰆼 Database · mysql`). Clicking it
 hides the database to a bar (`▸ DB`) and back, independently of the agent and
@@ -394,7 +406,7 @@ Glow, exactly as before.
 - Layout toggle: `config/tmuxinator/toggle_layout.sh`
 - Minimize agent and terminal: `config/tmuxinator/minimize_panes.sh` (placeholder: `minimized_placeholder.sh`)
 - Pane headers and devws key bindings: end of `config/tmux/tmux.conf`
-- Database pane (Harlequin): `config/tmuxinator/open_database.sh`,
+- Database pane (devdb): `config/tmuxinator/open_database.sh`,
   `database_runner.sh`, and `.env` parsing in `database_url.sh`
 - Workspace menu: `config/tmuxinator/session_picker.sh`
 - Neovim (LazyVim): `config/nvim/`

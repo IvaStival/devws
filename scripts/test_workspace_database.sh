@@ -29,37 +29,27 @@ cat > "$TEST_ROOT/bin/tmux" <<EOF
 #!/usr/bin/env bash
 exec "$REAL_TMUX" -L "$SOCKET" -f /dev/null "\$@"
 EOF
-# Stands in for Harlequin: records its arguments, its config and the password
-# it received through the environment, then draws Harlequin's footer, which
-# the runner waits for before removing the config.
-cat > "$TEST_ROOT/bin/harlequin" <<'EOF'
+# Stands in for devdb: records its arguments and the connection it received
+# through DEVDB_URL, then stays open like the real client.
+cat > "$TEST_ROOT/bin/devdb" <<'EOF'
 #!/usr/bin/env bash
 log="$CLIENT_LOG_DIR/$$"
-printf '%s\n' "$@" > "$log.args"
-config=""
-previous=""
-for argument in "$@"; do
-  [ "$previous" = --config-path ] && config="$argument"
-  previous="$argument"
-done
-[ -n "$config" ] && cp "$config" "$log.config"
-printf '%s' "${DEVWS_DB_PASSWORD:-}" > "$log.password"
+: > "$log.args"
+[ "$#" -eq 0 ] || printf '%s\n' "$@" > "$log.args"
+printf '%s' "${DEVDB_URL:-}" > "$log.url"
 touch "$log.connected"
-printf ' ^q Quit  f1 Help\n'
 sleep 600
 EOF
-chmod +x "$TEST_ROOT/bin/tmux" "$TEST_ROOT/bin/harlequin"
+chmod +x "$TEST_ROOT/bin/tmux" "$TEST_ROOT/bin/devdb"
 ln -s "$SCRIPTS" "$TEST_ROOT/home/.tmuxinator"
-mkdir -p "$TEST_ROOT/client" "$TEST_ROOT/tmp"
-# The runner's throwaway Harlequin configs land here, so leftovers can be counted.
-export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" CLIENT_LOG_DIR="$TEST_ROOT/client" \
-  TMPDIR="$TEST_ROOT/tmp"
+mkdir -p "$TEST_ROOT/client"
+export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" CLIENT_LOG_DIR="$TEST_ROOT/client"
 unset TMUX
 
 # --- Connection settings from .env ---------------------------------------
 
-# Prints "provider|file|host|port|name|user|password|problem" for a project
-# with the given .env; any further arguments are files created in it first.
+# Prints "provider|url|problem" for a project with the given .env; any further
+# arguments are files created in it first.
 connection_for() {
   local env_text="$1"
   shift
@@ -71,30 +61,45 @@ connection_for() {
     mkdir -p "$(dirname "$project/$file")"
     : > "$project/$file"
   done
-  bash -c '. "$1"; database_connection "$2"; printf "%s|%s|%s|%s|%s|%s|%s|%s" \
-    "$database_provider" "$database_file" "$database_host" "$database_port" \
-    "$database_name" "$database_user" "$database_password" "$database_problem"' \
+  bash -c '. "$1"; database_connection "$2"
+    printf "%s|%s|%s" "$database_provider" "$database_url" "$database_problem"' \
     -- "$SCRIPTS/database_url.sh" "$project"
 }
 
 test_mysql_from_laravel_env() {
   local result
   result="$(connection_for $'# DB_PASSWORD=old\nexport DB_CONNECTION=mysql\nDB_HOST=db.local\nDB_PORT=3307\nDB_DATABASE="shop"\nDB_USERNAME=root\nDB_PASSWORD="p@ss:w/ord#é"\n')"
-  [[ "$result" == 'mysql||db.local|3307|shop|root|p@ss:w/ord#é|' ]] ||
-    fail "MySQL settings from .env are wrong: $result"
+  [[ "$result" == 'mysql|mysql://root:p%40ss%3Aw%2Ford%23%C3%A9@db.local:3307/shop|' ]] ||
+    fail "MySQL URL from .env is wrong: $result"
 }
 
 test_postgres_defaults() {
   local result
   result="$(connection_for $'DB_CONNECTION=pgsql\nDB_DATABASE=app # main database\nDB_USERNAME=app\n')"
-  [[ "$result" == 'postgres||||app|app||' ]] ||
-    fail "Postgres settings without host and port are wrong: $result"
+  [[ "$result" == 'postgres|postgres://app@127.0.0.1:5432/app|' ]] ||
+    fail "Postgres URL with default host and port is wrong: $result"
+}
+
+test_mongodb_from_laravel_env() {
+  local result
+  result="$(connection_for $'DB_CONNECTION=mongodb\nDB_HOST=mongo.local\nDB_DATABASE=app\nDB_USERNAME=admin\nDB_PASSWORD=pw\nDB_AUTHENTICATION_DATABASE=admin\n')"
+  [[ "$result" == 'mongodb|mongodb://admin:pw@mongo.local:27017/app?authSource=admin|' ]] ||
+    fail "MongoDB URL from .env is wrong: $result"
+}
+
+test_mongodb_uri_variables() {
+  local variable result
+  for variable in MONGODB_URI MONGODB_URL MONGO_URL; do
+    result="$(connection_for "$variable=mongodb+srv://u:p@cluster.example.net/app"$'\n')"
+    [[ "$result" == 'mongodb|mongodb+srv://u:p@cluster.example.net/app|' ]] ||
+      fail "$variable was not used: $result"
+  done
 }
 
 test_sqlite_default_file() {
   local result
   result="$(connection_for $'DB_CONNECTION=sqlite\n' database/database.sqlite)"
-  [[ "$result" == "sqlite|$TEST_ROOT/env-"*"/database/database.sqlite||||||" ]] ||
+  [[ "$result" == "sqlite|$TEST_ROOT/env-"*"/database/database.sqlite|" ]] ||
     fail "SQLite default path is wrong: $result"
 }
 
@@ -104,39 +109,32 @@ test_sqlite_url_forms() {
   : > "$absolute"
   for url in "sqlite://$absolute" "file:$absolute?loc=auto" "$absolute"; do
     result="$(connection_for "DATABASE_URL=$url"$'\n')"
-    [[ "$result" == "sqlite|$absolute||||||" ]] ||
+    [[ "$result" == "sqlite|$absolute|" ]] ||
       fail "SQLite URL $url was not turned into its path: $result"
   done
   result="$(connection_for $'DB_URL=sqlite://data/app.sqlite\n' data/app.sqlite)"
-  [[ "$result" == "sqlite|$TEST_ROOT/env-"*"/data/app.sqlite||||||" ]] ||
+  [[ "$result" == "sqlite|$TEST_ROOT/env-"*"/data/app.sqlite|" ]] ||
     fail "a relative sqlite:// URL was not resolved in the project: $result"
 }
 
 test_missing_sqlite_file_is_reported() {
   local result
   result="$(connection_for $'DB_CONNECTION=sqlite\nDB_DATABASE=database/typo.sqlite\n')"
-  [[ "$result" == "|||||||SQLite database not found: $TEST_ROOT/env-"*"/database/typo.sqlite" ]] ||
+  [[ "$result" == "||SQLite database not found: $TEST_ROOT/env-"*"/database/typo.sqlite" ]] ||
     fail "a missing SQLite file was not reported: $result"
 }
 
 test_explicit_url_wins() {
   local result
   result="$(connection_for $'DB_CONNECTION=mysql\nDATABASE_URL="postgres://u:p@host/db"\n')"
-  [[ "$result" == 'postgres||host||db|u|p|' ]] ||
+  [[ "$result" == 'postgres|postgres://u:p@host/db|' ]] ||
     fail "DATABASE_URL should override DB_* settings: $result"
-}
-
-test_server_url_is_split() {
-  local result
-  result="$(connection_for $'DATABASE_URL=postgres://app:s%40cret@db.local:6543/main?sslmode=require\n')"
-  [[ "$result" == 'postgres||db.local|6543|main|app|s@cret|' ]] ||
-    fail "a server URL was not split into its parts: $result"
 }
 
 test_no_database_settings() {
   local result
   result="$(connection_for $'APP_NAME=demo\n')"
-  [[ "$result" == '|||||||' ]] || fail "a .env without database settings gave: $result"
+  [[ "$result" == '||' ]] || fail "a .env without database settings gave: $result"
 }
 
 env_dirs_for() {
@@ -252,8 +250,8 @@ database_hidden() {
   [[ -n "$(pane_id "$1" minimized-database)" ]]
 }
 
-no_client_configs_left() {
-  ! ls -d "$TMPDIR"/devws-harlequin.* >/dev/null 2>&1
+process_gone() {
+  ! kill -0 "$1" 2>/dev/null
 }
 
 database_connected() {
@@ -273,51 +271,31 @@ test_runner_connects_without_exposing_password() {
   create_workspace "$session"
   "$SCRIPTS/open_database.sh" "$session"
 
-  wait_until database_connected || fail "the runner did not start Harlequin"
+  wait_until database_connected || fail "the runner did not start devdb"
   log="$(client_log)"
-  ! grep -q 'secret-pass' "$log.args" ||
-    fail "the password was passed on Harlequin's command line"
-  [[ "$(tr '\n' ' ' < "$log.args")" == "--config-path $TMPDIR/devws-harlequin."*"/harlequin.toml --profile devws " ]] ||
-    fail "Harlequin was not started with the devws profile: $(tr '\n' ' ' < "$log.args")"
-  grep -qx '\[profiles.devws\]' "$log.config" &&
-    grep -qx 'adapter = "mysql"' "$log.config" &&
-    grep -qx 'host = "127.0.0.1"' "$log.config" &&
-    grep -qx 'user = "root"' "$log.config" &&
-    grep -qx 'database = "shop"' "$log.config" ||
-    fail "the Harlequin profile for MySQL is wrong: $(cat "$log.config")"
-  grep -qxF 'password = "${DEVWS_DB_PASSWORD}"' "$log.config" ||
-    fail "the profile does not read the password from the environment"
-  ! grep -q 'secret-pass' "$log.config" || fail "the password was written to the config"
-  [[ "$(cat "$log.password")" == secret-pass ]] ||
-    fail "Harlequin did not receive the password through the environment"
-  grep -qx 'theme = "tokyo-night"' "$log.config" || fail "the Tokyo Night theme is not set"
+  [[ ! -s "$log.args" ]] ||
+    fail "devdb got command-line arguments, which show in ps: $(cat "$log.args")"
+  [[ "$(cat "$log.url")" == 'mysql://root:secret-pass@127.0.0.1:3306/shop' ]] ||
+    fail "devdb did not receive the connection through DEVDB_URL: $(cat "$log.url")"
   [[ "$(tmux show-options -pqv -t "$(pane_id "$session" database)" @devws_db_kind)" == mysql ]] ||
     fail "the database pane does not record its kind"
-  wait_until no_client_configs_left ||
-    fail "the throwaway Harlequin config was not removed once read"
 }
 
-test_postgres_profile() {
-  local session="dev-postgres"
-  local project="$TEST_ROOT/pg-project"
-  local log
+test_mongodb_project_opens_devdb_on_mongodb() {
+  local session="dev-mongo"
+  local project="$TEST_ROOT/mongo-project"
   mkdir -p "$project"
-  printf 'DATABASE_URL=postgres://app:s%%40cret@db.local:6543/main\n' > "$project/.env"
+  printf 'MONGODB_URI=mongodb://app:pw@127.0.0.1:27017/shop\n' > "$project/.env"
   rm -f "$CLIENT_LOG_DIR"/*
   create_workspace "$session"
   tmux set-option -t "$session" @devws_root "$project"
   "$SCRIPTS/open_database.sh" "$session" --no-focus
 
-  wait_until database_connected || fail "the runner did not start Harlequin for Postgres"
-  log="$(client_log)"
-  grep -qx 'adapter = "postgres"' "$log.config" &&
-    grep -qx 'host = "db.local"' "$log.config" &&
-    grep -qx 'port = "6543"' "$log.config" &&
-    grep -qx 'dbname = "main"' "$log.config" &&
-    grep -qx 'user = "app"' "$log.config" ||
-    fail "the Harlequin profile for Postgres is wrong: $(cat "$log.config")"
-  [[ "$(cat "$log.password")" == 's@cret' ]] ||
-    fail "the decoded Postgres password did not reach Harlequin"
+  wait_until database_connected || fail "the runner did not start devdb for MongoDB"
+  [[ "$(cat "$(client_log).url")" == 'mongodb://app:pw@127.0.0.1:27017/shop' ]] ||
+    fail "devdb did not receive the MongoDB URL"
+  [[ "$(tmux show-options -pqv -t "$(pane_id "$session" database)" @devws_db_kind)" == mongodb ]] ||
+    fail "the database pane does not record mongodb as its kind"
 }
 
 test_no_settings_shows_how_to_pick_a_folder() {
@@ -355,9 +333,8 @@ test_runner_asks_between_several_databases() {
   [[ "$(tr '\n' ' ' < "$TEST_ROOT/fzf-offered")" == 'admin api ' ]] ||
     fail "the choice did not offer both folders: $(cat "$TEST_ROOT/fzf-offered")"
   log="$(client_log)"
-  grep -qxF "conn_str = [\"$project/api/database/database.sqlite\"]" "$log.config" &&
-    grep -qx 'adapter = "sqlite"' "$log.config" ||
-    fail "Harlequin did not open the chosen database: $(cat "$log.config")"
+  [[ "$(cat "$log.url")" == "$project/api/database/database.sqlite" ]] ||
+    fail "devdb did not open the chosen database: $(cat "$log.url")"
 }
 
 test_remembered_folder_and_reconnect() {
@@ -372,41 +349,32 @@ test_remembered_folder_and_reconnect() {
   "$SCRIPTS/open_database.sh" "$session" --no-focus
   wait_until database_connected || fail "the runner did not connect to the remembered folder"
   [[ ! -e "$TEST_ROOT/fzf-offered" ]] || fail "the runner asked although a folder was remembered"
-  grep -qF "$project/admin/database/database.sqlite" "$(client_log).config" ||
-    fail "Harlequin did not open the remembered folder's database"
+  [[ "$(cat "$(client_log).url")" == "$project/admin/database/database.sqlite" ]] ||
+    fail "devdb did not open the remembered folder's database"
 
   # Picking another folder reconnects the open pane.
   bash -c '. "$1"; remember_database_folder "$2" api' -- "$SCRIPTS/database_url.sh" "$project"
   rm -f "$CLIENT_LOG_DIR"/*
   "$SCRIPTS/open_database.sh" "$session" --reconnect
   wait_until database_connected || fail "the database pane did not reconnect"
-  grep -qF "$project/api/database/database.sqlite" "$(client_log).config" ||
-    fail "after reconnecting Harlequin did not open the newly chosen folder"
+  [[ "$(cat "$(client_log).url")" == "$project/api/database/database.sqlite" ]] ||
+    fail "after reconnecting devdb did not open the newly chosen folder"
   [[ "$(tmux list-panes -t "$session:" -F '#{@devws_role}' | grep -c '^database$')" == 1 ]] ||
     fail "reconnecting opened a second database pane"
 }
 
-test_closing_pane_removes_config() {
+test_closing_pane_ends_devdb() {
   local session="dev-close"
-  local runner_pid
+  local client_pid
   create_workspace "$session"
-  # A client that never draws its footer keeps the config until the pane closes.
-  mv "$TEST_ROOT/bin/harlequin" "$TEST_ROOT/bin/harlequin.real"
-  printf '#!/usr/bin/env bash\nsleep 600\n' > "$TEST_ROOT/bin/harlequin"
-  chmod +x "$TEST_ROOT/bin/harlequin"
+  rm -f "$CLIENT_LOG_DIR"/*
   "$SCRIPTS/open_database.sh" "$session" --no-focus
-  sleep 1
-  ls -d "$TMPDIR"/devws-harlequin.* >/dev/null 2>&1 ||
-    fail "the runner did not create its config"
-
-  runner_pid="$(field "$(pane_id "$session" database)" pane_pid)"
+  wait_until database_connected || fail "the runner did not start devdb"
+  client_pid="$(basename "$(client_log)")"
 
   tmux kill-pane -t "$(pane_id "$session" database)"
-  mv "$TEST_ROOT/bin/harlequin.real" "$TEST_ROOT/bin/harlequin"
-  wait_until no_client_configs_left ||
-    fail "closing the database pane left its Harlequin config behind"
-  ! kill -0 "$runner_pid" 2>/dev/null ||
-    fail "closing the database pane left the runner process running"
+  wait_until process_gone "$client_pid" ||
+    fail "closing the database pane left devdb running"
 }
 
 test_stacked_layout_opens_right_of_editor() {
@@ -554,16 +522,17 @@ test_postgres_defaults
 test_sqlite_default_file
 test_sqlite_url_forms
 test_missing_sqlite_file_is_reported
+test_mongodb_from_laravel_env
+test_mongodb_uri_variables
 test_explicit_url_wins
-test_server_url_is_split
 test_settings_found_in_subfolders
 test_database_folder_choices
 test_remembered_database_folder
 test_no_database_settings
 test_runner_connects_without_exposing_password
-test_postgres_profile
+test_mongodb_project_opens_devdb_on_mongodb
 test_no_settings_shows_how_to_pick_a_folder
-test_closing_pane_removes_config
+test_closing_pane_ends_devdb
 test_runner_asks_between_several_databases
 test_remembered_folder_and_reconnect
 test_stacked_layout_opens_right_of_editor

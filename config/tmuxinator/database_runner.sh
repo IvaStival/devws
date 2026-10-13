@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Runs Harlequin in a devws database pane, connected to the database
-# configured in the project's .env.
+# Runs devdb in a devws database pane, connected to the database configured in
+# the project's .env.
 #
 #   database_runner.sh <project_root>
 
@@ -11,8 +11,8 @@ root="${1:-$PWD}"
 
 tmux set-option -p -t "$TMUX_PANE" @devws_role database
 
-if ! command -v harlequin >/dev/null 2>&1; then
-  printf 'Harlequin is not installed; run ./install.sh --deps.\nPress Enter to close.'
+if ! command -v devdb >/dev/null 2>&1; then
+  printf 'devdb is not installed; run ./install.sh --deps.\nPress Enter to close.'
   read -r
   exit 127
 fi
@@ -53,58 +53,7 @@ if [ -z "$database_provider" ]; then
 fi
 tmux set-option -p -t "$TMUX_PANE" @devws_db_kind "$database_provider"
 
-# A TOML string; "$${" keeps Harlequin from reading ${ as a variable.
-toml_string() {
-  local value="$1"
-  value="${value//\\/\\\\}"
-  value="${value//\"/\\\"}"
-  value="${value//\$\{/\$\$\{}"
-  printf '"%s"' "$value"
-}
-
-# The password travels in the environment: Harlequin resolves
-# ${DEVWS_DB_PASSWORD} in its config, so the password never appears in `ps`
-# output or on disk. The throwaway config is removed once Harlequin has read it.
-config_dir="$(mktemp -d "${TMPDIR:-/tmp}/devws-harlequin.XXXXXX")" || exit 1
-# Only EXIT is trapped: bash still runs it when tmux closes the pane with
-# SIGHUP, and an explicit HUP trap would make bash wait for Harlequin, which
-# never receives the hang-up and would be left running.
-trap 'rm -rf "$config_dir"' EXIT
-config="$config_dir/harlequin.toml"
-{
-  printf '[profiles.devws]\n'
-  printf 'adapter = %s\n' "$(toml_string "$database_provider")"
-  # Matches LazyVim's colours.
-  printf 'theme = "tokyo-night"\n'
-  if [ "$database_provider" = sqlite ]; then
-    printf 'conn_str = [%s]\n' "$(toml_string "$database_file")"
-  else
-    printf 'host = %s\n' "$(toml_string "${database_host:-127.0.0.1}")"
-    [ -n "$database_port" ] && printf 'port = %s\n' "$(toml_string "$database_port")"
-    [ -n "$database_user" ] && printf 'user = %s\n' "$(toml_string "$database_user")"
-    # The MySQL adapter calls it "database", the Postgres one "dbname".
-    if [ -n "$database_name" ]; then
-      if [ "$database_provider" = mysql ]; then
-        printf 'database = %s\n' "$(toml_string "$database_name")"
-      else
-        printf 'dbname = %s\n' "$(toml_string "$database_name")"
-      fi
-    fi
-    [ -n "$database_password" ] && printf 'password = "${DEVWS_DB_PASSWORD}"\n'
-  fi
-} > "$config"
-export DEVWS_DB_PASSWORD="$database_password"
-
-(
-  for attempt in $(seq 1 100); do
-    # The footer ("^q Quit …") starts at the left edge, so it shows at any
-    # width; panel titles are cut short in narrow panes.
-    if tmux capture-pane -p -t "$TMUX_PANE" 2>/dev/null | grep -q 'Quit'; then
-      break
-    fi
-    sleep 0.1
-  done
-  rm -rf "$config_dir"
-) &
-
-harlequin --config-path "$config" --profile devws
+# The URL may hold a password, so it goes in the environment: an argument would
+# show in `ps` output.
+export DEVDB_URL="$database_url"
+exec devdb

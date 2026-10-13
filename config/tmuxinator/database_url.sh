@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Reads a project's database connection from its Laravel-style .env for the
-# database pane. Source this file, pick the folder with database_env_dirs, then
-# call database_connection with that folder. It sets database_provider (mysql,
-# postgres or sqlite) and, for SQLite, database_file; for MySQL and Postgres,
-# database_host, database_port, database_name, database_user and
-# database_password. All stay empty when the project has no usable database
-# settings; for a SQLite file that does not exist, database_problem says so.
+# Reads a project's database connection from its .env for the database pane,
+# which runs devdb. Source this file, pick the folder with database_env_dirs,
+# then call database_connection with that folder. It sets database_provider
+# (mysql, postgres, sqlite or mongodb) and database_url, the connection devdb
+# opens: a SQLite file path or a mysql://, postgres:// or mongodb:// URL. Both
+# stay empty when the folder has no usable database settings; for a SQLite file
+# that does not exist, database_problem says so instead.
+
+# Variables that hold a whole connection URL, in the order they win.
+URL_VARIABLES="DATABASE_URL DB_URL MONGODB_URI MONGODB_URL MONGO_URL"
 
 # Prints the value of one .env key. The file is parsed, never sourced: .env
 # values are not shell-safe and must not run as code.
@@ -33,15 +36,32 @@ env_value() {
   ' "$env_file"
 }
 
-# Decodes %XX escapes in a URL component, such as a password with an @ in it.
-url_decode() {
-  printf '%b' "${1//%/\\x}"
+# Percent-encodes a URL component so passwords with @, :, / or # survive.
+url_encode() {
+  local text="$1"
+  local encoded=""
+  local index character code
+  # Byte-wise in the C locale, so non-ASCII characters become their UTF-8 bytes.
+  local LC_ALL=C
+  for (( index = 0; index < ${#text}; index++ )); do
+    character="${text:index:1}"
+    case "$character" in
+      [A-Za-z0-9._~-]) encoded="${encoded}${character}" ;;
+      *)
+        printf -v code '%d' "'$character"
+        # macOS's bash 3.2 reads bytes above 127 as negative numbers.
+        encoded="${encoded}$(printf '%%%02X' $(( code & 255 )))"
+        ;;
+    esac
+  done
+  printf '%s' "$encoded"
 }
 
 provider_for_url() {
   case "$1" in
     mysql://*|mariadb://*) printf 'mysql' ;;
     postgres://*|postgresql://*|pgsql://*|pg://*) printf 'postgres' ;;
+    mongodb://*|mongodb+srv://*) printf 'mongodb' ;;
   esac
 }
 
@@ -52,32 +72,9 @@ is_sqlite_url() {
   return 1
 }
 
-# Splits scheme://user:password@host:port/name?options into the database_*
-# fields; Harlequin's MySQL adapter only accepts separate fields.
-use_server_url() {
-  local url="$1"
-  local rest userinfo hostport
-
-  rest="${url#*://}"
-  rest="${rest%%\?*}"
-  database_name="${rest#*/}"
-  [ "$database_name" != "$rest" ] || database_name=""
-  rest="${rest%%/*}"
-  if [ "${rest#*@}" != "$rest" ]; then
-    userinfo="${rest%@*}"
-    hostport="${rest##*@}"
-    database_user="$(url_decode "${userinfo%%:*}")"
-    [ "${userinfo#*:}" != "$userinfo" ] && database_password="$(url_decode "${userinfo#*:}")"
-  else
-    hostport="$rest"
-  fi
-  database_host="${hostport%%:*}"
-  [ "${hostport#*:}" != "$hostport" ] && database_port="${hostport#*:}"
-}
-
-# Harlequin opens SQLite by plain path; Laravel's sqlite:///path form is
-# turned into one. A missing file is reported rather than passed on, because
-# opening it would silently create an empty database there.
+# Laravel's sqlite:///path form is turned into a plain path. A missing file is
+# reported rather than passed on, because opening it would silently create an
+# empty database there.
 use_sqlite_file() {
   local root="$1"
   local path="$2"
@@ -97,13 +94,26 @@ use_sqlite_file() {
     return 0
   fi
   database_provider="sqlite"
-  database_file="$path"
+  database_url="$path"
+}
+
+# The first connection URL the .env sets, if any.
+connection_url_in() {
+  local env_file="$1"
+  local variable url
+  for variable in $URL_VARIABLES; do
+    url="$(env_value "$env_file" "$variable")"
+    if [ -n "$url" ]; then
+      printf '%s' "$url"
+      return 0
+    fi
+  done
 }
 
 has_database_settings() {
   local env_file="$1"
   [ -r "$env_file" ] || return 1
-  [ -n "$(env_value "$env_file" DATABASE_URL)$(env_value "$env_file" DB_URL)$(env_value "$env_file" DB_CONNECTION)" ]
+  [ -n "$(connection_url_in "$env_file")$(env_value "$env_file" DB_CONNECTION)" ]
 }
 
 # Prints the folders whose .env has database settings: the project root when
@@ -164,8 +174,7 @@ database_folder_choices() {
     folder="${folder#/}"
     [ -n "$folder" ] || folder=.
     kind="$(env_value "$env_file" DB_CONNECTION)"
-    [ -n "$kind" ] || kind="$(env_value "$env_file" DATABASE_URL)"
-    [ -n "$kind" ] || kind="$(env_value "$env_file" DB_URL)"
+    [ -n "$kind" ] || kind="$(connection_url_in "$env_file")"
     kind="${kind%%:*}"
     if [ -n "$kind" ]; then
       printf '0\t%s\t%s\n' "$folder" "$kind"
@@ -183,28 +192,22 @@ database_folder_choices() {
 database_connection() {
   local root="$1"
   local env_file="$root/.env"
-  local url connection sqlite_file
+  local url connection port sqlite_file credentials user password name options host
 
   database_provider=""
-  database_file=""
-  database_host=""
-  database_port=""
-  database_name=""
-  database_user=""
-  database_password=""
+  database_url=""
   database_problem=""
   [ -r "$env_file" ] || return 0
 
   # An explicit URL wins, as it does for Laravel itself.
-  url="$(env_value "$env_file" DATABASE_URL)"
-  [ -n "$url" ] || url="$(env_value "$env_file" DB_URL)"
+  url="$(connection_url_in "$env_file")"
   if [ -n "$url" ]; then
     if is_sqlite_url "$url"; then
       use_sqlite_file "$root" "$url"
       return 0
     fi
     database_provider="$(provider_for_url "$url")"
-    [ -n "$database_provider" ] && use_server_url "$url"
+    [ -n "$database_provider" ] && database_url="$url"
     return 0
   fi
 
@@ -215,15 +218,28 @@ database_connection() {
       use_sqlite_file "$root" "${sqlite_file:-database/database.sqlite}"
       return 0
       ;;
-    mysql|mariadb) database_provider="mysql" ;;
-    pgsql|postgres|postgresql) database_provider="postgres" ;;
+    mysql|mariadb) database_provider="mysql"; port=3306 ;;
+    pgsql|postgres|postgresql) database_provider="postgres"; port=5432 ;;
+    mongodb) database_provider="mongodb"; port=27017 ;;
     *) return 0 ;;
   esac
 
-  database_host="$(env_value "$env_file" DB_HOST)"
-  database_port="$(env_value "$env_file" DB_PORT)"
-  database_name="$(env_value "$env_file" DB_DATABASE)"
-  database_user="$(env_value "$env_file" DB_USERNAME)"
-  database_password="$(env_value "$env_file" DB_PASSWORD)"
+  [ -n "$(env_value "$env_file" DB_PORT)" ] && port="$(env_value "$env_file" DB_PORT)"
+  user="$(env_value "$env_file" DB_USERNAME)"
+  password="$(env_value "$env_file" DB_PASSWORD)"
+  name="$(env_value "$env_file" DB_DATABASE)"
+  credentials=""
+  if [ -n "$user" ]; then
+    credentials="$(url_encode "$user")"
+    [ -n "$password" ] && credentials="${credentials}:$(url_encode "$password")"
+    credentials="${credentials}@"
+  fi
+  options=""
+  # Laravel's MongoDB package names the database that holds the user here.
+  if [ "$database_provider" = mongodb ] && [ -n "$(env_value "$env_file" DB_AUTHENTICATION_DATABASE)" ]; then
+    options="?authSource=$(env_value "$env_file" DB_AUTHENTICATION_DATABASE)"
+  fi
+  host="$(env_value "$env_file" DB_HOST)"
+  database_url="${database_provider}://${credentials}${host:-127.0.0.1}:${port}/${name}${options}"
   return 0
 }

@@ -235,9 +235,11 @@ test_lunarvim_links_are_retired() {
     fail "stale devws LunarVim links were left behind"
 }
 
-test_deps_install_harlequin_with_adapters() {
-  local test_home="$TEST_ROOT/harlequin"
+test_deps_install_devdb_from_its_checkout() {
+  local test_home="$TEST_ROOT/devdb"
   local fake_bin="$test_home/bin"
+  local devdb_source="$test_home/src/devdb"
+  local output="$test_home/install-output"
   mkdir -p "$test_home/.tmux/plugins/tpm"
   make_fake_bin "$fake_bin"
   make_command "$fake_bin/fzf"
@@ -245,14 +247,22 @@ test_deps_install_harlequin_with_adapters() {
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/uv.log"\n' "$test_home" > "$fake_bin/uv"
   chmod +x "$fake_bin/uv"
 
-  run_install "$test_home" "$fake_bin" --deps >/dev/null 2>&1
-  grep -qx 'tool install harlequin\[postgres,mysql\]' "$test_home/uv.log" ||
-    fail "--deps did not install Harlequin with its adapters: $(cat "$test_home/uv.log" 2>/dev/null)"
+  # Without a checkout there is nothing to install, and the user is told so.
+  DEVWS_DEVDB_SOURCE="$devdb_source" run_install "$test_home" "$fake_bin" --deps > "$output" 2>&1
+  grep -q "devdb was not found at $devdb_source" "$output" ||
+    fail "a missing devdb checkout was not reported"
+  [[ ! -s "$test_home/uv.log" ]] || fail "uv ran without a devdb checkout"
+
+  mkdir -p "$devdb_source"
+  : > "$devdb_source/pyproject.toml"
+  DEVWS_DEVDB_SOURCE="$devdb_source" run_install "$test_home" "$fake_bin" --deps >/dev/null 2>&1
+  grep -qx "tool install $devdb_source" "$test_home/uv.log" ||
+    fail "--deps did not install devdb from its checkout: $(cat "$test_home/uv.log" 2>/dev/null)"
 
   rm -f "$test_home/uv.log"
-  make_command "$fake_bin/harlequin"
-  run_install "$test_home" "$fake_bin" --deps >/dev/null 2>&1
-  [[ ! -s "$test_home/uv.log" ]] || fail "--deps reinstalled an existing Harlequin"
+  make_command "$fake_bin/devdb"
+  DEVWS_DEVDB_SOURCE="$devdb_source" run_install "$test_home" "$fake_bin" --deps >/dev/null 2>&1
+  [[ ! -s "$test_home/uv.log" ]] || fail "--deps reinstalled an existing devdb"
 }
 
 test_picker_fails_once_without_fzf() {
@@ -279,7 +289,7 @@ test_owned_glow_is_removed
 test_preexisting_glow_is_preserved
 test_nvim_config_is_linked_and_restored
 test_lunarvim_links_are_retired
-test_deps_install_harlequin_with_adapters
+test_deps_install_devdb_from_its_checkout
 test_picker_fails_once_without_fzf
 
 printf 'Install lifecycle tests passed.\n'

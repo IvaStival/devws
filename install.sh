@@ -12,7 +12,7 @@ usage() {
   cat <<'EOF'
 Usage: ./install.sh [--deps] [--iterm-keys]
 
-  --deps        Install Homebrew packages, Harlequin and tmux plugin manager.
+  --deps        Install Homebrew packages, devdb and tmux plugin manager.
   --iterm-keys  Map Shift+Enter to a newline in iTerm2 (quit iTerm2 first).
 EOF
 }
@@ -112,16 +112,21 @@ install_dependencies() {
     record_installed_dependency "glow"
   fi
 
-  # Harlequin (the database pane) is a Python app installed with uv, which
-  # also brings its MySQL and Postgres adapters; Homebrew's package has none.
-  if ! command -v harlequin >/dev/null 2>&1; then
-    command -v uv >/dev/null 2>&1 || brew install uv
-    if command -v uv >/dev/null 2>&1; then
-      info "Installing Harlequin"
-      uv tool install 'harlequin[postgres,mysql]' ||
-        warn "Harlequin installation failed; the database pane will not open"
+  # devdb (the database pane) lives in its own repository and is installed
+  # with uv from that checkout.
+  local devdb_source="${DEVWS_DEVDB_SOURCE:-$HOME/Projects/devdb}"
+  if ! command -v devdb >/dev/null 2>&1; then
+    if [[ ! -f "$devdb_source/pyproject.toml" ]]; then
+      warn "devdb was not found at $devdb_source; set DEVWS_DEVDB_SOURCE to its checkout"
     else
-      warn "uv is unavailable, so Harlequin was not installed"
+      command -v uv >/dev/null 2>&1 || brew install uv
+      if command -v uv >/dev/null 2>&1; then
+        info "Installing devdb"
+        uv tool install "$devdb_source" ||
+          warn "devdb installation failed; the database pane will not open"
+      else
+        warn "uv is unavailable, so devdb was not installed"
+      fi
     fi
   fi
 
@@ -279,8 +284,8 @@ fi
 if ! command -v nvim >/dev/null 2>&1; then
   warn "Neovim is missing; run ./install.sh --deps"
 fi
-if ! command -v harlequin >/dev/null 2>&1; then
-  warn "Harlequin (database pane) is missing; run ./install.sh --deps"
+if ! command -v devdb >/dev/null 2>&1; then
+  warn "devdb (database pane) is missing; run ./install.sh --deps"
 fi
 if ! command -v claude >/dev/null 2>&1 &&
     ! command -v codex >/dev/null 2>&1; then
