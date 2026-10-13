@@ -256,7 +256,11 @@ same Tokyo Night colours as LazyVim:
 - `/` filters (a SQL `WHERE` condition, or a JSON query for MongoDB),
   clicking a header sorts, `[` / `]` page, `v` shows a long value in full.
 - The **Query** tab runs SQL, or a MongoDB command as JSON, with `Ctrl+J`.
+- `F2` goes back to the connections: set up a new one, or open another saved
+  one. `Ctrl+O` opens another database on the same server.
 - `Ctrl+Q` quits and closes the pane, asking first when changes are pending.
+- **`F1`** (or `?`) shows all the shortcuts; the footer only fits the first
+  few in a narrow pane.
 
 See devdb's README for everything it does.
 
