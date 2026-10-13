@@ -134,8 +134,8 @@ test_side_minimize_and_restore() {
 
   "$MINIMIZE" "$session" || fail "minimize in side layout exited non-zero"
   assert_minimized "$session"
-  [[ "$(pane_size "$(pane_id "$session" minimized-agent)" pane_width)" == 14 ]] &&
-    [[ "$(pane_size "$(pane_id "$session" minimized-terminal)" pane_width)" == 14 ]] ||
+  [[ "$(pane_size "$(pane_id "$session" minimized-agent)" pane_width)" == 9 ]] &&
+    [[ "$(pane_size "$(pane_id "$session" minimized-terminal)" pane_width)" == 9 ]] ||
     fail "the right column did not shrink to a strip"
 
   "$MINIMIZE" "$session"
@@ -171,7 +171,7 @@ test_layout_toggle_expands_minimized_panes() {
   "$MINIMIZE" "$session"
 
   "$TOGGLE" "$session" || fail "layout toggle while minimized exited non-zero"
-  (( $(pane_size "$(pane_id "$session" agent)" pane_width) > 14 )) &&
+  (( $(pane_size "$(pane_id "$session" agent)" pane_width) > 9 )) &&
     (( $(pane_size "$(pane_id "$session" agent)" pane_height) > 1 )) ||
     fail "layout toggle left the panes minimized"
 }
@@ -233,14 +233,21 @@ test_headers_and_mouse() {
   wait_until is_minimized_now "$session" || fail "clicking the agent header did not minimize"
   sleep 0.5
   screen="$(client_screen)"
-  grep -q '▸ 󰚩 Agent ' <<< "$screen" && grep -q $'▸ \uF489 Term ' <<< "$screen" ||
+  grep -q '▸ Agent─' <<< "$screen" && grep -q '▸ Term─' <<< "$screen" ||
     fail "the headers do not show the short minimized labels"
-  grep -q '󰚩 Agent · claude · minimized' <<< "$screen" ||
+  grep -q ' Agent · claude · minimized' <<< "$screen" ||
     fail "the agent placeholder text is not shown"
-  grep -q $'\uF489 Terminal · minimized' <<< "$screen" ||
+  grep -q ' Terminal · minimized' <<< "$screen" ||
     fail "the terminal placeholder text is not shown"
 
-  click_header '▸ 󰚩 Agent'
+  # Keys reaching a placeholder (Esc typed while it has focus, focus events)
+  # must not be echoed into the bar.
+  tmux send-keys -t "$(pane_id "$session" minimized-agent)" Escape x
+  sleep 0.5
+  ! grep -qE '\^\[|minimized.*x$' <<< "$(client_screen)" ||
+    fail "a placeholder echoed typed keys"
+
+  click_header '▸ Agent'
   wait_until eval '! is_minimized_now "$session"' ||
     fail "clicking the minimized header did not restore"
 

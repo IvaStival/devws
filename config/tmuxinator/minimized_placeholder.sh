@@ -1,25 +1,26 @@
 #!/usr/bin/env bash
 # Stands in for a minimized agent or terminal pane while the real one keeps
-# running in a hidden window. Draws a short notice sized to the bar.
+# running in a hidden window. Draws a short notice when the bar is wide enough.
 #
-#   minimized_placeholder.sh <icon> <label>
+#   minimized_placeholder.sh <label>
 
 set -u
 
-icon="${1:-•}"
-label="${2:-pane}"
+label="${1:-pane}"
+
+# tmux sends focus-in/out sequences to the pane (focus-events is on); nothing
+# reads them here, so without this the terminal would echo them as "^[[I".
+stty -echo 2>/dev/null
 
 draw() {
   local width
   width="$(tput cols 2>/dev/null || printf 80)"
-  printf '\033[2J\033[H\033[?25l\033[2m'
-  # The narrow strip of the full-height-editor layout only fits the icon.
+  printf '\033[2J\033[H\033[?25l'
+  # The narrow strip of the full-height-editor layout has its header label
+  # already, so it is left blank.
   if (( width >= 40 )); then
-    printf ' %s %s · minimized — click the header or press C-b _' "$icon" "$label"
-  else
-    printf ' %s' "$icon"
+    printf '\033[2m %s · minimized — click the header or press C-b _\033[0m' "$label"
   fi
-  printf '\033[0m'
 }
 
 trap draw WINCH

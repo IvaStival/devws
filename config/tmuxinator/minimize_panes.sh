@@ -14,12 +14,9 @@ script_dir="$(dirname "$0")"
 session="${1:-$(tmux display-message -p '#S' 2>/dev/null)}"
 action="${2:-toggle}"
 
-# Wide enough for a "▸ 󰚩 Agent" header in the full-height-editor layout.
-strip_width=14
+# Just wide enough for the "▸ Agent" header in the full-height-editor layout.
+strip_width=9
 hidden_window_name="devws-minimized"
-# Nerd Font icons as UTF-8 bytes, which macOS's bash 3.2 also reads.
-agent_icon="$(printf '\363\260\232\251')"  # nf-md-robot
-terminal_icon="$(printf '\357\222\211')"         # nf-oct-terminal
 
 fail() {
   tmux display-message "Minimize panes: $*" 2>/dev/null
@@ -65,7 +62,7 @@ move_focus_to_editor() {
 }
 
 placeholder_command() {
-  printf "'%s' '%s' '%s'" "$script_dir/minimized_placeholder.sh" "$1" "$2"
+  printf "'%s' '%s'" "$script_dir/minimized_placeholder.sh" "$1"
 }
 
 # Creates a placeholder beside the hidden window's first pane, or, for the
@@ -74,18 +71,17 @@ placeholder_command() {
 create_placeholder() {
   local real_pane="$1"
   local role="$2"
-  local icon="$3"
-  local label="$4"
+  local label="$3"
   local placeholder
 
   if [ -z "$hidden_window" ]; then
     placeholder="$(tmux split-window -d -t "$real_pane" -c "#{pane_current_path}" \
-      -P -F '#{pane_id}' "$(placeholder_command "$icon" "$label")")" || return 1
+      -P -F '#{pane_id}' "$(placeholder_command "$label")")" || return 1
     hidden_window="$(tmux break-pane -d -s "$placeholder" -n "$hidden_window_name" \
       -P -F '#{window_id}')" || return 1
   else
     placeholder="$(tmux split-window -d -t "$hidden_window" -c "#{pane_current_path}" \
-      -P -F '#{pane_id}' "$(placeholder_command "$icon" "$label")")" || return 1
+      -P -F '#{pane_id}' "$(placeholder_command "$label")")" || return 1
   fi
   tmux set-option -p -t "$placeholder" @devws_role "minimized-$role"
   tmux set-option -p -t "$placeholder" @devws_hidden_pane "$real_pane"
@@ -103,15 +99,15 @@ minimize() {
   move_focus_to_editor
 
   hidden_window=""
-  create_placeholder "$agent" agent "$agent_icon" "Agent · ${agent_name:-agent}" ||
+  create_placeholder "$agent" agent "Agent · ${agent_name:-agent}" ||
     fail "could not hide the agent pane"
   tmux set-option -w -t "$session:" @devws_hidden_window "$hidden_window"
   if [ -n "$terminal" ]; then
-    create_placeholder "$terminal" terminal "$terminal_icon" "Terminal" ||
+    create_placeholder "$terminal" terminal "Terminal" ||
       fail "could not hide the terminal pane"
   fi
   for extra in $(extra_panes); do
-    create_placeholder "$extra" extra "$terminal_icon" "Terminal" ||
+    create_placeholder "$extra" extra "Terminal" ||
       fail "could not hide a terminal pane"
   done
 
