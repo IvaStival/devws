@@ -163,9 +163,16 @@ editor_pane() {
   return 1
 }
 
+# Agent and terminal actions need the real panes, which live in a hidden
+# window while minimized, so they are expanded first.
+expand_minimized_panes() {
+  "$HOME/.tmuxinator/minimize_panes.sh" "$1" restore
+}
+
 switch_agent() {
   local session pane agent root
   session="$(tmux display-message -p '#S')"
+  expand_minimized_panes "$session" || return
   pane="$(agent_pane "$session")" || return
   agent="$(choose_agent)" || return
   [ -n "$agent" ] || return
@@ -196,6 +203,7 @@ switch_editor() {
 restart_agent() {
   local session pane agent root
   session="$(tmux display-message -p '#S')"
+  expand_minimized_panes "$session" || return
   pane="$(agent_pane "$session")" || return
   agent="$(tmux show-options -t "$session" -v @devws_agent 2>/dev/null)"
   root="$(tmux show-options -t "$session" -v @devws_root 2>/dev/null)"
@@ -239,6 +247,7 @@ terminal_pane() {
 new_terminal() {
   local session root pane added
   session="$(tmux display-message -p '#S')"
+  expand_minimized_panes "$session" || return
   root="$(tmux show-options -t "$session" -v @devws_root 2>/dev/null)"
   pane="$(terminal_pane "$session")"
   [ -n "$pane" ] || return

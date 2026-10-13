@@ -20,33 +20,22 @@ fail() {
 
 [ -n "$session" ] || fail "no tmux session"
 
-# Workspaces created before the terminal pane marked itself only carry the
-# role in the pane title, so the title is accepted as a fallback for it.
-panes="$(
-  tmux list-panes -t "$session:" \
-    -F '#{pane_id}|#{@devws_role}|#{pane_title}|#{pane_top}|#{pane_left}' \
-    2>/dev/null
-)" || fail "session $session not found"
+. "$script_dir/workspace_panes.sh"
 
-pane_with_role() {
-  printf '%s\n' "$panes" | awk -F '|' -v role="$1" '
-    $2 == role { print $1; exit }
-    $3 == role && fallback == "" { fallback = $1 }
-    END { if (fallback != "") print fallback }'
-}
+# Minimized panes are expanded first: while minimized the real agent and
+# terminal live in a hidden window, and the toggle should produce full-size
+# panes anyway.
+"$script_dir/minimize_panes.sh" "$session" restore ||
+  fail "could not restore minimized panes"
 
-pane_field() {
-  printf '%s\n' "$panes" | awk -F '|' -v id="$1" -v field="$2" '
-    $1 == id { print $field; exit }'
-}
-
+load_workspace_panes "$session" || fail "session $session not found"
 editor="$(pane_with_role editor)"
 agent="$(pane_with_role agent)"
 terminal="$(pane_with_role terminal)"
 [ -n "$editor" ] || fail "editor pane not found"
 [ -n "$agent" ] || fail "agent pane not found"
 [ -n "$terminal" ] || fail "terminal pane not found"
-extras="$(printf '%s\n' "$panes" | awk -F '|' '$2 == "extra" { print $1 }')"
+extras="$(extra_panes)"
 
 move_pane() {
   tmux join-pane -d "$@" 2>/dev/null || fail "could not move pane ($*)"
@@ -64,12 +53,7 @@ move_extras_beside_terminal() {
   done
 }
 
-is_side_layout() {
-  [ "$(pane_field "$agent" 4)" = "$(pane_field "$editor" 4)" ] &&
-    [ "$(pane_field "$agent" 5)" -gt "$(pane_field "$editor" 5)" ]
-}
-
-if is_side_layout; then
+if is_side_layout "$editor" "$agent"; then
   move_pane -v -l 50% -s "$agent" -t "$editor"
   move_pane -h -l 50% -s "$terminal" -t "$agent"
 else

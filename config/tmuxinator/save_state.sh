@@ -60,6 +60,8 @@ trap 'rm -f "$temporary"' EXIT
         index_of[NR] = $1
         path_of[NR] = $4
         role = $2
+        # A minimized pane is recorded as the pane its placeholder stands in for.
+        sub(/^minimized-/, "", role)
         if (role == "") {
           if ($3 == "devws-picker") { role = "picker" }
           else if ($3 == "terminal") { role = "terminal" }

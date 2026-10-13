@@ -144,6 +144,12 @@ the terminal on the right: choose **▥ Toggle layout** in the workspace menu or
 press `C-b \`. Panes keep running and the chosen layout is saved with the
 workspace.
 
+The agent and terminal panes have a header (`▾ Agent · claude`,
+`▾ Terminal`). Click either header, or press `C-b _`, to minimize both to small
+bars (`▸`) so the editor gets the space; do it again to bring them back at
+their previous size. Both keep running while minimized. Dragging a header still
+resizes the panes.
+
 Inside Neovim, `Space e` shows or hides the file explorer, which also opens on
 its own when the editor starts on a folder. Uncommitted changes are highlighted
 in dark green so edits made by the agent stand out; `Space g v` turns the
@@ -241,6 +247,7 @@ Glow, exactly as before.
 - iTerm2 Shift+Enter mapping: `scripts/setup_iterm_keys.sh`
 - Workspace layout: `config/tmuxinator/dev.yml`
 - Layout toggle: `config/tmuxinator/toggle_layout.sh`
+- Minimize agent and terminal: `config/tmuxinator/minimize_panes.sh`
 - Workspace menu: `config/tmuxinator/session_picker.sh`
 - Neovim (LazyVim): `config/nvim/`
 - tmux: `config/tmux/tmux.conf`

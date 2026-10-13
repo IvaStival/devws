@@ -10,6 +10,7 @@ bash -n "$ROOT/scripts/test_install_lifecycle.sh"
 bash -n "$ROOT/scripts/test_markdown_viewer.sh"
 bash -n "$ROOT/scripts/test_workspace_state.sh"
 bash -n "$ROOT/scripts/test_workspace_layout.sh"
+bash -n "$ROOT/scripts/test_workspace_minimize.sh"
 bash -n "$ROOT/scripts/test_iterm_keys.sh"
 bash -n "$ROOT/scripts/setup_iterm_keys.sh"
 bash -n "$ROOT/shell/render_mermaid_preview.sh"
@@ -37,6 +38,7 @@ for file in "$ROOT/install.sh" "$ROOT/delete.sh" "$ROOT/scripts/check.sh" \
             "$ROOT/scripts/test_markdown_viewer.sh" \
             "$ROOT/scripts/test_workspace_state.sh" \
             "$ROOT/scripts/test_workspace_layout.sh" \
+            "$ROOT/scripts/test_workspace_minimize.sh" \
             "$ROOT/scripts/test_iterm_keys.sh" \
             "$ROOT/scripts/setup_iterm_keys.sh" \
             "$ROOT/shell/render_mermaid_preview.sh" \
@@ -51,6 +53,7 @@ done
 "$ROOT/scripts/test_markdown_viewer.sh"
 "$ROOT/scripts/test_workspace_state.sh"
 "$ROOT/scripts/test_workspace_layout.sh"
+"$ROOT/scripts/test_workspace_minimize.sh"
 "$ROOT/scripts/test_iterm_keys.sh"
 
 printf 'All checks passed.\n'
