@@ -256,7 +256,7 @@ test_deps_install_devdb_from_its_checkout() {
   mkdir -p "$devdb_source"
   : > "$devdb_source/pyproject.toml"
   DEVWS_DEVDB_SOURCE="$devdb_source" run_install "$test_home" "$fake_bin" --deps >/dev/null 2>&1
-  grep -qx "tool install $devdb_source" "$test_home/uv.log" ||
+  grep -qx "tool install --compile-bytecode $devdb_source" "$test_home/uv.log" ||
     fail "--deps did not install devdb from its checkout: $(cat "$test_home/uv.log" 2>/dev/null)"
 
   rm -f "$test_home/uv.log"

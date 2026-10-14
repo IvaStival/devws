@@ -122,7 +122,8 @@ install_dependencies() {
       command -v uv >/dev/null 2>&1 || brew install uv
       if command -v uv >/dev/null 2>&1; then
         info "Installing devdb"
-        uv tool install "$devdb_source" ||
+        # Compiled now rather than on the first launch, which would take seconds longer.
+        uv tool install --compile-bytecode "$devdb_source" ||
           warn "devdb installation failed; the database pane will not open"
       else
         warn "uv is unavailable, so devdb was not installed"
