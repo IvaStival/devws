@@ -131,7 +131,7 @@ devws ~/Projects/my-app codex nvim
 devws ~/Projects/my-app claude nvim
 ```
 
-Control the left workspace menu from any pane:
+Control the left sidebar (the list of open workspaces) from any pane:
 
 ```sh
 devws menu open
@@ -145,10 +145,28 @@ Target another open workspace by folder/session name:
 devws menu open my-app
 ```
 
+### The devws menu
+
+Every workspace action is in one menu: press **`C-b Space`** in any pane, or
+click **☰ Menu** at the top of the sidebar. It opens as a popup with a tab per
+group, and shows each action's own shortcut:
+
+| Tab | Actions |
+| --- | ------- |
+| Workspace | New workspace · Open folder · Toggle layout `C-b \` · Minimize agent and terminal `C-b _` · New terminal · Close workspace |
+| Agent | Switch agent · Restart agent · Initialize agent · Agent follow `C-b F` |
+| Editor | Switch editor · Agent follow `C-b F` |
+| Database | Database `C-b B` · Database folder |
+
+`←`/`→` or `Tab` change tabs, `↑`/`↓` move, `Enter` runs the action and `Esc`
+closes; typing filters the tab. Clicking a tab or an action works too. The
+menu reopens on the tab you used last in that workspace. Actions that ask
+something (which agent, which folder…) ask inside the popup.
+
 ### Layouts
 
 Each workspace can switch between two arrangements at any time. Choose
-**▥ Toggle layout** in the workspace menu or press `C-b \`:
+**▥ Toggle layout** in the devws menu or press `C-b \`:
 
 ```
 default                       full-height editor
@@ -244,7 +262,7 @@ The agent and Neovim are linked:
   editor. It runs `~/.tmuxinator/editor_open.sh <path>[:<line>]`, which you
   can also run yourself from the agent or terminal pane.
 - **Choose how it follows** with `C-b F` or **◎ Agent follow** in the
-  workspace menu. The menu marks the current mode, and the agent's header
+  devws menu. The menu marks the current mode, and the agent's header
   names it:
 
   | Mode | What the editor does | Header |
@@ -267,7 +285,7 @@ Only Neovim is linked; with another editor the agent just names the file.
 
 ### Database pane
 
-Choose **⛁ Database** in the workspace menu, or press `C-b B`, to open
+Choose **⛁ Database** in the devws menu, or press `C-b B`, to open
 **devdb** beside the editor, connected to the project's database. devdb is a
 DataGrip-style client for SQLite, MySQL, PostgreSQL and MongoDB that lets you
 edit data in place. It goes where there is room for it:
@@ -303,7 +321,7 @@ The connection comes from a `.env` file, read when the pane opens. devws uses
 the project root's `.env` when it has database settings, otherwise one in a
 direct subfolder (such as `backend/.env`, skipping `node_modules` and
 `vendor`), and asks when several qualify. To choose the folder yourself, use
-**⛁ Database folder** in the workspace menu: it lists every folder with a
+**⛁ Database folder** in the devws menu: it lists every folder with a
 `.env` (up to three levels down, database settings first) plus **Automatic**.
 The choice is remembered per project, and an open database pane reconnects to
 it straight away.
@@ -347,6 +365,7 @@ The tmux prefix is `C-b` (tmux's default key set is restored by
 
 | Keys | Action |
 | ---- | ------ |
+| `C-b Space` | Open the devws menu (every workspace action, in tabs) |
 | `C-b \` | Toggle the workspace layout |
 | `C-b _` | Minimize or restore the agent and terminal |
 | `C-b B` | Open the database pane, or focus it |
@@ -361,9 +380,9 @@ does not cost you the arrangement. Saved per workspace:
 - the workspace folder, agent, and editor
 - the pane layout (including the full-height editor layout) and each pane's
   working directory
-- extra terminals created from the workspace menu
+- extra terminals created from the devws menu
 - whether the database pane was open
-- whether the workspace menu was open or closed
+- whether the sidebar was open or closed
 
 State lives in `~/.devws-state/sessions.tsv` and is rewritten whenever a
 workspace is created or closed, a client detaches, the agent or editor is
@@ -393,7 +412,7 @@ them.
 
 ### Initialize an agent
 
-Click **Initialize agent** in the workspace menu to seed the current project
+Choose **Initialize agent** in the devws menu to seed the current project
 for the workspace's active agent:
 
 - Claude creates `CLAUDE.md` and `.claude/skills/`.
@@ -452,7 +471,9 @@ Glow, exactly as before.
 - Pane headers and devws key bindings: end of `config/tmux/tmux.conf`
 - Database pane (devdb): `config/tmuxinator/open_database.sh`,
   `database_runner.sh`, and `.env` parsing in `database_url.sh`
-- Workspace menu: `config/tmuxinator/session_picker.sh`
+- Sidebar: `config/tmuxinator/session_picker.sh`
+- devws menu: `config/tmuxinator/devws_menu.sh` (tabs and items), with the
+  actions in `config/tmuxinator/workspace_actions.sh`
 - Agent ↔ editor link: `config/tmuxinator/editor_open.sh`,
   `agent_follow_hook.sh`, `agent_settings.json` (Claude Code hook),
   `agent_editor_prompt.md`, `follow_mode.sh` (the modes), and
