@@ -107,3 +107,7 @@ code with the sidebar, whose command list becomes one "☰ Menu" entry.
 - Checked in a real tmux client driven through a pty and the pyte terminal emulator:
   `C-b Space` opened the popup; `→`, `Tab` and clicks on tabs switched tabs; Enter and a click
   on an item ran the action; the last tab was remembered.
+
+## Commits
+
+- 172d6be feat: add a tabbed devws menu for every workspace action
