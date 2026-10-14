@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": ["Bash(~/.tmuxinator/editor_open.sh:*)"]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write|NotebookEdit",
+        "hooks": [
+          { "type": "command", "command": "\"$HOME/.tmuxinator/agent_follow_hook.sh\" claude" }
+        ]
+      }
+    ]
+  }
+}

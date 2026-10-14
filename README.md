@@ -230,6 +230,32 @@ used most:
 | `Space g v` | Turn the change highlights off and on |
 | `Space m p` | Toggle the Markdown preview |
 
+### Following the agent in the editor
+
+The agent and Neovim are linked:
+
+- **The editor follows the agent's edits.** Each time the agent changes a file,
+  the editor opens it at the change and flashes the changed line. Your focus
+  stays in the agent pane. While you are typing in the editor (insert or
+  command mode, or unsaved changes), it doesn't jump: a notification names
+  the file and line instead.
+- **The agent can show you things.** Ask it to "show me the login controller"
+  or "open where the total is computed", and it opens that place in the
+  editor. It runs `~/.tmuxinator/editor_open.sh <path>[:<line>]`, which you
+  can also run yourself from the agent or terminal pane.
+- **Turn following off and on** with `C-b F` or **◎ Follow agent** in the
+  workspace menu, e.g. while you work in the editor yourself; the agent can
+  still open files when asked. The agent's header shows `· following` while
+  it is on.
+
+How it works: Neovim listens on a socket (`/tmp/devws-nvim-*.sock`), and devws
+starts the agent with an edit hook and a short instruction about
+`editor_open.sh`, passed on its command line, so your own Claude Code and
+Codex settings are not changed. Claude Code follows every edit and may run
+`editor_open.sh` without asking. **Codex asks once to review the new hook**
+(it shows "Hooks need review"); approve it, and it follows from then on.
+Only Neovim is linked; with another editor the agent just names the file.
+
 ### Database pane
 
 Choose **⛁ Database** in the workspace menu, or press `C-b B`, to open
@@ -315,6 +341,7 @@ The tmux prefix is `C-b` (tmux's default key set is restored by
 | `C-b \` | Toggle the workspace layout |
 | `C-b _` | Minimize or restore the agent and terminal |
 | `C-b B` | Open the database pane, or focus it |
+| `C-b F` | Turn following the agent in the editor off or on |
 | Click a header | Minimize or restore that pane group (agent and terminal, or database) |
 
 ### Session persistence
@@ -417,6 +444,11 @@ Glow, exactly as before.
 - Database pane (devdb): `config/tmuxinator/open_database.sh`,
   `database_runner.sh`, and `.env` parsing in `database_url.sh`
 - Workspace menu: `config/tmuxinator/session_picker.sh`
+- Agent ↔ editor link: `config/tmuxinator/editor_open.sh`,
+  `agent_follow_hook.sh`, `agent_settings.json` (Claude Code hook),
+  `agent_editor_prompt.md`, `toggle_follow.sh`, and
+  `config/nvim/lua/devws/follow.lua`; wired up in `agent_runner.sh` and
+  `editor_runner.sh`
 - Neovim (LazyVim): `config/nvim/`
 - tmux: `config/tmux/tmux.conf`
 - Shell command and prompt: `shell/devws.zsh`

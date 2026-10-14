@@ -1,7 +1,7 @@
 name: dev-<%= File.basename(@settings["project_root"] || Dir.pwd) %>
 root: <%= @settings["project_root"] || Dir.pwd %>
 
-pre_window: tmux set-option status-position top; tmux set-option status-left-length 40; tmux set-option status-left "[#{s/^dev-//:session_name}]"; tmux set-option @devws_agent "<%= @settings["agent"] || "claude" %>"; tmux set-option @devws_editor "<%= @settings["editor"] || "nvim" %>"; tmux set-option @devws_root "$PWD"; tmux set-option -w pane-border-indicators off; tmux set-option -w pane-border-status top; clear
+pre_window: tmux set-option status-position top; tmux set-option status-left-length 40; tmux set-option status-left "[#{s/^dev-//:session_name}]"; tmux set-option @devws_agent "<%= @settings["agent"] || "claude" %>"; tmux set-option @devws_editor "<%= @settings["editor"] || "nvim" %>"; tmux set-option @devws_root "$PWD"; tmux set-option @devws_follow on; tmux set-option -w pane-border-indicators off; tmux set-option -w pane-border-status top; clear
 
 windows:
   - workspace:

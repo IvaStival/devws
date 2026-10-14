@@ -25,7 +25,22 @@ if ! command -v "$editor" >/dev/null 2>&1; then
 fi
 
 tmux set-option -p -t "$TMUX_PANE" @devws_role editor
+session="$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}')"
 case "$editor" in
-  code|zed) exec "$editor" --wait . ;;
-  *) exec "$editor" . ;;
+  code|zed)
+    tmux set-option -u -t "$session" @devws_editor_socket
+    exec "$editor" --wait .
+    ;;
+  nvim)
+    # The agent reaches Neovim through this socket (editor_open.sh). Unix
+    # socket paths are limited to ~100 characters, and TMPDIR is long on macOS.
+    socket="/tmp/devws-nvim-$(id -u)-$(printf '%s' "$session" | tr -c 'A-Za-z0-9_.-' '_' | cut -c1-40).sock"
+    rm -f "$socket"
+    tmux set-option -t "$session" @devws_editor_socket "$socket"
+    exec nvim --listen "$socket" .
+    ;;
+  *)
+    tmux set-option -u -t "$session" @devws_editor_socket
+    exec "$editor" .
+    ;;
 esac

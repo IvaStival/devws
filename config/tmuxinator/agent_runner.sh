@@ -14,4 +14,22 @@ case "$agent" in
 esac
 
 tmux set-option -p -t "$TMUX_PANE" @devws_role agent
-exec "$agent"
+
+# Link the agent with the editor: an edit hook shows its changes there, and
+# the prompt tells it how to open files in it. Passed on the command line, so
+# the user's own agent settings are never changed.
+# Absolute: the hook runs from wherever the agent works.
+link_dir="$(cd "$(dirname "$0")" && pwd)"
+prompt="$(cat "$link_dir/agent_editor_prompt.md")"
+case "$agent" in
+  claude)
+    exec claude --settings "$link_dir/agent_settings.json" --append-system-prompt "$prompt"
+    ;;
+  codex)
+    # Config overrides are TOML; jq's JSON strings are valid TOML strings, quotes escaped.
+    hook_command="$(jq -n --arg path "$link_dir/agent_follow_hook.sh" '"\"\($path)\" codex"')"
+    exec codex \
+      -c "hooks.PostToolUse=[{matcher=\"apply_patch\",hooks=[{type=\"command\",command=$hook_command}]}]" \
+      -c "developer_instructions=$(jq -n --arg prompt "$prompt" '$prompt')"
+    ;;
+esac
