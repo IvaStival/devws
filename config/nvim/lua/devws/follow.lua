@@ -42,13 +42,13 @@ local function file_window(path)
   return current
 end
 
--- The first line containing `text`, ignoring surrounding whitespace.
-local function line_of(buffer, text)
+-- The number of the first of `lines` containing `text`, ignoring surrounding whitespace.
+local function line_containing(lines, text)
   local needle = vim.trim(text or "")
   if needle == "" then
     return nil
   end
-  for number, content in ipairs(vim.api.nvim_buf_get_lines(buffer, 0, -1, false)) do
+  for number, content in ipairs(lines) do
     if content:find(needle, 1, true) then
       return number
     end
@@ -67,12 +67,16 @@ local function flash(buffer, line)
 end
 
 --- Opens `path` at `line` (0: unknown), or at the first line containing `text`.
---- Returns "shown", or "busy" when the user is typing and was only notified.
-function M.show(path, line, text)
-  local label = vim.fn.fnamemodify(path, ":~:.") .. (line > 0 and ":" .. line or "")
-  if user_is_busy() then
+--- With `notify_only` (the "notify" follow mode), or while the user is typing,
+--- it only names the place in a notification. Returns "shown" or "notified".
+function M.show(path, line, text, notify_only)
+  if notify_only or user_is_busy() then
+    if line == 0 and vim.fn.filereadable(path) == 1 then
+      line = line_containing(vim.fn.readfile(path), text) or 0
+    end
+    local label = vim.fn.fnamemodify(path, ":~:.") .. (line > 0 and ":" .. line or "")
     vim.notify("Agent: " .. label, vim.log.levels.INFO, { title = "devws" })
-    return "busy"
+    return "notified"
   end
 
   local window = file_window(path)
@@ -84,7 +88,9 @@ function M.show(path, line, text)
   end
 
   local buffer = vim.api.nvim_get_current_buf()
-  local target = line > 0 and line or line_of(buffer, text) or 1
+  local target = line > 0 and line
+    or line_containing(vim.api.nvim_buf_get_lines(buffer, 0, -1, false), text)
+    or 1
   target = math.min(target, vim.api.nvim_buf_line_count(buffer))
   vim.api.nvim_win_set_cursor(window, { target, 0 })
   vim.cmd("normal! zz")

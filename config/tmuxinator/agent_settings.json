@@ -5,7 +5,7 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "Edit|MultiEdit|Write|NotebookEdit",
+        "matcher": "Edit|MultiEdit|Write|NotebookEdit|Read",
         "hooks": [
           { "type": "command", "command": "\"$HOME/.tmuxinator/agent_follow_hook.sh\" claude" }
         ]

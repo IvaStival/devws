@@ -81,8 +81,11 @@ location_is() {
 
 tmux new-session -d -s work -x 200 -y 50 -c "$TEST_ROOT/project" 'sleep 600'
 tmux set-option -t work @devws_editor_socket "$NVIM_SOCKET"
+EDITOR_PANE="$(tmux split-window -t work: -P -F '#{pane_id}' -c "$TEST_ROOT/project" 'sleep 600')"
+tmux set-option -p -t "$EDITOR_PANE" @devws_role editor
 AGENT_PANE="$(tmux split-window -t work: -P -F '#{pane_id}' -c "$TEST_ROOT/project" 'sleep 600')"
 tmux set-option -p -t "$AGENT_PANE" @devws_role agent
+tmux set-option -t work @devws_follow follow
 
 # Runs a script the way the agent does: from the agent pane, in the project.
 from_agent() {
@@ -152,7 +155,70 @@ test_following_off_ignores_hooks_but_not_requests() {
   [ "$(current_location)" = ":1" ] || fail "an edit was followed while following was off"
   from_agent "$SCRIPTS/editor_open.sh" src/a.php:4
   wait_until location_is "a.php:4" || fail "a request was ignored while following was off"
+  tmux set-option -t work @devws_follow follow
+}
+
+claude_edit() {
+  printf '{"tool_name":"Edit","tool_input":{"file_path":"%s","new_string":"%s"}}' \
+    "$TEST_ROOT/project/src/$1" "$2" | from_agent "$SCRIPTS/agent_follow_hook.sh" claude
+}
+
+claude_read() {
+  printf '{"tool_name":"Read","tool_input":{"file_path":"%s","offset":%s}}' \
+    "$TEST_ROOT/project/src/$1" "$2" | from_agent "$SCRIPTS/agent_follow_hook.sh" claude
+}
+
+test_notify_mode_only_notifies() {
+  start_editor
+  tmux set-option -t work @devws_follow notify
+  claude_edit a.php "line four"
+  notified() { editor_eval 'execute("messages")' | grep -q "a.php:4"; }
+  wait_until notified || fail "notify mode did not notify about the change"
+  [ "$(current_location)" = ":1" ] || fail "notify mode moved the editor"
+  tmux set-option -t work @devws_follow follow
+}
+
+test_focus_mode_moves_the_focus_to_the_editor() {
+  start_editor
+  tmux select-pane -t "$AGENT_PANE"
+  tmux set-option -t work @devws_follow focus
+  claude_edit a.php "line two"
+  wait_until location_is "a.php:2" || fail "focus mode did not follow the change: $(current_location)"
+  editor_focused() { [ "$(tmux display-message -p -t work: '#{pane_id}')" = "$EDITOR_PANE" ]; }
+  wait_until editor_focused || fail "focus mode did not move the focus to the editor"
+  tmux select-pane -t "$AGENT_PANE"
+  tmux set-option -t work @devws_follow follow
+}
+
+test_reads_are_followed_only_in_explore_mode() {
+  start_editor
+  claude_read b.txt 30
+  sleep 1
+  [ "$(current_location)" = ":1" ] || fail "a read was followed in follow mode"
+  tmux set-option -t work @devws_follow explore
+  claude_read b.txt 30
+  wait_until location_is "b.txt:30" || fail "explore mode did not follow a read: $(current_location)"
+  claude_edit a.php "line four"
+  wait_until location_is "a.php:4" || fail "explore mode did not follow an edit"
+  tmux set-option -t work @devws_follow follow
+}
+
+test_follow_mode_sets_modes() {
+  local mode
+  for mode in off notify focus explore follow; do
+    "$SCRIPTS/follow_mode.sh" work "$mode"
+    [ "$(tmux show-option -qv -t work @devws_follow)" = "$mode" ] || fail "could not set the $mode mode"
+  done
+  ! "$SCRIPTS/follow_mode.sh" work sideways 2>/dev/null || fail "an unknown mode was accepted"
+  [ "$(tmux show-option -qv -t work @devws_follow)" = "follow" ] || fail "an unknown mode changed the mode"
+}
+
+test_workspaces_from_before_the_modes_still_follow() {
+  start_editor
   tmux set-option -t work @devws_follow on
+  claude_edit a.php "line two"
+  wait_until location_is "a.php:2" || fail "the old \"on\" no longer follows"
+  tmux set-option -t work @devws_follow follow
 }
 
 test_typing_user_is_not_interrupted() {
@@ -185,25 +251,21 @@ test_hooks_never_fail_without_an_editor() {
     fail "a request without an editor should say so"
 }
 
-test_toggle_follow() {
-  tmux set-option -t work -u @devws_follow
-  "$SCRIPTS/toggle_follow.sh" work
-  [ "$(tmux show-option -qv -t work @devws_follow)" = "off" ] || fail "C-b F did not turn following off"
-  "$SCRIPTS/toggle_follow.sh" work
-  [ "$(tmux show-option -qv -t work @devws_follow)" = "on" ] || fail "C-b F did not turn following on"
-}
-
-test_agent_header_shows_following() {
+test_agent_header_shows_the_mode() {
   local format
   format="$(sed -n 's/^set -g pane-border-format "\(.*\)"$/\1/p' "$ROOT/config/tmux/tmux.conf")"
   tmux set-option -t work @devws_agent claude
-  tmux set-option -t work @devws_follow on
-  tmux display-message -p -t "$AGENT_PANE" "$format" | grep -q "following" ||
-    fail "the agent header does not show following"
-  tmux set-option -t work @devws_follow off
-  ! tmux display-message -p -t "$AGENT_PANE" "$format" | grep -q "following" ||
-    fail "the agent header shows following while it is off"
-  tmux set-option -t work @devws_follow on
+  header_for() {
+    tmux set-option -t work @devws_follow "$1"
+    tmux display-message -p -t "$AGENT_PANE" "$format"
+  }
+  header_for follow | grep -q "· following" || fail "the header does not show following"
+  header_for on | grep -q "· following" || fail "the header does not show the old \"on\" as following"
+  header_for notify | grep -q "· notify" || fail "the header does not show notify"
+  header_for focus | grep -q "· following + focus" || fail "the header does not show focus"
+  header_for explore | grep -q "· following reads" || fail "the header does not show explore"
+  ! header_for off | grep -qE "following|notify" || fail "the header shows a mode while following is off"
+  tmux set-option -t work @devws_follow follow
 }
 
 test_agents_start_with_the_link() {
@@ -212,6 +274,8 @@ test_agents_start_with_the_link() {
     "$SCRIPTS/agent_runner.sh claude")"
   wait_until test -s "$TEST_ROOT/agents/claude.args" || fail "claude did not start"
   grep -qx -- "--settings" "$TEST_ROOT/agents/claude.args" || fail "claude got no hook settings"
+  grep -q '"matcher": "Edit|MultiEdit|Write|NotebookEdit|Read"' "$(sed -n '/^--settings$/{n;p;}' "$TEST_ROOT/agents/claude.args")" ||
+    fail "claude's hook does not see reads"
   grep -q 'agent_follow_hook.sh.* claude' "$(sed -n '/^--settings$/{n;p;}' "$TEST_ROOT/agents/claude.args")" ||
     fail "claude's settings have no follow hook"
   grep -qx -- "--append-system-prompt" "$TEST_ROOT/agents/claude.args" ||
@@ -237,9 +301,13 @@ test_claude_write_follows_the_file
 test_codex_patch_follows_the_last_file
 test_following_off_ignores_hooks_but_not_requests
 test_typing_user_is_not_interrupted
+test_notify_mode_only_notifies
+test_focus_mode_moves_the_focus_to_the_editor
+test_reads_are_followed_only_in_explore_mode
+test_follow_mode_sets_modes
+test_workspaces_from_before_the_modes_still_follow
 test_hooks_never_fail_without_an_editor
-test_toggle_follow
-test_agent_header_shows_following
+test_agent_header_shows_the_mode
 test_agents_start_with_the_link
 
 printf 'Agent follow tests passed.\n'

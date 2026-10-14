@@ -109,3 +109,11 @@ Today: `editor_runner.sh` runs plain `nvim .` (no server socket); `agent_runner.
 - Verified with the real agents against a headless Neovim: a Claude edit moved the editor to
   a.php:4; "show me line two" opened a.php:2 without a permission prompt; a Codex patch moved
   it to a.php:5.
+
+## Follow-up: follow modes (14-10-2026)
+
+The on/off toggle became a menu of modes (`follow_mode.sh`, `C-b F`, menu "◎ Agent follow"),
+stored in `@devws_follow`: `follow` (default), `notify`, `focus` (also selects the editor pane),
+`explore` (also follows Claude Code's Read calls) and `off`; the old "on" counts as `follow`.
+The agent header names the mode. Verified with a real tmux menu (pick by key) and a real Claude
+Read in explore mode.

@@ -262,8 +262,8 @@ toggle_layout() {
   "$HOME/.tmuxinator/toggle_layout.sh" "$(tmux display-message -p '#S')"
 }
 
-toggle_follow() {
-  "$HOME/.tmuxinator/toggle_follow.sh" "$(tmux display-message -p '#S')"
+choose_follow_mode() {
+  "$HOME/.tmuxinator/follow_mode.sh" "$(tmux display-message -p '#S')"
 }
 
 open_database() {
@@ -393,13 +393,13 @@ while tmux list-sessions >/dev/null 2>&1; do
             6) printf "print(restart-agent)+accept\n" ;;
             7) printf "print(new-terminal)+accept\n" ;;
             8) printf "print(toggle-layout)+accept\n" ;;
-            9) printf "print(toggle-follow)+accept\n" ;;
+            9) printf "print(follow-mode)+accept\n" ;;
             10) printf "print(open-database)+accept\n" ;;
             11) printf "print(database-folder)+accept\n" ;;
             12) printf "print(open-folder)+accept\n" ;;
             13) printf "print(close)+accept\n" ;;
           esac' \
-        --header=$'WORKSPACE COMMANDS\n\033[32m+ New workspace\033[0m\n\033[36m⇄ Switch agent\033[0m\n\033[36m⇄ Switch editor\033[0m\n\033[35m◇ Initialize agent\033[0m\n\033[36m↻ Restart agent\033[0m\n\033[36m▣ New terminal\033[0m\n\033[36m▥ Toggle layout\033[0m\n\033[36m◎ Follow agent\033[0m\n\033[36m⛁ Database\033[0m\n\033[36m⛁ Database folder\033[0m\n\033[36m⌂ Open folder\033[0m\n\033[31m× Close workspace\033[0m\n\n\033[2mOPEN WORKSPACES\033[0m' \
+        --header=$'WORKSPACE COMMANDS\n\033[32m+ New workspace\033[0m\n\033[36m⇄ Switch agent\033[0m\n\033[36m⇄ Switch editor\033[0m\n\033[35m◇ Initialize agent\033[0m\n\033[36m↻ Restart agent\033[0m\n\033[36m▣ New terminal\033[0m\n\033[36m▥ Toggle layout\033[0m\n\033[36m◎ Agent follow\033[0m\n\033[36m⛁ Database\033[0m\n\033[36m⛁ Database folder\033[0m\n\033[36m⌂ Open folder\033[0m\n\033[31m× Close workspace\033[0m\n\n\033[2mOPEN WORKSPACES\033[0m' \
         --prompt='> ' \
         --info=inline --no-separator --border=none --margin=0 --padding=0
   )"
@@ -414,7 +414,7 @@ while tmux list-sessions >/dev/null 2>&1; do
     restart-agent) restart_agent ;;
     new-terminal) new_terminal ;;
     toggle-layout) toggle_layout ;;
-    toggle-follow) toggle_follow ;;
+    follow-mode) choose_follow_mode ;;
     open-database) open_database ;;
     database-folder) choose_database_folder ;;
     open-folder) open_folder ;;

@@ -243,10 +243,19 @@ The agent and Neovim are linked:
   or "open where the total is computed", and it opens that place in the
   editor. It runs `~/.tmuxinator/editor_open.sh <path>[:<line>]`, which you
   can also run yourself from the agent or terminal pane.
-- **Turn following off and on** with `C-b F` or **◎ Follow agent** in the
-  workspace menu, e.g. while you work in the editor yourself; the agent can
-  still open files when asked. The agent's header shows `· following` while
-  it is on.
+- **Choose how it follows** with `C-b F` or **◎ Agent follow** in the
+  workspace menu. The menu marks the current mode, and the agent's header
+  names it:
+
+  | Mode | What the editor does | Header |
+  | ---- | -------------------- | ------ |
+  | Follow edits (default) | Opens each changed file at the change | `· following` |
+  | Notify only | Stays put; a notification names each change | `· notify` |
+  | Follow edits and focus the editor | Follows, and moves the focus to the editor pane | `· following + focus` |
+  | Follow edits and reads | Also opens each file the agent reads (Claude Code; Codex reads through shell commands, which aren't seen) | `· following reads` |
+  | Off | Never moves by itself | — |
+
+  In every mode the agent can still open files when you ask.
 
 How it works: Neovim listens on a socket (`/tmp/devws-nvim-*.sock`), and devws
 starts the agent with an edit hook and a short instruction about
@@ -341,7 +350,7 @@ The tmux prefix is `C-b` (tmux's default key set is restored by
 | `C-b \` | Toggle the workspace layout |
 | `C-b _` | Minimize or restore the agent and terminal |
 | `C-b B` | Open the database pane, or focus it |
-| `C-b F` | Turn following the agent in the editor off or on |
+| `C-b F` | Choose how the editor follows the agent (menu) |
 | Click a header | Minimize or restore that pane group (agent and terminal, or database) |
 
 ### Session persistence
@@ -446,7 +455,7 @@ Glow, exactly as before.
 - Workspace menu: `config/tmuxinator/session_picker.sh`
 - Agent ↔ editor link: `config/tmuxinator/editor_open.sh`,
   `agent_follow_hook.sh`, `agent_settings.json` (Claude Code hook),
-  `agent_editor_prompt.md`, `toggle_follow.sh`, and
+  `agent_editor_prompt.md`, `follow_mode.sh` (the modes), and
   `config/nvim/lua/devws/follow.lua`; wired up in `agent_runner.sh` and
   `editor_runner.sh`
 - Neovim (LazyVim): `config/nvim/`
