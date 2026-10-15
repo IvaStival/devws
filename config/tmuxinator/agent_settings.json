@@ -1,13 +1,87 @@
 {
   "permissions": {
-    "allow": ["Bash(~/.tmuxinator/editor_open.sh:*)"]
+    "allow": [
+      "Bash(~/.tmuxinator/editor_open.sh:*)"
+    ]
   },
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.tmuxinator/agent_state.sh\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.tmuxinator/agent_state.sh\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.tmuxinator/agent_state.sh\""
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|MultiEdit|Write|NotebookEdit|Read",
         "hooks": [
-          { "type": "command", "command": "\"$HOME/.tmuxinator/agent_follow_hook.sh\" claude" }
+          {
+            "type": "command",
+            "command": "\"$HOME/.tmuxinator/agent_follow_hook.sh\" claude"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.tmuxinator/agent_state.sh\""
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt|elicitation_dialog",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.tmuxinator/agent_state.sh\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.tmuxinator/agent_state.sh\""
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.tmuxinator/agent_state.sh\""
+          }
         ]
       }
     ]

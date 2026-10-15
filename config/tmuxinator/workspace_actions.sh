@@ -112,6 +112,7 @@ switch_agent() {
   tmux set-option -t "$session" @devws_agent "$agent"
   tmux respawn-pane -k -t "$pane" -c "${root:-$PWD}" \
     "$HOME/.tmuxinator/agent_runner.sh $agent"
+  "$HOME/.tmuxinator/agent_status.sh" "$session" idle
   save_state
   refresh_pickers
 }
@@ -142,6 +143,7 @@ restart_agent() {
 
   tmux respawn-pane -k -t "$pane" -c "${root:-$PWD}" \
     "$HOME/.tmuxinator/agent_runner.sh $agent"
+  "$HOME/.tmuxinator/agent_status.sh" "$session" idle
 }
 
 initialize_agent() {

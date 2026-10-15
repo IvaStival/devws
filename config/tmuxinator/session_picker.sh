@@ -25,7 +25,8 @@ print_padded_row() {
 
 workspace_rows() {
   local current="$1"
-  local session agent editor root branch state state_plain row_width
+  local session agent editor root agent_state branch state state_plain row_width
+  local activity activity_plain
 
   row_width="$(
     tmux display-message -p -t "$TMUX_PANE" '#{pane_width}' 2>/dev/null
@@ -35,10 +36,19 @@ workspace_rows() {
   esac
   (( row_width > 2 )) && row_width=$((row_width - 2))
 
-  while IFS='|' read -r session agent editor root; do
+  while IFS='|' read -r session agent editor root agent_state; do
     case "$session" in dev-*) ;; *) continue ;; esac
     agent="${agent:-unknown}"
     editor="${editor:-unknown}"
+
+    # The agent's state (agent_status.sh); the spinner stays still here, as
+    # the sidebar only redraws when a state changes.
+    case "$agent_state" in
+      working) activity=" ⠋ working"; activity_plain=" ⠋ working" ;;
+      waiting) activity=" \033[33m● needs you\033[0;2m"; activity_plain=" ● needs you" ;;
+      done) activity=" \033[32m✓ done\033[0;2m"; activity_plain=" ✓ done" ;;
+      *) activity=""; activity_plain="" ;;
+    esac
 
     branch="—"
     state="  "
@@ -63,15 +73,15 @@ workspace_rows() {
       print_padded_row '\033[2;37;48;5;238m' "$row_width" "    $branch"
       printf '\n'
       print_padded_row '\033[2;37;48;5;238m' \
-        "$row_width" "    $agent · $editor"
+        "$row_width" "    $agent$activity_plain · $editor"
       printf '\0'
     else
       printf 'workspace:%s\t%b  %s\033[0m' "$session" "$state" "$session"
       printf '\n    \033[2m%s\033[0m' "$branch"
-      printf '\n    \033[2m%s · %s\033[0m\0' "$agent" "$editor"
+      printf '\n    \033[2m%s%b · %s\033[0m\0' "$agent" "$activity" "$editor"
     fi
   done < <(tmux list-sessions \
-    -F '#{session_name}|#{@devws_agent}|#{@devws_editor}|#{@devws_root}' 2>/dev/null)
+    -F '#{session_name}|#{@devws_agent}|#{@devws_editor}|#{@devws_root}|#{@devws_agent_state}' 2>/dev/null)
 }
 
 while tmux list-sessions >/dev/null 2>&1; do

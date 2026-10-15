@@ -13,6 +13,7 @@ bash -n "$ROOT/scripts/test_workspace_layout.sh"
 bash -n "$ROOT/scripts/test_workspace_minimize.sh"
 bash -n "$ROOT/scripts/test_workspace_database.sh"
 bash -n "$ROOT/scripts/test_agent_follow.sh"
+bash -n "$ROOT/scripts/test_agent_status.sh"
 bash -n "$ROOT/scripts/test_devws_menu.sh"
 bash -n "$ROOT/scripts/test_iterm_keys.sh"
 bash -n "$ROOT/scripts/setup_iterm_keys.sh"
@@ -44,6 +45,7 @@ for file in "$ROOT/install.sh" "$ROOT/delete.sh" "$ROOT/scripts/check.sh" \
             "$ROOT/scripts/test_workspace_minimize.sh" \
             "$ROOT/scripts/test_workspace_database.sh" \
             "$ROOT/scripts/test_agent_follow.sh" \
+            "$ROOT/scripts/test_agent_status.sh" \
             "$ROOT/scripts/test_devws_menu.sh" \
             "$ROOT/scripts/test_iterm_keys.sh" \
             "$ROOT/scripts/setup_iterm_keys.sh" \
@@ -62,6 +64,7 @@ done
 "$ROOT/scripts/test_workspace_minimize.sh"
 "$ROOT/scripts/test_workspace_database.sh"
 "$ROOT/scripts/test_agent_follow.sh"
+"$ROOT/scripts/test_agent_status.sh"
 "$ROOT/scripts/test_devws_menu.sh"
 "$ROOT/scripts/test_iterm_keys.sh"
 

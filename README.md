@@ -283,6 +283,30 @@ Codex settings are not changed. Claude Code follows every edit and may run
 (it shows "Hooks need review"); approve it, and it follows from then on.
 Only Neovim is linked; with another editor the agent just names the file.
 
+### Agent status
+
+devws shows what the agent is doing, so you can tell at a glance whether it
+still works, needs you, or is done, even while it is minimized or you are in
+another workspace:
+
+| State | Shown as | When |
+| ----- | -------- | ---- |
+| Working | `⠋ working` (animated) | From your prompt until the agent's turn ends |
+| Needs you | yellow `● needs you` | A permission prompt or a question is waiting for you |
+| Done | green `✓ done` | The agent finished its turn; stays until your next prompt |
+| Idle | nothing | The agent just started, or was restarted |
+
+It appears in the agent's header (`Agent · claude ⠋ working · following`), as
+the icon alone in the minimized agent strip (`▸ Agent ⠋`) and in the status
+bar (`[project] ⠋`), and in the sidebar under each workspace
+(`claude ● needs you · nvim`; the sidebar's spinner stays still). There are
+no alerts or sounds.
+
+How it works: the same hooks that link the editor report each agent event to
+`agent_state.sh`, which records the state on the workspace (tmux option
+`@devws_agent_state`). Switching or restarting the agent resets it. Codex asks
+once to review the new hooks, as for following.
+
 ### Database pane
 
 Choose **⛁ Database** in the devws menu, or press `C-b B`, to open
@@ -479,6 +503,10 @@ Glow, exactly as before.
   `agent_editor_prompt.md`, `follow_mode.sh` (the modes), and
   `config/nvim/lua/devws/follow.lua`; wired up in `agent_runner.sh` and
   `editor_runner.sh`
+- Agent status: `config/tmuxinator/agent_state.sh` (hook: event → state),
+  `agent_status.sh` (records it, runs the spinner), the formats
+  `@devws_agent_icon` and `@devws_agent_badge` in `config/tmux/tmux.conf`;
+  wired up in `agent_runner.sh` and `agent_settings.json`
 - Neovim (LazyVim): `config/nvim/`
 - tmux: `config/tmux/tmux.conf`
 - Shell command and prompt: `shell/devws.zsh`

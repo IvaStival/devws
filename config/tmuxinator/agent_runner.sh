@@ -28,8 +28,15 @@ case "$agent" in
   codex)
     # Config overrides are TOML; jq's JSON strings are valid TOML strings, quotes escaped.
     hook_command="$(jq -n --arg path "$link_dir/agent_follow_hook.sh" '"\"\($path)\" codex"')"
+    # Every state event reports to agent_state.sh (working / needs you / done).
+    state_hook="{hooks=[{type=\"command\",command=$(jq -n --arg path "$link_dir/agent_state.sh" '"\"\($path)\""')}]}"
+    state_hooks=()
+    for event in SessionStart UserPromptSubmit PreToolUse PermissionRequest Stop SessionEnd; do
+      state_hooks+=(-c "hooks.$event=[$state_hook]")
+    done
     exec codex \
-      -c "hooks.PostToolUse=[{matcher=\"apply_patch\",hooks=[{type=\"command\",command=$hook_command}]}]" \
+      -c "hooks.PostToolUse=[{matcher=\"apply_patch\",hooks=[{type=\"command\",command=$hook_command}]},$state_hook]" \
+      "${state_hooks[@]}" \
       -c "developer_instructions=$(jq -n --arg prompt "$prompt" '$prompt')"
     ;;
 esac
