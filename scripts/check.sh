@@ -28,7 +28,9 @@ ruby -rerb -ryaml -e '
   context = Object.new
   context.instance_variable_set(:@settings, settings)
   rendered = ERB.new(File.read(ARGV[0])).result(context.instance_eval { binding })
-  YAML.safe_load(rendered, aliases: true)
+  config = YAML.safe_load(rendered, aliases: true)
+  # A stray " #" in an unquoted value silently truncates it as a comment.
+  abort "dev.yml: pre_window was cut short" unless config["pre_window"].end_with?("; clear")
 ' "$ROOT/config/tmuxinator/dev.yml"
 
 if command -v luac >/dev/null 2>&1; then
