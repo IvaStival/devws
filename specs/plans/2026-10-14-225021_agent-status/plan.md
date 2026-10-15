@@ -106,3 +106,7 @@ state without touching the user's settings.
   (interactive, in tmux) goes working → needs you (permission prompt) → working → done.
 - Known gap: an interrupted Claude turn (Esc) may not send Stop, so "working" can stay until the
   next turn ends.
+
+## Commits
+
+- `2b93906` feat: show the agent's state (working / needs you / done) in devws
