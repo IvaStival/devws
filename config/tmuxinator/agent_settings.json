@@ -4,6 +4,10 @@
       "Bash(~/.tmuxinator/editor_open.sh:*)"
     ]
   },
+  "statusLine": {
+    "type": "command",
+    "command": "\"$HOME/.tmuxinator/agent_statusline.sh\""
+  },
   "hooks": {
     "SessionStart": [
       {

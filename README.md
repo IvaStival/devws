@@ -307,6 +307,54 @@ How it works: the same hooks that link the editor report each agent event to
 `@devws_agent_state`). Switching or restarting the agent resets it. Codex asks
 once to review the new hooks, as for following.
 
+### The header
+
+The status bar at the top is tmux's own line (workspace, windows, the current
+conversation, the clock), a blank line, then three rows of groups spread
+across the window (five lines, the most tmux allows):
+
+```
+ [project] 1:workspace                                          conv 1.9M · ctx 115k   19:25 Thu 15 Oct
+
+ CPU ▓▓▓░░░░░░░  27%  ▂▃▅▂▁    │   claude  31.6M today · 458M week   │   codex   0 today · 278k week    │   +18°C  Light rain             ▄▄▄▄
+ MEM ▓▓▓▓▓▓▓▓░░  80%  6.4/8.0G │   session ▓▓▓▓▓▓░░░░  62% left      │   session ▓▓▓▓▓▓▓▓▓▓ 100% left   │   Curitiba                     ██████
+ DSK ▓▓▓▓▓▓▓▓▓▓  98%  BAT 64%  │   week    ▓▓▓▓▓▓▓▓▓░  88% left      │   week    ▓▓▓▓▓▓▓▓▓▓  99% left   │   humidity 94% · wind ↓6km/h  █▀██▀█
+```
+
+- **System:** CPU with its last minute of history, memory, disk, battery (when
+  there is one) and load. The bars are drawn like Claude Code's status line:
+  green, yellow from 60%, red from 85%.
+- **A column per agent** in `DEVWS_AGENTS`: the tokens it used today (since
+  midnight) and this week (since Monday), read from its own logs
+  (`~/.claude/projects`, `~/.codex/sessions`), and what is left of the plan's
+  limits — the 5-hour session and the week. Codex logs its limits; Claude Code
+  passes them only to a status line, so devws starts Claude Code with its own
+  (`agent_statusline.sh`), which records them and then prints your status line
+  from `~/.claude/settings.json` unchanged. Until a Claude agent started that
+  way has drawn its status line, its bars are empty (`—`). Token totals count
+  input, output and cache tokens, like Codex's own; cache reads make most of
+  them.
+- **Weather** from [wttr.in](https://wttr.in), located by your IP every 30
+  minutes; set `DEVWS_WEATHER_LOCATION` in `config/tmuxinator/.env` to pick a
+  place.
+- **The ghost**, pixel art in quarter blocks (body, white eyes, pupils),
+  follows the workspace's agent: grey, asleep and breathing while idle; orange,
+  drifting and looking where it goes while it works, blinking now and then;
+  yellow, wide-eyed and gasping with a `!` when it needs you; green and
+  smiling with a heart when it is done. Set `DEVWS_HEADER_PET=0` to hide it.
+- **The conversation** of this workspace's agent, on tmux's own line: its
+  tokens and context (in tokens for Claude Code, as a share of the window for
+  Codex).
+
+Each group is as wide as its content; narrow terminals cut the widest first,
+and under 110 columns the ghost goes. One background loop (`header_ticker.sh`)
+collects everything, lays the rows out at each client's width
+(`header_layout.sh`) once a second and restarts whenever tmux.conf is reloaded;
+the CPU, memory, disk and battery readings are macOS's. The ghost moves 20
+times a second from frames drawn once at start; that costs about 10% of a core
+(tmux redrawing, the ticker and its tmux calls), which `DEVWS_HEADER_PET=0`
+saves. `C-b C-s` hides and shows the header.
+
 ### Database pane
 
 Choose **⛁ Database** in the devws menu, or press `C-b B`, to open
