@@ -291,16 +291,16 @@ another workspace:
 
 | State | Shown as | When |
 | ----- | -------- | ---- |
-| Working | `⠋ working` (animated) | From your prompt until the agent's turn ends |
+| Working | `⠋` (animated) | From your prompt until the agent's turn ends |
 | Needs you | yellow `● needs you` | A permission prompt or a question is waiting for you |
 | Done | green `✓ done` | The agent finished its turn; stays until your next prompt |
 | Idle | nothing | The agent just started, or was restarted |
 
-It appears in the agent's header (`Agent · claude ⠋ working · following`), as
-the icon alone in the minimized agent strip (`▸ Agent ⠋`) and in the status
-bar (`[project] ⠋`), and in the sidebar under each workspace
-(`claude ● needs you · nvim`; the sidebar's spinner stays still). There are
-no alerts or sounds.
+It appears in the agent's header, where the spinner replaces the agent icon
+(`⠋ Agent · claude · following`) and the other states follow the name
+(`Agent · claude ● needs you`), as the icon alone in the minimized agent strip
+(`▸ Agent ⠋`) and in the status bar (`[project] ⠋`), and in the sidebar under
+each workspace (`claude ⠋ · nvim`). There are no alerts or sounds.
 
 How it works: the same hooks that link the editor report each agent event to
 `agent_state.sh`, which records the state on the workspace (tmux option

@@ -182,7 +182,7 @@ test_header_strip_and_status_bar_show_the_state() {
   [ -n "$header" ] && [ -n "$status_left" ] || fail "could not read the formats"
 
   "$SCRIPTS/agent_status.sh" dev-work idle
-  ! render "$header" | grep -qE "working|needs you|done" || fail "the idle header shows a state"
+  ! render "$header" | grep -qE "[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|needs you|done" || fail "the idle header shows a state"
   [ "$(render "$status_left")" = "[work]" ] || fail "the idle status bar shows a state: $(render "$status_left")"
 
   "$SCRIPTS/agent_status.sh" dev-work waiting
@@ -194,12 +194,13 @@ test_header_strip_and_status_bar_show_the_state() {
   render "$status_left" | grep -q "^\[work\] .*✓" || fail "the status bar does not show done"
 
   "$SCRIPTS/agent_status.sh" dev-work working
-  render "$header" | grep -qE "Agent · claude [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] working" || fail "the header does not show working"
+  render "$header" | grep -qE "▾ [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Agent · claude( |$)" || fail "the header's icon is not the spinner: $(render "$header")"
+  ! render "$header" | grep -q "working" || fail "the header still names working"
   render "$status_left" | grep -qE "^\[work\] [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]$" || fail "the status bar does not show working"
 
   tmux set-option -p -t "$AGENT_PANE" @devws_role minimized-agent
   render "$header" | grep -qE "▸ Agent [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]$" || fail "the minimized strip does not show working"
-  ! render "$header" | grep -q "working" || fail "the minimized strip is not just the icon"
+  ! render "$header" | grep -q "Agent · " || fail "the minimized strip is not just the icon"
   tmux set-option -p -t "$AGENT_PANE" @devws_role agent
   "$SCRIPTS/agent_status.sh" dev-work idle
 }
@@ -215,7 +216,7 @@ test_a_real_client_redraws_the_spinner() {
     "$REAL_TMUX" -L "$CLIENT_SOCKET" capture-pane -p -t client | grep -m 1 "Agent ·"
   }
   "$SCRIPTS/agent_status.sh" dev-work working
-  shows_working() { client_header | grep -q "working"; }
+  shows_working() { client_header | grep -qE "[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Agent ·"; }
   wait_until shows_working || fail "the client does not draw working: $(client_header)"
   first="$(client_header)"
   redrawn() { [ "$(client_header)" != "$first" ]; }
@@ -228,7 +229,7 @@ test_a_real_client_redraws_the_spinner() {
 }
 
 test_the_sidebar_shows_each_workspace_state() {
-  local pane screen
+  local pane first fzf_before
   new_workspace dev-other
   "$SCRIPTS/agent_status.sh" dev-work waiting
   "$SCRIPTS/agent_status.sh" dev-other done
@@ -236,13 +237,23 @@ test_the_sidebar_shows_each_workspace_state() {
   sidebar() { tmux capture-pane -p -t "$pane"; }
   shows_both() { sidebar | grep -q "claude ● needs you · nvim" && sidebar | grep -q "claude ✓ done · nvim"; }
   wait_until shows_both || fail "the sidebar does not show each state: $(sidebar)"
+  sidebar_fzf() {
+    pgrep -f -- "--listen=.*devws-picker-$(tmux display-message -p -t "$pane" '#{pane_pid}').sock"
+  }
+  fzf_before="$(sidebar_fzf)"
+  [ -n "$fzf_before" ] || fail "the sidebar's fzf is not listening"
 
   "$SCRIPTS/agent_status.sh" dev-other working
-  shows_working() { sidebar | grep -q "claude ⠋ working · nvim"; }
+  working_row() { sidebar | grep -oE "claude [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] · nvim"; }
+  shows_working() { [ -n "$(working_row)" ]; }
   wait_until shows_working || fail "the sidebar did not redraw on a state change: $(sidebar)"
+  first="$(working_row)"
+  turned() { shows_working && [ "$(working_row)" != "$first" ]; }
+  wait_until turned || fail "the sidebar's spinner does not turn: $(sidebar)"
   "$SCRIPTS/agent_status.sh" dev-other idle
   shows_idle() { sidebar | grep -q "claude · nvim"; }
   wait_until shows_idle || fail "the sidebar shows a state while idle: $(sidebar)"
+  [ "$(sidebar_fzf)" = "$fzf_before" ] || fail "the sidebar restarted on a state change"
   tmux kill-pane -t "$pane"
   tmux kill-session -t dev-other
   "$SCRIPTS/agent_status.sh" dev-work idle

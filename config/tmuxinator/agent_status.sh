@@ -66,6 +66,6 @@ else
   tmux set-option -t "=$session:" @devws_agent_state "$state"
 fi
 [ "$state" = working ] && start_ticker
-# The sidebar redraws by restarting, so only when the state changes.
-[ "$previous" = "$state" ] || "$(dirname "$script")/refresh_devws_pickers.sh"
+# The sidebar redraws its rows, so only when the state changes.
+[ "$previous" = "$state" ] || "$(dirname "$script")/refresh_devws_pickers.sh" --reload
 exit 0
