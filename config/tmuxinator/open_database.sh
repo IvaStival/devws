@@ -56,16 +56,14 @@ fi
 [ "$reconnect" = 1 ] && exit 0
 
 editor="$(pane_with_role editor)"
-# A minimized agent is represented by its placeholder, which keeps its slot.
-agent="$(pane_with_role agent)"
-[ -n "$agent" ] || agent="$(pane_with_role minimized-agent)"
 [ -n "$editor" ] || fail "editor pane not found"
-[ -n "$agent" ] || fail "agent pane not found"
+slot="$(agent_slot_pane)"
 
 split_options=(-t "$editor" -c "${root:-$PWD}")
 [ "$focus" = 1 ] || split_options+=(-d)
 
-if is_side_layout "$editor" "$agent"; then
+# With nothing beside the editor, the database goes to its right.
+if [ -n "$slot" ] && is_side_layout "$editor" "$slot"; then
   split_options+=(-v -l 35%)
 else
   split_options+=(-h -l 40%)

@@ -199,6 +199,10 @@ minimize_agents() {
   "$HOME/.tmuxinator/minimize_panes.sh" "$(tmux display-message -p '#S')" toggle agents
 }
 
+toggle_header() {
+  "$HOME/.tmuxinator/header_toggle.sh" toggle
+}
+
 choose_follow_mode() {
   "$HOME/.tmuxinator/follow_mode.sh" "$(tmux display-message -p '#S')"
 }

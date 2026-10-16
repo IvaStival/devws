@@ -110,3 +110,7 @@ state without touching the user's settings.
 ## Commits
 
 - `2b93906` feat: show the agent's state (working / needs you / done) in devws
+- `485f96d` feat: spin the agent icon and the sidebar without redrawing it — follow-up: the
+  spinner replaces the header's agent icon (no "working" word); the sidebar spinner turns via
+  fzf reloads over its `--listen` socket, and a state change marks the rows stale
+  (`refresh_devws_pickers.sh --reload`) instead of restarting fzf

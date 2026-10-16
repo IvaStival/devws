@@ -1,0 +1,21 @@
+# API prices in US$ per million tokens, for the month's cost in the header's
+# agent column (header_tokens.sh costs). Plans are not billed per token, so
+# the cost is what the same tokens would cost on the API: an indication.
+#
+# Columns, tab-separated: model, input, cache write (5 min), cache write (1 h),
+# cache read, output. A model is matched exactly, else by the longest listed
+# prefix (a dated id); one not listed is left out and the cost is marked "+".
+#
+# Claude: Claude API pricing, cached 2026-09-25 (cache writes 1.25x / 2x the
+# input price). OpenAI: published rates, October 2026 (no cache-write charge,
+# so writes cost the input price).
+claude-fable-5-1	10	12.5	20	0.25	50
+claude-fable-5	10	12.5	20	1	50
+claude-opus-5-5	4	5	8	0.2	20
+claude-opus-5	5	6.25	10	0.5	25
+claude-sonnet-5-5	2	2.5	4	0.2	10
+claude-sonnet-5	2	2.5	4	0.2	10
+claude-haiku-4-5	1	1.25	2	0.1	5
+gpt-6-astra	10	10	10	1	50
+gpt-5.6-sol	4	4	4	0.4	20
+gpt-5.6-luna	0.2	0.2	0.2	0.02	1.2

@@ -117,6 +117,19 @@ test_codex_events_set_the_state() {
   state_is "" || fail "a Codex SessionEnd did not set idle"
 }
 
+test_the_hook_records_the_conversation() {
+  claude_event UserPromptSubmit "\"transcript_path\":\"$TEST_ROOT/one.jsonl\",\"prompt\":\"go\""
+  [ "$(tmux show-option -qv -t =dev-work: @devws_agent_transcript)" = "$TEST_ROOT/one.jsonl" ] ||
+    fail "the conversation's transcript is not recorded"
+  claude_event Stop '"stop_hook_active":false'
+  [ "$(tmux show-option -qv -t =dev-work: @devws_agent_transcript)" = "$TEST_ROOT/one.jsonl" ] ||
+    fail "an event without a transcript forgot the conversation"
+  claude_event SessionStart "\"transcript_path\":\"$TEST_ROOT/two.jsonl\",\"source\":\"clear\""
+  [ "$(tmux show-option -qv -t =dev-work: @devws_agent_transcript)" = "$TEST_ROOT/two.jsonl" ] ||
+    fail "a new conversation is not recorded"
+  claude_event SessionEnd '"reason":"exit"'
+}
+
 test_the_hook_never_fails() {
   local output
   output="$(printf 'not json' | TMUX_PANE="$AGENT_PANE" "$SCRIPTS/agent_state.sh" 2>&1)" ||
@@ -293,6 +306,7 @@ test_agents_start_with_the_state_hooks() {
 
 test_claude_events_set_the_state
 test_codex_events_set_the_state
+test_the_hook_records_the_conversation
 test_the_hook_never_fails
 test_the_spinner_turns_only_while_working
 test_header_strip_and_status_bar_show_the_state

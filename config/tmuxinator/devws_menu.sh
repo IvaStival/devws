@@ -24,6 +24,7 @@ actions='workspace|new|+ New workspace||new_workspace
 workspace|open-folder|⌂ Open folder||open_folder
 workspace|toggle-layout|▥ Toggle layout|C-b \|toggle_layout
 workspace|minimize|▁ Minimize agent and terminal|C-b _|minimize_agents
+workspace|header|▔ Hide or show the header|C-b C-s|toggle_header
 workspace|new-terminal|▣ New terminal||new_terminal
 workspace|close|× Close workspace||close_workspace
 agent|switch-agent|⇄ Switch agent||switch_agent

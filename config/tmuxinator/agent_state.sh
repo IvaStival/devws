@@ -39,4 +39,7 @@ case "$event" in
 esac
 
 [ -z "$state" ] || "$(dirname "$0")/agent_status.sh" "$session" "$state" >/dev/null 2>&1
+# The conversation's log, whose tokens the header shows (header_tokens.sh).
+transcript="$(json '.transcript_path // empty')"
+[ -z "$transcript" ] || tmux set-option -t "=$session:" @devws_agent_transcript "$transcript" 2>/dev/null
 exit 0

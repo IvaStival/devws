@@ -125,6 +125,37 @@ test_stacked_minimize_and_restore() {
     fail "the agent process did not survive minimizing"
 }
 
+# An agent run by hand in the terminal, the agent pane now a plain shell with
+# no devws role: the terminal leads the group, the shell goes along as an
+# extra terminal, and both come back.
+test_minimize_without_an_agent_pane() {
+  local session="dev-no-agent"
+  local before shell terminal_pid shell_pid
+  create_workspace "$session"
+  shell="$(pane_id "$session" agent)"
+  tmux set-option -p -u -t "$shell" @devws_role
+  before="$(window_layout "$session")"
+  terminal_pid="$(pane_pid "$(pane_id "$session" terminal)")"
+  shell_pid="$(pane_pid "$shell")"
+
+  "$MINIMIZE" "$session" toggle agents || fail "minimize without an agent pane exited non-zero"
+  [[ "$(pane_window "$(pane_id "$session" terminal)")" == devws-minimized ]] &&
+    [[ "$(pane_window "$shell")" == devws-minimized ]] ||
+    fail "the terminal and the shell were not moved to the hidden window"
+  [[ -n "$(pane_id "$session" minimized-extra)" ]] || fail "the shell's placeholder is not an extra terminal's"
+  [[ "$(pane_size "$(pane_id "$session" minimized-terminal)" pane_height)" == 1 ]] ||
+    fail "the terminal bar is not one line high"
+
+  "$MINIMIZE" "$session" toggle agents || fail "restore without an agent pane exited non-zero"
+  [[ -z "$(tmux list-panes -s -t "$session" -F '#{@devws_role}' | grep '^minimized-')" ]] &&
+    ! tmux list-windows -t "$session" -F '#{window_name}' | grep -qx devws-minimized ||
+    fail "placeholders or the hidden window were left behind"
+  [[ "$(window_layout "$session")" == "$before" ]] || fail "restore did not bring back the sizes"
+  [[ "$(pane_pid "$(pane_id "$session" terminal)")" == "$terminal_pid" ]] &&
+    [[ "$(pane_pid "$shell")" == "$shell_pid" ]] ||
+    fail "the terminal's or the shell's process did not survive minimizing"
+}
+
 test_side_minimize_and_restore() {
   local session="dev-side"
   local before
@@ -282,6 +313,7 @@ test_headers_and_mouse() {
 }
 
 test_stacked_minimize_and_restore
+test_minimize_without_an_agent_pane
 test_side_minimize_and_restore
 test_restore_falls_back_when_panes_changed
 test_focus_leaves_minimized_pane

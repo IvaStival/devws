@@ -150,23 +150,40 @@ test_picker_closed_with_extra_terminal() {
   assert_stacked_layout "$session"
 }
 
-test_missing_agent_leaves_panes_untouched() {
+# An agent started by hand in the terminal, its agent pane now a plain shell
+# with no devws role: the terminal leads, and the shell travels beside it.
+test_toggles_without_an_agent_pane() {
   local session="dev-missing"
-  local before
+  local shell before
+  local editor_left editor_top editor_width editor_height
+  local terminal_left terminal_top terminal_width terminal_height
+  local shell_left shell_top shell_width shell_height
   create_workspace "$session"
-  tmux set-option -p -u -t "$(pane_id "$session" agent)" @devws_role
-  before="$(tmux display-message -p -t "$session:" '#{window_layout}')"
+  shell="$(pane_id "$session" agent)"
+  tmux set-option -p -u -t "$shell" @devws_role
+  before="$(pane_commands "$session")"
 
-  if "$TOGGLE" "$session" 2>/dev/null; then
-    fail "toggle succeeded without an agent pane"
-  fi
-  [[ "$(tmux display-message -p -t "$session:" '#{window_layout}')" == "$before" ]] ||
-    fail "a failed toggle changed the layout"
+  "$TOGGLE" "$session" || fail "toggle without an agent pane exited non-zero"
+  read -r editor_left editor_top editor_width editor_height < <(geometry "$(pane_id "$session" editor)")
+  read -r terminal_left terminal_top terminal_width terminal_height < <(geometry "$(pane_id "$session" terminal)")
+  read -r shell_left shell_top shell_width shell_height < <(geometry "$shell")
+  [[ "$editor_height" == "$(window_height "$session")" ]] ||
+    fail "without an agent, the editor is not full height in the side layout"
+  [[ "$terminal_top" == "$editor_top" ]] && (( terminal_left > editor_left + editor_width - 1 )) ||
+    fail "without an agent, the terminal is not right of the editor"
+  [[ "$shell_top" == "$terminal_top" ]] || fail "the shell did not travel beside the terminal"
+
+  "$TOGGLE" "$session" || fail "toggle back without an agent pane exited non-zero"
+  read -r editor_left editor_top editor_width editor_height < <(geometry "$(pane_id "$session" editor)")
+  read -r terminal_left terminal_top terminal_width terminal_height < <(geometry "$(pane_id "$session" terminal)")
+  (( terminal_top > editor_top + editor_height - 1 )) && [[ "$terminal_left" == "$editor_left" ]] ||
+    fail "without an agent, the terminal is not below the editor"
+  [[ "$(pane_commands "$session")" == "$before" ]] || fail "toggling restarted or replaced panes"
 }
 
 test_toggles_both_ways
 test_keeps_focus
 test_picker_closed_with_extra_terminal
-test_missing_agent_leaves_panes_untouched
+test_toggles_without_an_agent_pane
 
 printf 'Workspace layout tests passed.\n'
