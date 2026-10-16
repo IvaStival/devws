@@ -154,7 +154,7 @@ group, and shows each action's own shortcut:
 | Tab | Actions |
 | --- | ------- |
 | Workspace | New workspace · Open folder · Toggle layout `C-b \` · Minimize agent and terminal `C-b _` · New terminal · Close workspace |
-| Agent | Switch agent · Restart agent · Initialize agent · Agent follow `C-b F` |
+| Agent | Switch agent · Restart agent · Initialize agent · Register agent · Remove agent · Agent follow `C-b F` |
 | Editor | Switch editor · Agent follow `C-b F` |
 | Database | Database `C-b B` · Database folder |
 
@@ -258,9 +258,11 @@ The agent and Neovim are linked:
 
 - **The editor follows the agent's edits.** Each time the agent changes a file,
   the editor opens it at the change and flashes the changed line. Your focus
-  stays in the agent pane. While you are typing in the editor (insert or
-  command mode, or unsaved changes), it doesn't jump: a notification names
-  the file and line instead.
+  stays in the agent pane. While you are typing in the editor (insert, replace,
+  command or terminal mode), or when the changed file has unsaved changes of
+  yours, it doesn't jump: a notification names the file and line instead.
+  Unsaved changes to other files don't stop it. When edits come quickly, the
+  editor always ends on the latest one.
 - **The agent can show you things.** Ask it to "show me the login controller"
   or "open where the total is computed", and it opens that place in the
   editor. It runs `~/.tmuxinator/editor_open.sh <path>[:<line>]`, which you
@@ -314,29 +316,35 @@ once to review the new hooks, as for following.
 ### The header
 
 The status bar at the top is tmux's own line (workspace, windows, the current
-conversation, the clock), a blank line, then three rows of groups spread
-across the window (five lines, the most tmux allows):
+conversation, the clock), a blank line, then three rows of groups, two spaces
+each side of the `│` between them (five lines, the most tmux allows):
 
 ```
  [project] 1:workspace                                          conv 1.9M · ctx 115k   19:25 Thu 15 Oct
 
- CPU ▓▓▓░░░░░░░  27%  ▂▃▅▂▁    │  claude  5h ▓▓▓▓░░░░░░  42%  wk ▓▓▓▓▓▓░░░░  63%  $552  │  ↓ 2.4 MB/s  ↑ 120 kB/s     │  +18°C  Light rain           ▗▟██▙▖
- MEM ▓▓▓▓▓▓▓▓░░  80%  6.4/8.0G │  codex   5h ░░░░░░░░░░   2%  wk ░░░░░░░░░░   1%  $36   │  Wi-Fi ▂▄▆_ -60 dBm · 5 GHz │  Curitiba                    ▐▗██▗▌
- DSK ▓▓▓▓▓▓▓▓▓▓  98%  BAT 64%  │  month $588 at API prices                               │  192.168.1.17 · ping 7 ms   │  humidity 94% · wind ↓6km/h  ▐▜▜▛▛▌
+ ▀█  ▀▀█ ▄ ▀▀█ ▀▀█  │  CPU ▓▓▓░░░░░░░  27%  ▂▃▅▂▁    │  claude 5h ▓▓▓▓░░░░░░  42% wk ▓▓▓▓▓▓░░░░  63% $552  │  ↓ 2.4 MB/s  ↑ 120 kB/s     │  +18°C  Light rain   ▗▟██▙▖
+  █  █▀▀ ▄ ▀▀█ █▀▀  │  MEM ▓▓▓▓▓▓▓▓░░  80%  6.4/8.0G │  work   5h ░░░░░░░░░░   2% wk ░░░░░░░░░░   1% $36   │  Wi-Fi ▂▄▆_ -60 dBm · 5 GHz │  Curitiba            ▐▗██▗▌
+ ▀▀▀ ▀▀▀   ▀▀▀ ▀▀▀  │  DSK ▓▓▓▓▓▓▓▓▓▓  98%  BAT 64%  │  month $588 at API prices                         │  192.168.1.17 · ping 7 ms   │  humidity 94% · wind ↓6km/h  ▐▜▜▛▛▌
 ```
 
+- **Clock:** the time, `HH:MM`, in block digits three rows tall
+  (`header_clock.sh`). It is left out, not cut, when the other groups need its
+  room.
 - **System:** CPU with its last minute of history, memory, disk, battery (when
   there is one) and load. The bars are drawn like Claude Code's status line:
   green, yellow from 60%, red from 85%.
-- **The agents**, one row each for the agents in `DEVWS_AGENTS`: how much of
+- **The agents**, one row each for the agents in `DEVWS_AGENTS` (see
+  [Agents and accounts](#agents-and-accounts)), in that order, leaving out
+  any whose folder doesn't exist; with none to show, it says so and points to
+  **☰ Menu › Agent › Register**. For each: how much of
   the plan's limits it has used — the 5-hour session (`5h`) and the week (`wk`)
   — and what this month's tokens would cost on the API, then the month's
   total. Codex logs its limits; Claude Code passes them only to a status line,
   so devws starts Claude Code with its own (`agent_statusline.sh`), which
-  records them and then prints your status line from `~/.claude/settings.json`
-  unchanged. Until a Claude agent started that way has drawn its status line,
-  its bars are empty (`—`). The cost prices each response in the agents' logs
-  (`~/.claude/projects`, `~/.codex/sessions`) at the rates in
+  records them per agent and then prints your status line from the account's
+  `settings.json` unchanged. Until a Claude agent started that way has drawn
+  its status line, its bars are empty (`—`). The cost prices each response in
+  each agent's own logs (`<folder>/projects`, `<folder>/sessions`) at the rates in
   `config/tmuxinator/agent_prices.tsv` — update them there when they change.
   Plans aren't billed per token, so it is an indication; a model with no price
   is left out and marks the cost `+`. Worked out every 10 minutes.
@@ -347,10 +355,11 @@ across the window (five lines, the most tmux allows):
   minutes; set `DEVWS_WEATHER_LOCATION` in `config/tmuxinator/.env` to pick a
   place.
 - **The ghost**, pixel art in quarter blocks (body, white eyes, pupils),
-  follows the workspace's agent: grey, asleep and breathing while idle; orange,
-  drifting and looking where it goes while it works, blinking now and then;
-  yellow, wide-eyed and gasping with a `!` when it needs you; green and
-  smiling with a heart when it is done. Set `DEVWS_HEADER_PET=0` to hide it.
+  shows all the workspaces' agents together, the same in every workspace:
+  yellow, wide-eyed and gasping with a `!` when any agent needs you; else
+  orange, drifting and looking where it goes while any works, blinking now and
+  then; else green and smiling with a heart when one is done; else grey,
+  asleep and breathing. Set `DEVWS_HEADER_PET=0` to hide it.
 - **The conversation** of this workspace's agent, on tmux's own line: its
   tokens and context (in tokens for Claude Code, as a share of the window for
   Codex).
@@ -496,6 +505,32 @@ and the editor are not restarted — restored terminals come back at a shell
 prompt in their saved directory. A workspace saved while minimized comes back
 with small agent and terminal panes; click a header or press `C-b _` to expand
 them.
+
+### Agents and accounts
+
+The agents devws offers are listed in `DEVWS_AGENTS` in
+`config/tmuxinator/.env`, and each one is a program in a config folder. That
+way one program can run several accounts, such as a personal Claude in
+`~/.claude` and a company one in `~/.claude-work`:
+
+```sh
+DEVWS_AGENTS="claude work"
+DEVWS_AGENT_work="claude ~/.claude-work"
+```
+
+`claude` and `codex` need no line of their own; they run in `~/.claude` and
+`~/.codex`. Choose **＋ Register agent** in the devws menu's Agent tab to add
+one. It asks for the program, offers the `~/.claude*` or `~/.codex*` folders
+not registered yet (or takes a typed path) and suggests a name (`work` for
+`~/.claude-work`). **− Remove agent** takes one off the list, and its folder is
+kept. Both edit `.env` and update the header at once. Log the account in once
+in its folder first, for example `CLAUDE_CONFIG_DIR=~/.claude-work claude`.
+
+An agent in its own folder starts with `CLAUDE_CONFIG_DIR` (or `CODEX_HOME`)
+set to it. One in the default folder starts with neither, as the plain command
+would, so it keeps the login it has. Start a workspace with an account by
+name, for example `devws ~/Projects/my-app work`, or switch to it with **Switch
+agent**.
 
 ### Initialize an agent
 

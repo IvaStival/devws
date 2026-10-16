@@ -64,7 +64,11 @@ quote() {
   printf "'%s'" "${1//\'/\'\'}"
 }
 
-expression="v:lua.require'devws.follow'.show($(quote "$file"), $line, $(quote "${text%%$'\n'*}"), v:$notify_only)"
+# Stamped now, in microseconds, so Neovim can drop a request that arrives after
+# a newer one (the calls below race in the background). macOS's bash 3.2 has
+# no EPOCHREALTIME; without perl the requests go unstamped and all are shown.
+stamp="$(perl -MTime::HiRes=time -e 'printf "%d", time * 1000000' 2>/dev/null)" || stamp=""
+expression="v:lua.require'devws.follow'.show($(quote "$file"), $line, $(quote "${text%%$'\n'*}"), v:$notify_only${stamp:+, $stamp})"
 # In the background, and given up after a few seconds: Neovim may be waiting
 # on a prompt, and neither the agent nor a pile of these calls should wait for it.
 (

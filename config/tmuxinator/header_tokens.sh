@@ -2,14 +2,15 @@
 # The agents' usage, for the header's agent column and tmux's own line.
 #
 #   header_tokens.sh costs                  this month's cost per agent in
-#                                           DEVWS_AGENTS: "claude 212.43 0"
+#                                           DEVWS_AGENTS: "work 212.43 0"
 #                                           (US$, then 1 if a model had no price)
-#   header_tokens.sh limits codex           Codex's plan limits, % used:
+#   header_tokens.sh limits <codex agent>   a Codex agent's plan limits, % used:
 #                                           "<5-hour session> <week>"
 #   header_tokens.sh session <transcript>   one conversation: "conv 230k · ctx 41%"
 #
-# Read from the agents' own logs: Claude Code's ~/.claude/projects/*/*.jsonl
-# and Codex's ~/.codex/sessions/YYYY/MM/DD/*.jsonl. Costs price each response
+# Read from the agents' own logs, in each agent's folder (agents.sh): Claude
+# Code's <folder>/projects/*/*.jsonl and Codex's
+# <folder>/sessions/YYYY/MM/DD/*.jsonl. Costs price each response
 # at agent_prices.tsv's API rates; the month starts on the 1st, 00:00 local.
 # DEVWS_TOKENS_NOW (epoch seconds) replaces the current time, for tests.
 
@@ -17,7 +18,10 @@ set -u
 
 mode="${1:-}"
 now="${DEVWS_TOKENS_NOW:-$(date +%s)}"
-prices_file="$(cd "$(dirname "$0")" && pwd)/agent_prices.tsv"
+scripts_dir="$(cd "$(dirname "$0")" && pwd)"
+prices_file="$scripts_dir/agent_prices.tsv"
+# shellcheck source=agents.sh
+. "$scripts_dir/agents.sh"
 
 # jq's number formatting: 980, 12k, 1.2M.
 human='def human: if . < 1000 then tostring
@@ -48,8 +52,9 @@ recent_logs() {
 
 # Rates: input, cache write 5 min, cache write 1 h, cache read, output. A
 # message without the 5 min / 1 h split counts its writes as 5 min ones.
+#   claude_cost <since> <folder>
 claude_cost() {
-  recent_logs "$HOME/.claude/projects" 32 | xargs -0 grep -h '"output_tokens"' 2>/dev/null |
+  recent_logs "$2/projects" 32 | xargs -0 grep -h '"output_tokens"' 2>/dev/null |
     jq -nRr --argjson since "$1" --rawfile prices "$prices_file" "$epoch $price $claude_messages
       | map(select(.at >= \$since and .model != \"<synthetic>\") | . as \$message | price(.model) as \$rates
         | if \$rates == null then {cost: 0, unpriced: 1}
@@ -67,11 +72,12 @@ claude_cost() {
 
 # Each Codex response logs its usage (token_usage_record) under its turn,
 # whose turn_context names the model. Input counts cached and written tokens.
+#   codex_cost <since> <folder>
 codex_cost() {
   local logs=()
   while IFS= read -r -d '' log; do
     logs+=("$log")
-  done < <(recent_logs "$HOME/.codex/sessions" 32)
+  done < <(recent_logs "$2/sessions" 32)
   if [ "${#logs[@]}" -eq 0 ]; then
     printf '0 0\n'
     return
@@ -93,13 +99,14 @@ codex_cost() {
 }
 
 costs() {
-  local month agent cost
+  local month agent kind home cost
   month="$(date -r "$now" -v1d -v0H -v0M -v0S +%s)"
-  for agent in ${DEVWS_AGENTS:-claude codex}; do
-    case "$agent" in
-      claude) cost="$(claude_cost "$month")" ;;
-      codex) cost="$(codex_cost "$month")" ;;
-      *) continue ;;
+  for agent in ${DEVWS_AGENTS-claude codex}; do
+    kind="$(agent_kind "$agent")" || continue
+    home="$(agent_home "$agent")"
+    case "$kind" in
+      claude) cost="$(claude_cost "$month" "$home")" ;;
+      codex) cost="$(codex_cost "$month" "$home")" ;;
     esac
     printf '%s %s\n' "$agent" "${cost:-0 0}"
   done
@@ -108,11 +115,12 @@ costs() {
 # Codex logs its plan limits with each token count: the latest one counts, and
 # a window that has reset since is back to 0. Claude Code's limits come from
 # its status line instead (agent_statusline.sh).
+#   codex_limits <folder>
 codex_limits() {
   local logs=()
   while IFS= read -r -d '' log; do
     logs+=("$log")
-  done < <(recent_logs "$HOME/.codex/sessions" 8)
+  done < <(recent_logs "$1/sessions" 8)
   [ "${#logs[@]}" -gt 0 ] || return 0
   grep -h '"rate_limits"' "${logs[@]}" 2>/dev/null |
     jq -nRr --argjson now "$now" "$epoch [inputs | fromjson? | select(.payload.rate_limits.primary)
@@ -144,16 +152,14 @@ case "$mode" in
   costs) costs ;;
   session) session "${2:-}" ;;
   limits)
-    case "${2:-}" in
-      codex) codex_limits ;;
-      *)
-        printf 'Only Codex logs its limits; Claude Code reports them to its status line\n' >&2
-        exit 2
-        ;;
-    esac
+    if [ "$(agent_kind "${2:-}")" != codex ]; then
+      printf 'Only Codex logs its limits; Claude Code reports them to its status line\n' >&2
+      exit 2
+    fi
+    codex_limits "$(agent_home "$2")"
     ;;
   *)
-    printf 'Usage: header_tokens.sh costs | limits codex | session <transcript>\n' >&2
+    printf 'Usage: header_tokens.sh costs | limits <codex agent> | session <transcript>\n' >&2
     exit 2
     ;;
 esac

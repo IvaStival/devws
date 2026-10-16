@@ -26,11 +26,22 @@ cat > "$TEST_ROOT/bin/tmux" <<EOF
 #!/usr/bin/env bash
 exec "$REAL_TMUX" -L "$SOCKET" -f /dev/null "\$@"
 EOF
-chmod +x "$TEST_ROOT/bin/tmux"
-for script in devws_menu.sh workspace_actions.sh workspace_panes.sh session_picker.sh .env; do
+# fzf answers from a queue, one line per call (after the query line that
+# --print-query adds); the agent folders it offers are recorded.
+cat > "$TEST_ROOT/bin/fzf" <<EOF
+#!/usr/bin/env bash
+cat > "$TEST_ROOT/calls/fzf.input"
+answer="\$(head -n 1 "$TEST_ROOT/fzf.answers")"
+sed -i '' 1d "$TEST_ROOT/fzf.answers"
+case " \$* " in *" --print-query "*) printf '\\n' ;; esac
+[ -n "\$answer" ] && printf '%s\\n' "\$answer"
+EOF
+chmod +x "$TEST_ROOT/bin/tmux" "$TEST_ROOT/bin/fzf"
+mkdir -p "$TEST_ROOT/home/.claude" "$TEST_ROOT/home/.claude-work"
+for script in devws_menu.sh workspace_actions.sh workspace_panes.sh session_picker.sh agents.sh .env; do
   ln -s "$SCRIPTS/$script" "$TEST_ROOT/home/.tmuxinator/$script"
 done
-for script in toggle_layout.sh minimize_panes.sh header_toggle.sh open_database.sh follow_mode.sh; do
+for script in toggle_layout.sh minimize_panes.sh header_toggle.sh open_database.sh follow_mode.sh register_agent.sh; do
   cat > "$TEST_ROOT/home/.tmuxinator/$script" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" > "$TEST_ROOT/calls/$script"
@@ -56,7 +67,7 @@ actions_of() {
 test_tabs_list_their_actions() {
   [ "$(actions_of workspace)" = "new open-folder toggle-layout minimize header new-terminal close" ] ||
     fail "Workspace tab: $(actions_of workspace)"
-  [ "$(actions_of agent)" = "switch-agent restart-agent initialize-agent follow-mode" ] ||
+  [ "$(actions_of agent)" = "switch-agent restart-agent initialize-agent register-agent remove-agent follow-mode" ] ||
     fail "Agent tab: $(actions_of agent)"
   [ "$(actions_of editor)" = "switch-editor follow-mode" ] || fail "Editor tab: $(actions_of editor)"
   [ "$(actions_of database)" = "open-database database-folder" ] ||
@@ -122,6 +133,33 @@ test_script_actions_run_for_the_session() {
   done
 }
 
+# Register asks for the kind, then a folder of that kind not registered yet,
+# then a name, which defaults to the folder's suffix.
+test_register_and_remove_agents() {
+  printf 'claude\n~/.claude-work\n' > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/register_agent.sh"
+  printf '\n\n' | DEVWS_AGENTS="claude codex" menu --run register-agent >/dev/null
+  [ "$(cat "$TEST_ROOT/calls/register_agent.sh" 2>/dev/null)" = "add work claude ~/.claude-work" ] ||
+    fail "register ran '$(cat "$TEST_ROOT/calls/register_agent.sh" 2>/dev/null)'"
+  ! grep -qx '~/.claude' "$TEST_ROOT/calls/fzf.input" || fail "register offered a registered folder"
+
+  # A name that can't be registered is asked again, saying why.
+  local output
+  printf 'claude\n~/.claude-work\n' > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/register_agent.sh"
+  output="$(printf 'My Claude\ncodex\nmy_claude\n\n' | DEVWS_AGENTS="claude codex" menu --run register-agent 2>&1)"
+  [ "$(cat "$TEST_ROOT/calls/register_agent.sh" 2>/dev/null)" = "add my_claude claude ~/.claude-work" ] ||
+    fail "register ran '$(cat "$TEST_ROOT/calls/register_agent.sh" 2>/dev/null)' after bad names"
+  grep -q "letters, digits and _" <<< "$output" || fail "a bad name was not explained: $output"
+  grep -q "codex is already registered" <<< "$output" || fail "a taken name was not explained: $output"
+
+  printf 'codex\n' > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/register_agent.sh"
+  printf '\n' | DEVWS_AGENTS="claude codex" menu --run remove-agent >/dev/null
+  [ "$(cat "$TEST_ROOT/calls/register_agent.sh" 2>/dev/null)" = "remove codex" ] ||
+    fail "remove ran '$(cat "$TEST_ROOT/calls/register_agent.sh" 2>/dev/null)'"
+}
+
 test_every_action_has_a_function() {
   local tab action function
   for tab in workspace agent editor database; do
@@ -151,6 +189,7 @@ test_items_show_labels_and_shortcuts
 test_switching_tabs
 test_header_marks_the_current_tab
 test_script_actions_run_for_the_session
+test_register_and_remove_agents
 test_every_action_has_a_function
 test_sidebar_opens_the_menu
 test_space_opens_the_menu

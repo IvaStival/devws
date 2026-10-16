@@ -6,6 +6,8 @@
 # Agents and editors to offer, and the defaults.
 config="$HOME/.tmuxinator/.env"
 [ -r "$config" ] && . "$config"
+# shellcheck source=agents.sh
+. "$HOME/.tmuxinator/agents.sh"
 
 dev_sessions() {
   tmux list-sessions -F '#{session_name}' 2>/dev/null |
@@ -147,21 +149,80 @@ restart_agent() {
 }
 
 initialize_agent() {
-  local session agent root message
+  local session agent kind root message
   session="$(tmux display-message -p '#S')"
   agent="$(tmux show-options -t "$session" -v @devws_agent 2>/dev/null)"
   root="$(tmux show-options -t "$session" -v @devws_root 2>/dev/null)"
   agent="${agent:-${DEVWS_DEFAULT_AGENT:-claude}}"
 
-  case "$agent" in
-    claude|codex) ;;
-    *) agent="${DEVWS_DEFAULT_AGENT:-claude}" ;;
-  esac
-  if message="$("$HOME/.tmuxinator/init_agent.sh" "$root" "$agent" 2>&1)"; then
+  # The project files are the kind's: CLAUDE.md or AGENTS.md.
+  kind="$(agent_kind "$agent")" || kind="$(agent_kind "${DEVWS_DEFAULT_AGENT:-claude}")" || kind=claude
+  if message="$("$HOME/.tmuxinator/init_agent.sh" "$root" "$kind" 2>&1)"; then
     tmux display-message "$message"
   else
     tmux display-message "Initialize agent failed: $message"
   fi
+}
+
+# The folders of a kind's accounts (~/.claude, ~/.claude-work, …) that no
+# agent uses yet, written under ~.
+unregistered_folders() {
+  local kind="$1" folder agent used=" "
+  for agent in ${DEVWS_AGENTS:-claude codex}; do
+    used+="$(agent_home "$agent" 2>/dev/null) "
+  done
+  for folder in "$HOME/.$kind" "$HOME/.$kind"-*; do
+    [ -d "$folder" ] || continue
+    case "$used" in *" $folder "*) continue ;; esac
+    printf '~/%s\n' "${folder#"$HOME"/}"
+  done
+}
+
+# Asks for the kind, the account's folder (offered, or typed) and a name, then
+# writes them to .env (register_agent.sh).
+register_agent() {
+  local kind folder name suggested
+  kind="$(printf '%s\n' claude codex |
+    fzf --height=~10 --layout=reverse --prompt='Kind > ' --header='Register an agent: which program it runs')" || return
+  [ -n "$kind" ] || return
+
+  folder="$(unregistered_folders "$kind" |
+    fzf --height=~12 --layout=reverse --print-query --prompt='Folder > ' \
+      --header="Its config folder (pick one, or type a path)" | tail -n 1)"
+  [ -n "$folder" ] || return
+
+  # ~/.claude-work suggests "work"; any other folder its own name.
+  suggested="${folder##*/}"
+  suggested="${suggested#.}"
+  suggested="${suggested#"$kind"-}"
+  suggested="$(printf '%s' "$suggested" | tr -c 'A-Za-z0-9_' _)"
+  # Asked again until it can be registered: it becomes a variable name in .env.
+  trap 'trap - INT; printf "\n"; return 130' INT
+  while :; do
+    read -e -r -p "Name [$suggested] (Ctrl-C to cancel): " name || { trap - INT; return; }
+    name="${name:-$suggested}"
+    if ! agent_valid_name "$name"; then
+      printf 'A name uses only letters, digits and _ (such as %s).\n' "$suggested"
+    elif [[ " ${DEVWS_AGENTS:-claude codex} " == *" $name "* ]]; then
+      printf '%s is already registered.\n' "$name"
+    else
+      break
+    fi
+  done
+  trap - INT
+
+  "$HOME/.tmuxinator/register_agent.sh" add "$name" "$kind" "$folder"
+  read -r -p 'Press Enter to return…'
+}
+
+remove_agent() {
+  local agent
+  agent="$(printf '%s\n' ${DEVWS_AGENTS:-claude codex} |
+    fzf --height=~10 --layout=reverse --prompt='Remove > ' \
+      --header='Remove an agent from devws (its folder is kept)')" || return
+  [ -n "$agent" ] || return
+  "$HOME/.tmuxinator/register_agent.sh" remove "$agent"
+  read -r -p 'Press Enter to return…'
 }
 
 terminal_pane() {

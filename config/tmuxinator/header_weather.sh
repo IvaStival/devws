@@ -22,6 +22,12 @@ case "$report" in
 esac
 IFS='|' read -r temperature condition place humidity wind <<< "$(printf '%s' "$report" | head -n 1)"
 printf '%s  %s\n' "$temperature" "$condition"
+# Located by IP, wttr.in may give the place as its coordinates; its JSON format
+# names the area there. Without a name, the row is left empty.
+if [[ "$place" =~ ^-?[0-9.]+,-?[0-9.]+$ ]]; then
+  place="$(curl -fsS --max-time 5 "https://wttr.in/$place?format=j1" 2>/dev/null |
+    jq -r '.nearest_area[0] | .areaName[0].value // .region[0].value // empty' 2>/dev/null)"
+fi
 # The place without its region or country.
 printf '%s\n' "${place%%,*}"
 printf 'humidity %s · wind %s\n' "$humidity" "$wind"

@@ -34,7 +34,16 @@ case "$agent" in
       offset="$(json '.tool_input.offset // empty')"
       [ -z "$file" ] || [ -z "$offset" ] || file="$file:$offset"
     else
-      text="$(json '.tool_input.new_string // .tool_input.edits[0].new_string // .tool_input.content // empty' | first_line)"
+      # The patch Claude Code reports says where the change is; searching the
+      # file for the new text would stop at an earlier line that reads the
+      # same (an "end", a "}"), so the text is only the fallback.
+      line="$(json '.tool_response.structuredPatch[0] // empty
+        | .newStart + (.lines | map(startswith("+") or startswith("-")) | index(true) // 0)')"
+      if [ -n "$file" ] && [ -n "$line" ]; then
+        file="$file:$line"
+      else
+        text="$(json '.tool_input.new_string // .tool_input.edits[0].new_string // .tool_input.content // empty' | first_line)"
+      fi
     fi
     ;;
   codex)

@@ -29,18 +29,27 @@ cat > "$TEST_ROOT/bin/tmux" <<EOF
 #!/usr/bin/env bash
 exec "$REAL_TMUX" -L "$SOCKET" -f /dev/null "\$@"
 EOF
-# The weather service: answers from a file, or fails when there is none.
+# The weather service: answers from a file (weather.json for the JSON
+# format), or fails when there is none.
 cat > "$TEST_ROOT/bin/curl" <<EOF
 #!/usr/bin/env bash
-printf '%s\n' "\$@" > "$TEST_ROOT/stubs/curl.args"
-[ -f "$TEST_ROOT/stubs/weather" ] || exit 6
-cat "$TEST_ROOT/stubs/weather"
+answer="$TEST_ROOT/stubs/weather"
+case "\$*" in
+  *format=j1*) answer="$TEST_ROOT/stubs/weather.json"; printf '%s\n' "\$@" > "$TEST_ROOT/stubs/curl.json.args" ;;
+  *) printf '%s\n' "\$@" > "$TEST_ROOT/stubs/curl.args" ;;
+esac
+[ -f "\$answer" ] || exit 6
+cat "\$answer"
 EOF
 chmod +x "$TEST_ROOT/bin/"*
 ln -s "$SCRIPTS" "$TEST_ROOT/home/.tmuxinator"
 # TMPDIR keeps the ticker's CPU history apart from a real workspace's.
-export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" TMPDIR="$TEST_ROOT" LC_ALL=en_US.UTF-8
-unset TMUX
+# The ticker's settings: fixed here, not the user's own .env.
+printf 'DEVWS_AGENTS="claude codex"\n' > "$TEST_ROOT/devws.env"
+export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" TMPDIR="$TEST_ROOT" LC_ALL=en_US.UTF-8 \
+  DEVWS_ENV_FILE="$TEST_ROOT/devws.env"
+# Run from a devws agent pane, the account it runs in would leak in.
+unset TMUX CLAUDE_CONFIG_DIR CODEX_HOME DEVWS_AGENT
 SCRIPTS="$HOME/.tmuxinator"
 
 wait_until() {
@@ -153,6 +162,7 @@ test_the_bar() {
   # What is left of a limit 90% used: little bar, in the color of 90% used.
   bar="$("$SCRIPTS/header_bar.sh" 10 90)"
   [ "$bar" = '#[fg=red]▓░░░░░░░░░#[fg=default]' ] || fail "unexpected bar of what is left: $bar"
+  [ "$("$SCRIPTS/header_bar.sh" 40 40 5 | plain)" = '▓▓░░░' ] || fail "a bar of 5 cells is not 5 wide"
 }
 
 # ---------------------------------------------------------------- tokens
@@ -227,6 +237,21 @@ test_month_costs_per_agent() {
   [ "$output" = $'claude 0 0\ncodex 0 0' ] || fail "no logs is not zero: $output"
 }
 
+# Two accounts of one kind: each is priced from its own folder's logs. Work:
+# $4 (1M Opus 5.5 input tokens).
+test_month_costs_per_account() {
+  local output
+  mkdir -p "$HOME/.claude-work/projects/-project"
+  printf '{"type":"assistant","timestamp":"%s","message":{"id":"msg_work","model":"claude-opus-5-5","usage":{"input_tokens":1000000,"output_tokens":0}}}\n' \
+    "$TODAY" > "$HOME/.claude-work/projects/-project/work.jsonl"
+  output="$(DEVWS_TOKENS_NOW="$NOW" DEVWS_AGENTS="claude work" DEVWS_AGENT_work="claude ~/.claude-work" \
+    "$SCRIPTS/header_tokens.sh" costs)"
+  [ "$output" = $'claude 44.71 1\nwork 4 0' ] || fail "unexpected costs per account: $output"
+  output="$(DEVWS_TOKENS_NOW="$NOW" DEVWS_AGENTS="work ghost" DEVWS_AGENT_work="claude ~/.claude-work" \
+    "$SCRIPTS/header_tokens.sh" costs)"
+  [ "$output" = "work 4 0" ] || fail "an unregistered agent was priced: $output"
+}
+
 test_codex_limits() {
   local output
   output="$("$SCRIPTS/header_tokens.sh" limits codex)"
@@ -255,15 +280,25 @@ test_claude_limits_come_from_its_status_line() {
   # Without a status line of the user's own, it shows nothing.
   output="$(printf '%s' "$payload" | TMUX=test "$SCRIPTS/agent_statusline.sh")"
   [ -z "$output" ] || fail "the status line printed without one of the user's: $output"
-  [ "$(tmux show-option -gqv @devws_claude_limits)" = "37 12" ] || fail "Claude's limits are not recorded"
+  [ "$(tmux show-option -gqv @devws_limits_claude)" = "37 12" ] || fail "Claude's limits are not recorded"
 
   mkdir -p "$HOME/.claude"
   printf '{"statusLine":{"type":"command","command":"jq -r .model.display_name; printf mine"}}\n' > "$HOME/.claude/settings.json"
   output="$(printf '%s' '{"model":{"display_name":"Sonnet"}}' | TMUX=test "$SCRIPTS/agent_statusline.sh")"
   [ "$output" = $'Sonnet\nmine' ] || fail "the user's own status line is not shown: $output"
-  [ "$(tmux show-option -gqv @devws_claude_limits)" = "37 12" ] ||
+  [ "$(tmux show-option -gqv @devws_limits_claude)" = "37 12" ] ||
     fail "a status line without limits forgot them"
   rm "$HOME/.claude/settings.json"
+
+  # Another account: its limits apart, and its own status line from its folder.
+  mkdir -p "$HOME/.claude-work"
+  printf '{"statusLine":{"type":"command","command":"printf work-line"}}\n' > "$HOME/.claude-work/settings.json"
+  output="$(printf '%s' '{"rate_limits":{"five_hour":{"used_percentage":80},"seven_day":{"used_percentage":50}}}' |
+    TMUX=test DEVWS_AGENT=work CLAUDE_CONFIG_DIR="$HOME/.claude-work" "$SCRIPTS/agent_statusline.sh")"
+  [ "$output" = "work-line" ] || fail "the account's own status line is not shown: $output"
+  [ "$(tmux show-option -gqv @devws_limits_work)" = "80 50" ] || fail "the work account's limits are not recorded"
+  [ "$(tmux show-option -gqv @devws_limits_claude)" = "37 12" ] || fail "another account overwrote Claude's limits"
+  rm "$HOME/.claude-work/settings.json"
   jq -e '.statusLine.command | contains("agent_statusline.sh")' "$SCRIPTS/agent_settings.json" >/dev/null ||
     fail "devws does not start Claude Code with its status line"
 }
@@ -275,17 +310,36 @@ test_one_column_for_the_agents() {
   DEVWS_TOKENS_NOW="$NOW" DEVWS_AGENTS="claude codex" "$SCRIPTS/header_tokens.sh" costs > "$costs"
   output="$(DEVWS_AGENTS="claude codex" "$SCRIPTS/header_agents.sh" "$costs" | plain)"
   [ "$output" = "$(printf '%s\n' \
-    'claude  5h ▓▓▓▓░░░░░░  37%  wk ▓░░░░░░░░░  12%  $45+' \
-    'codex   5h ▓▓▓▓░░░░░░  37%  wk ░░░░░░░░░░   0%  $4.20' \
+    'claude 5h ▓▓▓▓░░░░░░  37% wk ▓░░░░░░░░░  12% $45+' \
+    'codex  5h ▓▓▓▓░░░░░░  37% wk ░░░░░░░░░░   0% $4.20' \
     'month $49+ at API prices')" ] || fail "unexpected agent column: $output"
 
   # Without costs worked out yet, only the limits.
   output="$(DEVWS_AGENTS="codex" "$SCRIPTS/header_agents.sh" | plain)"
-  [ "$output" = 'codex   5h ▓▓▓▓░░░░░░  37%  wk ░░░░░░░░░░   0%' ] || fail "unexpected column without costs: $output"
+  [ "$output" = 'codex 5h ▓▓▓▓░░░░░░  37% wk ░░░░░░░░░░   0%' ] || fail "unexpected column without costs: $output"
 
-  tmux set-option -gu @devws_claude_limits
+  tmux set-option -gu @devws_limits_claude
   output="$(DEVWS_AGENTS="claude" "$SCRIPTS/header_agents.sh" | plain)"
-  [ "$output" = 'claude  5h ░░░░░░░░░░    —  wk ░░░░░░░░░░    —' ] || fail "an unknown limit is not empty: $output"
+  [ "$output" = 'claude 5h ░░░░░░░░░░    — wk ░░░░░░░░░░    —' ] || fail "an unknown limit is not empty: $output"
+
+  # A row for each listed account with its own limits, names aligned to the
+  # longest; a name that is not registered has no row.
+  tmux set-option -g @devws_limits_claude "37 12"
+  tmux set-option -g @devws_limits_company_work "80 50"
+  output="$(DEVWS_AGENTS="claude company_work ghost" DEVWS_AGENT_company_work="claude ~/.claude-work" \
+    "$SCRIPTS/header_agents.sh" | plain)"
+  [ "$output" = "$(printf '%s\n' \
+    'claude       5h ▓▓▓▓░░░░░░  37% wk ▓░░░░░░░░░  12%' \
+    'company_work 5h ▓▓▓▓▓▓▓▓░░  80% wk ▓▓▓▓▓░░░░░  50%')" ] || fail "unexpected rows per account: $output"
+
+  # No agent to show (none listed, or their folders gone): no made-up rows, a
+  # pointer to where agents are registered.
+  local hint
+  hint="$(printf '%s\n' 'no agents registered' '☰ Menu › Agent › Register')"
+  output="$(DEVWS_AGENTS="" "$SCRIPTS/header_agents.sh" "$costs" | plain)"
+  [ "$output" = "$hint" ] || fail "no agents shows: $output"
+  output="$(HOME="$TEST_ROOT/empty" DEVWS_AGENTS="claude codex" "$SCRIPTS/header_agents.sh" "$costs" | plain)"
+  [ "$output" = "$hint" ] || fail "agents without their folders show: $output"
   tmux kill-server
 }
 
@@ -422,6 +476,21 @@ test_weather() {
   output="$("$SCRIPTS/header_weather.sh")" || fail "an unknown location failed"
   [ -z "$output" ] || fail "an unknown location printed: $output"
 
+  # Located by IP, wttr.in may name the place by its coordinates: the name of
+  # the area there comes from its JSON format instead, or no name at all.
+  printf '+28°C|Light rain shower|-22.830500,-43.219200|68%%|↖4km/h\n' > "$TEST_ROOT/stubs/weather"
+  printf '{"nearest_area":[{"areaName":[{"value":"Bom Successo"}],"region":[{"value":"Rio de Janeiro"}]}]}\n' \
+    > "$TEST_ROOT/stubs/weather.json"
+  output="$("$SCRIPTS/header_weather.sh")"
+  [ "$output" = $'+28°C  Light rain shower\nBom Successo\nhumidity 68% · wind ↖4km/h' ] ||
+    fail "a place given by coordinates is not named: $output"
+  grep -q '^https://wttr.in/-22.830500,-43.219200?format=j1' "$TEST_ROOT/stubs/curl.json.args" ||
+    fail "the area is not looked up at the coordinates"
+  rm "$TEST_ROOT/stubs/weather.json"
+  output="$("$SCRIPTS/header_weather.sh")"
+  [ "$output" = $'+28°C  Light rain shower\n\nhumidity 68% · wind ↖4km/h' ] ||
+    fail "coordinates are shown when the area has no name: $output"
+
   rm "$TEST_ROOT/stubs/weather"
   output="$("$SCRIPTS/header_weather.sh")" || fail "being offline failed"
   [ -z "$output" ] || fail "being offline printed: $output"
@@ -459,12 +528,39 @@ test_the_layout_spreads_the_groups() {
     *) fail "unexpected first row: $line" ;;
   esac
   ! shows "$output" 'SYSTEM\|AGENTS\|WEATHER' || fail "the groups still have labels"
-  # Spread: wide gaps between the groups, the last one ending at the edge.
-  shows "$line" '27%       *│       *claude' || fail "the groups are not spread: $line"
-  shows "$line" 'Light rain $' || fail "the last group does not end at the edge"
+  # Close together: two spaces each side of a │, what is left after the last group.
+  shows "$line" '27% *  │  claude' || fail "the groups are not two spaces from the rule: $line"
+  ! shows "$line" '│   ' || fail "a group starts more than two spaces after its rule: $line"
+  shows "$line" 'Light rain    *$' || fail "the room left over is not after the last group: $line"
   # Narrow, the widest groups give way first.
   output="$(layout_rows | "$SCRIPTS/header_layout.sh" 100 4 | plain)"
   shows "$output" 'Curitiba' || fail "a narrow header cut a short group"
+}
+
+# The clock: HH:MM three rows tall, a digit three columns wide.
+test_the_clock() {
+  local output
+  output="$(DEVWS_CLOCK_TIME=12:34 "$SCRIPTS/header_clock.sh")"
+  [ "$output" = "$(printf '%s\n' \
+    '▀█  ▀▀█ ▄ ▀▀█ █ █' \
+    ' █  █▀▀ ▄ ▀▀█ ▀▀█' \
+    '▀▀▀ ▀▀▀   ▀▀▀   ▀')" ] || fail "unexpected clock: $output"
+  output="$(DEVWS_CLOCK_TIME=05:67 "$SCRIPTS/header_clock.sh")"
+  [ "$(wc -l <<< "$output" | tr -d ' ')" -eq 3 ] || fail "the clock is not three rows"
+  [ -z "$("$SCRIPTS/header_clock.sh" | tr -d ' ▀▄█\n')" ] || fail "the clock draws more than blocks"
+}
+
+# The clock goes first, and is left out when the groups would be cut for it.
+test_the_layout_leaves_out_the_clock_when_narrow() {
+  local output clock
+  clock="$(DEVWS_CLOCK_TIME=12:34 "$SCRIPTS/header_clock.sh")"
+  output="$({ printf '%s\n' "$clock"; layout_rows; } | "$SCRIPTS/header_layout.sh" 238 5 --optional-first | plain)"
+  shows "$(sed -n 1p <<< "$output")" '^ ▀█  ▀▀█ ▄ ▀▀█ █ █ *│ *CPU' || fail "the clock is not first: $output"
+  [ "$(sed -n 1p <<< "$output" | tr -cd '│' | wc -m | tr -d ' ')" -eq 4 ] || fail "the clock is not a group of its own"
+  output="$({ printf '%s\n' "$clock"; layout_rows; } | "$SCRIPTS/header_layout.sh" 100 5 --optional-first | plain)"
+  ! shows "$output" '▀▀█' || fail "a narrow header kept the clock: $output"
+  [ "$(sed -n 1p <<< "$output")" = "$(layout_rows | "$SCRIPTS/header_layout.sh" 100 4 | plain | sed -n 1p)" ] ||
+    fail "without the clock the groups are not laid out as before: $output"
 }
 
 # ---------------------------------------------------------------- tmux
@@ -501,6 +597,11 @@ header_shows() {
   shows "$(client_header)" "$1"
 }
 
+# A row of the clock as it reads now.
+header_clock_row() {
+  "$SCRIPTS/header_clock.sh" | sed -n "$1p"
+}
+
 header_row_shows() {
   shows "$(client_header | sed -n "$1p")" "$2"
 }
@@ -513,22 +614,29 @@ test_a_client_shows_the_header() {
     "$ROOT/config/tmux/tmux.conf" > "$TEST_ROOT/status.conf"
   tmux source-file "$TEST_ROOT/status.conf"
   [ "$(option status)" = 5 ] || fail "the header is not five lines"
-  tmux set-option -g @devws_claude_limits "40 10"
+  tmux set-option -g @devws_limits_claude "40 10"
   tmux set-option -t dev-work @devws_agent_state working
-  tmux set-option -t dev-work @devws_agent_transcript "$CODEX_LOG"
+  # A copy: the conversation stays readable while Codex's folder is away.
+  cp "$CODEX_LOG" "$TEST_ROOT/transcript.jsonl"
+  tmux set-option -t dev-work @devws_agent_transcript "$TEST_ROOT/transcript.jsonl"
   "$REAL_TMUX" -L "$CLIENT_SOCKET" -f /dev/null new-session -d -s client -x 200 -y 50 \
     "TMUX= $REAL_TMUX -L $SOCKET attach -t dev-work"
+  # Without Codex's folder its row goes, so the agent group is short a row:
+  # the groups after it must stay in their columns.
+  mv "$HOME/.codex" "$HOME/.codex.away"
   "$SCRIPTS/header_ticker.sh" --start
 
   wait_until header_row_shows 3 'CPU ▓' || fail "the client shows no system: $(client_header)"
-  wait_until header_row_shows 3 '│ *claude  5h .*│ *\(↓\|offline\).*│ *+25°C  Sunny' ||
+  wait_until header_row_shows 3 "^ *$(header_clock_row 1)  *│ *CPU" ||
+    fail "the client shows no clock before the system: $(client_header)"
+  wait_until header_row_shows 3 '│ *claude 5h .*│ *\(↓\|offline\).*│ *+25°C  Sunny' ||
     fail "the client shows no agent columns or weather: $(client_header)"
-  wait_until header_row_shows 3 'claude  5h ▓▓▓▓░░░░░░  40%  wk ▓░░░░░░░░░  10%' ||
+  wait_until header_row_shows 3 'claude 5h ▓▓▓▓░░░░░░  40% wk ▓░░░░░░░░░  10%' ||
     fail "the client shows no Claude limits: $(client_header)"
   # tmux's own line, then a blank line before the groups.
   header_row_shows 1 'dev-work' || fail "tmux's own line moved: $(client_header)"
   [ -z "$(client_header | sed -n 2p | tr -d ' ')" ] || fail "no blank line under tmux's own line: $(client_header)"
-  header_row_shows 5 'month \$' || fail "the groups' last row moved: $(client_header)"
+  header_row_shows 4 '│ *month \$.*│' || fail "the agent group's last row moved: $(client_header)"
   wait_until header_row_shows 1 'conv 351k · ctx 20%' ||
     fail "the client shows no conversation: $(client_header)"
   header_shows '█' || fail "the client shows no ghost: $(client_header)"
@@ -542,6 +650,23 @@ test_a_client_shows_the_header() {
   wait_until ghost_moved || fail "the ghost does not move"
   shows "$(session_option dev-work @devws_ghost_2)" 'colour173' || fail "the working ghost is not orange"
 
+  # One ghost for all the agents: another workspace's agent needs you, so every
+  # ghost waits; once it is done the working one wins; with every agent idle it sleeps.
+  ghost_colored() {
+    shows "$(session_option dev-work @devws_ghost_2)$(session_option dev-work @devws_ghost_3)" "$1"
+  }
+  tmux new-session -d -s dev-other -x 200 -y 50 'sleep 600'
+  tmux set-option -t dev-other @devws_agent_state waiting
+  wait_until ghost_colored "$(option @devws_color_warn)" ||
+    fail "another agent waiting does not make the ghost wait: $(session_option dev-work @devws_ghost_2)"
+  tmux set-option -t dev-other @devws_agent_state done
+  wait_until ghost_colored 'colour173' || fail "a working agent does not outrank a done one"
+  tmux set-option -t dev-work -u @devws_agent_state
+  wait_until ghost_colored "$(option @devws_color_ok)" || fail "a done agent does not show when none works"
+  tmux set-option -t dev-other -u @devws_agent_state
+  wait_until ghost_colored "$(option @devws_color_dim)" || fail "the ghost does not sleep with every agent idle"
+  tmux kill-session -t dev-other
+
   local first
   first="$(ticker_pid)"
   "$SCRIPTS/header_ticker.sh" --start
@@ -550,6 +675,7 @@ test_a_client_shows_the_header() {
 
   local second
   second="$(ticker_pid)"
+  mv "$HOME/.codex.away" "$HOME/.codex"
   "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server
   tmux kill-server
   wait_until process_gone "$second" || fail "the ticker outlived the tmux server"
@@ -621,6 +747,7 @@ test_the_ghost_shows_its_mood
 test_the_ghost_cycle
 test_the_bar
 test_month_costs_per_agent
+test_month_costs_per_account
 test_codex_limits
 test_tokens_of_the_current_conversation
 test_claude_limits_come_from_its_status_line
@@ -629,6 +756,8 @@ test_system_usage
 test_network
 test_weather
 test_the_layout_spreads_the_groups
+test_the_clock
+test_the_layout_leaves_out_the_clock_when_narrow
 test_a_client_shows_the_header
 test_the_header_hides
 

@@ -30,6 +30,8 @@ workspace|close|× Close workspace||close_workspace
 agent|switch-agent|⇄ Switch agent||switch_agent
 agent|restart-agent|↻ Restart agent||restart_agent
 agent|initialize-agent|◇ Initialize agent||initialize_agent
+agent|register-agent|＋ Register agent||register_agent
+agent|remove-agent|− Remove agent||remove_agent
 agent|follow-mode|◎ Agent follow|C-b F|choose_follow_mode
 editor|switch-editor|⇄ Switch editor||switch_editor
 editor|follow-mode|◎ Agent follow|C-b F|choose_follow_mode

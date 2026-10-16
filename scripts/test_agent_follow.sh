@@ -25,7 +25,8 @@ fail() {
 }
 
 # Every tmux call, including the scripts' own, goes to an isolated server.
-# The agents are stubs that record the arguments devws starts them with.
+# The agents are stubs that record the arguments devws starts them with, and
+# the account settings in their environment.
 mkdir -p "$TEST_ROOT/bin" "$TEST_ROOT/home" "$TEST_ROOT/project/src" "$TEST_ROOT/agents"
 cat > "$TEST_ROOT/bin/tmux" <<EOF
 #!/usr/bin/env bash
@@ -35,6 +36,7 @@ for agent in claude codex; do
   cat > "$TEST_ROOT/bin/$agent" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$@" > "$TEST_ROOT/agents/$agent.args"
+env | grep -E '^(CLAUDE_CONFIG_DIR|CODEX_HOME|DEVWS_AGENT)=' > "$TEST_ROOT/agents/$agent.env"
 sleep 600
 EOF
 done
@@ -50,9 +52,11 @@ seq 1 60 | sed 's/^/row /' > "$TEST_ROOT/project/src/b.txt"
 start_editor() {
   [ -z "$NVIM_PID" ] || kill "$NVIM_PID" 2>/dev/null || true
   rm -f "$NVIM_SOCKET"
-  # exec, so NVIM_PID is Neovim itself and killing it stops Neovim.
+  # exec, so NVIM_PID is Neovim itself and killing it stops Neovim. No swap
+  # files (-n): a test that leaves unsaved changes would otherwise leave the
+  # next Neovim at a swap-file prompt.
   (cd "$TEST_ROOT/project" &&
-    exec "$REAL_NVIM" --headless --clean --listen "$NVIM_SOCKET" \
+    exec "$REAL_NVIM" --headless --clean -n --listen "$NVIM_SOCKET" \
       --cmd "set rtp^=$ROOT/config/nvim" >/dev/null 2>&1) &
   NVIM_PID=$!
   wait_until test -S "$NVIM_SOCKET" || fail "Neovim did not start"
@@ -129,6 +133,15 @@ test_claude_edit_follows_the_change() {
   printf '{"tool_name":"Edit","tool_input":{"file_path":"%s","old_string":"x","new_string":"function total()\\n  return 1;"}}' \
     "$TEST_ROOT/project/src/a.php" | from_agent "$SCRIPTS/agent_follow_hook.sh" claude
   wait_until location_is "a.php:3" || fail "a Claude edit was not followed: $(current_location)"
+}
+
+# The new text's first line also appears earlier in the file, so only the
+# patch Claude Code reports says where the change really is.
+test_claude_edit_follows_the_reported_patch() {
+  start_editor
+  printf '{"tool_name":"Edit","tool_input":{"file_path":"%s","new_string":"line two"},"tool_response":{"structuredPatch":[{"newStart":3,"lines":[" function total()","-line four","+line two"]}]}}' \
+    "$TEST_ROOT/project/src/a.php" | from_agent "$SCRIPTS/agent_follow_hook.sh" claude
+  wait_until location_is "a.php:4" || fail "a Claude edit was not followed to its patch: $(current_location)"
 }
 
 test_claude_write_follows_the_file() {
@@ -235,6 +248,37 @@ test_typing_user_is_not_interrupted() {
     fail "no notification about the agent's change"
 }
 
+test_unsaved_changes_elsewhere_do_not_stop_following() {
+  start_editor
+  from_agent "$SCRIPTS/editor_open.sh" src/a.php:2
+  wait_until location_is "a.php:2" || fail "setup: a.php did not open"
+  editor_eval 'execute("normal! Ounsaved")' >/dev/null
+  from_agent "$SCRIPTS/editor_open.sh" --follow src/b.txt:10
+  wait_until location_is "b.txt:10" || fail "an unsaved buffer stopped following: $(current_location)"
+}
+
+test_unsaved_changes_in_the_changed_file_only_notify() {
+  start_editor
+  from_agent "$SCRIPTS/editor_open.sh" src/a.php:2
+  wait_until location_is "a.php:2" || fail "setup: a.php did not open"
+  editor_eval 'execute("normal! Ounsaved")' >/dev/null
+  from_agent "$SCRIPTS/editor_open.sh" --follow src/a.php:4
+  sleep 1
+  [ "$(current_location)" = "a.php:2" ] || fail "the editor moved over the user's unsaved changes"
+  editor_eval 'execute("messages")' | grep -q "a.php:4" ||
+    fail "no notification about the change to the unsaved file"
+}
+
+# Follow requests reach Neovim in the background and may arrive out of order;
+# one stamped earlier than a request already shown must not move the editor back.
+test_an_older_follow_does_not_override_a_newer_one() {
+  start_editor
+  local show="v:lua.require'devws.follow'.show"
+  editor_eval "$show('$TEST_ROOT/project/src/b.txt', 20, '', v:false, 200)" >/dev/null
+  editor_eval "$show('$TEST_ROOT/project/src/a.php', 3, '', v:false, 100)" >/dev/null
+  [ "$(current_location)" = "b.txt:20" ] || fail "an older follow overrode a newer one: $(current_location)"
+}
+
 test_hooks_never_fail_without_an_editor() {
   kill "$NVIM_PID" 2>/dev/null || true
   NVIM_PID=""
@@ -268,6 +312,32 @@ test_agent_header_shows_the_mode() {
   tmux set-option -t work @devws_follow follow
 }
 
+# An agent registered with its own folder runs there; one in its kind's default
+# folder runs with no folder set, as the plain command would (a folder set,
+# even the default one, changes where Claude Code keeps its login).
+test_registered_agents_start_with_their_folder() {
+  local pane
+  rm -f "$TEST_ROOT/agents/claude.env" "$TEST_ROOT/agents/codex.env"
+  pane="$(tmux split-window -t work: -P -F '#{pane_id}' -c "$TEST_ROOT/project" \
+    "DEVWS_AGENT_work='claude ~/.claude-work' CLAUDE_CONFIG_DIR=/elsewhere '$SCRIPTS/agent_runner.sh' work")"
+  wait_until test -s "$TEST_ROOT/agents/claude.env" || fail "the work agent did not start claude"
+  grep -qx "CLAUDE_CONFIG_DIR=$HOME/.claude-work" "$TEST_ROOT/agents/claude.env" ||
+    fail "the work agent runs outside its folder: $(cat "$TEST_ROOT/agents/claude.env")"
+  grep -qx "DEVWS_AGENT=work" "$TEST_ROOT/agents/claude.env" || fail "the work agent does not know its name"
+  tmux kill-pane -t "$pane"
+
+  rm -f "$TEST_ROOT/agents/claude.env"
+  pane="$(tmux split-window -t work: -P -F '#{pane_id}' -c "$TEST_ROOT/project" \
+    "CLAUDE_CONFIG_DIR=/elsewhere '$SCRIPTS/agent_runner.sh' claude")"
+  wait_until test -s "$TEST_ROOT/agents/claude.env" || fail "the claude agent did not start"
+  ! grep -q "^CLAUDE_CONFIG_DIR=" "$TEST_ROOT/agents/claude.env" ||
+    fail "the default-folder agent got a folder: $(cat "$TEST_ROOT/agents/claude.env")"
+  grep -qx "DEVWS_AGENT=claude" "$TEST_ROOT/agents/claude.env" || fail "the claude agent does not know its name"
+  tmux kill-pane -t "$pane"
+
+  ! "$SCRIPTS/agent_runner.sh" ghost 2>/dev/null || fail "an unregistered agent was started"
+}
+
 test_agents_start_with_the_link() {
   local pane
   pane="$(tmux split-window -t work: -P -F '#{pane_id}' -c "$TEST_ROOT/project" \
@@ -294,13 +364,18 @@ test_agents_start_with_the_link() {
 }
 
 test_editor_runner_links_neovim
+test_registered_agents_start_with_their_folder
 test_open_file_at_line
 test_open_file_without_line
 test_claude_edit_follows_the_change
+test_claude_edit_follows_the_reported_patch
 test_claude_write_follows_the_file
 test_codex_patch_follows_the_last_file
 test_following_off_ignores_hooks_but_not_requests
 test_typing_user_is_not_interrupted
+test_unsaved_changes_elsewhere_do_not_stop_following
+test_unsaved_changes_in_the_changed_file_only_notify
+test_an_older_follow_does_not_override_a_newer_one
 test_notify_mode_only_notifies
 test_focus_mode_moves_the_focus_to_the_editor
 test_reads_are_followed_only_in_explore_mode

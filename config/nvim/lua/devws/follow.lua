@@ -6,14 +6,24 @@ local M = {}
 local namespace = vim.api.nvim_create_namespace("devws_follow")
 local highlight_duration_ms = 1500
 
+-- The stamp of the latest request acted on: requests arrive in the background
+-- and can overtake each other, so an older one must not move the editor back.
+local latest_stamp = 0
+
 -- The user's own typing comes first: the agent only gets a notification then.
-local function user_is_busy()
+-- So do their unsaved changes to the file the agent changed, which reloading
+-- it would clash with; unsaved changes to other files don't matter.
+local function user_is_busy(path)
   local mode = vim.api.nvim_get_mode()
   if mode.blocking then
     return true
   end
   local kind = mode.mode:sub(1, 1)
-  return kind == "i" or kind == "R" or kind == "c" or kind == "t" or vim.bo.modified
+  if kind == "i" or kind == "R" or kind == "c" or kind == "t" then
+    return true
+  end
+  local buffer = vim.fn.bufnr(path)
+  return buffer ~= -1 and vim.bo[buffer].modified
 end
 
 -- A window showing a file: the current one if it does, else the first such
@@ -68,9 +78,17 @@ end
 
 --- Opens `path` at `line` (0: unknown), or at the first line containing `text`.
 --- With `notify_only` (the "notify" follow mode), or while the user is typing,
---- it only names the place in a notification. Returns "shown" or "notified".
-function M.show(path, line, text, notify_only)
-  if notify_only or user_is_busy() then
+--- it only names the place in a notification. `stamp` (optional) orders the
+--- requests: one older than the latest is ignored. Returns "shown", "notified"
+--- or "outdated".
+function M.show(path, line, text, notify_only, stamp)
+  if stamp then
+    if stamp < latest_stamp then
+      return "outdated"
+    end
+    latest_stamp = stamp
+  end
+  if notify_only or user_is_busy(path) then
     if line == 0 and vim.fn.filereadable(path) == 1 then
       line = line_containing(vim.fn.readfile(path), text) or 0
     end

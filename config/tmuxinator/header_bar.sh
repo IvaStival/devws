@@ -2,7 +2,7 @@
 # A header bar, in the style of the Claude Code statusline: ▓▓▓▓▓▓░░░░, all of
 # it in the level's color: green, yellow from 60% used, red from 85%.
 #
-#   header_bar.sh <filled %> <used %>
+#   header_bar.sh <filled %> [<used %>] [<cells>]   10 cells unless given
 #
 # The two differ for what is shown as left: a limit 30% used is drawn 70%
 # filled, in the color of 30% used. DEVWS_COLOR_OK, DEVWS_COLOR_WARN and
@@ -12,7 +12,7 @@ set -u
 
 filled_percent="${1:?Usage: header_bar.sh <filled %> <used %>}"
 used_percent="${2:-$filled_percent}"
-width=10
+width="${3:-10}"
 
 if [ "$used_percent" -lt 60 ]; then
   color="${DEVWS_COLOR_OK:-green}"

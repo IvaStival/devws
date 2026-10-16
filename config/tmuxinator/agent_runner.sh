@@ -1,17 +1,34 @@
 #!/usr/bin/env bash
 # Marks the pane as the workspace agent pane, then replaces itself with the
 # configured agent process. The pane marker makes restart/switch actions safe.
+#
+#   agent_runner.sh <agent>   a name registered in .env (agents.sh)
 
 set -u
 
 agent="${1:-}"
-case "$agent" in
-  claude|codex) ;;
-  *)
-    printf 'Unsupported devws agent: %s\n' "$agent" >&2
-    exit 2
-    ;;
-esac
+link_dir="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=/dev/null
+[ -r "$link_dir/.env" ] && . "$link_dir/.env"
+# shellcheck source=agents.sh
+. "$link_dir/agents.sh"
+
+if ! kind="$(agent_kind "$agent")"; then
+  printf 'Unsupported devws agent: %s (register it in the devws menu)\n' "$agent" >&2
+  exit 2
+fi
+
+# The account: the agent's own folder, or none for its kind's default folder,
+# whatever folder the environment came with.
+unset CLAUDE_CONFIG_DIR CODEX_HOME
+if ! agent_is_default_home "$agent"; then
+  case "$kind" in
+    claude) export CLAUDE_CONFIG_DIR="$(agent_home "$agent")" ;;
+    codex) export CODEX_HOME="$(agent_home "$agent")" ;;
+  esac
+fi
+# The status line records this agent's limits under its name.
+export DEVWS_AGENT="$agent"
 
 tmux set-option -p -t "$TMUX_PANE" @devws_role agent
 
@@ -19,9 +36,8 @@ tmux set-option -p -t "$TMUX_PANE" @devws_role agent
 # the prompt tells it how to open files in it. Passed on the command line, so
 # the user's own agent settings are never changed.
 # Absolute: the hook runs from wherever the agent works.
-link_dir="$(cd "$(dirname "$0")" && pwd)"
 prompt="$(cat "$link_dir/agent_editor_prompt.md")"
-case "$agent" in
+case "$kind" in
   claude)
     exec claude --settings "$link_dir/agent_settings.json" --append-system-prompt "$prompt"
     ;;

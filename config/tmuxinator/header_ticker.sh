@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Keeps the header current: the one background loop behind tmux.conf's three
-# rows of groups — the system, the agents, the network, the weather — and the
-# ghost beside them, which only show what it writes.
+# rows of groups — the clock, the system, the agents, the network, the
+# weather — and the ghost beside them, which only show what it writes.
 #
 #   header_ticker.sh --start   (tmux.conf) replaces the running ticker
 #   header_ticker.sh --run     (internal) the loop itself
@@ -15,12 +15,15 @@
 # which tmux's own line shows.
 #
 # Two speeds:
-#   every second   the rows are laid out (header_layout.sh) at the width of
+#   every second   the clock is drawn (header_clock.sh; left out when the
+#                  other groups need its room) and the rows are laid out
+#                  (header_layout.sh) at the width of
 #                  each attached client, into the session's
 #                  @devws_header_row_<1-3>; the global rows, at the first
 #                  client's width, stand in for a session until then
-#   20 times a s.  the ghost (header_pet.sh) moves, in the mood of each
-#                  attached workspace's agent, into its @devws_ghost_<1-3>.
+#   20 times a s.  the ghost (header_pet.sh) moves, into each attached
+#                  workspace's @devws_ghost_<1-3>, in one mood for all the
+#                  agents (overall_mood).
 #                  Its cycles are drawn once at start and played back, so a
 #                  frame is a single tmux call.
 # The ticker stops once the tmux server is gone or another ticker has replaced
@@ -51,9 +54,14 @@ start() {
 # The settings and the colors tmux.conf defines. The layout counts characters,
 # which needs a UTF-8 locale; the tmux server may not have passed one on.
 load_settings() {
+  # Exported (set -a): the agent sources read each agent's DEVWS_AGENT_<name>.
+  # DEVWS_ENV_FILE replaces .env, for tests.
+  local env_file="${DEVWS_ENV_FILE:-$scripts_dir/.env}"
+  set -a
   # shellcheck source=/dev/null
-  [ -r "$scripts_dir/.env" ] && . "$scripts_dir/.env"
-  export DEVWS_AGENTS="${DEVWS_AGENTS:-claude codex}" DEVWS_WEATHER_LOCATION="${DEVWS_WEATHER_LOCATION:-}"
+  [ -r "$env_file" ] && . "$env_file"
+  set +a
+  export DEVWS_AGENTS="${DEVWS_AGENTS-claude codex}" DEVWS_WEATHER_LOCATION="${DEVWS_WEATHER_LOCATION:-}"
   export DEVWS_COLOR_OK DEVWS_COLOR_WARN DEVWS_COLOR_STRESS DEVWS_COLOR_DIM DEVWS_COLOR_RULE DEVWS_COLOR_GHOST
   DEVWS_COLOR_OK="$(tmux show-option -gqv @devws_color_ok)"
   DEVWS_COLOR_WARN="$(tmux show-option -gqv @devws_color_warn)"
@@ -97,6 +105,16 @@ in_background() {
   printf -v "$pid_variable" '%s' "$!"
 }
 
+# Sets <variable> to what the command prints, every line kept: $(…) alone
+# drops trailing empty rows, which would move the next group's rows up.
+#   capture_rows <variable> <command…>
+capture_rows() {
+  local variable="$1" rows
+  shift
+  rows="$("$@"; printf .)"
+  printf -v "$variable" '%s' "${rows%.}"
+}
+
 # Prints a source's first <count> rows, padded with empty ones.
 source_rows() {
   local name="$1" count="$2"
@@ -124,27 +142,41 @@ add_rows() {
       frame+=(set-option "$target_flag" "@devws_header_row_$index" "$row" \;)
     fi
     index=$((index + 1))
-  done < <(printf '%s\n' "$system_rows" "$agent_rows" "$network_rows" "$weather_rows" |
-    "$scripts_dir/header_layout.sh" "$(groups_width "$width")" 4)
+  done < <(printf '%s' "$clock_rows" "$system_rows" "$agent_rows" "$network_rows" "$weather_rows" |
+    "$scripts_dir/header_layout.sh" "$(groups_width "$width")" 5 --optional-first)
+}
+
+# The mood of all the workspaces' agents together: the first of waiting (one
+# needs you), working, done (one has finished, for you to look at) that any
+# agent is in, else idle, when the ghost sleeps.
+overall_mood() {
+  local states mood
+  states=" $(tmux list-sessions -F '#{@devws_agent_state}' 2>/dev/null | tr '\n' ' ') "
+  for mood in waiting working done; do
+    case "$states" in *" $mood "*) printf '%s' "$mood"; return ;; esac
+  done
+  printf 'idle'
 }
 
 # Every second, in the background: the rows of every attached workspace, and
-# the list of them with their agent's state, which the ghost reads.
+# the list of them with the agents' overall mood, which the ghost reads.
 lay_out() {
-  local session width state first_width="" drawn=" " clients=""
-  system_rows="$(source_rows system 3)"
-  agent_rows="$(source_rows agents 3)"
-  network_rows="$(source_rows network 3)"
-  weather_rows="$(source_rows weather 3)"
+  local session width mood first_width="" drawn=" " clients=""
+  capture_rows clock_rows "$scripts_dir/header_clock.sh"
+  capture_rows system_rows source_rows system 3
+  capture_rows agent_rows source_rows agents 3
+  capture_rows network_rows source_rows network 3
+  capture_rows weather_rows source_rows weather 3
+  mood="$(overall_mood)"
   frame=()
-  while IFS='|' read -r session width state; do
+  while IFS='|' read -r session width; do
     [ -n "$first_width" ] || first_width="$width"
     # A session with two clients is laid out once, at the first one's width.
     case "$drawn" in *" $session "*) continue ;; esac
     drawn+="$session "
-    clients+="$session|${state:-idle}|$width"$'\n'
+    clients+="$session|$mood|$width"$'\n'
     add_rows -t "$session" "$width"
-  done < <(tmux list-clients -F '#{session_id}|#{client_width}|#{@devws_agent_state}')
+  done < <(tmux list-clients -F '#{session_id}|#{client_width}')
   printf '%s' "$clients" > "$state_dir/clients.new" && mv "$state_dir/clients.new" "$state_dir/clients"
   [ -n "$first_width" ] || return 0
   add_rows -g "" "$first_width"
