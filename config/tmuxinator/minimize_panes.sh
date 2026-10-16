@@ -116,8 +116,7 @@ hidden_window() {
 
 # Creates the placeholder in the hidden window and swaps it with the real
 # pane. The hidden window itself is made by splitting a placeholder off the
-# real pane and breaking it out: new-window would trigger tmux.conf's rename
-# prompt.
+# real pane and breaking it out, which keeps the window in this session.
 hide_pane() {
   local real_pane="$1"
   local role placeholder window
