@@ -46,9 +46,17 @@ editor="$(pane_with_role editor)"
 [ -n "$editor" ] || fail "editor pane not found"
 
 # The pane that decides a group's slot and size: the agent, or the database.
+# Without an agent pane (an agent started by hand in the terminal, or a closed
+# agent pane), the terminal leads the agent group.
 lead_role() {
   case "$1" in
-    agents) printf 'agent' ;;
+    agents)
+      if [ -n "$(pane_with_role agent)$(pane_with_role minimized-agent)" ]; then
+        printf 'agent'
+      else
+        printf 'terminal'
+      fi
+      ;;
     database) printf 'database' ;;
   esac
 }
@@ -122,6 +130,9 @@ hide_pane() {
   local real_pane="$1"
   local role placeholder window
   role="$(role_of "$real_pane")"
+  # A pane with no devws role (a shell split off by hand) goes as an extra
+  # terminal, so restore finds its placeholder.
+  role="${role:-extra}"
   window="$(hidden_window)"
 
   if [ -z "$window" ]; then

@@ -57,19 +57,13 @@ fi
 
 editor="$(pane_with_role editor)"
 [ -n "$editor" ] || fail "editor pane not found"
-# The pane that tells the layout: the agent, or a minimized agent's
-# placeholder, which keeps its slot. A closed agent pane (or an agent started
-# by hand in the terminal) leaves the terminal, which shares its column or row.
-neighbour="$(pane_with_role agent)"
-[ -n "$neighbour" ] || neighbour="$(pane_with_role minimized-agent)"
-[ -n "$neighbour" ] || neighbour="$(pane_with_role terminal)"
-[ -n "$neighbour" ] || neighbour="$(pane_with_role minimized-terminal)"
+slot="$(agent_slot_pane)"
 
 split_options=(-t "$editor" -c "${root:-$PWD}")
 [ "$focus" = 1 ] || split_options+=(-d)
 
 # With nothing beside the editor, the database goes to its right.
-if [ -n "$neighbour" ] && is_side_layout "$editor" "$neighbour"; then
+if [ -n "$slot" ] && is_side_layout "$editor" "$slot"; then
   split_options+=(-v -l 35%)
 else
   split_options+=(-h -l 40%)

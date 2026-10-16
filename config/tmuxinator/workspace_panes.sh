@@ -19,8 +19,13 @@ pane_with_role() {
     END { if (fallback != "") print fallback }'
 }
 
+# Extra terminals, which travel with the agent group: those devws opened
+# (role "extra"), and panes with no devws role, such as a shell split off by
+# hand. Not the sidebar, nor a pane that only carries its role in its title.
 extra_panes() {
-  printf '%s\n' "$workspace_panes" | awk -F '|' '$2 == "extra" { print $1 }'
+  printf '%s\n' "$workspace_panes" | awk -F '|' '
+    $2 == "extra" { print $1 }
+    $2 == "" && $3 !~ /^(devws-picker|editor|agent|terminal|database)$/ { print $1 }'
 }
 
 # Fields: 4 top, 5 left, 6 width, 7 height, 8 active.
@@ -31,6 +36,22 @@ pane_field() {
 
 active_pane() {
   printf '%s\n' "$workspace_panes" | awk -F '|' '$8 == 1 { print $1; exit }'
+}
+
+# The pane in the agent's slot, which tells the layout and leads the agent
+# group: the agent, else the terminal — a workspace whose agent pane was
+# closed, or whose agent was started by hand in the terminal. A minimized pane
+# counts as its placeholder, which keeps the slot.
+agent_slot_pane() {
+  local role pane
+  for role in agent minimized-agent terminal minimized-terminal; do
+    pane="$(pane_with_role "$role")"
+    if [ -n "$pane" ]; then
+      printf '%s' "$pane"
+      return 0
+    fi
+  done
+  return 1
 }
 
 # Side layout: the agent sits at the editor's top, to its right.

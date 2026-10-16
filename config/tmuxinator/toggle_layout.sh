@@ -34,8 +34,12 @@ editor="$(pane_with_role editor)"
 agent="$(pane_with_role agent)"
 terminal="$(pane_with_role terminal)"
 [ -n "$editor" ] || fail "editor pane not found"
-[ -n "$agent" ] || fail "agent pane not found"
-[ -n "$terminal" ] || fail "terminal pane not found"
+# The pane leading the agent group: the agent, else the terminal (an agent
+# started by hand there, or a closed agent pane). It goes first; the other,
+# when there is one, follows it.
+lead="$(agent_slot_pane)" || fail "no agent or terminal pane"
+follower=""
+[ -n "$agent" ] && follower="$terminal"
 extras="$(extra_panes)"
 database="$(pane_with_role database)"
 
@@ -47,7 +51,7 @@ move_pane() {
 # one another to keep their order, and all must leave the old row/column so
 # tmux collapses it and the neighbouring pane takes over the space.
 move_extras_beside_terminal() {
-  local previous="$terminal"
+  local previous="${follower:-$lead}"
   local extra
   for extra in $extras; do
     move_pane -h -s "$extra" -t "$previous"
@@ -56,14 +60,14 @@ move_extras_beside_terminal() {
 }
 
 was_side_layout=0
-is_side_layout "$editor" "$agent" && was_side_layout=1
+is_side_layout "$editor" "$lead" && was_side_layout=1
 
 if [ "$was_side_layout" = 1 ]; then
-  move_pane -v -l 50% -s "$agent" -t "$editor"
-  move_pane -h -l 50% -s "$terminal" -t "$agent"
+  move_pane -v -l 50% -s "$lead" -t "$editor"
+  [ -z "$follower" ] || move_pane -h -l 50% -s "$follower" -t "$lead"
 else
-  move_pane -h -l 35% -s "$agent" -t "$editor"
-  move_pane -v -l 50% -s "$terminal" -t "$agent"
+  move_pane -h -l 35% -s "$lead" -t "$editor"
+  [ -z "$follower" ] || move_pane -v -l 50% -s "$follower" -t "$lead"
 fi
 move_extras_beside_terminal
 
