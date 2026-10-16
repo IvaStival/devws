@@ -1,84 +1,107 @@
 #!/usr/bin/env bash
-# Token usage of the agents, for the header's AGENTS group.
+# The agents' usage, for the header's agent column and tmux's own line.
 #
-#   header_tokens.sh totals                 a line per agent in DEVWS_AGENTS:
-#                                           "claude 1.2M 8.4M" (today, week)
+#   header_tokens.sh costs                  this month's cost per agent in
+#                                           DEVWS_AGENTS: "claude 212.43 0"
+#                                           (US$, then 1 if a model had no price)
 #   header_tokens.sh limits codex           Codex's plan limits, % used:
 #                                           "<5-hour session> <week>"
 #   header_tokens.sh session <transcript>   one conversation: "conv 230k · ctx 41%"
 #
 # Read from the agents' own logs: Claude Code's ~/.claude/projects/*/*.jsonl
-# and Codex's ~/.codex/sessions/YYYY/MM/DD/*.jsonl. A total counts input,
-# output and cache tokens, as Codex's own total_tokens does. "Today" starts at
-# local midnight and the week on Monday 00:00 local. DEVWS_TOKENS_NOW (epoch
-# seconds) replaces the current time, for tests.
+# and Codex's ~/.codex/sessions/YYYY/MM/DD/*.jsonl. Costs price each response
+# at agent_prices.tsv's API rates; the month starts on the 1st, 00:00 local.
+# DEVWS_TOKENS_NOW (epoch seconds) replaces the current time, for tests.
 
 set -u
 
 mode="${1:-}"
 now="${DEVWS_TOKENS_NOW:-$(date +%s)}"
+prices_file="$(cd "$(dirname "$0")" && pwd)/agent_prices.tsv"
 
-# jq's number formatting, shared by every output: 980, 12k, 1.2M.
+# jq's number formatting: 980, 12k, 1.2M.
 human='def human: if . < 1000 then tostring
   elif . < 1000000 then "\(. / 1000 | floor)k"
   else "\(. / 100000 | floor | . / 10 | tostring | if test("\\.") then . else . + ".0" end)M" end;'
 # Timestamps are UTC ISO 8601 with milliseconds, which fromdateiso8601 rejects.
 epoch='def epoch: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;'
+# The price row of a model ($prices, from agent_prices.tsv): exact, else the
+# longest listed prefix, else null.
+price='def price($model):
+  ($prices | split("\n") | map(select(length > 0 and (startswith("#") | not)) | split("\t"))
+    | map({model: .[0], rates: (.[1:] | map(tonumber))})) as $rows
+  | ($rows | map(select(.model == $model)) | first)
+    // ($rows | map(select(. as $row | $model | startswith($row.model))) | sort_by(.model | length) | last)
+  | if . then .rates else null end;'
 
-# Claude Code writes a message's usage on several lines: one count per id.
+# Claude Code writes a message's usage on several lines: one per id.
 claude_messages='[inputs | fromjson? | select(.type == "assistant" and .message.usage and .message.id)]
-  | map({id: .message.id, at: (.timestamp | epoch), usage: .message.usage,
+  | map({id: .message.id, at: (.timestamp | epoch), model: .message.model, usage: .message.usage,
          total: (.message.usage | (.input_tokens + .output_tokens
            + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)))})
   | unique_by(.id)'
 
-# Codex logs the conversation's running total: each event adds the difference.
-codex_events='[inputs as $line | input_filename as $file | $line | fromjson?
-    | select(.type == "event_msg" and .payload.type == "token_count" and .payload.info)
-    | {file: $file, at: (.timestamp | epoch), total: .payload.info.total_token_usage.total_tokens}]
-  | reduce .[] as $event ({previous: {}, events: []};
-      .events += [{at: $event.at, used: ($event.total - (.previous[$event.file] // 0))}]
-      | .previous[$event.file] = $event.total)
-  | .events | map(select(.used > 0))'
-
-# The logs of the last 8 days, which cover the week; the rest never counts.
+# The logs of the last <days> days.
 recent_logs() {
-  [ -d "$1" ] && find "$1" -name '*.jsonl' -mtime -8 -print0
+  [ -d "$1" ] && find "$1" -name '*.jsonl' -mtime "-$2" -print0
 }
 
-claude_usage() {
-  recent_logs "$HOME/.claude/projects" | xargs -0 grep -h '"output_tokens"' 2>/dev/null |
-    jq -nRr --argjson today "$1" --argjson week "$2" "$human $epoch $claude_messages
-      | \"\(map(select(.at >= \$today) | .total) | add // 0 | human) \(map(select(.at >= \$week) | .total) | add // 0 | human)\""
+# Rates: input, cache write 5 min, cache write 1 h, cache read, output. A
+# message without the 5 min / 1 h split counts its writes as 5 min ones.
+claude_cost() {
+  recent_logs "$HOME/.claude/projects" 32 | xargs -0 grep -h '"output_tokens"' 2>/dev/null |
+    jq -nRr --argjson since "$1" --rawfile prices "$prices_file" "$epoch $price $claude_messages
+      | map(select(.at >= \$since and .model != \"<synthetic>\") | . as \$message | price(.model) as \$rates
+        | if \$rates == null then {cost: 0, unpriced: 1}
+          else (.usage.cache_creation // {}) as \$writes
+            | ((\$writes.ephemeral_5m_input_tokens // null) == null and (\$writes.ephemeral_1h_input_tokens // null) == null) as \$unsplit
+            | {cost: ((.usage.input_tokens * \$rates[0]
+                + (if \$unsplit then (.usage.cache_creation_input_tokens // 0) else (\$writes.ephemeral_5m_input_tokens // 0) end) * \$rates[1]
+                + (if \$unsplit then 0 else (\$writes.ephemeral_1h_input_tokens // 0) end) * \$rates[2]
+                + (.usage.cache_read_input_tokens // 0) * \$rates[3]
+                + .usage.output_tokens * \$rates[4]) / 1000000),
+               unpriced: 0}
+          end)
+      | \"\(map(.cost) | add // 0 | . * 100 | round / 100) \(map(.unpriced) | max // 0)\""
 }
 
-codex_usage() {
+# Each Codex response logs its usage (token_usage_record) under its turn,
+# whose turn_context names the model. Input counts cached and written tokens.
+codex_cost() {
   local logs=()
   while IFS= read -r -d '' log; do
     logs+=("$log")
-  done < <(recent_logs "$HOME/.codex/sessions")
-  # Every log is read whole, so jq knows which conversation each event is from.
+  done < <(recent_logs "$HOME/.codex/sessions" 32)
   if [ "${#logs[@]}" -eq 0 ]; then
     printf '0 0\n'
     return
   fi
-  jq -nRr --argjson today "$1" --argjson week "$2" "$human $epoch $codex_events
-    | \"\(map(select(.at >= \$today) | .used) | add // 0 | human) \(map(select(.at >= \$week) | .used) | add // 0 | human)\"" \
-    "${logs[@]}" 2>/dev/null
+  grep -h '"turn_context"\|"token_usage_record"' "${logs[@]}" 2>/dev/null |
+    jq -nRr --argjson since "$1" --rawfile prices "$prices_file" "$epoch $price
+      [inputs | fromjson?] as \$lines
+      | (\$lines | map(select(.type == \"turn_context\") | {key: .payload.turn_id, value: .payload.model}) | from_entries) as \$models
+      | \$lines | map(select(.type == \"token_usage_record\" and (.timestamp | epoch) >= \$since)
+        | price(\$models[.payload.turn_id] // \"\") as \$rates | .payload.usage as \$usage
+        | if \$rates == null then {cost: 0, unpriced: 1}
+          else {cost: (((\$usage.input_tokens - (\$usage.cached_input_tokens // 0) - (\$usage.cache_write_input_tokens // 0)) * \$rates[0]
+                + (\$usage.cache_write_input_tokens // 0) * \$rates[1]
+                + (\$usage.cached_input_tokens // 0) * \$rates[3]
+                + \$usage.output_tokens * \$rates[4]) / 1000000),
+                unpriced: 0}
+          end)
+      | \"\(map(.cost) | add // 0 | . * 100 | round / 100) \(map(.unpriced) | max // 0)\""
 }
 
-totals() {
-  local today week agent usage today_used week_used
-  today="$(date -r "$now" -v0H -v0M -v0S +%s)"
-  week="$(date -r "$now" -v-mon -v0H -v0M -v0S +%s)"
+costs() {
+  local month agent cost
+  month="$(date -r "$now" -v1d -v0H -v0M -v0S +%s)"
   for agent in ${DEVWS_AGENTS:-claude codex}; do
     case "$agent" in
-      claude) usage="$(claude_usage "$today" "$week")" ;;
-      codex) usage="$(codex_usage "$today" "$week")" ;;
+      claude) cost="$(claude_cost "$month")" ;;
+      codex) cost="$(codex_cost "$month")" ;;
       *) continue ;;
     esac
-    read -r today_used week_used <<< "${usage:-0 0}"
-    printf '%s %s %s\n' "$agent" "${today_used:-0}" "${week_used:-0}"
+    printf '%s %s\n' "$agent" "${cost:-0 0}"
   done
 }
 
@@ -89,7 +112,7 @@ codex_limits() {
   local logs=()
   while IFS= read -r -d '' log; do
     logs+=("$log")
-  done < <(recent_logs "$HOME/.codex/sessions")
+  done < <(recent_logs "$HOME/.codex/sessions" 8)
   [ "${#logs[@]}" -gt 0 ] || return 0
   grep -h '"rate_limits"' "${logs[@]}" 2>/dev/null |
     jq -nRr --argjson now "$now" "$epoch [inputs | fromjson? | select(.payload.rate_limits.primary)
@@ -118,7 +141,7 @@ session() {
 }
 
 case "$mode" in
-  totals) totals ;;
+  costs) costs ;;
   session) session "${2:-}" ;;
   limits)
     case "${2:-}" in
@@ -130,7 +153,7 @@ case "$mode" in
     esac
     ;;
   *)
-    printf 'Usage: header_tokens.sh totals | limits codex | session <transcript>\n' >&2
+    printf 'Usage: header_tokens.sh costs | limits codex | session <transcript>\n' >&2
     exit 2
     ;;
 esac

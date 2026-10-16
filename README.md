@@ -212,6 +212,10 @@ full-height editor, minimized: a 9-column strip on the right
   panes first.
 - A click toggles only when the mouse is released without dragging, so
   dragging a header still resizes the panes.
+- An agent started by hand in the terminal works too: without an agent pane
+  the terminal leads, and shells split off by hand (panes with no devws role)
+  go along as extra terminals. Toggling the layout and opening the database
+  follow the same rule.
 - The icons need a Nerd Font (see Requirements). The editor gets a blank
   header line too, because tmux enables headers for a whole window.
 
@@ -316,24 +320,29 @@ across the window (five lines, the most tmux allows):
 ```
  [project] 1:workspace                                          conv 1.9M · ctx 115k   19:25 Thu 15 Oct
 
- CPU ▓▓▓░░░░░░░  27%  ▂▃▅▂▁    │   claude  31.6M today · 458M week   │   codex   0 today · 278k week    │   +18°C  Light rain             ▄▄▄▄
- MEM ▓▓▓▓▓▓▓▓░░  80%  6.4/8.0G │   session ▓▓▓▓▓▓░░░░  62% left      │   session ▓▓▓▓▓▓▓▓▓▓ 100% left   │   Curitiba                     ██████
- DSK ▓▓▓▓▓▓▓▓▓▓  98%  BAT 64%  │   week    ▓▓▓▓▓▓▓▓▓░  88% left      │   week    ▓▓▓▓▓▓▓▓▓▓  99% left   │   humidity 94% · wind ↓6km/h  █▀██▀█
+ CPU ▓▓▓░░░░░░░  27%  ▂▃▅▂▁    │  claude  5h ▓▓▓▓░░░░░░  42%  wk ▓▓▓▓▓▓░░░░  63%  $552  │  ↓ 2.4 MB/s  ↑ 120 kB/s     │  +18°C  Light rain           ▗▟██▙▖
+ MEM ▓▓▓▓▓▓▓▓░░  80%  6.4/8.0G │  codex   5h ░░░░░░░░░░   2%  wk ░░░░░░░░░░   1%  $36   │  Wi-Fi ▂▄▆_ -60 dBm · 5 GHz │  Curitiba                    ▐▗██▗▌
+ DSK ▓▓▓▓▓▓▓▓▓▓  98%  BAT 64%  │  month $588 at API prices                               │  192.168.1.17 · ping 7 ms   │  humidity 94% · wind ↓6km/h  ▐▜▜▛▛▌
 ```
 
 - **System:** CPU with its last minute of history, memory, disk, battery (when
   there is one) and load. The bars are drawn like Claude Code's status line:
   green, yellow from 60%, red from 85%.
-- **A column per agent** in `DEVWS_AGENTS`: the tokens it used today (since
-  midnight) and this week (since Monday), read from its own logs
-  (`~/.claude/projects`, `~/.codex/sessions`), and what is left of the plan's
-  limits — the 5-hour session and the week. Codex logs its limits; Claude Code
-  passes them only to a status line, so devws starts Claude Code with its own
-  (`agent_statusline.sh`), which records them and then prints your status line
-  from `~/.claude/settings.json` unchanged. Until a Claude agent started that
-  way has drawn its status line, its bars are empty (`—`). Token totals count
-  input, output and cache tokens, like Codex's own; cache reads make most of
-  them.
+- **The agents**, one row each for the agents in `DEVWS_AGENTS`: how much of
+  the plan's limits it has used — the 5-hour session (`5h`) and the week (`wk`)
+  — and what this month's tokens would cost on the API, then the month's
+  total. Codex logs its limits; Claude Code passes them only to a status line,
+  so devws starts Claude Code with its own (`agent_statusline.sh`), which
+  records them and then prints your status line from `~/.claude/settings.json`
+  unchanged. Until a Claude agent started that way has drawn its status line,
+  its bars are empty (`—`). The cost prices each response in the agents' logs
+  (`~/.claude/projects`, `~/.codex/sessions`) at the rates in
+  `config/tmuxinator/agent_prices.tsv` — update them there when they change.
+  Plans aren't billed per token, so it is an indication; a model with no price
+  is left out and marks the cost `+`. Worked out every 10 minutes.
+- **Network:** download and upload speed of the default interface, the Wi-Fi
+  signal (macOS hides the network's name from apps without Location access),
+  the local address and a ping to 1.1.1.1 once a minute.
 - **Weather** from [wttr.in](https://wttr.in), located by your IP every 30
   minutes; set `DEVWS_WEATHER_LOCATION` in `config/tmuxinator/.env` to pick a
   place.
@@ -353,7 +362,13 @@ collects everything, lays the rows out at each client's width
 the CPU, memory, disk and battery readings are macOS's. The ghost moves 20
 times a second from frames drawn once at start; that costs about 10% of a core
 (tmux redrawing, the ticker and its tmux calls), which `DEVWS_HEADER_PET=0`
-saves. `C-b C-s` hides and shows the header.
+saves.
+
+The header hides like the panes: click its rows (or the `▾` at the end of
+tmux's line), press `C-b C-s`, or choose **▔ Hide or show the header** in the
+devws menu, and only tmux's own line stays, with a `▸` to click to bring the
+rows back. It stays hidden across tmux.conf reloads, and the ticker rests
+meanwhile. Clicks elsewhere on the status bar still choose windows.
 
 ### Database pane
 

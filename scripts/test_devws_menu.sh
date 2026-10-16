@@ -30,7 +30,7 @@ chmod +x "$TEST_ROOT/bin/tmux"
 for script in devws_menu.sh workspace_actions.sh workspace_panes.sh session_picker.sh .env; do
   ln -s "$SCRIPTS/$script" "$TEST_ROOT/home/.tmuxinator/$script"
 done
-for script in toggle_layout.sh minimize_panes.sh open_database.sh follow_mode.sh; do
+for script in toggle_layout.sh minimize_panes.sh header_toggle.sh open_database.sh follow_mode.sh; do
   cat > "$TEST_ROOT/home/.tmuxinator/$script" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" > "$TEST_ROOT/calls/$script"
@@ -54,7 +54,7 @@ actions_of() {
 }
 
 test_tabs_list_their_actions() {
-  [ "$(actions_of workspace)" = "new open-folder toggle-layout minimize new-terminal close" ] ||
+  [ "$(actions_of workspace)" = "new open-folder toggle-layout minimize header new-terminal close" ] ||
     fail "Workspace tab: $(actions_of workspace)"
   [ "$(actions_of agent)" = "switch-agent restart-agent initialize-agent follow-mode" ] ||
     fail "Agent tab: $(actions_of agent)"
@@ -71,6 +71,7 @@ test_items_show_labels_and_shortcuts() {
   database="$(menu --items database)"
   grep -q $'^toggle-layout\t.*Toggle layout.*C-b \\\\' <<<"$workspace" || fail "Toggle layout has no shortcut"
   grep -q $'^minimize\t.*Minimize agent and terminal.*C-b _' <<<"$workspace" || fail "Minimize has no shortcut"
+  grep -q $'^header\t.*Hide or show the header.*C-b C-s' <<<"$workspace" || fail "Hide header has no shortcut"
   grep -q $'^open-database\t.*Database.*C-b B' <<<"$database" || fail "Database has no shortcut"
   grep -q $'^follow-mode\t.*Agent follow.*C-b F' <<<"$agent" || fail "Agent follow has no shortcut"
   grep -q $'^switch-agent\t.*Switch agent' <<<"$agent" || fail "Switch agent has no label"
@@ -111,6 +112,7 @@ test_header_marks_the_current_tab() {
 test_script_actions_run_for_the_session() {
   local action script expected
   for action in toggle-layout:toggle_layout.sh:dev-menu minimize:minimize_panes.sh:"dev-menu toggle agents" \
+    header:header_toggle.sh:toggle \
     open-database:open_database.sh:dev-menu follow-mode:follow_mode.sh:dev-menu; do
     IFS=: read -r action script expected <<<"$action"
     rm -f "$TEST_ROOT/calls/$script"

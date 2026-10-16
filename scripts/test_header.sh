@@ -200,14 +200,31 @@ EARLIER=$(($(date +%s) - 3600))
   codex_tokens "$TODAY" 351000 51680 37.6 "$LATER" 12.2 "$EARLIER"
 } > "$CODEX_LOG"
 
-test_tokens_today_and_this_week_per_agent() {
+# Costs: Claude messages priced by model, writes split by cache lifetime, last
+# month's left out, an unknown model flagged; Codex responses priced by their
+# turn's model, cached input at the cache-read price.
+LAST_MONTH="$(iso $((NOW - 24 * 86400)))"
+{
+  printf '{"type":"assistant","timestamp":"%s","message":{"id":"msg_september","model":"claude-opus-5-5","usage":{"input_tokens":1000000,"output_tokens":0}}}\n' "$LAST_MONTH"
+  printf '{"type":"assistant","timestamp":"%s","message":{"id":"msg_split","model":"claude-sonnet-5","usage":{"input_tokens":0,"output_tokens":1000000,"cache_creation_input_tokens":2000000,"cache_read_input_tokens":1000000,"cache_creation":{"ephemeral_5m_input_tokens":1000000,"ephemeral_1h_input_tokens":1000000}}}}\n' "$TODAY"
+  printf '{"type":"assistant","timestamp":"%s","message":{"id":"msg_mystery","model":"claude-mystery-9","usage":{"input_tokens":1000000,"output_tokens":0}}}\n' "$TODAY"
+} > "$HOME/.claude/projects/-project/two.jsonl"
+{
+  printf '{"timestamp":"%s","type":"turn_context","payload":{"turn_id":"turn-sol","model":"gpt-5.6-sol"}}\n' "$TODAY"
+  printf '{"timestamp":"%s","type":"token_usage_record","payload":{"turn_id":"turn-sol","usage":{"input_tokens":1000000,"cached_input_tokens":500000,"cache_write_input_tokens":0,"output_tokens":100000,"total_tokens":1100000}}}\n' "$TODAY"
+} >> "$CODEX_LOG"
+
+# Claude: $20 + $8 (Opus 5.5 input) + $0.0084 (cached message) + $16.70
+# (Sonnet 5: 5 min and 1 h writes, a read, output); Codex: $4.20 (Sol: fresh
+# and cached input, output).
+test_month_costs_per_agent() {
   local output
-  output="$(DEVWS_TOKENS_NOW="$NOW" DEVWS_AGENTS="claude codex" "$SCRIPTS/header_tokens.sh" totals)"
-  [ "$output" = $'claude 11k 2.0M\ncodex 50k 350k' ] || fail "unexpected totals: $output"
-  output="$(DEVWS_TOKENS_NOW="$NOW" DEVWS_AGENTS="codex" "$SCRIPTS/header_tokens.sh" totals)"
-  [ "$output" = "codex 50k 350k" ] || fail "an unregistered agent is shown: $output"
-  output="$(HOME="$TEST_ROOT/empty" DEVWS_TOKENS_NOW="$NOW" DEVWS_AGENTS="claude" "$SCRIPTS/header_tokens.sh" totals)"
-  [ "$output" = "claude 0 0" ] || fail "no logs is not zero: $output"
+  output="$(DEVWS_TOKENS_NOW="$NOW" DEVWS_AGENTS="claude codex" "$SCRIPTS/header_tokens.sh" costs)"
+  [ "$output" = $'claude 44.71 1\ncodex 4.2 0' ] || fail "unexpected costs: $output"
+  output="$(DEVWS_TOKENS_NOW="$NOW" DEVWS_AGENTS="codex" "$SCRIPTS/header_tokens.sh" costs)"
+  [ "$output" = "codex 4.2 0" ] || fail "an unregistered agent is shown: $output"
+  output="$(HOME="$TEST_ROOT/empty" DEVWS_TOKENS_NOW="$NOW" DEVWS_AGENTS="claude codex" "$SCRIPTS/header_tokens.sh" costs)"
+  [ "$output" = $'claude 0 0\ncodex 0 0' ] || fail "no logs is not zero: $output"
 }
 
 test_codex_limits() {
@@ -251,20 +268,24 @@ test_claude_limits_come_from_its_status_line() {
     fail "devws does not start Claude Code with its status line"
 }
 
-test_a_column_per_agent() {
-  local output
-  output="$(DEVWS_AGENTS="claude codex" "$SCRIPTS/header_agents.sh" | plain)"
-  [ "$(wc -l <<< "$output" | tr -d ' ')" -eq 6 ] || fail "not three rows per agent: $output"
-  shows "$(sed -n 1p <<< "$output")" '^claude  .* today · .* week$' || fail "unexpected Claude title: $output"
-  [ "$(sed -n 2p <<< "$output")" = "session ▓▓▓▓▓▓░░░░  63% left" ] || fail "unexpected Claude session: $output"
-  [ "$(sed -n 3p <<< "$output")" = "week    ▓▓▓▓▓▓▓▓▓░  88% left" ] || fail "unexpected Claude week: $output"
-  shows "$(sed -n 4p <<< "$output")" '^codex   .* today · .* week$' || fail "unexpected Codex title: $output"
-  [ "$(sed -n 5p <<< "$output")" = "session ▓▓▓▓▓▓░░░░  63% left" ] || fail "unexpected Codex session: $output"
-  [ "$(sed -n 6p <<< "$output")" = "week    ▓▓▓▓▓▓▓▓▓▓ 100% left" ] || fail "unexpected Codex week: $output"
+# One column for every agent: a row each with its limits used and its month's
+# cost, then the month's total.
+test_one_column_for_the_agents() {
+  local output costs="$TEST_ROOT/costs"
+  DEVWS_TOKENS_NOW="$NOW" DEVWS_AGENTS="claude codex" "$SCRIPTS/header_tokens.sh" costs > "$costs"
+  output="$(DEVWS_AGENTS="claude codex" "$SCRIPTS/header_agents.sh" "$costs" | plain)"
+  [ "$output" = "$(printf '%s\n' \
+    'claude  5h ▓▓▓▓░░░░░░  37%  wk ▓░░░░░░░░░  12%  $45+' \
+    'codex   5h ▓▓▓▓░░░░░░  37%  wk ░░░░░░░░░░   0%  $4.20' \
+    'month $49+ at API prices')" ] || fail "unexpected agent column: $output"
+
+  # Without costs worked out yet, only the limits.
+  output="$(DEVWS_AGENTS="codex" "$SCRIPTS/header_agents.sh" | plain)"
+  [ "$output" = 'codex   5h ▓▓▓▓░░░░░░  37%  wk ░░░░░░░░░░   0%' ] || fail "unexpected column without costs: $output"
 
   tmux set-option -gu @devws_claude_limits
   output="$(DEVWS_AGENTS="claude" "$SCRIPTS/header_agents.sh" | plain)"
-  [ "$(sed -n 2p <<< "$output")" = "session ░░░░░░░░░░    —" ] || fail "an unknown limit is not empty: $output"
+  [ "$output" = 'claude  5h ░░░░░░░░░░    —  wk ░░░░░░░░░░    —' ] || fail "an unknown limit is not empty: $output"
   tmux kill-server
 }
 
@@ -327,6 +348,63 @@ test_system_usage() {
   [ "$(wc -w < "$history" | tr -d ' ')" -eq 12 ] || fail "the CPU history keeps more than 12 samples"
 }
 
+# ---------------------------------------------------------------- network
+
+# The macOS sources: en0 on Wi-Fi at -60 dBm on 5 GHz, its byte counters in a
+# file, a 7 ms ping; offline when the stub route has no default.
+stub_network() {
+  local stubs="$TEST_ROOT/network-bin"
+  mkdir -p "$stubs"
+  cat > "$stubs/route" <<STUB
+#!/usr/bin/env bash
+[ -f "$TEST_ROOT/stubs/offline" ] || printf '   route to: default\n  interface: en0\n'
+STUB
+  cat > "$stubs/netstat" <<STUB
+#!/usr/bin/env bash
+printf 'Name Mtu Network Address Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll\n'
+printf 'en0 1500 <Link#11> ea:96 100 0 %s 50 0 %s 0\n' \$(cat "$TEST_ROOT/stubs/counters")
+STUB
+  cat > "$stubs/system_profiler" <<'STUB'
+#!/usr/bin/env bash
+cat <<'OUT'
+      Interfaces:
+        en0:
+          Current Network Information:
+            <redacted>:
+              PHY Mode: 802.11ac
+              Channel: 153 (5GHz, 80MHz)
+              Signal / Noise: -60 dBm / -93 dBm
+          Other Local Wi-Fi Networks:
+              Signal / Noise: -80 dBm / -93 dBm
+OUT
+STUB
+  printf '#!/usr/bin/env bash\necho 192.168.1.17\n' > "$stubs/ipconfig"
+  printf '#!/usr/bin/env bash\necho "64 bytes from 1.1.1.1: icmp_seq=0 ttl=57 time=6.838 ms"\n' > "$stubs/ping"
+  chmod +x "$stubs/"*
+  printf '%s' "$stubs"
+}
+
+test_network() {
+  local stubs state="$TEST_ROOT/network-state" output start
+  stubs="$(stub_network)"
+  mkdir -p "$state"
+  start="$(date +%s)"
+  printf '1000000 500000\n' > "$TEST_ROOT/stubs/counters"
+  output="$(PATH="$stubs:$PATH" DEVWS_NETWORK_NOW="$start" "$SCRIPTS/header_network.sh" "$state")"
+  [ "$output" = $'↓ —  ↑ —\nWi-Fi ▂▄▆_ -60 dBm · 5 GHz\n192.168.1.17 · ping 7 ms' ] ||
+    fail "unexpected first network rows: $output"
+
+  # 25 MB in and 1.2 MB out over 10 s.
+  printf '26000000 1700000\n' > "$TEST_ROOT/stubs/counters"
+  output="$(PATH="$stubs:$PATH" DEVWS_NETWORK_NOW=$((start + 10)) "$SCRIPTS/header_network.sh" "$state")"
+  [ "$(sed -n 1p <<< "$output")" = '↓ 2.5 MB/s  ↑ 120 kB/s' ] || fail "unexpected speeds: $output"
+
+  touch "$TEST_ROOT/stubs/offline"
+  output="$(PATH="$stubs:$PATH" "$SCRIPTS/header_network.sh" "$state" | plain)"
+  [ "$(sed -n 1p <<< "$output")" = offline ] || fail "being offline is not shown: $output"
+  rm "$TEST_ROOT/stubs/offline"
+}
+
 # ---------------------------------------------------------------- weather
 
 test_weather() {
@@ -351,12 +429,14 @@ test_weather() {
 
 # ---------------------------------------------------------------- layout
 
-# Rows as the ticker passes them: the system, two agents, the weather.
+# Rows as the ticker passes them: the system, the agents, the network, the
+# weather.
 layout_rows() {
   printf '%s\n' \
     'CPU #[fg=green]▓▓▓#[fg=default]░░░░░░░  27%' 'MEM ▓▓▓▓▓▓▓▓░░  80%' 'DSK ▓▓▓▓▓▓▓▓▓▓  98%' \
-    '#[bold]claude #[nobold] 31.6M today · 458.6M week' 'session ▓▓▓▓▓▓░░░░  62% left' 'week    ▓▓▓▓▓▓▓▓▓░  88% left' \
-    'codex   0 today · 278k week' 'session ▓▓▓▓▓▓▓▓▓▓ 100% left' 'week    ▓▓▓▓▓▓▓▓▓▓  99% left' \
+    '#[bold]claude #[nobold] 5h ▓▓▓▓░░░░░░  42%  wk ▓▓▓▓▓▓░░░░  63%  $552' \
+    'codex   5h ░░░░░░░░░░   2%  wk ░░░░░░░░░░   1%  $36' '#[dim]month $588 at API prices#[nodim]' \
+    '↓ 2.4 MB/s  ↑ 120 kB/s' 'Wi-Fi ▂▄▆_ -60 dBm · 5 GHz' '192.168.1.17 · ping 7 ms' \
     '+18°C  Light rain' 'Curitiba' 'humidity 94%'
 }
 
@@ -375,7 +455,7 @@ test_the_layout_spreads_the_groups() {
   output="$(layout_rows | "$SCRIPTS/header_layout.sh" 238 4 | plain)"
   line="$(sed -n 1p <<< "$output")"
   case "$line" in
-    " CPU ▓▓▓░░░░░░░  27%"*"│"*"claude  31.6M today · 458.6M week"*"│"*"codex   0 today · 278k week"*"│"*"+18°C  Light rain"*) ;;
+    " CPU ▓▓▓░░░░░░░  27%"*"│"*"claude  5h ▓▓▓▓░░░░░░  42%  wk ▓▓▓▓▓▓░░░░  63%  \$552"*"│"*"↓ 2.4 MB/s  ↑ 120 kB/s"*"│"*"+18°C  Light rain"*) ;;
     *) fail "unexpected first row: $line" ;;
   esac
   ! shows "$output" 'SYSTEM\|AGENTS\|WEATHER' || fail "the groups still have labels"
@@ -441,14 +521,14 @@ test_a_client_shows_the_header() {
   "$SCRIPTS/header_ticker.sh" --start
 
   wait_until header_row_shows 3 'CPU ▓' || fail "the client shows no system: $(client_header)"
-  wait_until header_row_shows 3 '│ *claude .*│ *codex .*│ *+25°C  Sunny' ||
+  wait_until header_row_shows 3 '│ *claude  5h .*│ *\(↓\|offline\).*│ *+25°C  Sunny' ||
     fail "the client shows no agent columns or weather: $(client_header)"
-  wait_until header_row_shows 4 'session ▓▓▓▓▓▓░░░░  60% left' ||
+  wait_until header_row_shows 3 'claude  5h ▓▓▓▓░░░░░░  40%  wk ▓░░░░░░░░░  10%' ||
     fail "the client shows no Claude limits: $(client_header)"
   # tmux's own line, then a blank line before the groups.
   header_row_shows 1 'dev-work' || fail "tmux's own line moved: $(client_header)"
   [ -z "$(client_header | sed -n 2p | tr -d ' ')" ] || fail "no blank line under tmux's own line: $(client_header)"
-  header_row_shows 5 'week    ▓' || fail "the groups' last row moved: $(client_header)"
+  header_row_shows 5 'month \$' || fail "the groups' last row moved: $(client_header)"
   wait_until header_row_shows 1 'conv 351k · ctx 20%' ||
     fail "the client shows no conversation: $(client_header)"
   header_shows '█' || fail "the client shows no ghost: $(client_header)"
@@ -475,18 +555,81 @@ test_a_client_shows_the_header() {
   wait_until process_gone "$second" || fail "the ticker outlived the tmux server"
 }
 
+# SGR mouse report to the client: button;column;row, pressed then released.
+click_client() {
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" send-keys -t client -l $'\e[<0;'"$1"';'"$2"'M'
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" send-keys -t client -l $'\e[<0;'"$1"';'"$2"'m'
+}
+
+header_status_is() {
+  [ "$(option status)" = "$1" ]
+}
+
+ghost_frozen() {
+  local before
+  before="$(session_option dev-work @devws_ghost_2)"
+  sleep 0.5
+  [ "$(session_option dev-work @devws_ghost_2)" = "$before" ]
+}
+
+# The header hides like a pane: by script, by a click on its rows or on its
+# ▾ / ▸, by C-b C-s; hidden, it is tmux's own line and the ticker rests.
+test_the_header_hides() {
+  local line marker_column
+  tmux new-session -d -s dev-work -x 200 -y 50 'sleep 600'
+  tmux source-file "$TEST_ROOT/status.conf"
+  sed -n '/^# devws bindings go after the reset/,$p' "$ROOT/config/tmux/tmux.conf" > "$TEST_ROOT/devws.conf"
+  tmux source-file "$TEST_ROOT/devws.conf"
+  tmux set-option -g mouse on
+  tmux set-option -t dev-work @devws_agent_state working
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" -f /dev/null new-session -d -s client -x 200 -y 50 \
+    "TMUX= $REAL_TMUX -L $SOCKET attach -t dev-work"
+  "$SCRIPTS/header_ticker.sh" --start
+  wait_until header_row_shows 3 'CPU' || fail "the header did not show: $(client_header)"
+
+  "$SCRIPTS/header_toggle.sh" hide
+  header_status_is on && [ "$(option @devws_header_hidden)" = 1 ] || fail "hiding did not leave one line"
+  header_row_shows 1 '▸' || fail "a hidden header shows no ▸: $(client_header)"
+  wait_until ghost_frozen || fail "the ticker still draws the hidden header"
+  "$SCRIPTS/header_toggle.sh" show
+  header_status_is 5 && [ -z "$(option @devws_header_hidden)" ] || fail "showing did not bring back five lines"
+  ! "$SCRIPTS/header_toggle.sh" sideways 2>/dev/null || fail "an unknown action was accepted"
+
+  # A click on the rows hides them; a click on ▸ brings them back.
+  click_client 20 3
+  wait_until header_status_is on || fail "clicking the rows did not hide the header"
+  line="$(client_header | sed -n 1p)"
+  marker_column="${line%%▸*}"
+  marker_column=$((${#marker_column} + 1))
+  # Apart from the first click, which tmux would otherwise take as a double click.
+  sleep 0.6
+  click_client "$marker_column" 1
+  wait_until header_status_is 5 || fail "clicking ▸ did not bring the header back: $line"
+  wait_until header_row_shows 3 'CPU' || fail "the header came back empty: $(client_header)"
+
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" send-keys -t client C-b C-s
+  wait_until header_status_is on || fail "C-b C-s did not hide the header"
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" send-keys -t client C-b C-s
+  wait_until header_status_is 5 || fail "C-b C-s did not bring the header back"
+
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server
+  tmux kill-server
+}
+
 test_the_ghost_has_three_rows_of_one_width
 test_the_ghost_shows_its_mood
 test_the_ghost_cycle
 test_the_bar
-test_tokens_today_and_this_week_per_agent
+test_month_costs_per_agent
 test_codex_limits
 test_tokens_of_the_current_conversation
 test_claude_limits_come_from_its_status_line
-test_a_column_per_agent
+test_one_column_for_the_agents
 test_system_usage
+test_network
 test_weather
 test_the_layout_spreads_the_groups
 test_a_client_shows_the_header
+test_the_header_hides
 
 printf 'Header tests passed.\n'

@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # Keeps the header current: the one background loop behind tmux.conf's three
-# rows of groups and the ghost beside them, which only show what it writes.
+# rows of groups — the system, the agents, the network, the weather — and the
+# ghost beside them, which only show what it writes.
 #
 #   header_ticker.sh --start   (tmux.conf) replaces the running ticker
 #   header_ticker.sh --run     (internal) the loop itself
 #
-# Sources, each kept in a file of the state folder: the system usage every 5 s
-# (header_system.sh), a column per agent every minute (header_agents.sh), the
-# weather every 30 min (header_weather.sh). A source that fails keeps its last
-# rows. Every minute too, each workspace's conversation (header_tokens.sh) goes
-# to its @devws_agent_session_usage, which tmux's own line shows.
+# Sources, each kept in a file of the state folder: the system usage and the
+# network every 5 s (header_system.sh, header_network.sh), the agents' limits
+# every minute (header_agents.sh) with their month's cost worked out every 10
+# min (header_tokens.sh costs), the weather every 30 min (header_weather.sh).
+# A source that fails keeps its last rows. Every minute too, each workspace's
+# conversation (header_tokens.sh) goes to its @devws_agent_session_usage,
+# which tmux's own line shows.
 #
 # Two speeds:
 #   every second   the rows are laid out (header_layout.sh) at the width of
@@ -76,7 +79,7 @@ keep() {
 
 update_tokens() {
   local session transcript usage
-  keep agents nice "$scripts_dir/header_agents.sh"
+  keep agents nice "$scripts_dir/header_agents.sh" "$state_dir/costs"
   while IFS='|' read -r session transcript; do
     [ -n "$transcript" ] || continue
     usage="$(nice "$scripts_dir/header_tokens.sh" session "$transcript")"
@@ -121,20 +124,17 @@ add_rows() {
       frame+=(set-option "$target_flag" "@devws_header_row_$index" "$row" \;)
     fi
     index=$((index + 1))
-  done < <(printf '%s\n' "$system_rows" "$agent_rows" "$weather_rows" |
-    "$scripts_dir/header_layout.sh" "$(groups_width "$width")" $((agent_groups + 2)))
+  done < <(printf '%s\n' "$system_rows" "$agent_rows" "$network_rows" "$weather_rows" |
+    "$scripts_dir/header_layout.sh" "$(groups_width "$width")" 4)
 }
 
 # Every second, in the background: the rows of every attached workspace, and
 # the list of them with their agent's state, which the ghost reads.
 lay_out() {
-  local session width state first_width="" drawn=" " agent_lines clients=""
+  local session width state first_width="" drawn=" " clients=""
   system_rows="$(source_rows system 3)"
-  # Three rows a column, for each agent.
-  agent_lines="$(wc -l < "$state_dir/agents" 2>/dev/null | tr -d ' ')"
-  agent_groups=$(((${agent_lines:-0} + 2) / 3))
-  [ "$agent_groups" -gt 0 ] || agent_groups=1
-  agent_rows="$(source_rows agents $((agent_groups * 3)))"
+  agent_rows="$(source_rows agents 3)"
+  network_rows="$(source_rows network 3)"
   weather_rows="$(source_rows weather 3)"
   frame=()
   while IFS='|' read -r session width state; do
@@ -207,16 +207,28 @@ run() {
   ghost_sessions=()
   while true; do
     if [ $((tick % fps)) -eq 0 ]; then
-      read_clients
-      in_background layout lay_out
+      header_hidden="$(tmux show-option -gqv @devws_header_hidden 2>/dev/null)"
+      if [ -z "$header_hidden" ]; then
+        read_clients
+        in_background layout lay_out
+      fi
     fi
     # Every 5 s: still the ticker of a running server?
     if [ $((tick % (5 * fps))) -eq 0 ]; then
       [ "$(tmux show-option -gqv @devws_header_ticker 2>/dev/null)" = "$$" ] || exit 0
       in_background system keep system nice "$scripts_dir/header_system.sh" "$state_dir/cpu.history"
+      in_background network keep network nice "$scripts_dir/header_network.sh" "$state_dir"
     fi
+    [ $((tick % (600 * fps))) -eq 0 ] && in_background costs keep costs nice "$scripts_dir/header_tokens.sh" costs
     [ $((tick % (60 * fps))) -eq 0 ] && in_background tokens update_tokens
     [ $((tick % (1800 * fps))) -eq 0 ] && in_background weather keep weather "$scripts_dir/header_weather.sh"
+    # While the header is hidden (header_toggle.sh) nothing is drawn: one turn
+    # a second keeps the sources current for when it comes back.
+    if [ -n "$header_hidden" ]; then
+      tick=$((tick + fps))
+      sleep 1
+      continue
+    fi
     if [ "$show_pet" = 1 ]; then
       draw_ghost "$tick" 2>/dev/null || exit 0
     fi
