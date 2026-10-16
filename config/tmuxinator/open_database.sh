@@ -56,16 +56,20 @@ fi
 [ "$reconnect" = 1 ] && exit 0
 
 editor="$(pane_with_role editor)"
-# A minimized agent is represented by its placeholder, which keeps its slot.
-agent="$(pane_with_role agent)"
-[ -n "$agent" ] || agent="$(pane_with_role minimized-agent)"
 [ -n "$editor" ] || fail "editor pane not found"
-[ -n "$agent" ] || fail "agent pane not found"
+# The pane that tells the layout: the agent, or a minimized agent's
+# placeholder, which keeps its slot. A closed agent pane (or an agent started
+# by hand in the terminal) leaves the terminal, which shares its column or row.
+neighbour="$(pane_with_role agent)"
+[ -n "$neighbour" ] || neighbour="$(pane_with_role minimized-agent)"
+[ -n "$neighbour" ] || neighbour="$(pane_with_role terminal)"
+[ -n "$neighbour" ] || neighbour="$(pane_with_role minimized-terminal)"
 
 split_options=(-t "$editor" -c "${root:-$PWD}")
 [ "$focus" = 1 ] || split_options+=(-d)
 
-if is_side_layout "$editor" "$agent"; then
+# With nothing beside the editor, the database goes to its right.
+if [ -n "$neighbour" ] && is_side_layout "$editor" "$neighbour"; then
   split_options+=(-v -l 35%)
 else
   split_options+=(-h -l 40%)

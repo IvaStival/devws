@@ -412,6 +412,36 @@ test_side_layout_opens_below_editor() {
     fail "opening the database did not focus it"
 }
 
+# A workspace whose agent pane was closed (or whose agent runs by hand in the
+# terminal) still opens the database: the terminal tells the layout, and
+# without either it goes beside the editor.
+test_opens_without_an_agent_pane() {
+  local session="dev-no-agent"
+  local editor database
+  create_workspace "$session"
+  "$SCRIPTS/toggle_layout.sh" "$session"
+  tmux kill-pane -t "$(pane_id "$session" agent)"
+  "$SCRIPTS/open_database.sh" "$session" --no-focus ||
+    fail "the database did not open without an agent pane"
+  editor="$(pane_id "$session" editor)"
+  database="$(pane_id "$session" database)"
+  [[ "$(field "$database" pane_left)" == "$(field "$editor" pane_left)" ]] &&
+    (( $(field "$database" pane_top) > $(field "$editor" pane_top) )) ||
+    fail "without an agent, the side layout did not put the database below the editor"
+
+  session="dev-editor-only"
+  create_workspace "$session"
+  tmux kill-pane -t "$(pane_id "$session" agent)"
+  tmux kill-pane -t "$(pane_id "$session" terminal)"
+  "$SCRIPTS/open_database.sh" "$session" --no-focus ||
+    fail "the database did not open beside a lone editor"
+  editor="$(pane_id "$session" editor)"
+  database="$(pane_id "$session" database)"
+  [[ "$(field "$database" pane_top)" == "$(field "$editor" pane_top)" ]] &&
+    (( $(field "$database" pane_left) > $(field "$editor" pane_left) )) ||
+    fail "beside a lone editor the database is not right of it"
+}
+
 test_opening_twice_focuses_existing_pane() {
   local session="dev-twice"
   local count
@@ -540,6 +570,7 @@ test_runner_asks_between_several_databases
 test_remembered_folder_and_reconnect
 test_stacked_layout_opens_right_of_editor
 test_side_layout_opens_below_editor
+test_opens_without_an_agent_pane
 test_opening_twice_focuses_existing_pane
 test_database_hides_independently
 test_database_below_editor_hides_to_one_line
