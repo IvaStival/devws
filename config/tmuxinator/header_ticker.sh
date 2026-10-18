@@ -26,6 +26,9 @@
 #                  agents (overall_mood).
 #                  Its cycles are drawn once at start and played back, so a
 #                  frame is a single tmux call.
+# Both send tmux only what changed: each change makes tmux redraw the status
+# lines and the terminal draw them, so a frame the same as the last one, or
+# rows whose data has not moved, are skipped.
 # The ticker stops once the tmux server is gone or another ticker has replaced
 # it.
 
@@ -161,7 +164,7 @@ overall_mood() {
 # Every second, in the background: the rows of every attached workspace, and
 # the list of them with the agents' overall mood, which the ghost reads.
 lay_out() {
-  local session width mood first_width="" drawn=" " clients=""
+  local session width mood first_width="" drawn=" " clients="" checksum
   capture_rows clock_rows "$scripts_dir/header_clock.sh"
   capture_rows system_rows source_rows system 3
   capture_rows agent_rows source_rows agents 3
@@ -180,8 +183,12 @@ lay_out() {
   printf '%s' "$clients" > "$state_dir/clients.new" && mv "$state_dir/clients.new" "$state_dir/clients"
   [ -n "$first_width" ] || return 0
   add_rows -g "" "$first_width"
+  # Rows the same as those last sent are not sent again: tmux would redraw the
+  # status lines for nothing. The data changes every few seconds at most.
+  checksum="$(printf '%s\n' "${frame[@]}" | cksum)"
+  [ "$checksum" = "$(cat "$state_dir/rows.sent" 2>/dev/null)" ] && return 0
   # Without the last ";", which would start an empty command.
-  tmux "${frame[@]:0:${#frame[@]}-1}"
+  tmux "${frame[@]:0:${#frame[@]}-1}" && printf '%s\n' "$checksum" > "$state_dir/rows.sent"
 }
 
 # The ghost's cycles (colored by header_pet.sh), one after the other in
@@ -203,7 +210,7 @@ load_ghost() {
 
 # The attached workspaces, as the last layout found them.
 read_clients() {
-  local session state width
+  local session state width previous="${ghost_sessions[*]:-}"
   ghost_sessions=()
   ghost_moods=()
   while IFS='|' read -r session state width; do
@@ -213,20 +220,29 @@ read_clients() {
     ghost_sessions+=("$session")
     ghost_moods+=("$state")
   done < "$state_dir/clients" 2>/dev/null
+  # Other workspaces attached: what each one shows is not known any more.
+  [ "${ghost_sessions[*]:-}" = "$previous" ] || ghost_shown=()
 }
 
+# Every tick looks, but only a frame that differs from the one a workspace
+# shows goes to tmux, which redraws the status lines on each change: a slow
+# mood repeats its frame for many ticks.
 draw_ghost() {
-  local tick="$1" index start_variable frames_variable first line
+  local tick="$1" index start_variable frames_variable first line rows
   [ "${#ghost_sessions[@]}" -gt 0 ] || return 0
   frame=()
   for index in "${!ghost_sessions[@]}"; do
     start_variable="ghost_start_${ghost_moods[index]}"
     frames_variable="ghost_frames_${ghost_moods[index]}"
     first=$((${!start_variable} + (tick % ${!frames_variable}) * 3))
+    rows="${ghost_rows[first]}"$'\n'"${ghost_rows[first + 1]}"$'\n'"${ghost_rows[first + 2]}"
+    [ "$rows" = "${ghost_shown[index]:-}" ] && continue
+    ghost_shown[index]="$rows"
     for line in 0 1 2; do
       frame+=(set-option -t "${ghost_sessions[index]}" "@devws_ghost_$((line + 1))" "${ghost_rows[first + line]}" \;)
     done
   done
+  [ "${#frame[@]}" -gt 0 ] || return 0
   tmux "${frame[@]:0:${#frame[@]}-1}"
 }
 
@@ -236,7 +252,10 @@ run() {
   tmux set-option -g @devws_header_ticker "$$" || exit 0
   load_settings
   [ "$show_pet" = 1 ] && load_ghost
+  # A new ticker sends everything once: a restarted tmux server has no rows.
+  rm -f "$state_dir/rows.sent"
   ghost_sessions=()
+  ghost_shown=()
   while true; do
     if [ $((tick % fps)) -eq 0 ]; then
       header_hidden="$(tmux show-option -gqv @devws_header_hidden 2>/dev/null)"

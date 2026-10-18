@@ -25,8 +25,14 @@ fail() {
 # Every tmux call, including the scripts' own, goes to an isolated server, and
 # the agents' logs live under a throwaway HOME.
 mkdir -p "$TEST_ROOT/bin" "$TEST_ROOT/home" "$TEST_ROOT/stubs"
+# Every call that updates the header's rows or ghost is logged, so a test can
+# count the redraws.
 cat > "$TEST_ROOT/bin/tmux" <<EOF
 #!/usr/bin/env bash
+case "\$*" in
+  *@devws_ghost_*) echo ghost >> "$TEST_ROOT/redraws.log" ;;
+  *@devws_header_row_*) echo rows >> "$TEST_ROOT/redraws.log" ;;
+esac
 exec "$REAL_TMUX" -L "$SOCKET" -f /dev/null "\$@"
 EOF
 # The weather service: answers from a file (weather.json for the JSON
@@ -701,6 +707,30 @@ ghost_frozen() {
 
 # The header hides like a pane: by script, by a click on its rows or on its
 # ▾ / ▸, by C-b C-s; hidden, it is tmux's own line and the ticker rests.
+redraws() {
+  grep -cx "$1" "$TEST_ROOT/redraws.log" 2>/dev/null || true
+}
+
+# The ticker looks 20 times a second, but tmux only hears of a change: the
+# sleeping ghost moves about twice a second, the rows when their data changes
+# (the system's every 5 s, the clock's every minute).
+test_the_header_redraws_only_changes() {
+  tmux new-session -d -s dev-work -x 200 -y 50 'sleep 600'
+  tmux source-file "$TEST_ROOT/status.conf"
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" -f /dev/null new-session -d -s client -x 200 -y 50 \
+    "TMUX= $REAL_TMUX -L $SOCKET attach -t dev-work"
+  "$SCRIPTS/header_ticker.sh" --start
+  wait_until header_row_shows 3 'CPU' || fail "the header did not show: $(client_header)"
+  sleep 1
+  : > "$TEST_ROOT/redraws.log"
+  sleep 4
+  [ "$(redraws ghost)" -le 12 ] || fail "the sleeping ghost was redrawn $(redraws ghost) times in 4 s"
+  [ "$(redraws ghost)" -ge 2 ] || fail "the sleeping ghost stopped moving"
+  [ "$(redraws rows)" -le 2 ] || fail "the rows were redrawn $(redraws rows) times in 4 s"
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server
+  tmux kill-server
+}
+
 test_the_header_hides() {
   local line marker_column
   tmux new-session -d -s dev-work -x 200 -y 50 'sleep 600'
@@ -760,6 +790,7 @@ test_the_layout_spreads_the_groups
 test_the_clock
 test_the_layout_leaves_out_the_clock_when_narrow
 test_a_client_shows_the_header
+test_the_header_redraws_only_changes
 test_the_header_hides
 
 printf 'Header tests passed.\n'

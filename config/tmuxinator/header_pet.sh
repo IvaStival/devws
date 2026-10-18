@@ -16,7 +16,8 @@
 #   working  drifting across the lane and back, looking where it goes, its
 #            hem flipping, blinking now and then
 #   waiting  wide-eyed and open-mouthed, shaking, a blinking "!"
-#   done     happy eyes, swaying, its hem flipping fast, a blinking heart
+#   done     happy eyes, swaying, its hem flipping fast, a blinking heart,
+#            for 3 s of every 15; at rest the rest of the time
 # The body takes the mood's color: DEVWS_COLOR_DIM (idle), DEVWS_COLOR_GHOST
 # (working), DEVWS_COLOR_WARN (waiting), DEVWS_COLOR_OK (done).
 # header_ticker.sh draws the cycles once and plays them back.
@@ -32,7 +33,7 @@ case "$mood" in
   idle) period=120 body="${DEVWS_COLOR_DIM:-colour245}" ;;
   working) period=720 body="${DEVWS_COLOR_GHOST:-colour173}" ;;
   waiting) period=180 body="${DEVWS_COLOR_WARN:-yellow}" ;;
-  done) period=72 body="${DEVWS_COLOR_OK:-green}" ;;
+  done) period=300 body="${DEVWS_COLOR_OK:-green}" ;;
   *)
     printf 'Unknown ghost mood: %s (idle, working, waiting, done)\n' "$mood" >&2
     exit 2
@@ -119,10 +120,19 @@ awk -v mood="$mood" -v first="$first" -v last="$last" -v body="$body" '
       mouth = ".OOOOKKOOOO."
       if (int(t / 10) % 2 == 0) { note = "!"; note_row = 0; note_column = 11 }
     } else {
-      x = 6 + (int(t / 12) % 2) * 2
-      phase = int(t / 2)
+      # Happy for the first 3 s of every 15, then at rest: done lasts until
+      # the next prompt, and every change is a redraw.
       top = eyes_row("KK", "KK"); bottom = eyes_row("OO", "OO")
-      note = "♥"; note_row = int(t / 12) % 2; note_column = 11
+      note = "♥"; note_column = 11
+      if (t % 300 < 60) {
+        x = 6 + (int(t / 12) % 2) * 2
+        phase = int(t / 2)
+        note_row = int(t / 12) % 2
+      } else {
+        x = 6
+        phase = int(t / 20)
+        note_row = int(t / 20) % 2
+      }
     }
     sprite[0] = head; sprite[1] = ".OOOOOOOOOO."
     sprite[2] = top; sprite[3] = bottom
