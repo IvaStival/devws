@@ -156,6 +156,27 @@ test_minimize_without_an_agent_pane() {
     fail "the terminal's or the shell's process did not survive minimizing"
 }
 
+# A pane split off the editor by hand (C-b %, e.g. a Markdown viewer) has no
+# devws role but is not the agent group's: minimizing leaves it in place, in
+# both layouts.
+test_minimize_leaves_a_pane_beside_the_editor() {
+  local session viewer viewer_pid
+  for session in dev-viewer-stacked dev-viewer-side; do
+    create_workspace "$session"
+    [ "$session" = dev-viewer-side ] && "$TOGGLE" "$session"
+    viewer="$(tmux split-window -h -t "$(pane_id "$session" editor)" -P -F '#{pane_id}' 'sleep 600')"
+    viewer_pid="$(pane_pid "$viewer")"
+
+    "$MINIMIZE" "$session" toggle agents || fail "$session: minimize exited non-zero"
+    [[ "$(pane_window "$viewer")" != devws-minimized ]] ||
+      fail "$session: the pane beside the editor was minimized with the agent group"
+    [[ -z "$(pane_id "$session" minimized-extra)" ]] ||
+      fail "$session: the pane beside the editor got a placeholder"
+    "$MINIMIZE" "$session" toggle agents || fail "$session: restore exited non-zero"
+    [[ "$(pane_pid "$viewer")" == "$viewer_pid" ]] || fail "$session: the pane beside the editor was restarted"
+  done
+}
+
 test_side_minimize_and_restore() {
   local session="dev-side"
   local before
@@ -314,6 +335,7 @@ test_headers_and_mouse() {
 
 test_stacked_minimize_and_restore
 test_minimize_without_an_agent_pane
+test_minimize_leaves_a_pane_beside_the_editor
 test_side_minimize_and_restore
 test_restore_falls_back_when_panes_changed
 test_focus_leaves_minimized_pane

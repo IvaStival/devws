@@ -20,12 +20,28 @@ pane_with_role() {
 }
 
 # Extra terminals, which travel with the agent group: those devws opened
-# (role "extra"), and panes with no devws role, such as a shell split off by
-# hand. Not the sidebar, nor a pane that only carries its role in its title.
+# (role "extra"), and panes with no devws role inside the group's area — such
+# as a shell split off the terminal by hand: right of the editor's column
+# from the agent column's left edge (side layout), or from the agent row's top
+# down (stacked). A pane split off the editor (a Markdown viewer, C-b %) stays
+# out. Not the sidebar, nor a pane that only carries its role in its title.
 extra_panes() {
-  printf '%s\n' "$workspace_panes" | awk -F '|' '
-    $2 == "extra" { print $1 }
-    $2 == "" && $3 !~ /^(devws-picker|editor|agent|terminal|database)$/ { print $1 }'
+  local editor slot side=0 edge
+  editor="$(pane_with_role editor)"
+  slot="$(agent_slot_pane)"
+  if [ -n "$editor" ] && [ -n "$slot" ]; then
+    is_side_layout "$editor" "$slot" && side=1
+    if [ "$side" = 1 ]; then
+      edge="$(pane_field "$slot" 5)"
+    else
+      edge="$(pane_field "$slot" 4)"
+    fi
+  fi
+  printf '%s\n' "$workspace_panes" | awk -F '|' -v side="$side" -v edge="${edge:-}" '
+    $2 == "extra" { print $1; next }
+    $2 != "" || $3 ~ /^(devws-picker|editor|agent|terminal|database)$/ || edge == "" { next }
+    side == 1 && $5 + 0 >= edge + 0 { print $1; next }
+    side == 0 && $4 + 0 >= edge + 0 { print $1 }'
 }
 
 # Fields: 4 top, 5 left, 6 width, 7 height, 8 active.
