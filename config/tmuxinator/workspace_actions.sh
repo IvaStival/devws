@@ -256,6 +256,10 @@ toggle_layout() {
   "$HOME/.tmuxinator/toggle_layout.sh" "$(tmux display-message -p '#S')"
 }
 
+jump_agent() {
+  "$HOME/.tmuxinator/jump_agent.sh" "$(tmux display-message -p '#{client_name}')"
+}
+
 minimize_agents() {
   "$HOME/.tmuxinator/minimize_panes.sh" "$(tmux display-message -p '#S')" toggle agents
 }

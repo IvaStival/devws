@@ -14,6 +14,7 @@ bash -n "$ROOT/scripts/test_workspace_minimize.sh"
 bash -n "$ROOT/scripts/test_workspace_database.sh"
 bash -n "$ROOT/scripts/test_agent_follow.sh"
 bash -n "$ROOT/scripts/test_agent_status.sh"
+"$ROOT/scripts/test_jump_agent.sh"
 bash -n "$ROOT/scripts/test_header.sh"
 bash -n "$ROOT/scripts/test_devws_menu.sh"
 bash -n "$ROOT/scripts/test_register_agent.sh"
@@ -50,6 +51,7 @@ for file in "$ROOT/install.sh" "$ROOT/delete.sh" "$ROOT/scripts/check.sh" \
             "$ROOT/scripts/test_workspace_database.sh" \
             "$ROOT/scripts/test_agent_follow.sh" \
             "$ROOT/scripts/test_agent_status.sh" \
+            "$ROOT/scripts/test_jump_agent.sh" \
             "$ROOT/scripts/test_header.sh" \
             "$ROOT/scripts/test_devws_menu.sh" \
             "$ROOT/scripts/test_register_agent.sh" \
