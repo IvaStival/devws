@@ -30,6 +30,11 @@ devws() {
     return
   fi
 
+  if [[ "${1:-}" == "reload" ]]; then
+    "$HOME/.tmuxinator/reload_devws.sh"
+    return
+  fi
+
   if [[ "${1:-}" == "fresh" ]]; then
     rm -f "$HOME/.devws-state/sessions.tsv"
     print "devws: saved workspaces cleared"

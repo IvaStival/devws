@@ -297,6 +297,13 @@ if [[ "$backed_up" == 1 ]]; then
   info "Backups are in $backup_root"
 fi
 
+# Open workspaces take the update now; agents and editors keep running.
+if command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/null 2>&1; then
+  info "Reloading the open workspaces"
+  "$HOME/.tmuxinator/reload_devws.sh" ||
+    warn "Could not reload the open workspaces; run devws reload"
+fi
+
 ok "Installation complete"
 printf '\n\n'
 printf '\033[1;33mReload your shell before using devws:\033[0m\n'

@@ -479,6 +479,7 @@ The tmux prefix is `C-b` (tmux's default key set is restored by
 | `C-b F` | Choose how the editor follows the agent (menu) |
 | `C-b a` | Go to the agent that needs you; again for the next one |
 | Click a header | Minimize or restore that pane group (agent and terminal, or database) |
+| `C-b C-s`, or click the header | Hide or show the header's rows |
 
 ### Session persistence
 
@@ -543,6 +544,29 @@ set to it. One in the default folder starts with neither, as the plain command
 would, so it keeps the login it has. Start a workspace with an account by
 name, for example `devws ~/Projects/my-app work`, or switch to it with **Switch
 agent**.
+
+### Update devws
+
+```sh
+git pull && ./install.sh
+```
+
+`./install.sh` ends by reloading the open workspaces when tmux is running, so
+the update applies at once, without restarting tmux or losing the agents'
+conversations. `devws reload` does the same by hand:
+
+- reloads `~/.tmux.conf` (formats, key bindings, colors; the header's ticker
+  restarts with it);
+- restarts each workspace's sidebar and minimized placeholders, and the
+  spinner of a working agent, so they run the new scripts;
+- leaves the agent, editor, terminal and database panes running.
+
+What those read only when they start applies to new or restarted ones: the
+agents' hooks and status line (`agent_settings.json`; **↻ Restart agent** in
+the devws menu), the editor config, and the per-workspace options `dev.yml`
+sets, such as the workspace name on the status bar (reopen the workspace).
+Sessions that are not devws workspaces are left alone, apart from tmux.conf,
+which is global.
 
 ### Initialize an agent
 

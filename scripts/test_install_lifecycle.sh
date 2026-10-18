@@ -265,6 +265,36 @@ test_deps_install_devdb_from_its_checkout() {
   [[ ! -s "$test_home/uv.log" ]] || fail "--deps reinstalled an existing devdb"
 }
 
+# Install reloads the open workspaces when a tmux server answers, and leaves
+# tmux alone otherwise. The fake tmux logs its calls; TMUX_UP says whether a
+# server answers.
+test_install_reloads_open_workspaces() {
+  local test_home="$TEST_ROOT/reload"
+  local fake_bin="$test_home/bin"
+  local output
+  mkdir -p "$test_home"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+  cat > "$fake_bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TMUX_LOG"
+[ "${1:-}" = list-sessions ] && [ "${TMUX_UP:-0}" != 1 ] && exit 1
+exit 0
+EOF
+  chmod +x "$fake_bin/tmux"
+
+  output="$(TMUX_LOG="$test_home/tmux.log" TMUX_UP=0 run_install "$test_home" "$fake_bin" 2>&1)" ||
+    fail "install failed without a tmux server: $output"
+  ! grep -q '^source-file' "$test_home/tmux.log" || fail "install reloaded tmux without a server"
+  ! grep -q 'Reloading the open workspaces' <<< "$output" || fail "install announced a reload without a server"
+
+  output="$(TMUX_LOG="$test_home/tmux.log" TMUX_UP=1 run_install "$test_home" "$fake_bin" 2>&1)" ||
+    fail "install failed with a tmux server: $output"
+  grep -q "^source-file $test_home/.tmux.conf$" "$test_home/tmux.log" ||
+    fail "install did not reload the open workspaces"
+  grep -q 'devws: reloaded tmux.conf' <<< "$output" || fail "install did not report the reload: $output"
+}
+
 test_picker_fails_once_without_fzf() {
   local test_home="$TEST_ROOT/picker"
   local output
@@ -290,6 +320,7 @@ test_preexisting_glow_is_preserved
 test_nvim_config_is_linked_and_restored
 test_lunarvim_links_are_retired
 test_deps_install_devdb_from_its_checkout
+test_install_reloads_open_workspaces
 test_picker_fails_once_without_fzf
 
 printf 'Install lifecycle tests passed.\n'
