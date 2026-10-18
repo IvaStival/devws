@@ -528,12 +528,13 @@ test_the_layout_spreads_the_groups() {
     *) fail "unexpected first row: $line" ;;
   esac
   ! shows "$output" 'SYSTEM\|AGENTS\|WEATHER' || fail "the groups still have labels"
-  # Close together: two spaces each side of a │, what is left after the last group.
-  shows "$line" '27% *  │  claude' || fail "the groups are not two spaces from the rule: $line"
-  ! shows "$line" '│   ' || fail "a group starts more than two spaces after its rule: $line"
-  shows "$line" 'Light rain    *$' || fail "the room left over is not after the last group: $line"
-  # Narrow, the widest groups give way first.
+  # Spread across the width: the room left over shared between the gaps, so a
+  # wide screen gets wide gaps and the last group ends at the edge.
+  shows "$line" '27%  \{10,\}│  \{10,\}claude' || fail "the groups are not spread: $line"
+  shows "$line" 'Light rain $' || fail "the last group does not end at the edge: $line"
+  # Narrow, the gaps keep their two spaces and the widest groups give way first.
   output="$(layout_rows | "$SCRIPTS/header_layout.sh" 100 4 | plain)"
+  shows "$(sed -n 1p <<< "$output")" '[^ ]  │  [^ ]' || fail "a narrow header lost its two-space gaps: $output"
   shows "$output" 'Curitiba' || fail "a narrow header cut a short group"
 }
 

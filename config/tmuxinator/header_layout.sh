@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Lays out the header's three rows of groups at a client's width. tmux can only
 # align a status line left, centre or right, so the groups are composed here:
-# each group as wide as its widest row, two spaces each side of the │ between
-# groups, the room left over after the last group, the rows exactly <width>
-# wide. When the groups do not fit, the widest gives way first.
+# each group as wide as its widest row, at least two spaces each side of the │
+# between groups, the room left over shared between the gaps so the groups
+# spread across the width, the rows exactly <width> wide. When the groups do
+# not fit, the widest gives way first.
 #
 #  CPU ▓▓░░  27%  │  claude 5h ▓▓▓▓░░░░░░  42% …  │  ↓ 2.4 MB/s  │  +18°C  Rain
 #  MEM ▓▓▓▓  80%  │  work   5h ▓░░░░░░░░░   9% …  │  Wi-Fi …     │  Curitiba
@@ -109,16 +110,25 @@ while [ "$used" -gt "$available" ] && [ "$used" -gt "$groups" ]; do
   used=$((used - 1))
 done
 
-# What is left over goes after the last group.
+# What is left over spreads the groups across the width: shared between the
+# gaps (the first ones take what does not divide evenly), half each side of
+# the │. A single group keeps it after itself.
 leftover=$((available - used))
 [ "$leftover" -lt 0 ] && leftover=0
+trailing="$leftover"
+separators=()
+for ((separator = 0; separator < gaps; separator++)); do
+  extra=$((leftover / gaps))
+  [ "$separator" -lt $((leftover % gaps)) ] && extra=$((extra + 1))
+  separators+=("$gap$(spaces $((extra / 2)))#[fg=$rule_color]│#[default]$gap$(spaces $((extra - extra / 2)))")
+  trailing=0
+done
 
-rule="#[fg=$rule_color]│#[default]"
 for row in 0 1 2; do
   line=" "
   for ((group = 0; group < groups; group++)); do
     line+="$(fit "${rows[group * 3 + row]}" "${columns[group]}")"
-    [ "$group" -lt "$gaps" ] && line+="$gap$rule$gap"
+    [ "$group" -lt "$gaps" ] && line+="${separators[group]}"
   done
-  printf '%s%s \n' "$line" "$(spaces "$leftover")"
+  printf '%s%s \n' "$line" "$(spaces "$trailing")"
 done
