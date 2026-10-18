@@ -153,7 +153,7 @@ group, and shows each action's own shortcut:
 
 | Tab | Actions |
 | --- | ------- |
-| Workspace | New workspace · Open folder · Toggle layout `C-b \` · Minimize agent and terminal `C-b _` · New terminal · Close workspace |
+| Workspace | New workspace · Open folder · Toggle layout `C-b \` · Minimize agent and terminal `C-b _` · New panel `C-b N` · Close workspace |
 | Agent | Go to waiting agent `C-b a` · Switch agent · Restart agent · Initialize agent · Register agent · Remove agent · Agent follow `C-b F` |
 | Editor | Switch editor · Agent follow `C-b F` |
 | Database | Database `C-b B` · Database folder |
@@ -181,6 +181,29 @@ Panes are moved, not restarted, so the editor, agent and shell keep running,
 and focus stays where it was. Extra terminals move with the terminal. New
 workspaces open in the default layout; the current one is saved with the
 workspace.
+
+### New panels
+
+Choose **▣ New panel** in the devws menu, or press `C-b N`, to open another
+**Agent** (any registered agent: a second account, or a second Claude on
+another task), a **Terminal** or a **Neovim**. It opens beside the terminal,
+in the agent group, so it minimizes with the agent and terminal, moves with
+the layout toggle, and is restored after a reboot.
+
+- **An extra agent** starts as the main one does: its account, devws's hooks
+  and status line. Its header shows its own state (`▾ ⠹ Agent · work`,
+  `● needs you`, `✓ done`), and the workspace's state — in the sidebar, the
+  status bar, the minimized strip and the header's ghost — sums all its
+  agents up: one that needs you comes first, then one working, then one done.
+  **Go to waiting agent** (`C-b a`) focuses the agent that is waiting. Its
+  edits show in the editor like the main agent's; tmux's line keeps showing
+  the main agent's conversation, and Restart / Switch agent act on the main
+  agent.
+- **A Neovim** is your LazyVim in the project folder, on its own: the agent
+  keeps opening files in the main editor.
+- **After a restore** an extra agent comes back with the same agent in a new
+  conversation (`/resume` brings the old one back), a Neovim fresh, a
+  terminal at a prompt in its folder.
 
 ### Minimize the agent and terminal
 
@@ -476,6 +499,7 @@ The tmux prefix is `C-b` (tmux's default key set is restored by
 | `C-b \` | Toggle the workspace layout |
 | `C-b _` | Minimize or restore the agent and terminal |
 | `C-b B` | Open the database pane, or focus it |
+| `C-b N` | Open a new panel: another agent, a terminal or a Neovim |
 | `C-b F` | Choose how the editor follows the agent (menu) |
 | `C-b a` | Go to the agent that needs you; again for the next one |
 | Click a header | Minimize or restore that pane group (agent and terminal, or database) |

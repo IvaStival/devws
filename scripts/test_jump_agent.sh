@@ -126,9 +126,25 @@ test_a_minimized_agent_is_restored() {
   lands_on dev-new || fail "it did not land on the restored agent"
 }
 
+# An extra agent (New panel) that waits gets the focus, not the main agent.
+test_the_waiting_extra_agent_gets_the_focus() {
+  local extra
+  extra="$(tmux split-window -h -t "$(agent_of dev-old)" -P -F '#{pane_id}' 'sleep 600')"
+  tmux set-option -p -t "$extra" @devws_role extra-agent
+  tmux set-option -p -t "$extra" @devws_pane_state waiting
+  set_state dev-old waiting 50
+  tmux switch-client -c "$CLIENT" -t dev-home
+  jump
+  [ "$(client_session)" = dev-old ] && [ "$(tmux display-message -p -t dev-old: '#{pane_id}')" = "$extra" ] ||
+    fail "the jump did not focus the waiting extra agent"
+  tmux kill-pane -t "$extra"
+  tmux set-option -u -t dev-old @devws_agent_state
+}
+
 test_waiting_agents_go_first_the_longest_waiting_first
 test_a_done_agent_when_none_waits
 test_nothing_to_go_to
+test_the_waiting_extra_agent_gets_the_focus
 test_a_minimized_agent_is_restored
 
 printf 'Jump to agent tests passed.\n'

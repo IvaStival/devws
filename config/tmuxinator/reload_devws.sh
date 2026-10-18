@@ -44,14 +44,14 @@ while IFS='|' read -r session pane title role; do
   fi
 done < <(tmux list-panes -a -F '#{session_name}|#{pane_id}|#{pane_title}|#{@devws_role}')
 
-# A spinner is stopped, then started again by agent_status.sh as for any
-# working agent.
+# A spinner is stopped, then started again by agent_status.sh, which leaves
+# the agents' states as they are.
 while IFS='|' read -r session state ticker; do
   case "$session" in dev-*) ;; *) continue ;; esac
   [ "$state" = working ] || continue
   [ -n "$ticker" ] && kill "$ticker" 2>/dev/null
   tmux set-option -u -t "=$session:" @devws_agent_ticker
-  "$scripts_dir/agent_status.sh" "$session" working && spinners=$((spinners + 1))
+  "$scripts_dir/agent_status.sh" "$session" --spin && spinners=$((spinners + 1))
 done < <(tmux list-sessions -F '#{session_name}|#{@devws_agent_state}|#{@devws_agent_ticker}')
 
 printf 'devws: reloaded tmux.conf, %s sidebar(s), %s placeholder(s), %s spinner(s)\n' \

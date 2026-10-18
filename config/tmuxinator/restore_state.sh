@@ -125,7 +125,7 @@ start_workspace() {
 }
 
 flush_workspace() {
-  local pane cwd picker count added
+  local pane cwd picker count added role agent command
 
   [ "$pending_skip" = 0 ] || return 0
 
@@ -134,15 +134,26 @@ flush_workspace() {
     [ -n "$picker" ] && tmux kill-pane -t "$picker" 2>/dev/null
   fi
 
+  # The extra panels go back beside the terminal: shells, and New panel's
+  # agents (a new conversation, with the same agent) and Neovims.
   pane="$(terminal_pane "$pending_session")"
   if [ -n "$pane" ]; then
-    printf '%s' "$pending_extras" | while IFS= read -r cwd; do
-      [ -n "$cwd" ] || continue
+    printf '%s' "$pending_extras" | while IFS='|' read -r role cwd agent; do
+      [ -n "$role" ] || continue
       [ -d "$cwd" ] || cwd="$pending_root"
+      command=""
+      case "$role" in
+        extra-agent)
+          agent="$(valid_choice "$agent" "${DEVWS_AGENTS:-claude codex}" "${DEVWS_DEFAULT_AGENT:-claude}")"
+          command="$(printf '%q %q --extra' "$HOME/.tmuxinator/agent_runner.sh" "$agent")"
+          ;;
+        extra-editor) command="nvim ." ;;
+      esac
       added="$(
-        tmux split-window -d -h -t "$pane" -c "$cwd" -P -F '#{pane_id}' 2>/dev/null
+        tmux split-window -d -h -t "$pane" -c "$cwd" -P -F '#{pane_id}' ${command:+"$command"} 2>/dev/null
       )" || continue
-      tmux set-option -p -t "$added" @devws_role extra 2>/dev/null
+      tmux set-option -p -t "$added" @devws_role "$role" 2>/dev/null
+      [ "$role" = extra-agent ] && tmux set-option -p -t "$added" @devws_agent "$agent" 2>/dev/null
     done
   fi
 
@@ -190,7 +201,9 @@ while IFS="$tab" read -r -u 3 record field2 field3 field4 field5 field6 field7; 
       [ "$field2" = "$pending_session" ] || continue
       pending_panes=$((pending_panes + 1))
       case "$field4" in
-        extra) pending_extras="${pending_extras}${field5}"$'\n' ;;
+        extra | extra-agent | extra-editor)
+          pending_extras="${pending_extras}${field4}|${field5}|${field6}"$'\n'
+          ;;
         terminal) pending_terminal_cwd="$field5" ;;
         database) pending_database=1 ;;
       esac

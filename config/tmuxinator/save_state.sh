@@ -36,7 +36,7 @@ trap 'rm -f "$temporary"' EXIT
     )"
     panes="$(
       tmux list-panes -t "$session:" \
-        -F "#{pane_index}${tab}#{@devws_role}${tab}#{pane_title}${tab}#{pane_current_path}" \
+        -F "#{pane_index}${tab}#{@devws_role}${tab}#{pane_title}${tab}#{pane_current_path}${tab}#{@devws_agent}" \
         2>/dev/null
     )"
     [ -n "$panes" ] || continue
@@ -59,6 +59,7 @@ trap 'rm -f "$temporary"' EXIT
       {
         index_of[NR] = $1
         path_of[NR] = $4
+        agent_of[NR] = $5
         role = $2
         # A minimized pane is recorded as the pane its placeholder stands in for.
         sub(/^minimized-/, "", role)
@@ -77,7 +78,12 @@ trap 'rm -f "$temporary"' EXIT
             role_of[row] = "terminal"
             has_terminal = 1
           }
-          printf "P\t%s\t%s\t%s\t%s\n", session, index_of[row], role_of[row], path_of[row]
+          # An extra agent (New panel) also records its agent.
+          if (role_of[row] == "extra-agent") {
+            printf "P\t%s\t%s\t%s\t%s\t%s\n", session, index_of[row], role_of[row], path_of[row], agent_of[row]
+          } else {
+            printf "P\t%s\t%s\t%s\t%s\n", session, index_of[row], role_of[row], path_of[row]
+          }
         }
       }'
   done < <(

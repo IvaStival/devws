@@ -41,7 +41,7 @@ mkdir -p "$TEST_ROOT/home/.claude" "$TEST_ROOT/home/.claude-work"
 for script in devws_menu.sh workspace_actions.sh workspace_panes.sh session_picker.sh agents.sh .env; do
   ln -s "$SCRIPTS/$script" "$TEST_ROOT/home/.tmuxinator/$script"
 done
-for script in toggle_layout.sh minimize_panes.sh header_toggle.sh open_database.sh follow_mode.sh register_agent.sh; do
+for script in toggle_layout.sh minimize_panes.sh header_toggle.sh open_database.sh follow_mode.sh register_agent.sh new_panel.sh; do
   cat > "$TEST_ROOT/home/.tmuxinator/$script" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" > "$TEST_ROOT/calls/$script"
@@ -65,7 +65,7 @@ actions_of() {
 }
 
 test_tabs_list_their_actions() {
-  [ "$(actions_of workspace)" = "new open-folder toggle-layout minimize header new-terminal close" ] ||
+  [ "$(actions_of workspace)" = "new open-folder toggle-layout minimize header new-panel close" ] ||
     fail "Workspace tab: $(actions_of workspace)"
   [ "$(actions_of agent)" = "jump switch-agent restart-agent initialize-agent register-agent remove-agent follow-mode" ] ||
     fail "Agent tab: $(actions_of agent)"
@@ -83,6 +83,7 @@ test_items_show_labels_and_shortcuts() {
   grep -q $'^toggle-layout\t.*Toggle layout.*C-b \\\\' <<<"$workspace" || fail "Toggle layout has no shortcut"
   grep -q $'^minimize\t.*Minimize agent and terminal.*C-b _' <<<"$workspace" || fail "Minimize has no shortcut"
   grep -q $'^header\t.*Hide or show the header.*C-b C-s' <<<"$workspace" || fail "Hide header has no shortcut"
+  grep -q $'^new-panel\t.*New panel.*C-b N' <<<"$workspace" || fail "New panel has no shortcut"
   grep -q $'^open-database\t.*Database.*C-b B' <<<"$database" || fail "Database has no shortcut"
   grep -q $'^follow-mode\t.*Agent follow.*C-b F' <<<"$agent" || fail "Agent follow has no shortcut"
   grep -q $'^switch-agent\t.*Switch agent' <<<"$agent" || fail "Switch agent has no label"
@@ -118,6 +119,24 @@ test_header_marks_the_current_tab() {
   header="$(menu --header)"
   grep -q $'\033\\[1;30;46m Database ' <<<"$header" || fail "the header does not mark Database"
   grep -q $'\033\\[2m Workspace ' <<<"$header" || fail "the header does not list every tab"
+}
+
+# New panel asks what to open, and for an agent which one, then opens it in
+# the workspace (new_panel.sh).
+test_new_panel_asks_what_to_open() {
+  local answers expected
+  for answers in "Agent|codex|dev-menu agent codex" "Terminal||dev-menu terminal" "Neovim||dev-menu nvim"; do
+    IFS='|' read -r kind agent expected <<<"$answers"
+    printf '%s\n' "$kind" ${agent:+"$agent"} > "$TEST_ROOT/fzf.answers"
+    rm -f "$TEST_ROOT/calls/new_panel.sh"
+    menu --run new-panel
+    [ "$(cat "$TEST_ROOT/calls/new_panel.sh" 2>/dev/null)" = "$expected" ] ||
+      fail "New panel → $kind ran new_panel.sh with '$(cat "$TEST_ROOT/calls/new_panel.sh" 2>/dev/null)'"
+  done
+  : > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/new_panel.sh"
+  menu --run new-panel
+  [ ! -e "$TEST_ROOT/calls/new_panel.sh" ] || fail "a cancelled New panel opened one"
 }
 
 test_script_actions_run_for_the_session() {
@@ -189,6 +208,7 @@ test_items_show_labels_and_shortcuts
 test_switching_tabs
 test_header_marks_the_current_tab
 test_script_actions_run_for_the_session
+test_new_panel_asks_what_to_open
 test_register_and_remove_agents
 test_every_action_has_a_function
 test_sidebar_opens_the_menu

@@ -156,6 +156,35 @@ test_minimize_without_an_agent_pane() {
     fail "the terminal's or the shell's process did not survive minimizing"
 }
 
+# Panels New panel adds beside the terminal — an extra agent and a Neovim —
+# minimize with the group, each with its own label, and come back as they were.
+test_new_panels_minimize_with_the_group() {
+  local session="dev-panels" agent_panel editor_panel agent_pid editor_pid
+  create_workspace "$session"
+  agent_panel="$(tmux split-window -h -t "$(pane_id "$session" terminal)" -P -F '#{pane_id}' 'sleep 600')"
+  tmux set-option -p -t "$agent_panel" @devws_role extra-agent
+  tmux set-option -p -t "$agent_panel" @devws_agent work
+  editor_panel="$(tmux split-window -h -t "$agent_panel" -P -F '#{pane_id}' 'sleep 600')"
+  tmux set-option -p -t "$editor_panel" @devws_role extra-editor
+  agent_pid="$(pane_pid "$agent_panel")"
+  editor_pid="$(pane_pid "$editor_panel")"
+
+  "$MINIMIZE" "$session" toggle agents || fail "minimize with new panels exited non-zero"
+  [[ "$(pane_window "$agent_panel")" == devws-minimized ]] &&
+    [[ "$(pane_window "$editor_panel")" == devws-minimized ]] ||
+    fail "the new panels did not minimize with the group"
+  tmux display-message -p -t "$(pane_id "$session" minimized-extra-agent)" '#{pane_start_command}' |
+    grep -q 'Agent.*·.*work' || fail "the extra agent's placeholder is not labelled with its agent"
+  tmux display-message -p -t "$(pane_id "$session" minimized-extra-editor)" '#{pane_start_command}' |
+    grep -q 'Neovim' || fail "the Neovim placeholder is not labelled Neovim"
+
+  "$MINIMIZE" "$session" toggle agents || fail "restore with new panels exited non-zero"
+  [[ -z "$(tmux list-panes -s -t "$session" -F '#{@devws_role}' | grep '^minimized-')" ]] ||
+    fail "placeholders were left behind"
+  [[ "$(pane_pid "$agent_panel")" == "$agent_pid" ]] && [[ "$(pane_pid "$editor_panel")" == "$editor_pid" ]] ||
+    fail "a new panel was restarted"
+}
+
 # A pane split off the editor by hand (C-b %, e.g. a Markdown viewer) has no
 # devws role but is not the agent group's: minimizing leaves it in place, in
 # both layouts.
@@ -336,6 +365,7 @@ test_headers_and_mouse() {
 test_stacked_minimize_and_restore
 test_minimize_without_an_agent_pane
 test_minimize_leaves_a_pane_beside_the_editor
+test_new_panels_minimize_with_the_group
 test_side_minimize_and_restore
 test_restore_falls_back_when_panes_changed
 test_focus_leaves_minimized_pane

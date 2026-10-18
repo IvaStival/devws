@@ -38,8 +38,12 @@ case "$event" in
   SessionStart|SessionEnd) state=idle ;;
 esac
 
-[ -z "$state" ] || "$(dirname "$0")/agent_status.sh" "$session" "$state" >/dev/null 2>&1
-# The conversation's log, whose tokens the header shows (header_tokens.sh).
+# The state is this pane's: a workspace can run several agents.
+[ -z "$state" ] || "$(dirname "$0")/agent_status.sh" "$session" "$state" "$TMUX_PANE" >/dev/null 2>&1
+# The conversation's log, whose tokens tmux's own line shows
+# (header_tokens.sh): the main agent's, not an extra one's.
 transcript="$(json '.transcript_path // empty')"
-[ -z "$transcript" ] || tmux set-option -t "=$session:" @devws_agent_transcript "$transcript" 2>/dev/null
+role="$(tmux show-options -pqv -t "$TMUX_PANE" @devws_role 2>/dev/null)"
+[ -z "$transcript" ] || [ "$role" = extra-agent ] ||
+  tmux set-option -t "=$session:" @devws_agent_transcript "$transcript" 2>/dev/null
 exit 0

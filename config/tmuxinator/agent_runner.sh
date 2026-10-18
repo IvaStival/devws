@@ -2,11 +2,15 @@
 # Marks the pane as the workspace agent pane, then replaces itself with the
 # configured agent process. The pane marker makes restart/switch actions safe.
 #
-#   agent_runner.sh <agent>   a name registered in .env (agents.sh)
+#   agent_runner.sh <agent>           a name registered in .env (agents.sh)
+#   agent_runner.sh <agent> --extra   an extra agent (New panel): marked
+#                                     extra-agent with its agent's name, so the
+#                                     main agent keeps its role
 
 set -u
 
 agent="${1:-}"
+extra="${2:-}"
 link_dir="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=/dev/null
 [ -r "$link_dir/.env" ] && . "$link_dir/.env"
@@ -30,7 +34,12 @@ fi
 # The status line records this agent's limits under its name.
 export DEVWS_AGENT="$agent"
 
-tmux set-option -p -t "$TMUX_PANE" @devws_role agent
+if [ "$extra" = --extra ]; then
+  tmux set-option -p -t "$TMUX_PANE" @devws_role extra-agent
+  tmux set-option -p -t "$TMUX_PANE" @devws_agent "$agent"
+else
+  tmux set-option -p -t "$TMUX_PANE" @devws_role agent
+fi
 
 # Link the agent with the editor: an edit hook shows its changes there, and
 # the prompt tells it how to open files in it. Passed on the command line, so

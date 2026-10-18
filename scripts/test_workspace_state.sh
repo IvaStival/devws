@@ -59,6 +59,7 @@ case "${1:-}" in
         '#{@devws_role}') column='$3' ;;
         '#{pane_title}') column='$4' ;;
         '#{pane_current_path}') column='$5' ;;
+        '#{@devws_agent}') column='$6' ;;
         *) column="\"$token\"" ;;
       esac
       if [[ -z "$program" ]]; then program="$column"; else program="$program, $column"; fi
@@ -242,6 +243,41 @@ test_restore_replays_workspaces() {
     fail "the restore lock was not released"
 }
 
+# New panel's panels: an extra agent is saved with its agent and restored
+# running it as an extra agent; an extra Neovim restored running Neovim; both
+# beside the terminal, with their roles.
+test_new_panels_are_saved_and_restored() {
+  local one="$TEST_ROOT/project-one"
+  setup
+  mkdir -p "$one"
+  printf 'dev-one\t%s\tclaude\tnvim\n' "$one" > "$TEST_ROOT/sessions"
+  write_panes dev-one \
+    "%editor-one|1|editor||$one" \
+    "%agent-one|2|agent||$one|claude" \
+    "%terminal-one|3|terminal||$one" \
+    "%agent-two|4|extra-agent||$one|codex" \
+    "%nvim-two|5|extra-editor||$one"
+  FIXTURE_SESSIONS="$TEST_ROOT/sessions"
+  run_save
+  grep -q "^P${TAB}dev-one${TAB}4${TAB}extra-agent${TAB}$one${TAB}codex$" "$(state_file)" ||
+    fail "the extra agent was not saved with its agent: $(cat "$(state_file)")"
+  grep -q "^P${TAB}dev-one${TAB}5${TAB}extra-editor${TAB}$one$" "$(state_file)" ||
+    fail "the extra Neovim was not saved"
+  grep -q "^P${TAB}dev-one${TAB}2${TAB}agent${TAB}$one$" "$(state_file)" ||
+    fail "the main agent's line changed"
+
+  : > "$TEST_ROOT/tmux.log"
+  run_restore
+  grep -q "split-window -d -h -t %terminal-one -c $one -P -F #{pane_id} .*agent_runner.sh codex --extra" "$TEST_ROOT/tmux.log" ||
+    fail "the extra agent was not restarted: $(grep split-window "$TEST_ROOT/tmux.log" || true)"
+  grep -q "split-window -d -h -t %terminal-one -c $one -P -F #{pane_id} nvim \.$" "$TEST_ROOT/tmux.log" ||
+    fail "the extra Neovim was not restarted: $(grep split-window "$TEST_ROOT/tmux.log" || true)"
+  grep -q "set-option -p -t %split-1 @devws_role extra-agent" "$TEST_ROOT/tmux.log" &&
+    grep -q "set-option -p -t %split-1 @devws_agent codex" "$TEST_ROOT/tmux.log" &&
+    grep -q "set-option -p -t %split-2 @devws_role extra-editor" "$TEST_ROOT/tmux.log" ||
+    fail "the restored panels were not tagged"
+}
+
 test_restore_skips_open_and_missing() {
   setup
   two_workspace_fixture
@@ -331,6 +367,7 @@ test_save_adopts_terminal_in_legacy_workspace
 test_save_is_idempotent
 test_save_skips_during_restore
 test_restore_replays_workspaces
+test_new_panels_are_saved_and_restored
 test_restore_skips_open_and_missing
 test_restore_falls_back_to_default_agent
 test_restore_reopens_database_pane

@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
-# Records the agent's state on a devws workspace, in the session option
-# @devws_agent_state (unset while idle), which tmux.conf's @devws_agent_badge
-# and @devws_agent_icon show in the agent's header, the minimized agent strip
-# and the status bar, and the sidebar shows next to each workspace. When the
-# state started goes in @devws_agent_state_since (epoch seconds), which
-# jump_agent.sh orders the waiting agents by.
+# Records an agent's state on its pane, and the workspace's: a workspace can
+# hold several agents (the main one, and extra ones from New panel).
+#
+# Each agent pane keeps its own state in the pane option @devws_pane_state
+# (unset while idle), which its header shows (tmux.conf's @devws_pane_icon and
+# @devws_pane_badge). The workspace's @devws_agent_state (unset while idle)
+# sums its agents up —
+# waiting, else working, else done — for the minimized strip, the status bar,
+# the sidebar and the header's ghost. When that state started goes in
+# @devws_agent_state_since (epoch seconds), which jump_agent.sh orders the
+# waiting agents by.
 #
 # When an agent starts waiting or is done in a workspace no client shows, a
 # macOS notification says so. DEVWS_NOTIFY in .env: 1 (default) for both,
 # "waiting" for waiting only, 0 for none. DEVWS_NOTIFY_COMMAND replaces the
 # notifier, for tests: it is called with the title and the message.
 #
-#   agent_status.sh <session> <working|waiting|done|idle>
+#   agent_status.sh <session> <working|waiting|done|idle> [pane]
+#                                  the agent in <pane>; without one, the
+#                                  workspace's main agent (role agent)
+#   agent_status.sh <session> --spin   starts the spinner again if the
+#                                      workspace is working (devws reload)
 #   agent_status.sh <session id> --tick   (internal: the spinner's loop)
 #
 # While the agent works, one ticker per session advances the spinner frame
@@ -22,6 +31,7 @@ set -u
 
 session="${1:-}"
 state="${2:-}"
+pane="${3:-}"
 # Absolute: the ticker is started from the tmux server's directory.
 script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
@@ -50,6 +60,10 @@ start_ticker() {
 
 if [ "$state" = --tick ]; then
   tick
+  exit 0
+fi
+if [ "$state" = --spin ]; then
+  [ "$(tmux show-option -qv -t "=$session:" @devws_agent_state 2>/dev/null)" = working ] && start_ticker
   exit 0
 fi
 
@@ -97,6 +111,36 @@ notify() {
       -e 'end run' "devws · $title" "$message" >/dev/null 2>&1 &
   fi
 }
+
+# The workspace's agent panes, also those hidden while minimized.
+agent_panes() {
+  tmux list-panes -s -t "=$session" -F '#{pane_id} #{@devws_role}' 2>/dev/null |
+    awk '$2 ~ /^(agent|extra-agent)$/ { print $1 }'
+}
+
+# The workspace's state from its agents' own ones: waiting, else working,
+# else done, else idle.
+summary() {
+  local states="" agent
+  for agent in $(agent_panes); do
+    states+=" $(tmux show-options -pqv -t "$agent" @devws_pane_state 2>/dev/null) "
+  done
+  for candidate in waiting working done; do
+    case "$states" in *" $candidate "*) printf '%s' "$candidate"; return ;; esac
+  done
+  printf 'idle'
+}
+
+[ -n "$pane" ] || pane="$(tmux list-panes -s -t "=$session" -F '#{pane_id} #{@devws_role}' 2>/dev/null |
+  awk '$2 == "agent" { print $1; exit }')"
+if [ -n "$pane" ]; then
+  if [ "$state" = idle ]; then
+    tmux set-option -p -u -t "$pane" @devws_pane_state 2>/dev/null
+  else
+    tmux set-option -p -t "$pane" @devws_pane_state "$state" 2>/dev/null
+  fi
+  state="$(summary)"
+fi
 
 previous="$(tmux show-option -qv -t "=$session:" @devws_agent_state)"
 if [ "$state" = idle ]; then

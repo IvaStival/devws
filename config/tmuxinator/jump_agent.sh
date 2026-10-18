@@ -2,8 +2,9 @@
 # Takes a client to the agent that needs the user (C-b a, or "Go to waiting
 # agent" in the devws menu): the workspace whose agent is waiting, the one
 # that has waited longest first, else one whose agent is done. Pressed again,
-# it goes on to the next one, wrapping round. The agent pane is focused, its
-# group restored first when minimized.
+# it goes on to the next one, wrapping round. The agent pane in that state is
+# focused — the main agent or one New panel added — its group restored first
+# when minimized.
 #
 #   jump_agent.sh [client]
 #
@@ -40,8 +41,12 @@ next_after() {
 }
 
 current="$(tmux display-message ${client:+-c "$client"} -p '#{client_session}' 2>/dev/null)"
+wanted=waiting
 candidates="$(workspaces_in waiting)"
-[ -n "$candidates" ] || candidates="$(workspaces_in done)"
+if [ -z "$candidates" ]; then
+  wanted=done
+  candidates="$(workspaces_in done)"
+fi
 if [ -z "$candidates" ]; then
   message "No agent needs you"
   exit 0
@@ -50,7 +55,10 @@ target="$(next_after "$current" "$candidates")"
 
 "$script_dir/minimize_panes.sh" "$target" restore agents >/dev/null 2>&1
 load_workspace_panes "$target"
-agent="$(pane_with_role agent)"
+# The agent pane in the wanted state, else the main agent.
+agent="$(tmux list-panes -t "=$target:" -F '#{pane_id} #{@devws_role} #{@devws_pane_state}' 2>/dev/null |
+  awk -v wanted="$wanted" '$2 ~ /^(agent|extra-agent)$/ && $3 == wanted { print $1; exit }')"
+[ -n "$agent" ] || agent="$(pane_with_role agent)"
 
 tmux switch-client ${client:+-c "$client"} -t "=$target" 2>/dev/null || {
   message "Could not switch to $target"

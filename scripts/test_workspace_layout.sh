@@ -150,6 +150,26 @@ test_picker_closed_with_extra_terminal() {
   assert_stacked_layout "$session"
 }
 
+# New panel's agent and Neovim travel beside the terminal both ways, like
+# extra terminals.
+test_new_panels_move_with_the_terminal() {
+  local session="dev-panels" agent_panel editor_panel terminal_top panel_top
+  create_workspace "$session"
+  agent_panel="$(tmux split-window -h -t "$(pane_id "$session" terminal)" -P -F '#{pane_id}' 'sleep 600')"
+  tmux set-option -p -t "$agent_panel" @devws_role extra-agent
+  editor_panel="$(tmux split-window -h -t "$agent_panel" -P -F '#{pane_id}' 'sleep 600')"
+  tmux set-option -p -t "$editor_panel" @devws_role extra-editor
+
+  for direction in side stacked; do
+    "$TOGGLE" "$session" || fail "toggle to $direction with new panels exited non-zero"
+    read -r _ terminal_top _ _ < <(geometry "$(pane_id "$session" terminal)")
+    for panel in "$agent_panel" "$editor_panel"; do
+      read -r _ panel_top _ _ < <(geometry "$panel")
+      [[ "$panel_top" == "$terminal_top" ]] || fail "$direction: a new panel did not move beside the terminal"
+    done
+  done
+}
+
 # An agent started by hand in the terminal, its agent pane now a plain shell
 # with no devws role: the terminal leads, and the shell travels beside it.
 test_toggles_without_an_agent_pane() {
@@ -185,5 +205,6 @@ test_toggles_both_ways
 test_keeps_focus
 test_picker_closed_with_extra_terminal
 test_toggles_without_an_agent_pane
+test_new_panels_move_with_the_terminal
 
 printf 'Workspace layout tests passed.\n'

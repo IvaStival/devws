@@ -99,14 +99,17 @@ group_members() {
 group_placeholders() {
   case "$1" in
     agents) printf '%s\n' "$workspace_panes" |
-      awk -F '|' '$2 ~ /^minimized-(agent|terminal|extra)$/ { print $1 }' ;;
+      awk -F '|' '$2 ~ /^minimized-(agent|terminal|extra|extra-agent|extra-editor)$/ { print $1 }' ;;
     database) pane_with_role minimized-database ;;
   esac
 }
 
+# <role> <pane>: an extra agent is named by its own pane's agent.
 placeholder_label() {
   case "$1" in
     agent) printf 'Agent · %s' "$(tmux show-options -qv -t "$session" @devws_agent)" ;;
+    extra-agent) printf 'Agent · %s' "$(tmux show-options -pqv -t "$2" @devws_agent)" ;;
+    extra-editor) printf 'Neovim' ;;
     terminal|extra) printf 'Terminal' ;;
     database) printf 'Database' ;;
   esac
@@ -136,7 +139,7 @@ hide_pane() {
 
   if [ -z "$window" ]; then
     placeholder="$(tmux split-window -d -t "$real_pane" -c "#{pane_current_path}" \
-      -P -F '#{pane_id}' "$(placeholder_command "$(placeholder_label "$role")")")" || return 1
+      -P -F '#{pane_id}' "$(placeholder_command "$(placeholder_label "$role" "$real_pane")")")" || return 1
     # -a -t places the window in this session; without a target tmux uses
     # the most recently active session, which may be another workspace.
     window="$(tmux break-pane -d -a -s "$placeholder" -t "$session:" \
@@ -144,10 +147,13 @@ hide_pane() {
     tmux set-option -w -t "$session:" @devws_hidden_window "$window"
   else
     placeholder="$(tmux split-window -d -t "$window" -c "#{pane_current_path}" \
-      -P -F '#{pane_id}' "$(placeholder_command "$(placeholder_label "$role")")")" || return 1
+      -P -F '#{pane_id}' "$(placeholder_command "$(placeholder_label "$role" "$real_pane")")")" || return 1
   fi
   tmux set-option -p -t "$placeholder" @devws_role "minimized-$role"
   tmux set-option -p -t "$placeholder" @devws_hidden_pane "$real_pane"
+  # An extra agent's name goes along, so saving a minimized workspace keeps it.
+  [ "$role" = extra-agent ] &&
+    tmux set-option -p -t "$placeholder" @devws_agent "$(tmux show-options -pqv -t "$real_pane" @devws_agent)"
   tmux swap-pane -d -s "$real_pane" -t "$placeholder"
 }
 

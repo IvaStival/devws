@@ -71,7 +71,7 @@ new_workspace() {
 }
 new_workspace dev-work
 AGENT_PANE="$(tmux display-message -p -t dev-work: '#{pane_id}')"
-grep -E '^(color_[a-z_]+=|set -g @devws_agent_)' "$ROOT/config/tmux/tmux.conf" > "$TEST_ROOT/formats.conf"
+grep -E '^(color_[a-z_]+=|set -g @devws_(agent|pane)_)' "$ROOT/config/tmux/tmux.conf" > "$TEST_ROOT/formats.conf"
 tmux source-file "$TEST_ROOT/formats.conf"
 
 state_of() {
@@ -224,6 +224,54 @@ test_header_strip_and_status_bar_show_the_state() {
   ! render "$header" | grep -q "Agent · " || fail "the minimized strip is not just the icon"
   tmux set-option -p -t "$AGENT_PANE" @devws_role agent
   "$SCRIPTS/agent_status.sh" dev-work idle
+}
+
+# An extra agent (New panel) beside the main one: each pane keeps its own
+# state, shown in its own header; the workspace's state sums them up —
+# waiting, else working, else done, else none.
+test_each_agent_pane_has_its_own_state() {
+  local header extra
+  header="$(conf_option pane-border-format)"
+  extra="$(tmux split-window -t "$AGENT_PANE" -P -F '#{pane_id}' 'sleep 600')"
+  tmux set-option -p -t "$extra" @devws_role extra-agent
+  tmux set-option -p -t "$extra" @devws_agent work
+  extra_event() {
+    printf '{"session_id":"x","cwd":"%s","hook_event_name":"%s"%s}' "$TEST_ROOT/project" "$1" "${2:+,$2}" |
+      TMUX_PANE="$extra" "$SCRIPTS/agent_state.sh"
+  }
+  pane_state() {
+    tmux show-options -pqv -t "$1" @devws_pane_state
+  }
+
+  extra_event UserPromptSubmit '"prompt":"go"'
+  [ "$(pane_state "$extra")" = working ] || fail "the extra agent's pane is not working"
+  state_is working || fail "the workspace does not show its working agent: $(state_of dev-work)"
+  ! [ "$(pane_state "$AGENT_PANE")" = working ] || fail "the main agent took the extra agent's state"
+
+  claude_event Notification '"notification_type":"permission_prompt","message":"permission"'
+  state_is waiting || fail "a waiting agent does not come first: $(state_of dev-work)"
+  tmux display-message -p -t "$AGENT_PANE" "$header" | grep -q "Agent · claude .*● needs you" ||
+    fail "the main agent's header does not show its own state: $(tmux display-message -p -t "$AGENT_PANE" "$header")"
+  tmux display-message -p -t "$extra" "$header" | grep -qE "▾ [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Agent · work( |$)" ||
+    fail "the extra agent's header does not show its own state: $(tmux display-message -p -t "$extra" "$header")"
+
+  extra_event Stop '"stop_hook_active":false'
+  state_is waiting || fail "an agent done hid the waiting one"
+  claude_event SessionEnd '"reason":"exit"'
+  state_is done || fail "the workspace does not show the done agent: $(state_of dev-work)"
+  ! tmux display-message -p -t "$AGENT_PANE" "$header" | grep -q "done" ||
+    fail "the idle main agent shows the workspace's state"
+
+  # The conversation on tmux's line stays the main agent's.
+  claude_event UserPromptSubmit "\"transcript_path\":\"$TEST_ROOT/main.jsonl\",\"prompt\":\"go\""
+  extra_event UserPromptSubmit "\"transcript_path\":\"$TEST_ROOT/extra.jsonl\",\"prompt\":\"go\""
+  [ "$(tmux show-option -qv -t =dev-work: @devws_agent_transcript)" = "$TEST_ROOT/main.jsonl" ] ||
+    fail "the extra agent took over the conversation"
+
+  extra_event SessionEnd '"reason":"exit"'
+  claude_event SessionEnd '"reason":"exit"'
+  state_is "" || fail "all agents idle is not idle: $(state_of dev-work)"
+  tmux kill-pane -t "$extra"
 }
 
 # A real client, running inside a second tmux server, so the header is drawn.
@@ -381,6 +429,19 @@ test_agents_start_with_the_state_hooks() {
   grep -q '^hooks.PostToolUse=.*apply_patch.*agent_follow_hook.sh.* codex' "$TEST_ROOT/agents/codex.args" ||
     fail "codex lost its follow hook"
   tmux kill-pane -t "$pane"
+
+  # An extra agent (New panel) starts the same way, marked as an extra one,
+  # with its agent's name on its pane; the main agent pane is not touched.
+  rm -f "$TEST_ROOT/agents/claude.args"
+  pane="$(tmux split-window -t dev-work: -P -F '#{pane_id}' -c "$TEST_ROOT/project" \
+    "$SCRIPTS/agent_runner.sh claude --extra")"
+  wait_until test -s "$TEST_ROOT/agents/claude.args" || fail "the extra claude did not start"
+  [ "$(tmux show-options -pqv -t "$pane" @devws_role)" = extra-agent ] &&
+    [ "$(tmux show-options -pqv -t "$pane" @devws_agent)" = claude ] ||
+    fail "the extra agent's pane is not marked as one"
+  [ "$(tmux show-options -pqv -t "$AGENT_PANE" @devws_role)" = agent ] || fail "the main agent pane lost its role"
+  grep -q -- '--settings' "$TEST_ROOT/agents/claude.args" || fail "the extra agent started without the devws hooks"
+  tmux kill-pane -t "$pane"
 }
 
 test_claude_events_set_the_state
@@ -389,6 +450,7 @@ test_the_hook_records_the_conversation
 test_the_hook_never_fails
 test_the_spinner_turns_only_while_working
 test_header_strip_and_status_bar_show_the_state
+test_each_agent_pane_has_its_own_state
 test_a_real_client_redraws_the_spinner
 test_the_sidebar_shows_each_workspace_state
 test_the_state_records_when_it_started

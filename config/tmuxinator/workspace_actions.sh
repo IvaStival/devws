@@ -22,14 +22,16 @@ save_state() {
   "$HOME/.tmuxinator/save_state.sh"
 }
 
+# [header]: what the agent is for.
 choose_agent() {
   local agents="${DEVWS_AGENTS:-claude codex}"
+  local header="${1:-Choose the agent for the new workspace}"
   local agent
 
   agent="$(
     printf '%s\n' $agents |
       fzf --height=~10 --layout=reverse --prompt='Agent > ' \
-        --header='Choose the agent for the new workspace'
+        --header="$header"
   )"
   [ -n "$agent" ] && printf '%s\n' "$agent"
 }
@@ -225,31 +227,26 @@ remove_agent() {
   read -r -p 'Press Enter to return…'
 }
 
-terminal_pane() {
-  local session="$1"
-
-  # @devws_role is authoritative; the title only survives in workspaces created
-  # before the terminal pane started marking itself.
-  tmux list-panes -t "$session" \
-    -F '#{pane_id}|#{@devws_role}|#{pane_title}' 2>/dev/null |
-    awk -F '|' '
-      $2 == "terminal" { print $1; exit }
-      $3 == "terminal" { fallback = $1 }
-      END { if (fallback != "") print fallback }'
-}
-
-new_terminal() {
-  local session root pane added
+# Another agent, terminal or Neovim beside the terminal (new_panel.sh).
+new_panel() {
+  local session kind agent=""
   session="$(tmux display-message -p '#S')"
-  expand_minimized_panes "$session" || return
-  root="$(tmux show-options -t "$session" -v @devws_root 2>/dev/null)"
-  pane="$(terminal_pane "$session")"
-  [ -n "$pane" ] || return
-  added="$(
-    tmux split-window -h -t "$pane" -c "${root:-$PWD}" -P -F '#{pane_id}'
-  )" || return
-  tmux set-option -p -t "$added" @devws_role extra 2>/dev/null
-  save_state
+  kind="$(
+    printf '%s\n' Agent Terminal Neovim |
+      fzf --height=~10 --layout=reverse --prompt='New panel > ' \
+        --header='Opens beside the terminal, with the agent group'
+  )" || return 0
+  case "$kind" in
+    Agent)
+      agent="$(choose_agent 'Choose the agent for the new panel')" || return 0
+      [ -n "$agent" ] || return 0
+      "$HOME/.tmuxinator/new_panel.sh" "$session" agent "$agent" >/dev/null
+      ;;
+    Terminal) "$HOME/.tmuxinator/new_panel.sh" "$session" terminal >/dev/null ;;
+    Neovim) "$HOME/.tmuxinator/new_panel.sh" "$session" nvim >/dev/null ;;
+    # Cancelled: nothing to open.
+    *) return 0 ;;
+  esac
 }
 
 toggle_layout() {

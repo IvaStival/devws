@@ -19,8 +19,9 @@ pane_with_role() {
     END { if (fallback != "") print fallback }'
 }
 
-# Extra terminals, which travel with the agent group: those devws opened
-# (role "extra"), and panes with no devws role inside the group's area — such
+# The agent group's extra panels, which travel with it: those devws opened
+# (New panel's roles "extra", "extra-agent", "extra-editor"), and panes with
+# no devws role inside the group's area — such
 # as a shell split off the terminal by hand: right of the editor's column
 # from the agent column's left edge (side layout), or from the agent row's top
 # down (stacked). A pane split off the editor (a Markdown viewer, C-b %) stays
@@ -38,7 +39,7 @@ extra_panes() {
     fi
   fi
   printf '%s\n' "$workspace_panes" | awk -F '|' -v side="$side" -v edge="${edge:-}" '
-    $2 == "extra" { print $1; next }
+    $2 ~ /^extra(-agent|-editor)?$/ { print $1; next }
     $2 != "" || $3 ~ /^(devws-picker|editor|agent|terminal|database)$/ || edge == "" { next }
     side == 1 && $5 + 0 >= edge + 0 { print $1; next }
     side == 0 && $4 + 0 >= edge + 0 { print $1 }'
