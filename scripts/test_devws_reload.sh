@@ -155,7 +155,21 @@ test_reload_restarts_devws_scripts_only() {
   "$SCRIPTS/agent_status.sh" dev-work idle
 }
 
+# A server started with an older tmux.conf keeps its hooks through a reload
+# unless tmux.conf removes them: the old after-new-window rename prompt
+# blocked tmuxinator's new-window, leaving new workspaces as one bare pane.
+test_reloading_removes_the_old_rename_hook() {
+  tmux new-session -d -s hooks 'sleep 600'
+  tmux set-hook -g after-new-window 'command-prompt -I "#{window_name}" "rename-window %%"'
+  grep -E '^set-hook ' "$ROOT/config/tmux/tmux.conf" > "$TEST_ROOT/hooks.conf"
+  tmux source-file "$TEST_ROOT/hooks.conf"
+  [ -z "$(tmux show-hooks -g after-new-window 2>/dev/null | grep command-prompt)" ] ||
+    fail "reloading tmux.conf kept the old rename prompt hook"
+  tmux kill-session -t hooks
+}
+
 test_no_server_is_nothing_to_reload
+test_reloading_removes_the_old_rename_hook
 test_reload_restarts_devws_scripts_only
 
 printf 'Reload tests passed.\n'
