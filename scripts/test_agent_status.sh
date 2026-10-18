@@ -38,7 +38,15 @@ EOF
 done
 chmod +x "$TEST_ROOT/bin/"*
 ln -s "$SCRIPTS" "$TEST_ROOT/home/.tmuxinator"
-export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home"
+# Notifications go to a file, never to macOS, with settings of the test's own.
+cat > "$TEST_ROOT/bin/notify" <<EOF
+#!/usr/bin/env bash
+printf '%s|%s\n' "\$1" "\$2" >> "$TEST_ROOT/notifications"
+EOF
+chmod +x "$TEST_ROOT/bin/notify"
+: > "$TEST_ROOT/devws.env"
+export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" \
+  DEVWS_NOTIFY_COMMAND="$TEST_ROOT/bin/notify" DEVWS_ENV_FILE="$TEST_ROOT/devws.env"
 unset TMUX
 # The scripts run through the link, so the tickers' command lines name this
 # test's directory and pgrep never counts a real workspace's ticker.
@@ -241,6 +249,77 @@ test_a_real_client_redraws_the_spinner() {
   "$SCRIPTS/agent_status.sh" dev-work idle
 }
 
+since_of() {
+  tmux show-option -qv -t "=$1:" @devws_agent_state_since
+}
+
+test_the_state_records_when_it_started() {
+  local since
+  "$SCRIPTS/agent_status.sh" dev-work idle
+  [ -z "$(since_of dev-work)" ] || fail "idle has a start time"
+  "$SCRIPTS/agent_status.sh" dev-work waiting
+  since="$(since_of dev-work)"
+  [[ "$since" =~ ^[0-9]+$ ]] || fail "waiting has no start time: $since"
+  tmux set-option -t dev-work @devws_agent_state_since 1
+  "$SCRIPTS/agent_status.sh" dev-work waiting
+  [ "$(since_of dev-work)" = 1 ] || fail "the same state again reset its start time"
+  "$SCRIPTS/agent_status.sh" dev-work done
+  [ "$(since_of dev-work)" != 1 ] || fail "a new state kept the old start time"
+  "$SCRIPTS/agent_status.sh" dev-work idle
+  [ -z "$(since_of dev-work)" ] || fail "idle kept a start time"
+}
+
+notifications() {
+  cat "$TEST_ROOT/notifications" 2>/dev/null
+}
+
+notified() {
+  notifications | grep -qxF "$1"
+}
+
+test_notifications_name_the_workspace_and_agent() {
+  "$SCRIPTS/agent_status.sh" dev-work idle
+  rm -f "$TEST_ROOT/notifications"
+  "$SCRIPTS/agent_status.sh" dev-work working
+  "$SCRIPTS/agent_status.sh" dev-work waiting
+  wait_until notified "work|claude needs you" || fail "waiting was not notified: $(notifications)"
+  "$SCRIPTS/agent_status.sh" dev-work waiting
+  "$SCRIPTS/agent_status.sh" dev-work done
+  wait_until notified "work|claude is done" || fail "done was not notified: $(notifications)"
+  sleep 0.3
+  [ "$(notifications | wc -l | tr -d ' ')" = 2 ] || fail "working or a repeated state notified: $(notifications)"
+
+  rm -f "$TEST_ROOT/notifications"
+  printf 'DEVWS_NOTIFY=waiting\n' > "$DEVWS_ENV_FILE"
+  "$SCRIPTS/agent_status.sh" dev-work waiting
+  "$SCRIPTS/agent_status.sh" dev-work done
+  wait_until notified "work|claude needs you" || fail "DEVWS_NOTIFY=waiting dropped waiting"
+  sleep 0.3
+  ! notified "work|claude is done" || fail "DEVWS_NOTIFY=waiting notified done"
+
+  rm -f "$TEST_ROOT/notifications"
+  printf 'DEVWS_NOTIFY=0\n' > "$DEVWS_ENV_FILE"
+  "$SCRIPTS/agent_status.sh" dev-work waiting
+  sleep 0.3
+  [ -z "$(notifications)" ] || fail "DEVWS_NOTIFY=0 notified: $(notifications)"
+  : > "$DEVWS_ENV_FILE"
+  "$SCRIPTS/agent_status.sh" dev-work idle
+}
+
+# A client that shows the workspace sees the state already: no notification.
+test_no_notification_for_the_workspace_on_screen() {
+  rm -f "$TEST_ROOT/notifications"
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" -f /dev/null new-session -d -s client -x 200 -y 50 \
+    "TMUX= $REAL_TMUX -L $SOCKET attach -t dev-work"
+  attached() { [ -n "$(tmux list-clients -t dev-work)" ]; }
+  wait_until attached || fail "the client did not attach"
+  "$SCRIPTS/agent_status.sh" dev-work waiting
+  sleep 0.3
+  [ -z "$(notifications)" ] || fail "the workspace on screen was notified: $(notifications)"
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server
+  "$SCRIPTS/agent_status.sh" dev-work idle
+}
+
 test_the_sidebar_shows_each_workspace_state() {
   local pane first fzf_before
   new_workspace dev-other
@@ -312,6 +391,9 @@ test_the_spinner_turns_only_while_working
 test_header_strip_and_status_bar_show_the_state
 test_a_real_client_redraws_the_spinner
 test_the_sidebar_shows_each_workspace_state
+test_the_state_records_when_it_started
+test_notifications_name_the_workspace_and_agent
+test_no_notification_for_the_workspace_on_screen
 test_agents_start_with_the_state_hooks
 
 printf 'Agent status tests passed.\n'

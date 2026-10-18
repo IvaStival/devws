@@ -27,6 +27,7 @@ workspace|minimize|▁ Minimize agent and terminal|C-b _|minimize_agents
 workspace|header|▔ Hide or show the header|C-b C-s|toggle_header
 workspace|new-terminal|▣ New terminal||new_terminal
 workspace|close|× Close workspace||close_workspace
+agent|jump|! Go to waiting agent|C-b a|jump_agent
 agent|switch-agent|⇄ Switch agent||switch_agent
 agent|restart-agent|↻ Restart agent||restart_agent
 agent|initialize-agent|◇ Initialize agent||initialize_agent

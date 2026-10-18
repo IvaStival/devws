@@ -67,7 +67,7 @@ actions_of() {
 test_tabs_list_their_actions() {
   [ "$(actions_of workspace)" = "new open-folder toggle-layout minimize header new-terminal close" ] ||
     fail "Workspace tab: $(actions_of workspace)"
-  [ "$(actions_of agent)" = "switch-agent restart-agent initialize-agent register-agent remove-agent follow-mode" ] ||
+  [ "$(actions_of agent)" = "jump switch-agent restart-agent initialize-agent register-agent remove-agent follow-mode" ] ||
     fail "Agent tab: $(actions_of agent)"
   [ "$(actions_of editor)" = "switch-editor follow-mode" ] || fail "Editor tab: $(actions_of editor)"
   [ "$(actions_of database)" = "open-database database-folder" ] ||

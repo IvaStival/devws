@@ -154,7 +154,7 @@ group, and shows each action's own shortcut:
 | Tab | Actions |
 | --- | ------- |
 | Workspace | New workspace · Open folder · Toggle layout `C-b \` · Minimize agent and terminal `C-b _` · New terminal · Close workspace |
-| Agent | Switch agent · Restart agent · Initialize agent · Register agent · Remove agent · Agent follow `C-b F` |
+| Agent | Go to waiting agent `C-b a` · Switch agent · Restart agent · Initialize agent · Register agent · Remove agent · Agent follow `C-b F` |
 | Editor | Switch editor · Agent follow `C-b F` |
 | Database | Database `C-b B` · Database folder |
 
@@ -306,11 +306,22 @@ It appears in the agent's header, where the spinner replaces the agent icon
 (`⠋ Agent · claude · following`) and the other states follow the name
 (`Agent · claude ● needs you`), as the icon alone in the minimized agent strip
 (`▸ Agent ⠋`) and in the status bar (`[project] ⠋`), and in the sidebar under
-each workspace (`claude ⠋ · nvim`). There are no alerts or sounds.
+each workspace (`claude ⠋ · nvim`).
+
+**Go to the agent that needs you** with `C-b a` or **! Go to waiting agent**
+in the menu's Agent tab. It switches to the workspace whose agent has been
+waiting longest and focuses the agent, restoring it when minimized; press it
+again for the next one. With none waiting, it goes to an agent that is done.
+
+When an agent in a workspace you are not looking at starts waiting or is
+done, macOS shows a notification (`devws · my-app — claude needs you`). Set
+`DEVWS_NOTIFY` in `config/tmuxinator/.env` to `waiting` for those only, or to
+`0` for none. There are no sounds.
 
 How it works: the same hooks that link the editor report each agent event to
 `agent_state.sh`, which records the state on the workspace (tmux option
-`@devws_agent_state`). Switching or restarting the agent resets it. Codex asks
+`@devws_agent_state`, and when it started in `@devws_agent_state_since`), and
+`jump_agent.sh` goes through them. Switching or restarting the agent resets it. Codex asks
 once to review the new hooks, as for following.
 
 ### The header
@@ -466,6 +477,7 @@ The tmux prefix is `C-b` (tmux's default key set is restored by
 | `C-b _` | Minimize or restore the agent and terminal |
 | `C-b B` | Open the database pane, or focus it |
 | `C-b F` | Choose how the editor follows the agent (menu) |
+| `C-b a` | Go to the agent that needs you; again for the next one |
 | Click a header | Minimize or restore that pane group (agent and terminal, or database) |
 
 ### Session persistence
