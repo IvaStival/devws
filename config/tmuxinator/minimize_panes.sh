@@ -62,7 +62,7 @@ lead_role() {
 }
 
 role_of() {
-  printf '%s\n' "$workspace_panes" | awk -F '|' -v id="$1" '$1 == id { print $2 }'
+  printf '%s\n' "$workspace_panes" | awk -F '\t' -v id="$1" '$1 == id { print $2 }'
 }
 
 # A group beside the editor (same top row) shrinks in width; one below it
@@ -99,7 +99,7 @@ group_members() {
 group_placeholders() {
   case "$1" in
     agents) printf '%s\n' "$workspace_panes" |
-      awk -F '|' '$2 ~ /^minimized-(agent|terminal|extra|extra-agent|extra-editor)$/ { print $1 }' ;;
+      awk -F '\t' '$2 ~ /^minimized-(agent|terminal|extra|extra-agent|extra-editor)$/ { print $1 }' ;;
     database) pane_with_role minimized-database ;;
   esac
 }

@@ -224,6 +224,26 @@ test_new_panels_beside_the_editor_stay() {
   done
 }
 
+# Codex names its pane after the task, which can hold a "|" ("Improve the
+# guide | Parla"): it must not shift the pane's fields, or the layout reads as
+# stacked and a panel beside the editor is hidden with the group.
+test_a_pane_title_with_a_bar() {
+  local session="dev-bar" viewer viewer_pid
+  create_workspace "$session"
+  "$TOGGLE" "$session"
+  tmux select-pane -t "$(pane_id "$session" agent)" -T 'Improve the guide | Parla'
+  viewer="$(tmux split-window -h -t "$(pane_id "$session" editor)" -P -F '#{pane_id}' 'sleep 600')"
+  viewer_pid="$(pane_pid "$viewer")"
+
+  "$MINIMIZE" "$session" toggle agents || fail "minimize with a | in a title exited non-zero"
+  [[ "$(pane_window "$viewer")" != devws-minimized ]] ||
+    fail "a | in the agent's title hid the panel beside the editor"
+  [[ "$(tmux show-options -wqv -t "$session:" @devws_restore_agents)" == x:* ]] ||
+    fail "a | in the agent's title made the side layout read as stacked"
+  "$MINIMIZE" "$session" toggle agents || fail "restore with a | in a title exited non-zero"
+  [[ "$(pane_pid "$viewer")" == "$viewer_pid" ]] || fail "the panel beside the editor was restarted"
+}
+
 test_side_minimize_and_restore() {
   local session="dev-side"
   local before
@@ -385,6 +405,7 @@ test_minimize_without_an_agent_pane
 test_minimize_leaves_a_pane_beside_the_editor
 test_new_panels_minimize_with_the_group
 test_new_panels_beside_the_editor_stay
+test_a_pane_title_with_a_bar
 test_side_minimize_and_restore
 test_restore_falls_back_when_panes_changed
 test_focus_leaves_minimized_pane

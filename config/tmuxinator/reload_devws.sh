@@ -34,15 +34,16 @@ placeholders=0
 spinners=0
 
 # respawn-pane keeps the pane and its options (a placeholder's role, label and
-# hidden pane); without a command it reruns the pane's own start command.
-while IFS='|' read -r session pane title role; do
+# hidden pane); without a command it reruns the pane's own start command. The
+# title comes last: it can hold a "|" (Codex names its pane after the task).
+while IFS='|' read -r session pane role title; do
   case "$session" in dev-*) ;; *) continue ;; esac
   if [ "$title" = devws-picker ]; then
     tmux respawn-pane -k -t "$pane" "$scripts_dir/session_picker.sh" && sidebars=$((sidebars + 1))
   elif [ "${role#minimized-}" != "$role" ]; then
     tmux respawn-pane -k -t "$pane" && placeholders=$((placeholders + 1))
   fi
-done < <(tmux list-panes -a -F '#{session_name}|#{pane_id}|#{pane_title}|#{@devws_role}')
+done < <(tmux list-panes -a -F '#{session_name}|#{pane_id}|#{@devws_role}|#{pane_title}')
 
 # A spinner is stopped, then started again by agent_status.sh, which leaves
 # the agents' states as they are.
