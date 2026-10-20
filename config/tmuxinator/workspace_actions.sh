@@ -227,26 +227,38 @@ remove_agent() {
   read -r -p 'Press Enter to return…'
 }
 
-# Another agent, terminal or Neovim beside the terminal (new_panel.sh).
+# Another agent, terminal or Neovim, beside or below the focused pane
+# (new_panel.sh).
 new_panel() {
-  local session kind agent=""
+  local session kind program agent="" place position
   session="$(tmux display-message -p '#S')"
   kind="$(
     printf '%s\n' Agent Terminal Neovim |
       fzf --height=~10 --layout=reverse --prompt='New panel > ' \
-        --header='Opens beside the terminal, with the agent group'
+        --header='What to open in the new panel'
   )" || return 0
   case "$kind" in
     Agent)
+      program=agent
       agent="$(choose_agent 'Choose the agent for the new panel')" || return 0
       [ -n "$agent" ] || return 0
-      "$HOME/.tmuxinator/new_panel.sh" "$session" agent "$agent" >/dev/null
       ;;
-    Terminal) "$HOME/.tmuxinator/new_panel.sh" "$session" terminal >/dev/null ;;
-    Neovim) "$HOME/.tmuxinator/new_panel.sh" "$session" nvim >/dev/null ;;
+    Terminal) program=terminal ;;
+    Neovim) program=nvim ;;
     # Cancelled: nothing to open.
     *) return 0 ;;
   esac
+  place="$(
+    printf '%s\n' Beside Below |
+      fzf --height=~10 --layout=reverse --prompt='Where > ' \
+        --header='Beside or below the pane you are in'
+  )" || return 0
+  case "$place" in
+    Beside) position=side ;;
+    Below) position=below ;;
+    *) return 0 ;;
+  esac
+  "$HOME/.tmuxinator/new_panel.sh" "$session" "$position" "$program" ${agent:+"$agent"} >/dev/null
 }
 
 toggle_layout() {

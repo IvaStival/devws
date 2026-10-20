@@ -206,6 +206,24 @@ test_minimize_leaves_a_pane_beside_the_editor() {
   done
 }
 
+# New panel opened beside or below the editor (not in the agent group's area)
+# stays where it is when the group minimizes, whatever it runs.
+test_new_panels_beside_the_editor_stay() {
+  local session panel panel_pid
+  for session in dev-near-stacked dev-near-side; do
+    create_workspace "$session"
+    [ "$session" = dev-near-side ] && "$TOGGLE" "$session"
+    panel="$(tmux split-window -v -t "$(pane_id "$session" editor)" -P -F '#{pane_id}' 'sleep 600')"
+    tmux set-option -p -t "$panel" @devws_role extra-editor
+    panel_pid="$(pane_pid "$panel")"
+    "$MINIMIZE" "$session" toggle agents || fail "$session: minimize exited non-zero"
+    [[ "$(pane_window "$panel")" != devws-minimized ]] ||
+      fail "$session: a Neovim below the editor was minimized with the agent group"
+    "$MINIMIZE" "$session" toggle agents || fail "$session: restore exited non-zero"
+    [[ "$(pane_pid "$panel")" == "$panel_pid" ]] || fail "$session: the Neovim below the editor was restarted"
+  done
+}
+
 test_side_minimize_and_restore() {
   local session="dev-side"
   local before
@@ -366,6 +384,7 @@ test_stacked_minimize_and_restore
 test_minimize_without_an_agent_pane
 test_minimize_leaves_a_pane_beside_the_editor
 test_new_panels_minimize_with_the_group
+test_new_panels_beside_the_editor_stay
 test_side_minimize_and_restore
 test_restore_falls_back_when_panes_changed
 test_focus_leaves_minimized_pane

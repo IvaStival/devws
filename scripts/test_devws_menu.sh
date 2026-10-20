@@ -124,13 +124,14 @@ test_header_marks_the_current_tab() {
   grep -q $'\033\\[2m Workspace ' <<<"$header" || fail "the header does not list every tab"
 }
 
-# New panel asks what to open, and for an agent which one, then opens it in
-# the workspace (new_panel.sh).
+# New panel asks what to open (for an agent, which one) and where, beside or
+# below the focused pane, then opens it there (new_panel.sh).
 test_new_panel_asks_what_to_open() {
-  local answers expected
-  for answers in "Agent|codex|dev-menu agent codex" "Terminal||dev-menu terminal" "Neovim||dev-menu nvim"; do
-    IFS='|' read -r kind agent expected <<<"$answers"
-    printf '%s\n' "$kind" ${agent:+"$agent"} > "$TEST_ROOT/fzf.answers"
+  local answers kind agent place expected
+  for answers in "Agent|codex|Beside|dev-menu side agent codex" "Terminal||Below|dev-menu below terminal" \
+    "Neovim||Beside|dev-menu side nvim"; do
+    IFS='|' read -r kind agent place expected <<<"$answers"
+    printf '%s\n' "$kind" ${agent:+"$agent"} "$place" > "$TEST_ROOT/fzf.answers"
     rm -f "$TEST_ROOT/calls/new_panel.sh"
     menu --run new-panel
     [ "$(cat "$TEST_ROOT/calls/new_panel.sh" 2>/dev/null)" = "$expected" ] ||
@@ -149,7 +150,7 @@ test_the_menu_marks_itself_open() {
   TMUX_PANE="$PANE" TMUX="fake,1,0" "$MENU" || fail "the menu failed"
   [ "$(cat "$TEST_ROOT/calls/popup" 2>/dev/null)" = open ] || fail "the menu did not mark itself open"
   [ ! -e "$TEST_ROOT/devws-popup-$(id -u)" ] || fail "the closed menu left the popup flag"
-  printf 'Terminal\n' > "$TEST_ROOT/fzf.answers"
+  printf 'Terminal\nBelow\n' > "$TEST_ROOT/fzf.answers"
   menu --run new-panel
   [ "$(cat "$TEST_ROOT/calls/popup")" = open ] || fail "New panel's popup was not marked open"
   [ ! -e "$TEST_ROOT/devws-popup-$(id -u)" ] || fail "New panel left the popup flag"
