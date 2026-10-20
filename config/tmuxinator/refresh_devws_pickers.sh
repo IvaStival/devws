@@ -10,12 +10,19 @@
 set -u
 
 if [ "${1:-}" = --reload ]; then
-  # Each sidebar redraws its own rows (session_picker.sh), since it alone may
-  # reload its fzf.
-  tmux list-panes -a -F '#{pane_title} #{@devws_picker_rows}' 2>/dev/null |
-    while read -r pane_title rows_file; do
+  # Every sidebar, on screen or not, so each is current when shown: its fzf
+  # redraws the rows (session_picker.sh --rows). The mark stays when fzf is
+  # not listening yet, for it to redraw once it starts.
+  picker="$(cd "$(dirname "$0")" && pwd)/session_picker.sh"
+  tmux list-panes -a -F '#{pane_title}|#{@devws_picker_rows}|#{@devws_picker_socket}' 2>/dev/null |
+    while IFS='|' read -r pane_title rows_file socket; do
       [ "$pane_title" = "devws-picker" ] && [ -n "$rows_file" ] || continue
       : > "$rows_file.stale"
+      [ -S "$socket" ] || continue
+      # In the background: the agent's hook that changed the state must not
+      # wait on the sidebars.
+      curl -s --max-time 2 --unix-socket "$socket" http://localhost \
+        -d "reload-sync('$picker' --rows)" >/dev/null 2>&1 &
     done
   exit 0
 fi

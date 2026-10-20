@@ -3,10 +3,12 @@
 # work in (devws reload; ./install.sh runs it when tmux is up):
 #
 #   - reloads ~/.tmux.conf: formats, key bindings, colors, and the header's
-#     ticker, which restarts itself whenever tmux.conf is sourced;
+#     ticker, which restarts itself whenever tmux.conf is sourced and turns
+#     the working agents' spinner (agent_spinner.sh);
 #   - restarts every workspace's sidebar (title devws-picker) and minimized
 #     placeholders (role minimized-*), which run the scripts' new versions;
-#   - restarts the spinner of every workspace whose agent is working.
+#   - stops the spinner an older devws ran for each working agent, now the
+#     header's ticker's job.
 #
 # Agent, editor, terminal and database panes keep running: what they read only
 # at start (the agents' hooks, the editor config, dev.yml) applies to new or
@@ -31,7 +33,6 @@ tmux source-file "$HOME/.tmux.conf" || {
 
 sidebars=0
 placeholders=0
-spinners=0
 
 # respawn-pane keeps the pane and its options (a placeholder's role, label and
 # hidden pane); without a command it reruns the pane's own start command.
@@ -44,15 +45,15 @@ while IFS='|' read -r session pane title role; do
   fi
 done < <(tmux list-panes -a -F '#{session_name}|#{pane_id}|#{pane_title}|#{@devws_role}')
 
-# A spinner is stopped, then started again by agent_status.sh as for any
-# working agent.
-while IFS='|' read -r session state ticker; do
+# An older devws's spinner: its process, and the frame it left on the session,
+# which would hide the global one.
+while IFS='|' read -r session ticker; do
   case "$session" in dev-*) ;; *) continue ;; esac
-  [ "$state" = working ] || continue
-  [ -n "$ticker" ] && kill "$ticker" 2>/dev/null
-  tmux set-option -u -t "=$session:" @devws_agent_ticker
-  "$scripts_dir/agent_status.sh" "$session" working && spinners=$((spinners + 1))
-done < <(tmux list-sessions -F '#{session_name}|#{@devws_agent_state}|#{@devws_agent_ticker}')
+  [ -n "$ticker" ] || continue
+  kill "$ticker" 2>/dev/null
+  tmux set-option -qu -t "=$session:" @devws_agent_ticker
+  tmux set-option -qu -t "=$session:" @devws_agent_frame
+done < <(tmux list-sessions -F '#{session_name}|#{@devws_agent_ticker}')
 
-printf 'devws: reloaded tmux.conf, %s sidebar(s), %s placeholder(s), %s spinner(s)\n' \
-  "$sidebars" "$placeholders" "$spinners"
+printf 'devws: reloaded tmux.conf, %s sidebar(s), %s placeholder(s)\n' \
+  "$sidebars" "$placeholders"

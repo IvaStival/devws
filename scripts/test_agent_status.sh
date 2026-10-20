@@ -153,39 +153,36 @@ test_the_hook_never_fails() {
   ! "$SCRIPTS/agent_status.sh" dev-none done 2>/dev/null || fail "a missing workspace was accepted"
 }
 
+# The frame the agents' headers and the status bar show: the session's own,
+# else the global one.
 frame() {
-  tmux show-option -qv -t "=$1:" @devws_agent_frame
+  tmux display-message -p -t "=$1:" '#{@devws_agent_frame}'
 }
 
-has_frame() {
-  [ -n "$(frame "$1")" ]
-}
-
-tickers() {
-  pgrep -f "$SCRIPTS/agent_status.sh .* --tick" | wc -l | tr -d ' '
+# One turn of the shared spinner, as header_ticker.sh runs it.
+spin() {
+  "$SCRIPTS/agent_spinner.sh" "$1"
 }
 
 test_the_spinner_turns_only_while_working() {
-  local first
-  "$SCRIPTS/agent_status.sh" dev-work working
-  "$SCRIPTS/agent_status.sh" dev-work working
-  "$SCRIPTS/agent_status.sh" dev-work working
-  wait_until has_frame dev-work || fail "the spinner did not start"
-  first="$(frame dev-work)"
-  frame_changed() { [ "$(frame dev-work)" != "$first" ]; }
-  wait_until frame_changed || fail "the spinner does not turn"
-  one_ticker() { [ "$(tickers)" = 1 ]; }
-  wait_until one_ticker || fail "more than one spinner runs: $(tickers)"
+  tmux set-option -gu @devws_agent_frame
+  "$SCRIPTS/agent_status.sh" dev-work idle
+  spin 3
+  [ -z "$(frame dev-work)" ] || fail "the spinner turned with no agent working"
 
+  "$SCRIPTS/agent_status.sh" dev-work working
+  spin 3
+  [ "$(frame dev-work)" = ⠸ ] || fail "turn 3 did not show the fourth frame: $(frame dev-work)"
+  spin 14
+  [ "$(frame dev-work)" = ⠼ ] || fail "the frames do not wrap round: $(frame dev-work)"
+  [ -z "$(pgrep -f "$SCRIPTS/agent_status.sh")" ] || fail "a state change left a process running"
+
+  # A frame left on the session by an older devws goes with the next change.
+  tmux set-option -t dev-work @devws_agent_frame ⠏
   "$SCRIPTS/agent_status.sh" dev-work done
-  no_ticker() { [ "$(tickers)" = 0 ]; }
-  wait_until no_ticker || fail "the spinner kept running after done"
-
-  new_workspace dev-gone
-  "$SCRIPTS/agent_status.sh" dev-gone working
-  wait_until has_frame dev-gone || fail "the second spinner did not start"
-  tmux kill-session -t dev-gone
-  wait_until no_ticker || fail "the spinner kept running after its workspace closed"
+  "$SCRIPTS/agent_status.sh" dev-work working
+  [ "$(frame dev-work)" = ⠼ ] || fail "an old session frame hides the shared one"
+  "$SCRIPTS/agent_status.sh" dev-work idle
 }
 
 render() {
@@ -237,9 +234,11 @@ test_a_real_client_redraws_the_spinner() {
     "$REAL_TMUX" -L "$CLIENT_SOCKET" capture-pane -p -t client | grep -m 1 "Agent ·"
   }
   "$SCRIPTS/agent_status.sh" dev-work working
+  spin 1
   shows_working() { client_header | grep -qE "[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Agent ·"; }
   wait_until shows_working || fail "the client does not draw working: $(client_header)"
   first="$(client_header)"
+  spin 2
   redrawn() { [ "$(client_header)" != "$first" ]; }
   wait_until redrawn || fail "the client does not redraw the spinner"
   "$SCRIPTS/agent_status.sh" dev-work done
@@ -320,33 +319,61 @@ test_no_notification_for_the_workspace_on_screen() {
   "$SCRIPTS/agent_status.sh" dev-work idle
 }
 
+sidebar_test_pane=""
+
+sidebar() {
+  tmux capture-pane -p -t "$sidebar_test_pane"
+}
+
+working_row() {
+  sidebar | grep -oE "claude [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] · nvim"
+}
+
 test_the_sidebar_shows_each_workspace_state() {
-  local pane first fzf_before
+  local first fzf_before
   new_workspace dev-other
   "$SCRIPTS/agent_status.sh" dev-work waiting
   "$SCRIPTS/agent_status.sh" dev-other done
-  pane="$(tmux split-window -t dev-work: -h -l 60 -P -F '#{pane_id}' "$SCRIPTS/session_picker.sh")"
-  sidebar() { tmux capture-pane -p -t "$pane"; }
+  sidebar_test_pane="$(tmux split-window -t dev-work: -h -l 60 -P -F '#{pane_id}' "$SCRIPTS/session_picker.sh")"
   shows_both() { sidebar | grep -q "claude ● needs you · nvim" && sidebar | grep -q "claude ✓ done · nvim"; }
   wait_until shows_both || fail "the sidebar does not show each state: $(sidebar)"
   sidebar_fzf() {
-    pgrep -f -- "--listen=.*devws-picker-$(tmux display-message -p -t "$pane" '#{pane_pid}').sock"
+    pgrep -f -- "--listen=.*devws-picker-$(tmux display-message -p -t "$sidebar_test_pane" '#{pane_pid}').sock"
   }
   fzf_before="$(sidebar_fzf)"
   [ -n "$fzf_before" ] || fail "the sidebar's fzf is not listening"
+  listening() { [ -S "$(tmux show-option -pqv -t "$sidebar_test_pane" @devws_picker_socket)" ]; }
+  wait_until listening || fail "the sidebar did not publish its socket"
 
+  # No client shows it: the state changes reach it, the spinner leaves it be.
   "$SCRIPTS/agent_status.sh" dev-other working
-  working_row() { sidebar | grep -oE "claude [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] · nvim"; }
   shows_working() { [ -n "$(working_row)" ]; }
   wait_until shows_working || fail "the sidebar did not redraw on a state change: $(sidebar)"
   first="$(working_row)"
+  spin 4
+  sleep 0.5
+  [ "$(working_row)" = "$first" ] || fail "a sidebar no one sees was spun: $(working_row)"
+
+  # Shown by a client, it spins.
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" -f /dev/null new-session -d -s client -x 200 -y 50 \
+    "TMUX= $REAL_TMUX -L $SOCKET attach -t dev-work"
+  attached() { [ -n "$(tmux list-clients -t dev-work)" ]; }
+  wait_until attached || fail "the client did not attach"
+  spin 4
   turned() { shows_working && [ "$(working_row)" != "$first" ]; }
-  wait_until turned || fail "the sidebar's spinner does not turn: $(sidebar)"
+  wait_until turned || fail "the sidebar on screen does not spin: $(sidebar)"
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server
+
   "$SCRIPTS/agent_status.sh" dev-other idle
   shows_idle() { sidebar | grep -q "claude · nvim"; }
   wait_until shows_idle || fail "the sidebar shows a state while idle: $(sidebar)"
   [ "$(sidebar_fzf)" = "$fzf_before" ] || fail "the sidebar restarted on a state change"
-  tmux kill-pane -t "$pane"
+  # Nothing polls while fzf runs: the sidebar starts no sleeps.
+  local sidebar_pid sleeps
+  sidebar_pid="$(tmux display-message -p -t "$sidebar_test_pane" '#{pane_pid}')"
+  sleeps="$(for attempt in 1 2 3 4 5; do pgrep -P "$sidebar_pid" sleep; sleep 0.1; done)"
+  [ -z "$sleeps" ] || fail "the sidebar polls: it started sleep $sleeps"
+  tmux kill-pane -t "$sidebar_test_pane"
   tmux kill-session -t dev-other
   "$SCRIPTS/agent_status.sh" dev-work idle
 }

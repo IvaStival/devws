@@ -557,8 +557,9 @@ conversations. `devws reload` does the same by hand:
 
 - reloads `~/.tmux.conf` (formats, key bindings, colors; the header's ticker
   restarts with it);
-- restarts each workspace's sidebar and minimized placeholders, and the
-  spinner of a working agent, so they run the new scripts;
+- restarts each workspace's sidebar and minimized placeholders, so they run
+  the new scripts (the working agents' spinner turns in the header's ticker,
+  which restarts with tmux.conf);
 - leaves the agent, editor, terminal and database panes running.
 
 What those read only when they start applies to new or restarted ones: the
@@ -663,7 +664,9 @@ Glow, exactly as before.
   `config/nvim/lua/devws/follow.lua`; wired up in `agent_runner.sh` and
   `editor_runner.sh`
 - Agent status: `config/tmuxinator/agent_state.sh` (hook: event → state),
-  `agent_status.sh` (records it, runs the spinner), the formats
+  `agent_status.sh` (records it, redraws the sidebars), `agent_spinner.sh`
+  (the spinner: one clock in `header_ticker.sh` for every workspace, which
+  turns only the sidebars on screen), the formats
   `@devws_agent_icon` and `@devws_agent_badge` in `config/tmux/tmux.conf`;
   wired up in `agent_runner.sh` and `agent_settings.json`
 - Neovim (LazyVim): `config/nvim/`

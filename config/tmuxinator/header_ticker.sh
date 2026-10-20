@@ -21,6 +21,9 @@
 #                  each attached client, into the session's
 #                  @devws_header_row_<1-3>; the global rows, at the first
 #                  client's width, stand in for a session until then
+#   4 times a s.   the working agents' spinner turns (agent_spinner.sh), in
+#                  the status bar, the agents' headers and the sidebars on
+#                  screen; header or not
 #   20 times a s.  the ghost (header_pet.sh) moves, into each attached
 #                  workspace's @devws_ghost_<1-3>, in one mood for all the
 #                  agents (overall_mood).
@@ -41,6 +44,10 @@ ghost_width=12
 narrow_width=110
 # Frames a second: the loop's pace, which every other interval counts in.
 fps=20
+# Ticks between the spinner's frames (agent_spinner.sh): four a second.
+spin_ticks=5
+# shellcheck source=agent_spinner.sh
+. "$scripts_dir/agent_spinner.sh"
 
 # Restarting on every tmux.conf load is how an update reaches a running server.
 start() {
@@ -254,11 +261,13 @@ run() {
     [ $((tick % (600 * fps))) -eq 0 ] && in_background costs keep costs nice "$scripts_dir/header_tokens.sh" costs
     [ $((tick % (60 * fps))) -eq 0 ] && in_background tokens update_tokens
     [ $((tick % (1800 * fps))) -eq 0 ] && in_background weather keep weather "$scripts_dir/header_weather.sh"
-    # While the header is hidden (header_toggle.sh) nothing is drawn: one turn
-    # a second keeps the sources current for when it comes back.
+    # The working agents' spinner, four turns a second, header or not.
+    [ $((tick % spin_ticks)) -eq 0 ] && spin_agents $((tick / spin_ticks))
+    # While the header is hidden (header_toggle.sh) nothing is drawn: a turn
+    # each spinner frame keeps the sources current for when it comes back.
     if [ -n "$header_hidden" ]; then
-      tick=$((tick + fps))
-      sleep 1
+      tick=$((tick + spin_ticks))
+      sleep 0.25
       continue
     fi
     if [ "$show_pet" = 1 ]; then
