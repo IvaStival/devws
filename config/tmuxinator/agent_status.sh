@@ -35,6 +35,10 @@ pane="${3:-}"
 # Absolute: the ticker is started from the tmux server's directory.
 script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+# Present while a devws popup (the menu) is open (devws_menu.sh): a redraw
+# then shows the panes behind it for an instant, so the spinner holds still.
+popup_flag="${TMPDIR:-/tmp}"
+popup_flag="${popup_flag%/}/devws-popup-$(id -u)"
 
 # The ticker follows the session by id, which survives a rename. A second
 # ticker can start while the first one is starting; the last one to register
@@ -43,8 +47,10 @@ tick() {
   local session_id="$session" frame=0
   tmux set-option -t "$session_id" @devws_agent_ticker "$$" 2>/dev/null || return
   while [ "$(tmux display-message -p -t "$session_id:" '#{@devws_agent_state}|#{@devws_agent_ticker}' 2>/dev/null)" = "working|$$" ]; do
-    frame=$(((frame + 1) % ${#frames[@]}))
-    tmux set-option -t "$session_id" @devws_agent_frame "${frames[frame]}" 2>/dev/null || return
+    if [ ! -e "$popup_flag" ]; then
+      frame=$(((frame + 1) % ${#frames[@]}))
+      tmux set-option -t "$session_id" @devws_agent_frame "${frames[frame]}" 2>/dev/null || return
+    fi
     sleep 0.15
   done
 }

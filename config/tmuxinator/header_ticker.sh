@@ -38,6 +38,10 @@ script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 scripts_dir="$(dirname "$script")"
 state_dir="${TMPDIR:-/tmp}"
 state_dir="${state_dir%/}/devws-header-$(id -u)"
+# Present while a devws popup (the menu) is open (devws_menu.sh): a redraw
+# then shows the panes behind it for an instant, so the header holds still.
+popup_flag="${TMPDIR:-/tmp}"
+popup_flag="${popup_flag%/}/devws-popup-$(id -u)"
 moods="idle working waiting done"
 # The ghost's lane, and the columns under which it is left out.
 ghost_width=12
@@ -259,7 +263,7 @@ run() {
   while true; do
     if [ $((tick % fps)) -eq 0 ]; then
       header_hidden="$(tmux show-option -gqv @devws_header_hidden 2>/dev/null)"
-      if [ -z "$header_hidden" ]; then
+      if [ -z "$header_hidden" ] && [ ! -e "$popup_flag" ]; then
         read_clients
         in_background layout lay_out
       fi
@@ -280,7 +284,7 @@ run() {
       sleep 1
       continue
     fi
-    if [ "$show_pet" = 1 ]; then
+    if [ "$show_pet" = 1 ] && [ ! -e "$popup_flag" ]; then
       draw_ghost "$tick" 2>/dev/null || exit 0
     fi
     tick=$((tick + 1))

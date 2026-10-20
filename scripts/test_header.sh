@@ -731,6 +731,30 @@ test_the_header_redraws_only_changes() {
   tmux kill-server
 }
 
+# While a devws popup (the menu) is open, every redraw shows the panes behind
+# it for an instant: the header holds still, then carries on.
+test_the_header_holds_still_under_a_popup() {
+  local popup_flag="$TEST_ROOT/devws-popup-$(id -u)"
+  tmux new-session -d -s dev-work -x 200 -y 50 'sleep 600'
+  tmux source-file "$TEST_ROOT/status.conf"
+  tmux set-option -t dev-work @devws_agent_state working
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" -f /dev/null new-session -d -s client -x 200 -y 50 \
+    "TMUX= $REAL_TMUX -L $SOCKET attach -t dev-work"
+  "$SCRIPTS/header_ticker.sh" --start
+  wait_until header_row_shows 3 'CPU' || fail "the header did not show: $(client_header)"
+  touch "$popup_flag"
+  sleep 0.5
+  : > "$TEST_ROOT/redraws.log"
+  sleep 2
+  [ "$(redraws ghost)" -eq 0 ] && [ "$(redraws rows)" -eq 0 ] ||
+    fail "the header redrew under a popup: $(redraws ghost) ghost, $(redraws rows) rows"
+  rm "$popup_flag"
+  sleep 1
+  [ "$(redraws ghost)" -gt 0 ] || fail "the ghost did not move again after the popup"
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server
+  tmux kill-server
+}
+
 test_the_header_hides() {
   local line marker_column
   tmux new-session -d -s dev-work -x 200 -y 50 'sleep 600'
@@ -791,6 +815,7 @@ test_the_clock
 test_the_layout_leaves_out_the_clock_when_narrow
 test_a_client_shows_the_header
 test_the_header_redraws_only_changes
+test_the_header_holds_still_under_a_popup
 test_the_header_hides
 
 printf 'Header tests passed.\n'

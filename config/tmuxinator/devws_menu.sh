@@ -163,6 +163,21 @@ show_menu() {
   run_action "${selected%%$'\t'*}"
 }
 
+# While the menu (or an action it runs, as C-b N's popup does) is open, the
+# header's ghost and the agents' spinners hold still: each of their redraws
+# would show the panes behind the popup for an instant. They watch this file
+# (header_ticker.sh, agent_status.sh).
+mark_popup_open() {
+  local flag="${TMPDIR:-/tmp}"
+  flag="${flag%/}/devws-popup-$(id -u)"
+  : > "$flag"
+  trap 'rm -f "'"$flag"'"' EXIT
+}
+
+case "${1:-}" in
+  --run | '') mark_popup_open ;;
+esac
+
 case "${1:-}" in
   --items) items "${2:-}" ;;
   --header) header ;;

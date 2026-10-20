@@ -45,7 +45,8 @@ printf '%s|%s\n' "\$1" "\$2" >> "$TEST_ROOT/notifications"
 EOF
 chmod +x "$TEST_ROOT/bin/notify"
 : > "$TEST_ROOT/devws.env"
-export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" \
+# TMPDIR keeps the popup flag (devws_menu.sh) apart from a real menu's.
+export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" TMPDIR="$TEST_ROOT" \
   DEVWS_NOTIFY_COMMAND="$TEST_ROOT/bin/notify" DEVWS_ENV_FILE="$TEST_ROOT/devws.env"
 unset TMUX
 # The scripts run through the link, so the tickers' command lines name this
@@ -176,6 +177,16 @@ test_the_spinner_turns_only_while_working() {
   wait_until frame_changed || fail "the spinner does not turn"
   one_ticker() { [ "$(tickers)" = 1 ]; }
   wait_until one_ticker || fail "more than one spinner runs: $(tickers)"
+
+  # Under a devws popup (the menu) the spinner holds still: a redraw would
+  # show the panes behind it. It turns again once the popup closes.
+  touch "$TEST_ROOT/devws-popup-$(id -u)"
+  sleep 0.4
+  first="$(frame dev-work)"
+  sleep 0.6
+  [ "$(frame dev-work)" = "$first" ] || fail "the spinner turned under a popup"
+  rm "$TEST_ROOT/devws-popup-$(id -u)"
+  wait_until frame_changed || fail "the spinner did not turn again after the popup"
 
   "$SCRIPTS/agent_status.sh" dev-work done
   no_ticker() { [ "$(tickers)" = 0 ]; }

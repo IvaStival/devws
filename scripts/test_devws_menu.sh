@@ -30,6 +30,8 @@ EOF
 # --print-query adds); the agent folders it offers are recorded.
 cat > "$TEST_ROOT/bin/fzf" <<EOF
 #!/usr/bin/env bash
+# Whether the menu marked a popup open while it asks (devws_menu.sh).
+[ -e "$TEST_ROOT/devws-popup-$(id -u)" ] && echo open > "$TEST_ROOT/calls/popup" || echo closed > "$TEST_ROOT/calls/popup"
 cat > "$TEST_ROOT/calls/fzf.input"
 answer="\$(head -n 1 "$TEST_ROOT/fzf.answers")"
 sed -i '' 1d "$TEST_ROOT/fzf.answers"
@@ -48,7 +50,8 @@ printf '%s\n' "\$*" > "$TEST_ROOT/calls/$script"
 EOF
   chmod +x "$TEST_ROOT/home/.tmuxinator/$script"
 done
-export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home"
+# TMPDIR keeps the popup flag apart from a real menu's.
+export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" TMPDIR="$TEST_ROOT"
 unset TMUX
 
 MENU="$HOME/.tmuxinator/devws_menu.sh"
@@ -139,6 +142,19 @@ test_new_panel_asks_what_to_open() {
   [ ! -e "$TEST_ROOT/calls/new_panel.sh" ] || fail "a cancelled New panel opened one"
 }
 
+# While the menu is open the header and spinners hold still (they would show
+# the panes behind it): the menu marks itself open, and always unmarks.
+test_the_menu_marks_itself_open() {
+  : > "$TEST_ROOT/fzf.answers"
+  TMUX_PANE="$PANE" TMUX="fake,1,0" "$MENU" || fail "the menu failed"
+  [ "$(cat "$TEST_ROOT/calls/popup" 2>/dev/null)" = open ] || fail "the menu did not mark itself open"
+  [ ! -e "$TEST_ROOT/devws-popup-$(id -u)" ] || fail "the closed menu left the popup flag"
+  printf 'Terminal\n' > "$TEST_ROOT/fzf.answers"
+  menu --run new-panel
+  [ "$(cat "$TEST_ROOT/calls/popup")" = open ] || fail "New panel's popup was not marked open"
+  [ ! -e "$TEST_ROOT/devws-popup-$(id -u)" ] || fail "New panel left the popup flag"
+}
+
 test_script_actions_run_for_the_session() {
   local action script expected
   for action in toggle-layout:toggle_layout.sh:dev-menu minimize:minimize_panes.sh:"dev-menu toggle agents" \
@@ -209,6 +225,7 @@ test_switching_tabs
 test_header_marks_the_current_tab
 test_script_actions_run_for_the_session
 test_new_panel_asks_what_to_open
+test_the_menu_marks_itself_open
 test_register_and_remove_agents
 test_every_action_has_a_function
 test_sidebar_opens_the_menu
