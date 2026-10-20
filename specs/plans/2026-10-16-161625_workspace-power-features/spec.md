@@ -57,9 +57,11 @@ This spec covers six features to fix that. Each one ships on its own.
 3. The checkout goes next to the repo: `../<repo>-<branch>`, with `/` in the branch turned
    into `-`. An existing worktree for that branch is reused, not created again.
 4. The new workspace opens on that folder like any other, and save/restore keeps it.
-5. Nothing is ever deleted without asking. **× Close workspace** on a worktree workspace closes
-   the workspace, then asks whether to remove the worktree folder too, with **Keep** as the
-   default answer (Enter or Esc keeps it). The question names the folder and the branch.
+5. Nothing is ever deleted without asking. **× Close workspace** on a worktree workspace asks,
+   before closing it, whether to remove the worktree folder too, with **Keep** as the default
+   answer (anything but `y` keeps it). The question names the folder and the branch. A
+   workspace is a worktree one when its folder is a linked worktree (not the repo's main
+   folder), so restored workspaces need no extra state.
 6. A worktree with uncommitted changes or untracked files is never removed: the question is not
    asked; devws says why it was kept and lists what is uncommitted.
 7. The branch itself is never deleted, nor any commit on it. Removing a worktree uses

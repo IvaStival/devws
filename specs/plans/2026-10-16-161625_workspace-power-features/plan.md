@@ -389,15 +389,16 @@ Throughout: anything that deletes asks first with "keep" as the default (spec co
 
 ### Step 3.3 — Closing one
 
-**Files:** `workspace_actions.sh`, `save_state.sh`, `restore_state.sh`
+**Files:** `workspace_actions.sh`
 
 **Actions:**
 - `close_workspace()`: after closing a worktree workspace, `worktree.sh status`:
   - dirty → print "Kept <path>: uncommitted changes" and the list; no question.
   - clean → `Remove the worktree folder <path> (branch <branch> is kept)? [y/N]`; only `y`
     removes; Enter/Esc keep.
-- Save/restore: `@devws_worktree` on the `W` line, so a restored workspace still offers the
-  removal question.
+- Asked before the workspace closes (the pane that asks may be in it); the folder is removed
+  after `kill-session`. A worktree workspace is recognised by its folder (`worktree.sh linked`),
+  so save/restore needs no change.
 
 **Verification:**
 - Tests: clean + Enter keeps, clean + `y` removes and the branch remains, dirty never asks.

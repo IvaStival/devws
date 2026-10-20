@@ -35,6 +35,20 @@ devws() {
     return
   fi
 
+  # A workspace on a git worktree of the current folder's repo, next to it
+  # (../<repo>-<branch>): the branch's worktree when there is one, else the
+  # branch checked out there, or a new branch off HEAD.
+  if [[ "${1:-}" == "worktree" ]]; then
+    if [[ -z "${2:-}" ]]; then
+      print -u2 "usage: devws worktree <branch> [agent] [editor]"
+      return 2
+    fi
+    local worktree_folder
+    worktree_folder="$("$HOME/.tmuxinator/worktree.sh" ensure "$PWD" "$2")" || return
+    devws "$worktree_folder" "${@:3}"
+    return
+  fi
+
   if [[ "${1:-}" == "fresh" ]]; then
     rm -f "$HOME/.devws-state/sessions.tsv"
     print "devws: saved workspaces cleared"

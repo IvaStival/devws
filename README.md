@@ -153,7 +153,7 @@ group, and shows each action's own shortcut:
 
 | Tab | Actions |
 | --- | ------- |
-| Workspace | New workspace · Open folder · Toggle layout `C-b \` · Minimize agent and terminal `C-b _` · New terminal · Close workspace |
+| Workspace | New workspace · New worktree workspace · Open folder · Toggle layout `C-b \` · Minimize agent and terminal `C-b _` · New terminal · Close workspace |
 | Agent | Go to waiting agent `C-b a` · Switch agent · Restart agent · Initialize agent · Register agent · Remove agent · Agent follow `C-b F` |
 | Editor | Switch editor · Agent follow `C-b F` |
 | Database | Database `C-b B` · Database folder |
@@ -567,6 +567,31 @@ the devws menu), the editor config, and the per-workspace options `dev.yml`
 sets, such as the workspace name on the status bar (reopen the workspace).
 Sessions that are not devws workspaces are left alone, apart from tmux.conf,
 which is global.
+
+### Worktree workspaces
+
+To have two agents work on the same repo without editing each other's files,
+give one its own checkout: choose **⑂ New worktree workspace** in the devws
+menu's Workspace tab, or run `devws worktree <branch> [agent] [editor]` in the
+repo. It opens a workspace on a [git worktree](https://git-scm.com/docs/git-worktree)
+of the branch, in a folder next to the repo:
+
+```
+~/Projects/my-app              the repo, on main
+~/Projects/my-app-feat-login   its worktree for feat/login
+```
+
+Pick an existing branch (local, or a remote one, which is then tracked) or
+**+ New branch…**, which branches off the current workspace's HEAD. A branch
+that already has a worktree opens that one again.
+
+devws asks before deleting anything. **× Close workspace** on a worktree
+workspace asks whether to remove the worktree's folder too, and keeps it
+unless you type `y`. A worktree with uncommitted changes or untracked files is
+always kept: devws lists them instead of asking. The branch and its commits
+are never deleted, and the folder is removed with `git worktree remove`,
+which refuses one with changes. Delete a branch yourself with `git branch -d`
+once it is merged.
 
 ### Initialize an agent
 

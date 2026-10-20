@@ -353,8 +353,84 @@ new_workspace() {
   refresh_pickers
 }
 
+# Opens a workspace on a git worktree of the current workspace's repo: an
+# existing branch, or a new one off its HEAD (worktree.sh).
+new_worktree_workspace() {
+  local session root branch folder agent editor new_branch='+ New branch…'
+  session="$(tmux display-message -p '#S')"
+  root="$(tmux show-options -t "$session" -v @devws_root 2>/dev/null)"
+
+  printf '\033c'
+  printf 'New worktree workspace\n\n'
+  if ! git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf 'This workspace is not in a git repo: %s\nPress Enter to return…' "$root"
+    read -r
+    return
+  fi
+
+  branch="$(
+    {
+      printf '%s\n' "$new_branch"
+      git -C "$root" for-each-ref --format='%(refname:short)' refs/heads
+      git -C "$root" for-each-ref --format='%(refname:lstrip=3)' refs/remotes | grep -vx HEAD
+    } | awk '!seen[$0]++' |
+      fzf --height=~20 --layout=reverse --prompt='Branch > ' \
+        --header='Branch for the new worktree (Esc: cancel)'
+  )"
+  [ -n "$branch" ] || return
+  if [ "$branch" = "$new_branch" ]; then
+    trap 'trap - INT; printf "\n"; return 130' INT
+    while :; do
+      read -e -r -p 'New branch name (Ctrl-C to cancel): ' branch
+      [ -n "$branch" ] || { trap - INT; return; }
+      git check-ref-format --branch "$branch" >/dev/null 2>&1 && break
+      printf 'Not a valid branch name: %s\n' "$branch"
+    done
+    trap - INT
+  fi
+
+  agent="$(choose_agent)" || return
+  [ -n "$agent" ] || return
+  editor="$(choose_editor)" || return
+  [ -n "$editor" ] || return
+
+  if ! folder="$("$HOME/.tmuxinator/worktree.sh" ensure "$root" "$branch")"; then
+    printf 'Press Enter to return…'
+    read -r
+    return
+  fi
+  tmuxinator start dev project_root="$folder" agent="$agent" editor="$editor"
+  save_state
+  refresh_pickers
+}
+
+# Closing a workspace on a worktree of its own asks whether to remove the
+# worktree's folder too, "keep" being the answer unless "y" is typed. One with
+# uncommitted changes is always kept, and the branch is never deleted.
+ask_to_remove_worktree() {
+  local root="$1" branch changes answer
+  "$HOME/.tmuxinator/worktree.sh" linked "$root" || return 1
+  branch="$("$HOME/.tmuxinator/worktree.sh" branch "$root" 2>/dev/null)"
+  changes="$("$HOME/.tmuxinator/worktree.sh" status "$root" 2>/dev/null)" || return 1
+  printf '\033c'
+  if [ "$changes" != clean ]; then
+    printf 'Keeping the worktree %s: it has uncommitted changes.\n\n' "$root"
+    printf '%s\n' "$changes" | head -n 20
+    printf '\nPress Enter to close the workspace…'
+    read -r
+    return 1
+  fi
+  printf 'The workspace is on the worktree %s.\n' "$root"
+  printf 'Remove that folder too? The branch %s is kept. [y/N] ' "${branch:-(detached)}"
+  read -r answer
+  case "$answer" in
+    y|Y|yes|Yes) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 close_workspace() {
-  local current selected target quoted_target
+  local current selected target quoted_target root quoted_root remove_worktree=""
   current="$(tmux display-message -p '#S' 2>/dev/null)"
   selected="$(
     dev_sessions |
@@ -367,8 +443,16 @@ close_workspace() {
 
   target="${selected#??}"
   printf -v quoted_target '%q' "$target"
+  # Asked before closing, while this pane is sure to be there to ask; the
+  # folder goes once the workspace no longer runs in it, and git still refuses
+  # if changes appeared meanwhile.
+  root="$(tmux show-options -t "=$target:" -v @devws_root 2>/dev/null)"
+  if [ -d "$root" ] && ask_to_remove_worktree "$root"; then
+    printf -v quoted_root '%q' "$root"
+    remove_worktree="'$HOME/.tmuxinator/worktree.sh' remove $quoted_root 2>/dev/null || tmux display-message 'Kept the worktree '$quoted_root': git would not remove it';"
+  fi
   # Run through the tmux server so closing the workspace containing this
   # sidebar does not terminate the refresh command along with the pane.
   tmux run-shell -b \
-    "tmux kill-session -t $quoted_target; '$HOME/.tmuxinator/save_state.sh'; '$HOME/.tmuxinator/refresh_devws_pickers.sh'"
+    "tmux kill-session -t $quoted_target; $remove_worktree '$HOME/.tmuxinator/save_state.sh'; '$HOME/.tmuxinator/refresh_devws_pickers.sh'"
 }
