@@ -47,13 +47,21 @@ for script in devws_menu.sh workspace_actions.sh workspace_panes.sh session_pick
   ln -s "$SCRIPTS/$script" "$TEST_ROOT/home/.tmuxinator/$script"
 done
 for script in toggle_layout.sh minimize_panes.sh header_toggle.sh open_database.sh follow_mode.sh register_agent.sh \
-  save_state.sh refresh_devws_pickers.sh; do
+  save_state.sh refresh_devws_pickers.sh agent_status.sh; do
   cat > "$TEST_ROOT/home/.tmuxinator/$script" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" > "$TEST_ROOT/calls/$script"
 EOF
   chmod +x "$TEST_ROOT/home/.tmuxinator/$script"
 done
+# The agent marks its pane, as agent_runner.sh does, and keeps running.
+cat > "$TEST_ROOT/home/.tmuxinator/agent_runner.sh" <<'EOF'
+#!/usr/bin/env bash
+tmux set-option -p -t "$TMUX_PANE" @devws_role agent
+tmux set-option -p -t "$TMUX_PANE" @devws_test_agent "$1"
+exec sleep 600
+EOF
+chmod +x "$TEST_ROOT/home/.tmuxinator/agent_runner.sh"
 export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home"
 unset TMUX
 
@@ -264,6 +272,45 @@ test_a_worktree_workspace_on_a_new_branch() {
   tmux set-option -u -t dev-menu @devws_root
 }
 
+# The agent the workspace's agent pane runs, and its left edge, once its
+# runner has marked it.
+agent_in() {
+  local try
+  for try in $(seq 50); do
+    tmux list-panes -t "$1:" -F '#{@devws_role}|#{@devws_test_agent}|#{pane_left}' |
+      awk -F '|' '$1 == "agent" && $2 != "" { print $2 "|" $3; found = 1 } END { exit !found }' && return 0
+    perl -e 'select(undef, undef, undef, 0.1)'
+  done
+  return 1
+}
+
+# A closed agent pane comes back, left of the terminal, on restart or switch.
+test_restart_and_switch_open_a_closed_agent() {
+  local editor terminal agent
+  tmux new-session -d -s dev-noagent -x 120 -y 30 'sleep 600'
+  editor="$(tmux display-message -p -t dev-noagent: '#{pane_id}')"
+  tmux set-option -p -t "$editor" @devws_role editor
+  terminal="$(tmux split-window -v -t "$editor" -P -F '#{pane_id}' 'sleep 600')"
+  tmux set-option -p -t "$terminal" @devws_role terminal
+  tmux set-option -t dev-noagent @devws_agent claude
+
+  TMUX_PANE="$terminal" TMUX="fake,1,0" "$MENU" --run restart-agent
+  agent="$(agent_in dev-noagent)" || fail "restart did not open an agent pane"
+  [ "${agent%%|*}" = claude ] || fail "restart opened '$agent', not claude"
+  [ "${agent#*|}" -lt "$(tmux display-message -p -t "$terminal" '#{pane_left}')" ] ||
+    fail "the agent pane is not left of the terminal"
+  [ "$(tmux list-panes -t dev-noagent: | wc -l | tr -d ' ')" = 3 ] || fail "restart opened more than one pane"
+
+  tmux kill-pane -t "$(tmux list-panes -t dev-noagent: -F '#{pane_id}|#{@devws_role}' |
+    awk -F '|' '$2 == "agent" { print $1 }')"
+  printf 'codex\n' > "$TEST_ROOT/fzf.answers"
+  TMUX_PANE="$terminal" TMUX="fake,1,0" "$MENU" --run switch-agent
+  agent="$(agent_in dev-noagent)" || fail "switch did not open an agent pane"
+  [ "${agent%%|*}" = codex ] || fail "switch opened '$agent', not codex"
+  [ "$(tmux show-options -v -t dev-noagent @devws_agent)" = codex ] || fail "switch did not record codex"
+  tmux kill-session -t dev-noagent
+}
+
 test_every_action_has_a_function() {
   local tab action function
   for tab in workspace agent editor database; do
@@ -298,6 +345,7 @@ test_closing_a_worktree_workspace_asks_before_removing_it
 test_a_worktree_with_changes_is_kept_without_asking
 test_closing_the_main_folder_never_asks
 test_a_worktree_workspace_on_a_new_branch
+test_restart_and_switch_open_a_closed_agent
 test_every_action_has_a_function
 test_sidebar_opens_the_menu
 test_space_opens_the_menu

@@ -102,18 +102,33 @@ expand_minimized_panes() {
   "$HOME/.tmuxinator/minimize_panes.sh" "$1" restore
 }
 
+# Runs <agent> in the workspace's agent pane. One that was closed comes back
+# where the layout keeps it: left of the terminal, else under the editor.
+start_agent() {
+  local session="$1" agent="$2" root pane command
+  root="$(tmux show-options -t "$session" -v @devws_root 2>/dev/null)"
+  command="$HOME/.tmuxinator/agent_runner.sh $agent"
+
+  if pane="$(agent_pane "$session")"; then
+    tmux respawn-pane -k -t "$pane" -c "${root:-$PWD}" "$command"
+  elif pane="$(terminal_pane "$session")" && [ -n "$pane" ]; then
+    tmux split-window -h -b -t "$pane" -c "${root:-$PWD}" "$command"
+  elif pane="$(editor_pane "$session")"; then
+    tmux split-window -v -t "$pane" -c "${root:-$PWD}" "$command"
+  else
+    tmux split-window -t "$session:" -c "${root:-$PWD}" "$command"
+  fi
+}
+
 switch_agent() {
-  local session pane agent root
+  local session agent
   session="$(tmux display-message -p '#S')"
   expand_minimized_panes "$session" || return
-  pane="$(agent_pane "$session")" || return
   agent="$(choose_agent)" || return
   [ -n "$agent" ] || return
-  root="$(tmux show-options -t "$session" -v @devws_root 2>/dev/null)"
 
   tmux set-option -t "$session" @devws_agent "$agent"
-  tmux respawn-pane -k -t "$pane" -c "${root:-$PWD}" \
-    "$HOME/.tmuxinator/agent_runner.sh $agent"
+  start_agent "$session" "$agent" || return
   "$HOME/.tmuxinator/agent_status.sh" "$session" idle
   save_state
   refresh_pickers
@@ -135,17 +150,15 @@ switch_editor() {
 }
 
 restart_agent() {
-  local session pane agent root
+  local session agent
   session="$(tmux display-message -p '#S')"
   expand_minimized_panes "$session" || return
-  pane="$(agent_pane "$session")" || return
   agent="$(tmux show-options -t "$session" -v @devws_agent 2>/dev/null)"
-  root="$(tmux show-options -t "$session" -v @devws_root 2>/dev/null)"
   [ -n "$agent" ] || agent="${DEVWS_DEFAULT_AGENT:-claude}"
 
-  tmux respawn-pane -k -t "$pane" -c "${root:-$PWD}" \
-    "$HOME/.tmuxinator/agent_runner.sh $agent"
+  start_agent "$session" "$agent" || return
   "$HOME/.tmuxinator/agent_status.sh" "$session" idle
+  save_state
 }
 
 initialize_agent() {
