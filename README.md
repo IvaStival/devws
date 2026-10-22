@@ -539,9 +539,10 @@ not registered yet (or takes a typed path) and suggests a name (`work` for
 kept. Both edit `.env` and update the header at once. Log the account in once
 in its folder first, for example `CLAUDE_CONFIG_DIR=~/.claude-work claude`.
 
-An agent in its own folder starts with `CLAUDE_CONFIG_DIR` (or `CODEX_HOME`)
-set to it. One in the default folder starts with neither, as the plain command
-would, so it keeps the login it has. Start a workspace with an account by
+Every agent starts with `CLAUDE_CONFIG_DIR` (or `CODEX_HOME`) set to its
+folder, the default one too, so `claude` runs the login in `~/.claude`, as
+`CLAUDE_CONFIG_DIR=~/.claude claude` would. A plain `claude` with no folder set
+uses the login in `~/.claude.json` instead, which can be another account. Start a workspace with an account by
 name, for example `devws ~/Projects/my-app work`, or switch to it with **Switch
 agent**.
 

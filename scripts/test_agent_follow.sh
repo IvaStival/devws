@@ -312,9 +312,9 @@ test_agent_header_shows_the_mode() {
   tmux set-option -t work @devws_follow follow
 }
 
-# An agent registered with its own folder runs there; one in its kind's default
-# folder runs with no folder set, as the plain command would (a folder set,
-# even the default one, changes where Claude Code keeps its login).
+# Every agent runs with its folder set, the default one too: with none,
+# Claude Code reads the login in ~/.claude.json, which may be another account
+# than the one in ~/.claude.
 test_registered_agents_start_with_their_folder() {
   local pane
   rm -f "$TEST_ROOT/agents/claude.env" "$TEST_ROOT/agents/codex.env"
@@ -330,8 +330,8 @@ test_registered_agents_start_with_their_folder() {
   pane="$(tmux split-window -t work: -P -F '#{pane_id}' -c "$TEST_ROOT/project" \
     "CLAUDE_CONFIG_DIR=/elsewhere '$SCRIPTS/agent_runner.sh' claude")"
   wait_until test -s "$TEST_ROOT/agents/claude.env" || fail "the claude agent did not start"
-  ! grep -q "^CLAUDE_CONFIG_DIR=" "$TEST_ROOT/agents/claude.env" ||
-    fail "the default-folder agent got a folder: $(cat "$TEST_ROOT/agents/claude.env")"
+  grep -qx "CLAUDE_CONFIG_DIR=$HOME/.claude" "$TEST_ROOT/agents/claude.env" ||
+    fail "the default-folder agent does not run in ~/.claude: $(cat "$TEST_ROOT/agents/claude.env")"
   grep -qx "DEVWS_AGENT=claude" "$TEST_ROOT/agents/claude.env" || fail "the claude agent does not know its name"
   tmux kill-pane -t "$pane"
 

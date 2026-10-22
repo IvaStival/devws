@@ -56,11 +56,3 @@ agent_home() {
   esac
   printf '%s' "${home%/}"
 }
-
-# <name>: whether it runs in its kind's default folder, where the program needs
-# no folder set (and setting one would change where Claude Code keeps its login).
-agent_is_default_home() {
-  local kind
-  kind="$(agent_kind "$1")" || return 1
-  [ "$(agent_home "$1")" = "$(agent_default_home "$kind")" ]
-}

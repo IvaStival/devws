@@ -18,15 +18,15 @@ if ! kind="$(agent_kind "$agent")"; then
   exit 2
 fi
 
-# The account: the agent's own folder, or none for its kind's default folder,
-# whatever folder the environment came with.
+# The account: the agent's own folder, whatever folder the environment came
+# with. Set even for the kind's default folder: with no folder Claude Code
+# keeps its login in ~/.claude.json, not in ~/.claude, so "claude" would run
+# whichever account that file holds.
 unset CLAUDE_CONFIG_DIR CODEX_HOME
-if ! agent_is_default_home "$agent"; then
-  case "$kind" in
-    claude) export CLAUDE_CONFIG_DIR="$(agent_home "$agent")" ;;
-    codex) export CODEX_HOME="$(agent_home "$agent")" ;;
-  esac
-fi
+case "$kind" in
+  claude) export CLAUDE_CONFIG_DIR="$(agent_home "$agent")" ;;
+  codex) export CODEX_HOME="$(agent_home "$agent")" ;;
+esac
 # The status line records this agent's limits under its name.
 export DEVWS_AGENT="$agent"
 
