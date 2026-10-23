@@ -6,7 +6,8 @@
 #     ticker, which restarts itself whenever tmux.conf is sourced;
 #   - restarts every workspace's sidebar (title devws-picker) and minimized
 #     placeholders (role minimized-*), which run the scripts' new versions;
-#   - restarts the spinner of every workspace whose agent is working.
+#   - restarts the spinner of every workspace whose agent is working;
+#   - first, brings back every frozen workspace (suspend_workspace.sh).
 #
 # Agent, editor, terminal and database panes keep running: what they read only
 # at start (the agents' hooks, the editor config, dev.yml) applies to new or
@@ -32,6 +33,10 @@ tmux source-file "$HOME/.tmux.conf" || {
 sidebars=0
 placeholders=0
 spinners=0
+
+# Frozen workspaces (suspend_workspace.sh) come back first: a frozen sidebar
+# or placeholder respawned now would leave its old processes stopped.
+"$scripts_dir/suspend_workspace.sh" resume --all
 
 # respawn-pane keeps the pane and its options (a placeholder's role, label and
 # hidden pane); without a command it reruns the pane's own start command. The

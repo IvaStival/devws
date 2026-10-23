@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Marks the pane as the workspace agent pane, then replaces itself with the
-# configured agent process. The pane marker makes restart/switch actions safe.
+# Marks the pane as the workspace agent pane, then runs the configured agent
+# and waits for it. The pane marker makes restart/switch actions safe. It
+# waits rather than replacing itself (exec): an idle workspace's agent is
+# frozen below this script (suspend_workspace.sh), and this script, without
+# job control, never notices — the pane's shell would, and take it back.
 #
 #   agent_runner.sh <agent>           a name registered in .env (agents.sh)
 #   agent_runner.sh <agent> --extra   an extra agent (New panel): marked
@@ -48,7 +51,7 @@ fi
 prompt="$(cat "$link_dir/agent_editor_prompt.md")"
 case "$kind" in
   claude)
-    exec claude --settings "$link_dir/agent_settings.json" --append-system-prompt "$prompt"
+    claude --settings "$link_dir/agent_settings.json" --append-system-prompt "$prompt"
     ;;
   codex)
     # Config overrides are TOML; jq's JSON strings are valid TOML strings, quotes escaped.
@@ -59,7 +62,7 @@ case "$kind" in
     for event in SessionStart UserPromptSubmit PreToolUse PermissionRequest Stop SessionEnd; do
       state_hooks+=(-c "hooks.$event=[$state_hook]")
     done
-    exec codex \
+    codex \
       -c "hooks.PostToolUse=[{matcher=\"apply_patch\",hooks=[{type=\"command\",command=$hook_command}]},$state_hook]" \
       "${state_hooks[@]}" \
       -c "developer_instructions=$(jq -n --arg prompt "$prompt" '$prompt')"

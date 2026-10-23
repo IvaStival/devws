@@ -12,7 +12,8 @@
 # min (header_tokens.sh costs), the weather every 30 min (header_weather.sh).
 # A source that fails keeps its last rows. Every minute too, each workspace's
 # conversation (header_tokens.sh) goes to its @devws_agent_session_usage,
-# which tmux's own line shows.
+# which tmux's own line shows, and the idle workspaces are frozen
+# (suspend_workspace.sh sweep).
 #
 # Two speeds:
 #   every second   the clock is drawn (header_clock.sh; left out when the
@@ -276,6 +277,7 @@ run() {
     fi
     [ $((tick % (600 * fps))) -eq 0 ] && in_background costs keep costs nice "$scripts_dir/header_tokens.sh" costs
     [ $((tick % (60 * fps))) -eq 0 ] && in_background tokens update_tokens
+    [ $((tick % (60 * fps))) -eq 0 ] && in_background suspend "$scripts_dir/suspend_workspace.sh" sweep
     [ $((tick % (1800 * fps))) -eq 0 ] && in_background weather keep weather "$scripts_dir/header_weather.sh"
     # While the header is hidden (header_toggle.sh) nothing is drawn: one turn
     # a second keeps the sources current for when it comes back.

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Marks the pane as the workspace editor pane, then runs the selected editor.
+# Marks the pane as the workspace editor pane, then runs the selected editor
+# and waits for it rather than replacing itself, so the editor can be frozen
+# without the pane's shell noticing (agent_runner.sh says why).
 
 set -u
 
@@ -29,7 +31,7 @@ session="$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}')"
 case "$editor" in
   code|zed)
     tmux set-option -u -t "$session" @devws_editor_socket
-    exec "$editor" --wait .
+    "$editor" --wait .
     ;;
   nvim)
     # The agent reaches Neovim through this socket (editor_open.sh). Unix
@@ -37,10 +39,10 @@ case "$editor" in
     socket="/tmp/devws-nvim-$(id -u)-$(printf '%s' "$session" | tr -c 'A-Za-z0-9_.-' '_' | cut -c1-40).sock"
     rm -f "$socket"
     tmux set-option -t "$session" @devws_editor_socket "$socket"
-    exec nvim --listen "$socket" .
+    nvim --listen "$socket" .
     ;;
   *)
     tmux set-option -u -t "$session" @devws_editor_socket
-    exec "$editor" .
+    "$editor" .
     ;;
 esac

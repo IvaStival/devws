@@ -545,6 +545,26 @@ prompt in their saved directory. A workspace saved while minimized comes back
 with small agent and terminal panes; click a header or press `C-b _` to expand
 them.
 
+### Paused workspaces
+
+A workspace you have not looked at for 15 minutes, whose agent is idle or
+done, is frozen: its agents, editor and sidebar, with what they started
+(language servers, MCP servers), stop using the CPU. Its row in the sidebar
+says `· paused`. Switching to it brings it back at once, as it was; a
+workspace whose agent is working or needs you is never frozen.
+
+- **Kept running:** the terminals (they may serve or watch something), panes
+  you opened by hand, and extra Neovims from New panel.
+- **Memory** stays in use: a frozen process keeps it, though macOS may
+  compress it.
+- **Workspaces opened before this update** freeze only their sidebar: their
+  agent and editor still run the old way. Restart the agent (devws menu) and
+  reopen the workspace's editor, or reopen the workspace.
+
+Set `DEVWS_SUSPEND_AFTER` in `config/tmuxinator/.env` to other minutes, or to
+0 to never freeze. The header's ticker checks once a minute
+(`config/tmuxinator/suspend_workspace.sh`).
+
 ### Agents and accounts
 
 The agents devws offers are listed in `DEVWS_AGENTS` in
@@ -656,6 +676,8 @@ Glow, exactly as before.
 - Database pane (devdb): `config/tmuxinator/open_database.sh`,
   `database_runner.sh`, and `.env` parsing in `database_url.sh`
 - Sidebar: `config/tmuxinator/session_picker.sh`
+- Paused workspaces: `config/tmuxinator/suspend_workspace.sh`, swept by
+  `header_ticker.sh`, resumed by hooks in `config/tmux/tmux.conf`
 - devws menu: `config/tmuxinator/devws_menu.sh` (tabs and items), with the
   actions in `config/tmuxinator/workspace_actions.sh`
 - Agent ↔ editor link: `config/tmuxinator/editor_open.sh`,
