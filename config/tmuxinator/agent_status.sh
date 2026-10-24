@@ -19,59 +19,16 @@
 #   agent_status.sh <session> <working|waiting|done|idle> [pane]
 #                                  the agent in <pane>; without one, the
 #                                  workspace's main agent (role agent)
-#   agent_status.sh <session> --spin   starts the spinner again if the
-#                                      workspace is working (devws reload)
-#   agent_status.sh <session id> --tick   (internal: the spinner's loop)
 #
-# While the agent works, one ticker per session advances the spinner frame
-# (@devws_agent_frame); it stops by itself once the state changes or the
-# session is gone.
+# The spinner shown while an agent works turns in header_ticker.sh, one clock
+# for every workspace (agent_spinner.sh).
 
 set -u
 
 session="${1:-}"
 state="${2:-}"
 pane="${3:-}"
-# Absolute: the ticker is started from the tmux server's directory.
 script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
-# Present while a devws popup (the menu) is open (devws_menu.sh): a redraw
-# then shows the panes behind it for an instant, so the spinner holds still.
-popup_flag="${TMPDIR:-/tmp}"
-popup_flag="${popup_flag%/}/devws-popup-$(id -u)"
-
-# The ticker follows the session by id, which survives a rename. A second
-# ticker can start while the first one is starting; the last one to register
-# wins and the other stops at its next frame.
-tick() {
-  local session_id="$session" frame=0
-  tmux set-option -t "$session_id" @devws_agent_ticker "$$" 2>/dev/null || return
-  while [ "$(tmux display-message -p -t "$session_id:" '#{@devws_agent_state}|#{@devws_agent_ticker}' 2>/dev/null)" = "working|$$" ]; do
-    if [ ! -e "$popup_flag" ]; then
-      frame=$(((frame + 1) % ${#frames[@]}))
-      tmux set-option -t "$session_id" @devws_agent_frame "${frames[frame]}" 2>/dev/null || return
-    fi
-    sleep 0.15
-  done
-}
-
-start_ticker() {
-  local ticker session_id
-  ticker="$(tmux show-option -qv -t "=$session:" @devws_agent_ticker)"
-  [ -n "$ticker" ] && kill -0 "$ticker" 2>/dev/null && return
-  session_id="$(tmux display-message -p -t "=$session:" '#{session_id}')"
-  # Started by the tmux server, so it outlives the hook that asked for it.
-  tmux run-shell -b "exec '$script' '$session_id' --tick >/dev/null 2>&1"
-}
-
-if [ "$state" = --tick ]; then
-  tick
-  exit 0
-fi
-if [ "$state" = --spin ]; then
-  [ "$(tmux show-option -qv -t "=$session:" @devws_agent_state 2>/dev/null)" = working ] && start_ticker
-  exit 0
-fi
 
 case "$state" in
   working|waiting|done|idle) ;;
@@ -157,10 +114,12 @@ else
   tmux set-option -t "=$session:" @devws_agent_state "$state"
   [ "$previous" = "$state" ] || tmux set-option -t "=$session:" @devws_agent_state_since "$(date +%s)"
 fi
-[ "$state" = working ] && start_ticker
 # The sidebar redraws its rows, and a notification goes out, only when the
 # state changes.
 if [ "$previous" != "$state" ]; then
+  # The frame is global (agent_spinner.sh); one left on the session by an
+  # older devws, with a ticker per workspace, would hide it.
+  tmux set-option -qu -t "=$session:" @devws_agent_frame
   "$(dirname "$script")/refresh_devws_pickers.sh" --reload
   case "$state" in
     waiting|done) notify ;;

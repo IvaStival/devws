@@ -79,18 +79,6 @@ picker_of() {
   tmux list-panes -t "$1:" -F '#{pane_id} #{pane_title}' | awk '$2 == "devws-picker" { print $1; exit }'
 }
 
-ticker_of() {
-  tmux show-option -qv -t "=$1:" @devws_agent_ticker
-}
-
-# The spinner tickers running for a session, by its id ($3: the $ escaped for
-# pgrep's pattern).
-tickers_for() {
-  local session_id
-  session_id="$(tmux display-message -p -t "=$1:" '#{session_id}')"
-  pgrep -f "agent_status.sh \\${session_id} --tick" | wc -l | tr -d ' '
-}
-
 process_gone() {
   ! kill -0 "$1" 2>/dev/null
 }
@@ -107,8 +95,12 @@ test_reload_restarts_devws_scripts_only() {
   create_workspace dev-work
   "$SCRIPTS/minimize_panes.sh" dev-work toggle agents || fail "could not minimize the agent group"
   "$SCRIPTS/agent_status.sh" dev-work working
-  wait_until test -n "$(ticker_of dev-work)" || fail "the spinner did not start"
-  old_ticker="$(ticker_of dev-work)"
+  # The spinner an older devws ran per working agent, and the frame it left.
+  sleep 600 &
+  old_ticker=$!
+  disown "$old_ticker"
+  tmux set-option -t "=dev-work:" @devws_agent_ticker "$old_ticker"
+  tmux set-option -t "=dev-work:" @devws_agent_frame ⠙
   # Not a workspace: left alone, even with a sidebar's title.
   tmux new-session -d -s other -x 200 -y 50 'sleep 600'
   tmux select-pane -t other: -T devws-picker
@@ -127,7 +119,7 @@ test_reload_restarts_devws_scripts_only() {
   printf 'set -g @reload_marker after\n' > "$HOME/.tmux.conf"
 
   output="$("$RELOAD")" || fail "reload exited non-zero"
-  [ "$output" = "devws: reloaded tmux.conf, 1 sidebar(s), 2 placeholder(s), 1 spinner(s)" ] ||
+  [ "$output" = "devws: reloaded tmux.conf, 1 sidebar(s), 2 placeholder(s)" ] ||
     fail "unexpected summary: $output"
 
   [ "$(tmux show-option -gqv @reload_marker)" = after ] || fail "tmux.conf was not reloaded"
@@ -145,9 +137,11 @@ test_reload_restarts_devws_scripts_only() {
     fail "the placeholder lost its label"
 
   wait_until process_gone "$old_ticker" || fail "the old spinner still runs"
-  [ -n "$(ticker_of dev-work)" ] && [ "$(ticker_of dev-work)" != "$old_ticker" ] ||
-    fail "no new spinner after the reload"
-  [ "$(tickers_for dev-work)" = 1 ] || fail "$(tickers_for dev-work) spinners run after the reload"
+  [ -z "$(tmux show-option -qv -t "=dev-work:" @devws_agent_ticker)" ] &&
+    [ -z "$(tmux show-option -qv -t "=dev-work:" @devws_agent_frame)" ] ||
+    fail "the old spinner's options are left on the workspace"
+  [ "$(tmux show-option -qv -t "=dev-work:" @devws_agent_state)" = working ] ||
+    fail "the reload changed the agent's state"
 
   "$SCRIPTS/minimize_panes.sh" dev-work toggle agents || fail "restoring after the reload failed"
   [ -z "$(pane_id dev-work minimized-terminal)" ] && [ "$(pane_pid "$agent")" = "$agent_pid" ] ||

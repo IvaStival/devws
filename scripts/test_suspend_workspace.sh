@@ -207,7 +207,7 @@ test_resume_gives_the_shells_their_programs_back() {
 }
 
 test_busy_or_recent_workspaces_stay() {
-  local session state
+  local session state rows_file
   for state in working waiting; do
     session="dev-$state"
     create_workspace "$session"
@@ -237,9 +237,15 @@ test_busy_or_recent_workspaces_stay() {
   DEVWS_SUSPEND_AFTER=0 "$SUSPEND" sweep || fail "the turned-off sweep failed"
   running "$(pane_id dev-idle agent)" || fail "a sweep turned off froze a workspace"
 
-  # The other workspaces' sidebars show it paused.
+  # The other workspaces' sidebars are asked to redraw, and show it paused.
+  # The stub fzf does not listen, so the test runs the redraw fzf would.
+  rows_file="$(tmux show-options -pqv -t "$(picker dev-working)" @devws_picker_rows)"
+  rm -f "$rows_file.stale"
   DEVWS_SUSPEND_AFTER=1 "$SUSPEND" sweep
-  wait_until sidebar_shows dev-working 'dev-idle.*paused' ||
+  [ -e "$rows_file.stale" ] || fail "freezing did not ask the sidebars to redraw"
+  DEVWS_PICKER_ROWS="$rows_file" "$HOME/.tmuxinator/session_picker.sh" --rows >/dev/null ||
+    fail "the sidebar's rows could not be redrawn"
+  sidebar_shows dev-working 'dev-idle.*paused' ||
     fail "the sidebar does not show the workspace paused: $(sidebar_rows dev-working)"
   for session in dev-working dev-waiting dev-recent dev-done; do tmux kill-session -t "$session"; done
 }

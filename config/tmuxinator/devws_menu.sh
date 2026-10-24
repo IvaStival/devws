@@ -21,6 +21,7 @@ tabs=(workspace agent editor database)
 
 # tab|action|label|shortcut|function in workspace_actions.sh
 actions='workspace|new|+ New workspace||new_workspace
+workspace|worktree|⑂ New worktree workspace||new_worktree_workspace
 workspace|open-folder|⌂ Open folder||open_folder
 workspace|toggle-layout|▥ Toggle layout|C-b \|toggle_layout
 workspace|minimize|▁ Minimize agent and terminal|C-b _|minimize_agents

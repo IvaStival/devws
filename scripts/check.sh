@@ -15,6 +15,7 @@ bash -n "$ROOT/scripts/test_workspace_database.sh"
 bash -n "$ROOT/scripts/test_agent_follow.sh"
 bash -n "$ROOT/scripts/test_agent_status.sh"
 "$ROOT/scripts/test_jump_agent.sh"
+"$ROOT/scripts/test_worktree.sh"
 bash -n "$ROOT/scripts/test_header.sh"
 bash -n "$ROOT/scripts/test_devws_reload.sh"
 bash -n "$ROOT/scripts/test_new_panel.sh"
@@ -55,6 +56,7 @@ for file in "$ROOT/install.sh" "$ROOT/delete.sh" "$ROOT/scripts/check.sh" \
             "$ROOT/scripts/test_agent_follow.sh" \
             "$ROOT/scripts/test_agent_status.sh" \
             "$ROOT/scripts/test_jump_agent.sh" \
+            "$ROOT/scripts/test_worktree.sh" \
             "$ROOT/scripts/test_header.sh" \
             "$ROOT/scripts/test_devws_reload.sh" \
             "$ROOT/scripts/test_new_panel.sh" \

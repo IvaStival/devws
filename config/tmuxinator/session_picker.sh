@@ -4,19 +4,25 @@
 
 set -u
 
+# Absolute: fzf runs it again (--rows) from wherever it is.
+picker_script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
 if ! command -v fzf >/dev/null 2>&1; then
   printf 'devws picker: fzf is required; run the devws installer and restart tmux.\n' >&2
   exit 127
 fi
 
-# The rows are drawn into rows_file with the spinner on its first frame (⠋),
-# and rows_file.working exists while an agent works. While fzf runs, only
-# redraw_rows talks to it, through its socket: it redraws the rows in place
-# when refresh_devws_pickers.sh --reload marks them stale (rows_file.stale),
-# and otherwise reloads them with the next spinner frame swapped in, so the
-# git lookups run once per redraw and the cursor stays.
-spinner_frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
-
+# The rows are drawn into rows_file with the spinner on its first frame (⠋).
+# While fzf runs, nothing in this script polls: others talk to fzf through its
+# socket (@devws_picker_socket). refresh_devws_pickers.sh --reload has it run
+# "session_picker.sh --rows" when an agent's state changes, which redraws the
+# rows in place, and agent_spinner.sh swaps the next spinner frame into them
+# while the sidebar is on screen; so the git lookups run once per redraw and
+# the cursor stays. A reload that came before fzf listened leaves
+# rows_file.stale, which fzf checks once it starts.
+#
+#   session_picker.sh          the sidebar
+#   session_picker.sh --rows   (fzf, internal) redraws the rows and prints them
 print_padded_row() {
   local style="$1"
   local width="$2"
@@ -95,36 +101,16 @@ workspace_rows() {
 # Swapped in whole, so a spinner frame never reads half of the rows.
 write_rows() {
   workspace_rows "$(tmux display-message -p '#S' 2>/dev/null)" > "$rows_file.new"
-  # BSD grep never matches in a file with NULs, so search it line by line.
-  if tr '\0' '\n' < "$rows_file.new" | grep -q ⠋; then
-    : > "$rows_file.working"
-  else
-    rm -f "$rows_file.working"
-  fi
   mv "$rows_file.new" "$rows_file"
 }
 
-reload_fzf() {
-  curl -s --unix-socket "$fzf_socket" http://localhost -d "reload-sync($1)" >/dev/null 2>&1
-}
-
-# The only one to reload fzf: a newer reload cancels the one in progress.
-redraw_rows() {
-  local frame=0
-  # Stops with the sidebar, even if it is killed before its EXIT trap runs.
-  while kill -0 $$ 2>/dev/null && sleep 0.15; do
-    if [ -e "$rows_file.stale" ]; then
-      rm -f "$rows_file.stale"
-      write_rows
-      # Until fzf is listening, it stays stale for the next try.
-      reload_fzf "cat '$rows_file'" || : > "$rows_file.stale"
-    elif [ -e "$rows_file.working" ]; then
-      frame=$(((frame + 1) % ${#spinner_frames[@]}))
-      # Fails until fzf is listening; the next frame tries again.
-      reload_fzf "sed 's/⠋/${spinner_frames[frame]}/g' '$rows_file'"
-    fi
-  done
-}
+if [ "${1:-}" = --rows ]; then
+  rows_file="${DEVWS_PICKER_ROWS:?}"
+  rm -f "$rows_file.stale"
+  write_rows
+  cat "$rows_file"
+  exit 0
+fi
 
 # Always title this script's own pane. Without an explicit target tmux titles
 # the client's active pane, which may be the editor or terminal.
@@ -136,12 +122,10 @@ rows_file="$(mktemp "${tmp_dir%/}/devws-picker.XXXXXX")"
 tmux set-option -p -t "$TMUX_PANE" @devws_picker_rows "$rows_file" 2>/dev/null
 # Short and in TMPDIR: a Unix socket path is limited to about 100 bytes.
 fzf_socket="${tmp_dir%/}/devws-picker-$$.sock"
-redrawer=""
-stop_redrawer() {
-  [ -n "$redrawer" ] && kill "$redrawer" 2>/dev/null
-  redrawer=""
-}
-trap 'stop_redrawer; rm -f "$rows_file" "$rows_file.working" "$rows_file.stale" "$fzf_socket"' EXIT
+tmux set-option -p -t "$TMUX_PANE" @devws_picker_socket "$fzf_socket" 2>/dev/null
+# fzf runs "--rows" with its environment.
+export DEVWS_PICKER_ROWS="$rows_file"
+trap 'rm -f "$rows_file" "$rows_file.stale" "$fzf_socket"' EXIT
 
 while tmux list-sessions >/dev/null 2>&1; do
   current="$(tmux display-message -p '#S' 2>/dev/null)"
@@ -153,11 +137,8 @@ while tmux list-sessions >/dev/null 2>&1; do
       '
   )"
   [ -n "$current_position" ] || current_position=1
-  write_rows
   rm -f "$rows_file.stale"
-  # The agent states change while fzf runs, so the redrawer runs with it.
-  redraw_rows &
-  redrawer=$!
+  write_rows
   selected="$(
     fzf --height=100% --layout=reverse --ansi --read0 --gap=1 \
         --highlight-line \
@@ -165,6 +146,7 @@ while tmux list-sessions >/dev/null 2>&1; do
         --color='bg+:244,fg+:255' \
         --delimiter=$'\t' --with-nth=2.. \
         --bind="load:pos($current_position)+unbind(load)" \
+        --bind="start:transform:[ -e '$rows_file.stale' ] && printf 'reload-sync(%q --rows)' '$picker_script'" \
         --bind='click-header:transform:
           [ "$FZF_CLICK_HEADER_LINE" = 1 ] && printf "print(menu)+accept\n"' \
         --header=$'\033[36m☰ Menu\033[0m  \033[2mC-b Space\033[0m\n\n\033[2mOPEN WORKSPACES\033[0m' \
@@ -172,7 +154,6 @@ while tmux list-sessions >/dev/null 2>&1; do
         --info=inline --no-separator --border=none --margin=0 --padding=0 \
         < "$rows_file"
   )"
-  stop_redrawer
   # Header actions add their command before fzf's current workspace output.
   selected="${selected%%$'\n'*}"
 

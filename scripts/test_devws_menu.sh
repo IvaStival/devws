@@ -38,12 +38,18 @@ sed -i '' 1d "$TEST_ROOT/fzf.answers"
 case " \$* " in *" --print-query "*) printf '\\n' ;; esac
 [ -n "\$answer" ] && printf '%s\\n' "\$answer"
 EOF
-chmod +x "$TEST_ROOT/bin/tmux" "$TEST_ROOT/bin/fzf"
+# tmuxinator records the workspace it was asked to start.
+cat > "$TEST_ROOT/bin/tmuxinator" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" > "$TEST_ROOT/calls/tmuxinator"
+EOF
+chmod +x "$TEST_ROOT/bin/tmux" "$TEST_ROOT/bin/fzf" "$TEST_ROOT/bin/tmuxinator"
 mkdir -p "$TEST_ROOT/home/.claude" "$TEST_ROOT/home/.claude-work"
-for script in devws_menu.sh workspace_actions.sh workspace_panes.sh session_picker.sh agents.sh .env; do
+for script in devws_menu.sh workspace_actions.sh workspace_panes.sh session_picker.sh agents.sh worktree.sh .env; do
   ln -s "$SCRIPTS/$script" "$TEST_ROOT/home/.tmuxinator/$script"
 done
-for script in toggle_layout.sh minimize_panes.sh header_toggle.sh open_database.sh follow_mode.sh register_agent.sh new_panel.sh; do
+for script in toggle_layout.sh minimize_panes.sh header_toggle.sh open_database.sh follow_mode.sh register_agent.sh \
+  new_panel.sh save_state.sh refresh_devws_pickers.sh; do
   cat > "$TEST_ROOT/home/.tmuxinator/$script" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" > "$TEST_ROOT/calls/$script"
@@ -68,7 +74,7 @@ actions_of() {
 }
 
 test_tabs_list_their_actions() {
-  [ "$(actions_of workspace)" = "new open-folder toggle-layout minimize header new-panel close" ] ||
+  [ "$(actions_of workspace)" = "new worktree open-folder toggle-layout minimize header new-panel close" ] ||
     fail "Workspace tab: $(actions_of workspace)"
   [ "$(actions_of agent)" = "jump switch-agent restart-agent initialize-agent register-agent remove-agent follow-mode" ] ||
     fail "Agent tab: $(actions_of agent)"
@@ -196,6 +202,104 @@ test_register_and_remove_agents() {
     fail "remove ran '$(cat "$TEST_ROOT/calls/register_agent.sh" 2>/dev/null)'"
 }
 
+# A repo in projects/app, with a worktree for <branch> in projects/app-<branch>.
+make_repo_with_worktree() {
+  export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+    GIT_AUTHOR_NAME=devws GIT_AUTHOR_EMAIL=devws@example.com \
+    GIT_COMMITTER_NAME=devws GIT_COMMITTER_EMAIL=devws@example.com
+  REPO="$TEST_ROOT/projects/app"
+  if [ ! -d "$REPO" ]; then
+    git init -q -b main "$REPO"
+    printf 'one\n' > "$REPO/file.txt"
+    git -C "$REPO" add file.txt
+    git -C "$REPO" commit -q -m first
+  fi
+  git -C "$REPO" worktree add -q -b "$1" "$TEST_ROOT/projects/app-$1" HEAD
+}
+
+# <session> <root>: a workspace to close, so dev-menu stays for the others.
+workspace_on() {
+  tmux new-session -d -s "$1" -x 120 -y 30 'sleep 600'
+  tmux set-option -t "$1" @devws_root "$2"
+}
+
+closed() {
+  ! tmux has-session -t "=$1" 2>/dev/null
+}
+
+wait_until() {
+  local attempt
+  for attempt in $(seq 1 30); do
+    "$@" && return 0
+    sleep 0.2
+  done
+  return 1
+}
+
+test_closing_a_worktree_workspace_asks_before_removing_it() {
+  local output folder
+  make_repo_with_worktree keep
+  folder="$TEST_ROOT/projects/app-keep"
+  workspace_on dev-keep "$folder"
+  printf '  dev-keep\n' > "$TEST_ROOT/fzf.answers"
+  output="$(printf '\n' | menu --run close 2>&1)"
+  grep -q "Remove that folder too? The branch keep is kept. \[y/N\]" <<< "$output" ||
+    fail "closing a worktree workspace did not ask: $output"
+  wait_until closed dev-keep || fail "the workspace was not closed"
+  sleep 0.3
+  [ -d "$folder" ] || fail "Enter removed the worktree"
+
+  make_repo_with_worktree gone
+  folder="$TEST_ROOT/projects/app-gone"
+  workspace_on dev-gone "$folder"
+  printf '  dev-gone\n' > "$TEST_ROOT/fzf.answers"
+  printf 'y\n' | menu --run close >/dev/null 2>&1
+  wait_until closed dev-gone || fail "the workspace was not closed"
+  removed() { [ ! -e "$folder" ]; }
+  wait_until removed || fail "y did not remove the worktree"
+  git -C "$REPO" show-ref --verify --quiet refs/heads/gone || fail "removing the worktree deleted its branch"
+}
+
+test_a_worktree_with_changes_is_kept_without_asking() {
+  local output folder
+  make_repo_with_worktree dirty
+  folder="$TEST_ROOT/projects/app-dirty"
+  printf 'draft\n' > "$folder/notes.txt"
+  workspace_on dev-dirty "$folder"
+  printf '  dev-dirty\n' > "$TEST_ROOT/fzf.answers"
+  # A "y" typed anyway must not remove it.
+  output="$(printf 'y\n' | menu --run close 2>&1)"
+  grep -q "Keeping the worktree .*uncommitted changes" <<< "$output" || fail "the kept worktree was not explained: $output"
+  grep -q '?? notes.txt' <<< "$output" || fail "the changes were not listed: $output"
+  ! grep -q "Remove that folder" <<< "$output" || fail "a worktree with changes was offered for removal"
+  wait_until closed dev-dirty || fail "the workspace was not closed"
+  sleep 0.3
+  [ -f "$folder/notes.txt" ] || fail "the worktree with changes was removed"
+}
+
+test_closing_the_main_folder_never_asks() {
+  local output
+  workspace_on dev-main "$REPO"
+  printf '  dev-main\n' > "$TEST_ROOT/fzf.answers"
+  output="$(printf 'y\n' | menu --run close 2>&1)"
+  ! grep -q "Remove that folder" <<< "$output" || fail "the repo's main folder was offered for removal"
+  wait_until closed dev-main || fail "the workspace was not closed"
+  [ -f "$REPO/file.txt" ] || fail "the repo lost its files"
+}
+
+test_a_worktree_workspace_on_a_new_branch() {
+  tmux set-option -t dev-menu @devws_root "$REPO"
+  printf '+ New branch…\nclaude\nnvim\n' > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/tmuxinator"
+  printf 'bad..name\nfeat/login\n' | menu --run worktree >/dev/null 2>&1
+  [ "$(cat "$TEST_ROOT/calls/tmuxinator" 2>/dev/null)" = \
+    "start dev project_root=$(cd "$TEST_ROOT" && pwd -P)/projects/app-feat-login agent=claude editor=nvim" ] ||
+    fail "the worktree workspace started with '$(cat "$TEST_ROOT/calls/tmuxinator" 2>/dev/null)'"
+  [ "$(git -C "$TEST_ROOT/projects/app-feat-login" symbolic-ref --short HEAD)" = feat/login ] ||
+    fail "the worktree is not on the new branch"
+  tmux set-option -u -t dev-menu @devws_root
+}
+
 test_every_action_has_a_function() {
   local tab action function
   for tab in workspace agent editor database; do
@@ -228,6 +332,10 @@ test_script_actions_run_for_the_session
 test_new_panel_asks_what_to_open
 test_the_menu_marks_itself_open
 test_register_and_remove_agents
+test_closing_a_worktree_workspace_asks_before_removing_it
+test_a_worktree_with_changes_is_kept_without_asking
+test_closing_the_main_folder_never_asks
+test_a_worktree_workspace_on_a_new_branch
 test_every_action_has_a_function
 test_sidebar_opens_the_menu
 test_space_opens_the_menu
