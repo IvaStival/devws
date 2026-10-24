@@ -227,8 +227,8 @@ remove_agent() {
   read -r -p 'Press Enter to return…'
 }
 
-# Another agent, terminal or Neovim, beside or below the focused pane
-# (new_panel.sh).
+# Another agent, terminal or Neovim, right of, left of, below or above the
+# focused pane (new_panel.sh).
 new_panel() {
   local session kind program agent="" place position
   session="$(tmux display-message -p '#S')"
@@ -249,13 +249,15 @@ new_panel() {
     *) return 0 ;;
   esac
   place="$(
-    printf '%s\n' Beside Below |
+    printf '%s\n' Right Left Below Above |
       fzf --height=~10 --layout=reverse --prompt='Where > ' \
-        --header='Beside or below the pane you are in'
+        --header='Where to open it, next to the pane you are in'
   )" || return 0
   case "$place" in
-    Beside) position=side ;;
+    Right) position=right ;;
+    Left) position=left ;;
     Below) position=below ;;
+    Above) position=above ;;
     *) return 0 ;;
   esac
   "$HOME/.tmuxinator/new_panel.sh" "$session" "$position" "$program" ${agent:+"$agent"} >/dev/null

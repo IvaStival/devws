@@ -81,15 +81,26 @@ field() {
   tmux display-message -p -t "$1" "#{$2}"
 }
 
-# <pane> <of>: right of <of>, at its top; below <of>, at its left edge.
+# <pane> <of>: right or left of <of>, at its top; below or above <of>, at its
+# left edge.
 beside() {
   [ "$(field "$1" pane_top)" = "$(field "$2" pane_top)" ] &&
     [ "$(field "$1" pane_left)" -gt "$(field "$2" pane_left)" ]
 }
 
+left_of() {
+  [ "$(field "$1" pane_top)" = "$(field "$2" pane_top)" ] &&
+    [ "$(field "$1" pane_left)" -lt "$(field "$2" pane_left)" ]
+}
+
 below() {
   [ "$(field "$1" pane_left)" = "$(field "$2" pane_left)" ] &&
     [ "$(field "$1" pane_top)" -gt "$(field "$2" pane_top)" ]
+}
+
+above() {
+  [ "$(field "$1" pane_left)" = "$(field "$2" pane_left)" ] &&
+    [ "$(field "$1" pane_top)" -lt "$(field "$2" pane_top)" ]
 }
 
 started() {
@@ -99,12 +110,12 @@ started() {
 SESSION=dev-panels
 create_workspace "$SESSION"
 
-# A new panel splits the focused pane: beside it, or below it.
+# A new panel splits the focused pane: right, left, below or above it.
 test_an_extra_agent() {
   local pane terminal
   terminal="$(pane_id "$SESSION" terminal)"
   tmux select-pane -t "$terminal"
-  pane="$("$NEW_PANEL" "$SESSION" side agent work)" || fail "adding an agent failed"
+  pane="$("$NEW_PANEL" "$SESSION" right agent work)" || fail "adding an agent failed"
   wait_until started claude || fail "the extra agent did not start"
   [ "$(tmux show-options -pqv -t "$pane" @devws_role)" = extra-agent ] &&
     [ "$(tmux show-options -pqv -t "$pane" @devws_agent)" = work ] || fail "the extra agent is not marked as one"
@@ -112,7 +123,7 @@ test_an_extra_agent() {
   [ "$(sed -n 1p "$TEST_ROOT"/started/claude.*)" = "$TEST_ROOT/project" ] || fail "the extra agent did not start in the project"
   grep -qx -- --settings "$TEST_ROOT"/started/claude.* || fail "the extra agent started without devws's hooks"
   [ "$(pane_id "$SESSION" agent)" != "$pane" ] || fail "the extra agent took the main agent's role"
-  ! "$NEW_PANEL" "$SESSION" side agent nobody 2>/dev/null || fail "an unregistered agent was added"
+  ! "$NEW_PANEL" "$SESSION" right agent nobody 2>/dev/null || fail "an unregistered agent was added"
 }
 
 test_a_terminal_and_a_neovim() {
@@ -127,11 +138,25 @@ test_a_terminal_and_a_neovim() {
   below "$editor" "$main_editor" || fail "Neovim is not below the focused editor"
 
   tmux select-pane -t "$main_editor"
-  terminal="$("$NEW_PANEL" "$SESSION" side terminal)" || fail "adding a terminal failed"
+  terminal="$("$NEW_PANEL" "$SESSION" right terminal)" || fail "adding a terminal failed"
   [ "$(tmux show-options -pqv -t "$terminal" @devws_role)" = extra ] || fail "the terminal is not an extra one"
   beside "$terminal" "$main_editor" || fail "the terminal is not beside the focused editor"
-  ! "$NEW_PANEL" "$SESSION" side sideways 2>/dev/null || fail "an unknown kind was accepted"
-  ! "$NEW_PANEL" "$SESSION" above terminal 2>/dev/null || fail "an unknown position was accepted"
+  ! "$NEW_PANEL" "$SESSION" right sideways 2>/dev/null || fail "an unknown kind was accepted"
+  ! "$NEW_PANEL" "$SESSION" diagonal terminal 2>/dev/null || fail "an unknown position was accepted"
+}
+
+test_left_and_above() {
+  local pane terminal main_editor
+  terminal="$(pane_id "$SESSION" terminal)"
+  tmux select-pane -t "$terminal"
+  pane="$("$NEW_PANEL" "$SESSION" left terminal)" || fail "adding a terminal on the left failed"
+  left_of "$pane" "$terminal" || fail "the terminal is not left of the focused terminal"
+  [ "$(pane_id "$SESSION" terminal)" = "$terminal" ] || fail "the panel on the left took the terminal's role"
+
+  main_editor="$(pane_id "$SESSION" editor)"
+  tmux select-pane -t "$main_editor"
+  pane="$("$NEW_PANEL" "$SESSION" above terminal)" || fail "adding a terminal above failed"
+  above "$pane" "$main_editor" || fail "the terminal is not above the focused editor"
 }
 
 # Opened from the sidebar's menu, the focus is on the sidebar: the panel goes
@@ -140,7 +165,7 @@ test_not_beside_the_sidebar() {
   local pane picker
   picker="$(tmux list-panes -t "$SESSION:" -F '#{pane_id} #{pane_title}' | awk '$2 == "devws-picker" { print $1 }')"
   tmux select-pane -t "$picker"
-  pane="$("$NEW_PANEL" "$SESSION" side terminal)" || fail "adding from the sidebar failed"
+  pane="$("$NEW_PANEL" "$SESSION" right terminal)" || fail "adding from the sidebar failed"
   beside "$pane" "$(pane_id "$SESSION" terminal)" || fail "a panel opened from the sidebar is not by the terminal"
 }
 
@@ -167,6 +192,7 @@ test_new_panels_are_saved() {
 
 test_an_extra_agent
 test_a_terminal_and_a_neovim
+test_left_and_above
 test_not_beside_the_sidebar
 test_a_minimized_group_is_expanded_first
 test_new_panels_are_saved

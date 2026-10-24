@@ -186,11 +186,12 @@ workspace.
 
 Choose **▣ New panel** in the devws menu, or press `C-b N`, to open another
 **Agent** (any registered agent: a second account, or a second Claude on
-another task), a **Terminal** or a **Neovim**, then **Beside** or **Below**
-the pane you are in (from the sidebar's menu, by the terminal). A panel in
-the agent group's area — beside or below the agent or the terminal — minimizes
-with the agent and terminal and moves with the layout toggle; one beside or
-below the editor stays where it is. All of them are restored after a reboot.
+another task), a **Terminal** or a **Neovim**, then **Right**, **Left**,
+**Below** or **Above** the pane you are in (from the sidebar's menu, by the
+terminal). A panel in the agent group's area — next to the agent or the
+terminal — minimizes with the agent and terminal and moves with the layout
+toggle; one next to the editor stays where it is. All of them are restored
+after a reboot.
 
 - **An extra agent** starts as the main one does: its account, devws's hooks
   and status line. Its header shows its own state (`▾ ⠹ Agent · work`,

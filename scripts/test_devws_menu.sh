@@ -130,12 +130,12 @@ test_header_marks_the_current_tab() {
   grep -q $'\033\\[2m Workspace ' <<<"$header" || fail "the header does not list every tab"
 }
 
-# New panel asks what to open (for an agent, which one) and where, beside or
-# below the focused pane, then opens it there (new_panel.sh).
+# New panel asks what to open (for an agent, which one) and where — right,
+# left, below or above the focused pane — then opens it there (new_panel.sh).
 test_new_panel_asks_what_to_open() {
   local answers kind agent place expected
-  for answers in "Agent|codex|Beside|dev-menu side agent codex" "Terminal||Below|dev-menu below terminal" \
-    "Neovim||Beside|dev-menu side nvim"; do
+  for answers in "Agent|codex|Right|dev-menu right agent codex" "Terminal||Below|dev-menu below terminal" \
+    "Neovim||Left|dev-menu left nvim" "Terminal||Above|dev-menu above terminal"; do
     IFS='|' read -r kind agent place expected <<<"$answers"
     printf '%s\n' "$kind" ${agent:+"$agent"} "$place" > "$TEST_ROOT/fzf.answers"
     rm -f "$TEST_ROOT/calls/new_panel.sh"
