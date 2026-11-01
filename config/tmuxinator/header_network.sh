@@ -58,14 +58,31 @@ signal_bars() {
     for (bar = 1; bar <= 4; bar++) printf "%s", (bar <= lit ? bars[bar] : "_") }'
 }
 
-link_rows() {
-  local wifi signal band address ping
-  wifi="$(system_profiler SPAirPortDataType 2>/dev/null |
+# "<dBm> <band>" of the current Wi-Fi network ("-60 5GHz"), or nothing.
+# CoreWLAN answers in a fifth of a second; system_profiler, which takes
+# seconds and wakes the Wi-Fi daemons, only when it can't.
+wifi_signal() {
+  local answer
+  answer="$(osascript -l JavaScript -e 'ObjC.import("CoreWLAN")
+    const wifi = $.CWWiFiClient.sharedWiFiClient.interface
+    wifi.rssiValue + " " + wifi.wlanChannel.channelBand' 2>/dev/null)"
+  # CoreWLAN's bands: 1 is 2.4 GHz, 2 is 5 GHz, 3 is 6 GHz; no signal reads 0.
+  answer="$(awk '$1 ~ /^-[0-9]+$/ { split("2.4GHz 5GHz 6GHz", bands, " "); print $1, bands[$2] }' <<< "$answer")"
+  if [ -n "$answer" ]; then
+    printf '%s\n' "$answer"
+    return
+  fi
+  system_profiler SPAirPortDataType 2>/dev/null |
     awk '/Current Network Information:/ { current = 1 }
          current && /Signal \/ Noise:/ { signal = $4 }
          current && /Channel:/ { band = $3; gsub(/[(,]/, "", band) }
          current && /Other Local Wi-Fi Networks:/ { exit }
-         END { if (signal != "") print signal, band }')"
+         END { if (signal != "") print signal, band }'
+}
+
+link_rows() {
+  local wifi signal band address ping
+  wifi="$(wifi_signal)"
   if [ -n "$wifi" ]; then
     read -r signal band <<< "$wifi"
     printf 'Wi-Fi %s %s dBm%s\n' "$(signal_bars "$signal")" "$signal" "${band:+ · ${band/GHz/ GHz}}"

@@ -49,7 +49,7 @@ for script in devws_menu.sh workspace_actions.sh workspace_panes.sh session_pick
   ln -s "$SCRIPTS/$script" "$TEST_ROOT/home/.tmuxinator/$script"
 done
 for script in toggle_layout.sh minimize_panes.sh header_toggle.sh open_database.sh follow_mode.sh register_agent.sh \
-  new_panel.sh save_state.sh refresh_devws_pickers.sh; do
+  new_panel.sh move_panel.sh save_state.sh refresh_devws_pickers.sh; do
   cat > "$TEST_ROOT/home/.tmuxinator/$script" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" > "$TEST_ROOT/calls/$script"
@@ -74,7 +74,7 @@ actions_of() {
 }
 
 test_tabs_list_their_actions() {
-  [ "$(actions_of workspace)" = "new worktree open-folder toggle-layout minimize header new-panel close" ] ||
+  [ "$(actions_of workspace)" = "new worktree open-folder toggle-layout minimize header new-panel move-panel close" ] ||
     fail "Workspace tab: $(actions_of workspace)"
   [ "$(actions_of agent)" = "jump switch-agent restart-agent initialize-agent register-agent remove-agent follow-mode" ] ||
     fail "Agent tab: $(actions_of agent)"
@@ -93,6 +93,7 @@ test_items_show_labels_and_shortcuts() {
   grep -q $'^minimize\t.*Minimize agent and terminal.*C-b _' <<<"$workspace" || fail "Minimize has no shortcut"
   grep -q $'^header\t.*Hide or show the header.*C-b C-s' <<<"$workspace" || fail "Hide header has no shortcut"
   grep -q $'^new-panel\t.*New panel.*C-b N' <<<"$workspace" || fail "New panel has no shortcut"
+  grep -q $'^move-panel\t.*Move panel.*C-b S-' <<<"$workspace" || fail "Move panel has no shortcut"
   grep -q $'^open-database\t.*Database.*C-b B' <<<"$database" || fail "Database has no shortcut"
   grep -q $'^follow-mode\t.*Agent follow.*C-b F' <<<"$agent" || fail "Agent follow has no shortcut"
   grep -q $'^switch-agent\t.*Switch agent' <<<"$agent" || fail "Switch agent has no label"
@@ -147,6 +148,23 @@ test_new_panel_asks_what_to_open() {
   rm -f "$TEST_ROOT/calls/new_panel.sh"
   menu --run new-panel
   [ ! -e "$TEST_ROOT/calls/new_panel.sh" ] || fail "a cancelled New panel opened one"
+}
+
+# Move panel asks which way, then moves the focused panel (move_panel.sh).
+test_move_panel_asks_which_way() {
+  local answers place expected
+  for answers in "Right|dev-menu right" "Left|dev-menu left" "Below|dev-menu below" "Above|dev-menu above"; do
+    IFS='|' read -r place expected <<<"$answers"
+    printf '%s\n' "$place" > "$TEST_ROOT/fzf.answers"
+    rm -f "$TEST_ROOT/calls/move_panel.sh"
+    menu --run move-panel
+    [ "$(cat "$TEST_ROOT/calls/move_panel.sh" 2>/dev/null)" = "$expected" ] ||
+      fail "Move panel → $place ran move_panel.sh with '$(cat "$TEST_ROOT/calls/move_panel.sh" 2>/dev/null)'"
+  done
+  : > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/move_panel.sh"
+  menu --run move-panel
+  [ ! -e "$TEST_ROOT/calls/move_panel.sh" ] || fail "a cancelled Move panel moved one"
 }
 
 # While the menu is open the header and spinners hold still (they would show
@@ -330,6 +348,7 @@ test_switching_tabs
 test_header_marks_the_current_tab
 test_script_actions_run_for_the_session
 test_new_panel_asks_what_to_open
+test_move_panel_asks_which_way
 test_the_menu_marks_itself_open
 test_register_and_remove_agents
 test_closing_a_worktree_workspace_asks_before_removing_it

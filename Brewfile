@@ -11,5 +11,7 @@ brew "tree-sitter-cli"
 brew "zsh"
 
 if OS.mac?
+  # Clickable agent alerts (agent_status.sh).
+  brew "terminal-notifier"
   cask "font-jetbrains-mono-nerd-font"
 end

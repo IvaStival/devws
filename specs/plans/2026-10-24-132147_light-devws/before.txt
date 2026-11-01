@@ -1,0 +1,13 @@
+CPU over 30 s, as % of one core
+
+workspace                  frozen  stopped      agent   editor  sidebar terminal    other
+dev-PhiPlanner             yes        0/12       0.5%     0.7%     2.3%     0.0%     0.0%
+dev-jungleforge            yes        0/11       0.8%     0.7%     2.4%     0.0%     0.0%
+dev-devws                  no         0/16       7.1%     0.9%     2.3%     0.0%     0.0%
+dev-FantasticaPortifolio   yes        0/13       0.7%     0.8%     2.3%     0.0%     0.0%
+dev-Parla                  yes        0/22       0.1%     0.6%     2.3%     0.0%     0.6%
+dev-ESP32                  yes        0/10       2.4%     0.8%     2.3%     0.0%     0.0%
+
+tmux server                    4.7%
+header ticker                  1.9%
+iTerm2                        84.8%

@@ -25,11 +25,12 @@
 #   4 times a s.   the working agents' spinner turns (agent_spinner.sh), in
 #                  the status bar, the agents' headers and the sidebars on
 #                  screen; header or not
-#   20 times a s.  the ghost (header_pet.sh) moves, into each attached
+#   10 times a s.  the ghost (header_pet.sh) moves, into each attached
 #                  workspace's @devws_ghost_<1-3>, in one mood for all the
 #                  agents (overall_mood).
 #                  Its cycles are drawn once at start and played back, so a
 #                  frame is a single tmux call.
+# The spinner and the ghost rest while no client's terminal is focused.
 # Both send tmux only what changed: each change makes tmux redraw the status
 # lines and the terminal draw them, so a frame the same as the last one, or
 # rows whose data has not moved, are skipped.
@@ -258,8 +259,29 @@ draw_ghost() {
   tmux "${frame[@]:0:${#frame[@]}-1}"
 }
 
+# Waits <seconds> without starting a process: a read that times out on a pipe
+# nobody writes to. The loop waits 20 times a second, and a sleep each time
+# would be 20 processes a second. Bash 3.2's read only times out in whole
+# seconds, so there it is sleep.
+nap() {
+  if [ -n "${nap_fd:-}" ]; then
+    read -r -t "$1" -u "$nap_fd" _ 2>/dev/null
+  else
+    sleep "$1"
+  fi
+  return 0
+}
+
+# Whether a client's terminal has the focus: with none (iTerm2 behind another
+# app), nothing animates, so tmux and the terminal rest.
+any_focused() {
+  tmux list-clients -F '#{client_flags}' 2>/dev/null | grep -q focused
+}
+
 run() {
-  local tick=0
+  local tick=0 focused=1
+  # Opened read-write, the pipe never reports its end: reads only time out.
+  [ "${BASH_VERSINFO[0]}" -ge 4 ] && exec 9<> <(:) && nap_fd=9
   mkdir -p "$state_dir"
   tmux set-option -g @devws_header_ticker "$$" || exit 0
   load_settings
@@ -270,6 +292,8 @@ run() {
   ghost_shown=()
   while true; do
     if [ $((tick % fps)) -eq 0 ]; then
+      focused=1
+      any_focused || focused=0
       header_hidden="$(tmux show-option -gqv @devws_header_hidden 2>/dev/null)"
       if [ -z "$header_hidden" ] && [ ! -e "$popup_flag" ]; then
         read_clients
@@ -286,20 +310,22 @@ run() {
     [ $((tick % (60 * fps))) -eq 0 ] && in_background tokens update_tokens
     [ $((tick % (60 * fps))) -eq 0 ] && in_background suspend "$scripts_dir/suspend_workspace.sh" sweep
     [ $((tick % (1800 * fps))) -eq 0 ] && in_background weather keep weather "$scripts_dir/header_weather.sh"
-    # The working agents' spinner, four turns a second, header or not.
-    [ $((tick % spin_ticks)) -eq 0 ] && spin_agents $((tick / spin_ticks))
+    # The working agents' spinner, four turns a second, header or not, while
+    # a client is focused.
+    [ "$focused" = 1 ] && [ $((tick % spin_ticks)) -eq 0 ] && spin_agents $((tick / spin_ticks))
     # While the header is hidden (header_toggle.sh) nothing is drawn: a turn
     # each spinner frame keeps the sources current for when it comes back.
     if [ -n "$header_hidden" ]; then
       tick=$((tick + spin_ticks))
-      sleep 0.25
+      nap 0.25
       continue
     fi
-    if [ "$show_pet" = 1 ] && [ ! -e "$popup_flag" ]; then
+    # The ghost: 10 frames a second at most, while a client is focused.
+    if [ "$show_pet" = 1 ] && [ "$focused" = 1 ] && [ $((tick % 2)) -eq 0 ] && [ ! -e "$popup_flag" ]; then
       draw_ghost "$tick" 2>/dev/null || exit 0
     fi
     tick=$((tick + 1))
-    sleep 0.05
+    nap 0.05
   done
 }
 

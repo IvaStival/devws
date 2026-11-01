@@ -27,9 +27,26 @@
             "command": "\"$HOME/.tmuxinator/agent_state.sh\""
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.tmuxinator/agent_follow_hook.sh\" claude prompt"
+          }
+        ]
       }
     ],
     "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|MultiEdit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.tmuxinator/agent_follow_hook.sh\" claude pre"
+          }
+        ]
+      },
       {
         "hooks": [
           {
@@ -41,7 +58,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Edit|MultiEdit|Write|NotebookEdit|Read",
+        "matcher": "Bash|Edit|MultiEdit|Write|NotebookEdit|Read",
         "hooks": [
           {
             "type": "command",

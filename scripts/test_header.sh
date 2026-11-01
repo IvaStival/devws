@@ -424,8 +424,16 @@ STUB
 printf 'Name Mtu Network Address Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll\n'
 printf 'en0 1500 <Link#11> ea:96 100 0 %s 50 0 %s 0\n' \$(cat "$TEST_ROOT/stubs/counters")
 STUB
-  cat > "$stubs/system_profiler" <<'STUB'
+  # CoreWLAN, asked through osascript: the signal and the band (2 is 5 GHz),
+  # from stubs/corewlan; with none, it fails, as without Wi-Fi.
+  cat > "$stubs/osascript" <<STUB
 #!/usr/bin/env bash
+[ -f "$TEST_ROOT/stubs/corewlan" ] || exit 1
+cat "$TEST_ROOT/stubs/corewlan"
+STUB
+  cat > "$stubs/system_profiler" <<STUB
+#!/usr/bin/env bash
+touch "$TEST_ROOT/stubs/system_profiler.called"
 cat <<'OUT'
       Interfaces:
         en0:
@@ -463,6 +471,26 @@ test_network() {
   output="$(PATH="$stubs:$PATH" "$SCRIPTS/header_network.sh" "$state" | plain)"
   [ "$(sed -n 1p <<< "$output")" = offline ] || fail "being offline is not shown: $output"
   rm "$TEST_ROOT/stubs/offline"
+}
+
+# The Wi-Fi row comes from CoreWLAN, a fifth of a second; system_profiler,
+# which takes seconds, only answers when CoreWLAN can't.
+test_the_wifi_row_asks_corewlan_first() {
+  local stubs state="$TEST_ROOT/wifi-state" output
+  stubs="$(stub_network)"
+  printf '1000000 500000\n' > "$TEST_ROOT/stubs/counters"
+  printf -- '-60 2\n' > "$TEST_ROOT/stubs/corewlan"
+  rm -rf "$state" "$TEST_ROOT/stubs/system_profiler.called"
+  mkdir -p "$state"
+  output="$(PATH="$stubs:$PATH" "$SCRIPTS/header_network.sh" "$state" | sed -n 2p)"
+  [ "$output" = 'Wi-Fi ▂▄▆_ -60 dBm · 5 GHz' ] || fail "unexpected Wi-Fi row from CoreWLAN: $output"
+  [ ! -e "$TEST_ROOT/stubs/system_profiler.called" ] || fail "system_profiler ran though CoreWLAN answered"
+
+  rm -rf "$state" "$TEST_ROOT/stubs/corewlan"
+  mkdir -p "$state"
+  output="$(PATH="$stubs:$PATH" "$SCRIPTS/header_network.sh" "$state" | sed -n 2p)"
+  [ "$output" = 'Wi-Fi ▂▄▆_ -60 dBm · 5 GHz' ] || fail "unexpected Wi-Fi row from system_profiler: $output"
+  [ -e "$TEST_ROOT/stubs/system_profiler.called" ] || fail "system_profiler was not asked when CoreWLAN could not answer"
 }
 
 # ---------------------------------------------------------------- weather
@@ -755,6 +783,44 @@ test_the_header_holds_still_under_a_popup() {
   tmux kill-server
 }
 
+# While no client's terminal is focused (iTerm2 behind another app), nothing
+# animates: no ghost frames, no spinner turns, so tmux and the terminal rest.
+# Focused, the ghost moves at most 10 times a second.
+test_animations_rest_while_unfocused() {
+  local frame
+  tmux new-session -d -s dev-work -x 200 -y 50 'sleep 600'
+  tmux source-file "$TEST_ROOT/status.conf"
+  tmux set-option -g focus-events on
+  tmux set-option -t dev-work @devws_agent_state working
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" -f /dev/null new-session -d -s client -x 200 -y 50 \
+    "TMUX= $REAL_TMUX -L $SOCKET attach -t dev-work"
+  "$SCRIPTS/header_ticker.sh" --start
+  wait_until header_row_shows 3 'CPU' || fail "the header did not show: $(client_header)"
+  sleep 1
+  : > "$TEST_ROOT/redraws.log"
+  sleep 2
+  [ "$(redraws ghost)" -gt 0 ] || fail "the working ghost does not move while focused"
+  [ "$(redraws ghost)" -le 22 ] || fail "the ghost was redrawn $(redraws ghost) times in 2 s, over 10 a second"
+
+  # The terminal reports it lost the focus.
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" send-keys -t client $'\e[O'
+  unfocused() { ! tmux list-clients -F '#{client_flags}' | grep -q focused; }
+  wait_until unfocused || fail "the client did not lose the focus: $(tmux list-clients -F '#{client_flags}')"
+  sleep 1.5
+  : > "$TEST_ROOT/redraws.log"
+  frame="$(option @devws_agent_frame)"
+  sleep 2
+  [ "$(redraws ghost)" -eq 0 ] || fail "the ghost moved $(redraws ghost) times with no client focused"
+  [ "$(option @devws_agent_frame)" = "$frame" ] || fail "the spinner turned with no client focused"
+
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" send-keys -t client $'\e[I'
+  sleep 1.5
+  [ "$(redraws ghost)" -gt 0 ] || fail "the ghost did not move again once focused"
+  [ "$(option @devws_agent_frame)" != "$frame" ] || fail "the spinner did not turn again once focused"
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server
+  tmux kill-server
+}
+
 test_the_header_hides() {
   local line marker_column
   tmux new-session -d -s dev-work -x 200 -y 50 'sleep 600'
@@ -809,6 +875,7 @@ test_claude_limits_come_from_its_status_line
 test_one_column_for_the_agents
 test_system_usage
 test_network
+test_the_wifi_row_asks_corewlan_first
 test_weather
 test_the_layout_spreads_the_groups
 test_the_clock
@@ -816,6 +883,7 @@ test_the_layout_leaves_out_the_clock_when_narrow
 test_a_client_shows_the_header
 test_the_header_redraws_only_changes
 test_the_header_holds_still_under_a_popup
+test_animations_rest_while_unfocused
 test_the_header_hides
 
 printf 'Header tests passed.\n'

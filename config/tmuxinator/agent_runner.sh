@@ -9,11 +9,21 @@
 #   agent_runner.sh <agent> --extra   an extra agent (New panel): marked
 #                                     extra-agent with its agent's name, so the
 #                                     main agent keeps its role
+#   agent_runner.sh <agent> --resume  continues the agent's last conversation
+#                                     in this folder (a pane reopened under
+#                                     its runner, suspend_workspace.sh)
 
 set -u
 
 agent="${1:-}"
-extra="${2:-}"
+extra=""
+resume=""
+for option in "${@:2}"; do
+  case "$option" in
+    --extra) extra=--extra ;;
+    --resume) resume=1 ;;
+  esac
+done
 link_dir="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=/dev/null
 [ -r "$link_dir/.env" ] && . "$link_dir/.env"
@@ -51,19 +61,29 @@ fi
 prompt="$(cat "$link_dir/agent_editor_prompt.md")"
 case "$kind" in
   claude)
-    claude --settings "$link_dir/agent_settings.json" --append-system-prompt "$prompt"
+    claude ${resume:+--continue} --settings "$link_dir/agent_settings.json" --append-system-prompt "$prompt"
     ;;
   codex)
     # Config overrides are TOML; jq's JSON strings are valid TOML strings, quotes escaped.
-    hook_command="$(jq -n --arg path "$link_dir/agent_follow_hook.sh" '"\"\($path)\" codex"')"
+    # The follow hook in <phase> (agent_follow_hook.sh): every tool call, since
+    # Codex's tools vary (exec, shell, apply_patch) and any may change files.
+    follow_hook() {
+      printf '{hooks=[{type="command",command=%s}]}' \
+        "$(jq -n --arg path "$link_dir/agent_follow_hook.sh" --arg phase "${1:-}" \
+          '"\"\($path)\" codex" + (if $phase == "" then "" else " " + $phase end)')"
+    }
     # Every state event reports to agent_state.sh (working / needs you / done).
     state_hook="{hooks=[{type=\"command\",command=$(jq -n --arg path "$link_dir/agent_state.sh" '"\"\($path)\""')}]}"
     state_hooks=()
-    for event in SessionStart UserPromptSubmit PreToolUse PermissionRequest Stop SessionEnd; do
+    for event in SessionStart PermissionRequest Stop SessionEnd; do
       state_hooks+=(-c "hooks.$event=[$state_hook]")
     done
-    codex \
-      -c "hooks.PostToolUse=[{matcher=\"apply_patch\",hooks=[{type=\"command\",command=$hook_command}]},$state_hook]" \
+    resume_args=()
+    [ -n "$resume" ] && resume_args=(resume --last)
+    codex ${resume_args[@]+"${resume_args[@]}"} \
+      -c "hooks.UserPromptSubmit=[$state_hook,$(follow_hook prompt)]" \
+      -c "hooks.PreToolUse=[$(follow_hook pre),$state_hook]" \
+      -c "hooks.PostToolUse=[$(follow_hook),$state_hook]" \
       "${state_hooks[@]}" \
       -c "developer_instructions=$(jq -n --arg prompt "$prompt" '$prompt')"
     ;;

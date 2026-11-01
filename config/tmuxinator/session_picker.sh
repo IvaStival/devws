@@ -46,7 +46,7 @@ workspace_rows() {
   esac
   (( row_width > 2 )) && row_width=$((row_width - 2))
 
-  while IFS='|' read -r session agent editor root agent_state frozen; do
+  while IFS='|' read -r session agent editor root agent_state frozen needs_reopen; do
     case "$session" in dev-*) ;; *) continue ;; esac
     agent="${agent:-unknown}"
     editor="${editor:-unknown}"
@@ -59,10 +59,19 @@ workspace_rows() {
       *) activity=""; activity_plain="" ;;
     esac
     # Frozen while idle (suspend_workspace.sh) until you switch to it.
-    if [ -n "$frozen" ]; then
-      activity="$activity · paused"
-      activity_plain="$activity_plain · paused"
+    # A mark to reopen it: its editor predates the runners and has unsaved
+    # changes, or can't be asked, so only closing and reopening the workspace
+    # lets the editor pause too.
+    pause_mark=""
+    if [ -n "$frozen" ] && [ -n "$needs_reopen" ]; then
+      pause_mark=" · partly paused"
+    elif [ -n "$frozen" ]; then
+      pause_mark=" · paused"
+    elif [ -n "$needs_reopen" ]; then
+      pause_mark=" · reopen to pause"
     fi
+    activity="$activity$pause_mark"
+    activity_plain="$activity_plain$pause_mark"
 
     branch="—"
     state="  "
@@ -95,7 +104,7 @@ workspace_rows() {
       printf '\n    \033[2m%s%b · %s\033[0m\0' "$agent" "$activity" "$editor"
     fi
   done < <(tmux list-sessions \
-    -F '#{session_name}|#{@devws_agent}|#{@devws_editor}|#{@devws_root}|#{@devws_agent_state}|#{@devws_frozen}' 2>/dev/null)
+    -F '#{session_name}|#{@devws_agent}|#{@devws_editor}|#{@devws_root}|#{@devws_agent_state}|#{@devws_frozen}|#{@devws_needs_reopen}' 2>/dev/null)
 }
 
 # Swapped in whole, so a spinner frame never reads half of the rows.

@@ -19,9 +19,11 @@ bash -n "$ROOT/scripts/test_agent_status.sh"
 bash -n "$ROOT/scripts/test_header.sh"
 bash -n "$ROOT/scripts/test_devws_reload.sh"
 bash -n "$ROOT/scripts/test_new_panel.sh"
+bash -n "$ROOT/scripts/test_move_panel.sh"
 bash -n "$ROOT/scripts/test_suspend_workspace.sh"
 bash -n "$ROOT/scripts/test_devws_menu.sh"
 bash -n "$ROOT/scripts/test_register_agent.sh"
+bash -n "$ROOT/scripts/measure_load.sh"
 bash -n "$ROOT/scripts/test_iterm_keys.sh"
 bash -n "$ROOT/scripts/setup_iterm_keys.sh"
 bash -n "$ROOT/shell/render_mermaid_preview.sh"
@@ -60,11 +62,13 @@ for file in "$ROOT/install.sh" "$ROOT/delete.sh" "$ROOT/scripts/check.sh" \
             "$ROOT/scripts/test_header.sh" \
             "$ROOT/scripts/test_devws_reload.sh" \
             "$ROOT/scripts/test_new_panel.sh" \
+            "$ROOT/scripts/test_move_panel.sh" \
             "$ROOT/scripts/test_suspend_workspace.sh" \
             "$ROOT/scripts/test_devws_menu.sh" \
             "$ROOT/scripts/test_register_agent.sh" \
             "$ROOT/scripts/test_iterm_keys.sh" \
             "$ROOT/scripts/setup_iterm_keys.sh" \
+            "$ROOT/scripts/measure_load.sh" \
             "$ROOT/shell/render_mermaid_preview.sh" \
             "$ROOT"/config/tmux/*.sh "$ROOT"/config/tmuxinator/*.sh; do
   [[ -x "$file" ]] || {
@@ -84,6 +88,7 @@ done
 "$ROOT/scripts/test_header.sh"
 "$ROOT/scripts/test_devws_reload.sh"
 "$ROOT/scripts/test_new_panel.sh"
+"$ROOT/scripts/test_move_panel.sh"
 "$ROOT/scripts/test_suspend_workspace.sh"
 "$ROOT/scripts/test_devws_menu.sh"
 "$ROOT/scripts/test_register_agent.sh"

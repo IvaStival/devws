@@ -263,6 +263,24 @@ new_panel() {
   "$HOME/.tmuxinator/new_panel.sh" "$session" "$position" "$program" ${agent:+"$agent"} >/dev/null
 }
 
+# The focused panel trades places with its neighbour on a side (move_panel.sh).
+move_panel() {
+  local place direction
+  place="$(
+    printf '%s\n' Right Left Below Above |
+      fzf --height=~10 --layout=reverse --prompt='Move > ' \
+        --header='Move the panel you are in'
+  )" || return 0
+  case "$place" in
+    Right) direction=right ;;
+    Left) direction=left ;;
+    Below) direction=below ;;
+    Above) direction=above ;;
+    *) return 0 ;;
+  esac
+  "$HOME/.tmuxinator/move_panel.sh" "$(tmux display-message -p '#S')" "$direction"
+}
+
 toggle_layout() {
   "$HOME/.tmuxinator/toggle_layout.sh" "$(tmux display-message -p '#S')"
 }

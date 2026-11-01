@@ -38,7 +38,10 @@ printf '#!/usr/bin/env bash\nexec sleep 600\n' > "$TEST_ROOT/home/.tmuxinator/se
 chmod +x "$TEST_ROOT/home/.tmuxinator/session_picker.sh"
 # The tmux.conf the reload sources: an option to see it applied.
 printf 'set -g @reload_marker before\n' > "$TEST_ROOT/home/.tmux.conf"
-export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home"
+# TMPDIR keeps devws's temporary files (frozen workspaces' records among them)
+# apart from the real ones.
+mkdir -p "$TEST_ROOT/tmp"
+export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" TMPDIR="$TEST_ROOT/tmp"
 unset TMUX
 SCRIPTS="$HOME/.tmuxinator"
 RELOAD="$SCRIPTS/reload_devws.sh"

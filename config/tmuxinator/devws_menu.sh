@@ -27,6 +27,7 @@ workspace|toggle-layout|▥ Toggle layout|C-b \|toggle_layout
 workspace|minimize|▁ Minimize agent and terminal|C-b _|minimize_agents
 workspace|header|▔ Hide or show the header|C-b C-s|toggle_header
 workspace|new-panel|▣ New panel|C-b N|new_panel
+workspace|move-panel|⇆ Move panel|C-b S-←→↑↓|move_panel
 workspace|close|× Close workspace||close_workspace
 agent|jump|! Go to waiting agent|C-b a|jump_agent
 agent|switch-agent|⇄ Switch agent||switch_agent

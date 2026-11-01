@@ -15,9 +15,6 @@ set -u
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 client="${1:-}"
 
-# shellcheck source=workspace_panes.sh
-. "$script_dir/workspace_panes.sh"
-
 message() {
   tmux display-message ${client:+-c "$client"} "$1" 2>/dev/null
 }
@@ -53,19 +50,13 @@ if [ -z "$candidates" ]; then
 fi
 target="$(next_after "$current" "$candidates")"
 
-"$script_dir/minimize_panes.sh" "$target" restore agents >/dev/null 2>&1
-load_workspace_panes "$target"
-# The agent pane in the wanted state, else the main agent.
-agent="$(tmux list-panes -t "=$target:" -F '#{pane_id} #{@devws_role} #{@devws_pane_state}' 2>/dev/null |
-  awk -v wanted="$wanted" '$2 ~ /^(agent|extra-agent)$/ && $3 == wanted { print $1; exit }')"
-[ -n "$agent" ] || agent="$(pane_with_role agent)"
+# The agent pane in the wanted state, else (focus_agent.sh) the main agent;
+# the panes of a minimized group are looked up in its hidden window too.
+agent="$(tmux list-panes -s -t "=$target" -F '#{pane_id} #{@devws_role} #{@devws_pane_state}' 2>/dev/null |
+  awk -v wanted="$wanted" '$2 ~ /^(minimized-)?(agent|extra-agent)$/ && $3 == wanted { print $1; exit }')"
 
-tmux switch-client ${client:+-c "$client"} -t "=$target" 2>/dev/null || {
+"$script_dir/focus_agent.sh" "$target" "$agent" "$client" || {
   message "Could not switch to $target"
   exit 1
 }
-if [ -n "$agent" ]; then
-  tmux select-window -t "$agent" 2>/dev/null
-  tmux select-pane -t "$agent" 2>/dev/null
-fi
 exit 0

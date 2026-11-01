@@ -153,7 +153,7 @@ group, and shows each action's own shortcut:
 
 | Tab | Actions |
 | --- | ------- |
-| Workspace | New workspace · New worktree workspace · Open folder · Toggle layout `C-b \` · Minimize agent and terminal `C-b _` · New panel `C-b N` · Close workspace |
+| Workspace | New workspace · New worktree workspace · Open folder · Toggle layout `C-b \` · Minimize agent and terminal `C-b _` · New panel `C-b N` · Move panel `C-b Shift+arrow` · Close workspace |
 | Agent | Go to waiting agent `C-b a` · Switch agent · Restart agent · Initialize agent · Register agent · Remove agent · Agent follow `C-b F` |
 | Editor | Switch editor · Agent follow `C-b F` |
 | Database | Database `C-b B` · Database folder |
@@ -207,6 +207,15 @@ after a reboot.
 - **After a restore** an extra agent comes back with the same agent in a new
   conversation (`/resume` brings the old one back), a Neovim fresh, a
   terminal at a prompt in its folder.
+
+### Moving panels
+
+Press **`C-b Shift+→`** (or ←, ↑, ↓), or choose **⇆ Move panel** in the devws
+menu, to move the pane you are in one place that way: it trades places with
+its neighbour on that side. The layout stays as it is — each place keeps its
+size — and nothing restarts; keep pressing the arrows after one `C-b` to move
+it further. The sidebar stays where it is, a minimized agent and terminal are
+expanded first, and the new order is saved with the workspace.
 
 ### Minimize the agent and terminal
 
@@ -288,7 +297,17 @@ The agent and Neovim are linked:
   command or terminal mode), or when the changed file has unsaved changes of
   yours, it doesn't jump: a notification names the file and line instead.
   Unsaved changes to other files don't stop it. When edits come quickly, the
-  editor always ends on the latest one.
+  editor always ends on the latest one. In a git project this covers changes
+  made through shell commands too (`sed -i`, a heredoc, a formatter,
+  `git checkout`): one command that changes several files shows the one it
+  changed last.
+- **Every line the agent changed is marked** with `▍` in the sign column, in
+  every file it changed, also files you open later. The marks stay until you
+  send the agent your next prompt. In a git project only: devws works out what
+  each tool call changed by snapshotting the project before and after it (into
+  an index of its own, so yours and your staging are never touched; ignored
+  files are left out). That takes about a fifth of a second per tool call on a
+  repo of a few hundred files.
 - **The agent can show you things.** Ask it to "show me the login controller"
   or "open where the total is computed", and it opens that place in the
   editor. It runs `~/.tmuxinator/editor_open.sh <path>[:<line>]`, which you
@@ -340,9 +359,21 @@ waiting longest and focuses the agent, restoring it when minimized; press it
 again for the next one. With none waiting, it goes to an agent that is done.
 
 When an agent in a workspace you are not looking at starts waiting or is
-done, macOS shows a notification (`devws · my-app — claude needs you`). Set
-`DEVWS_NOTIFY` in `config/tmuxinator/.env` to `waiting` for those only, or to
-`0` for none. There are no sounds.
+done, macOS shows a notification naming the workspace, its folder and branch,
+and the agent — the main one or one in a new panel:
+
+```
+my-app ✓ done
+my-app · feat/login
+codex in a new panel is done
+```
+
+Click it to go there: devws switches to the workspace, restores the agent
+when minimized, focuses it and brings iTerm2 forward. A newer alert from the
+same workspace replaces the older one. Clicking needs `terminal-notifier`
+(installed by `./install.sh --deps`); without it the alert still shows, but
+clicking does nothing. Set `DEVWS_NOTIFY` in `config/tmuxinator/.env` to
+`waiting` for those only, or to `0` for none. There are no sounds.
 
 How it works: the same hooks that link the editor report each agent event to
 `agent_state.sh`, which records the state on the workspace (tmux option
@@ -708,7 +739,8 @@ Glow, exactly as before.
 - devws menu: `config/tmuxinator/devws_menu.sh` (tabs and items), with the
   actions in `config/tmuxinator/workspace_actions.sh`
 - Agent ↔ editor link: `config/tmuxinator/editor_open.sh`,
-  `agent_follow_hook.sh`, `agent_settings.json` (Claude Code hook),
+  `agent_follow_hook.sh`, `agent_changes.sh` (what a tool call changed),
+  `agent_settings.json` (Claude Code hook),
   `agent_editor_prompt.md`, `follow_mode.sh` (the modes), and
   `config/nvim/lua/devws/follow.lua`; wired up in `agent_runner.sh` and
   `editor_runner.sh`

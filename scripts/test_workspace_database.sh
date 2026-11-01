@@ -43,7 +43,10 @@ EOF
 chmod +x "$TEST_ROOT/bin/tmux" "$TEST_ROOT/bin/devdb"
 ln -s "$SCRIPTS" "$TEST_ROOT/home/.tmuxinator"
 mkdir -p "$TEST_ROOT/client"
-export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" CLIENT_LOG_DIR="$TEST_ROOT/client"
+# TMPDIR keeps devws's temporary files (frozen workspaces' records among them)
+# apart from the real ones.
+mkdir -p "$TEST_ROOT/tmp"
+export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" CLIENT_LOG_DIR="$TEST_ROOT/client" TMPDIR="$TEST_ROOT/tmp"
 unset TMUX
 
 # --- Connection settings from .env ---------------------------------------
