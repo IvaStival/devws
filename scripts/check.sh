@@ -74,6 +74,7 @@ done
 logs="$(mktemp -d "${TMPDIR:-/tmp}/devws-check.XXXXXX")"
 trap 'rm -rf "$logs"' EXIT
 failed=0
+retry=()
 
 # A batch of suites at a time (bash 3.2 has no `wait -n`), each reported as
 # it is collected.
@@ -89,12 +90,25 @@ for ((start = 0; start < ${#suites[@]}; start += parallel)); do
     if wait "${pids[index]}"; then
       printf '✓ %s\n' "$name"
     else
-      printf '✗ %s\n' "$name"
-      sed 's/^/    /' "$logs/$name.log"
-      failed=1
+      retry+=("$suite")
     fi
     index=$((index + 1))
   done
+done
+
+# A suite that failed alongside others runs again alone: several tmux servers
+# at once can briefly run the machine out of terminals ("fork failed: Device
+# not configured"). Passing alone is said, not hidden.
+for suite in "${retry[@]+"${retry[@]}"}"; do
+  name="$(basename "$suite" .sh)"
+  if "$suite" > "$logs/$name.retry.log" 2>&1; then
+    printf '✓ %s (failed beside the others, passed alone: %s)\n' "$name" \
+      "$(grep -v '^\s*$' "$logs/$name.log" | tail -n 1)"
+  else
+    printf '✗ %s\n' "$name"
+    sed 's/^/    /' "$logs/$name.retry.log"
+    failed=1
+  fi
 done
 
 if [ "$failed" = 1 ]; then
