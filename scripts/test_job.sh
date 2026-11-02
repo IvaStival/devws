@@ -90,27 +90,29 @@ test_jobs_on_one_lock_run_in_order() {
   [ "$(cat "$TEST_ROOT/order")" = $'first\nsecond' ] || fail "order: $(cat "$TEST_ROOT/order")"
 }
 
-test_rows_show_running_jobs_and_their_last_lines() {
+# The header keeps only the jobs line: the log is in the workspace's panel.
+test_rows_show_the_jobs_line_only() {
   local id rows
-  id="$(job start 'Build web' -- sh -c 'printf "step 1\n\033[32mstep #2\033[0m\rstep 3 of 9\n"; sleep 2')"
+  id="$(job start 'Build web' -- sh -c 'printf "step 1\nstep 2\n"; sleep 2')"
   wait_for "$id" running
   sleep 0.3
-  rows="$(job rows 80)"
-  [ "$(wc -l <<<"$rows" | tr -d ' ')" = 3 ] || fail "not three rows: $rows"
+  # The "." keeps the empty rows that $(…) would drop.
+  rows="$(job rows 80; printf .)"
+  [ "$(grep -c '' <<<"$rows")" = 4 ] && [ -z "$(sed -n 2,3p <<<"$rows" | tr -d '\n')" ] ||
+    fail "not the jobs line and two empty rows: $rows"
   grep -q '⏵ Build web 0:0' <<<"$(sed -n 1p <<<"$rows")" || fail "row 1: $(sed -n 1p <<<"$rows")"
-  [ "$(sed -n 2p <<<"$rows")" = '  step 1' ] || fail "row 2: $(sed -n 2p <<<"$rows")"
-  # The carriage return keeps the last text; control sequences go.
-  [ "$(sed -n 3p <<<"$rows")" = '  step 3 of 9' ] || fail "row 3: $(sed -n 3p <<<"$rows")"
+  ! grep -q 'step' <<<"$rows" || fail "the log is still in the header"
   [ "$(job summary)" = '⏵ 1 job · ✗ 1 failed' ] || fail "summary: $(job summary)"
   wait_for "$id" ok
 }
 
 test_rows_are_cut_and_escaped_for_tmux() {
   local id
-  id="$(job start 'Hash' -- sh -c 'echo "#[fg=red] 0123456789012345678901234567890"; sleep 2')"
+  id="$(job start '#[fg=red] 0123456789' -- sleep 2)"
   wait_for "$id" running
   sleep 0.3
-  [ "$(job rows 20 | sed -n 2p)" = '  ##[fg=red] 01234567' ] || fail "cut/escaped: $(job rows 20 | sed -n 2p)"
+  # Cut to 14 characters ("⏵ #[fg=red] 01"), then the "#" doubled.
+  [ "$(job rows 14 | sed -n 1p)" = '⏵ ##[fg=red] 01' ] || fail "cut/escaped: $(job rows 14 | sed -n 1p)"
   wait_for "$id" ok
 }
 
@@ -201,7 +203,7 @@ test_old_jobs_are_pruned() {
 test_a_job_returns_at_once_and_records_its_end
 test_arguments_reach_the_command_unchanged
 test_jobs_on_one_lock_run_in_order
-test_rows_show_running_jobs_and_their_last_lines
+test_rows_show_the_jobs_line_only
 test_rows_are_cut_and_escaped_for_tmux
 test_a_success_leaves_after_ten_seconds_a_failure_when_seen
 test_notes_show_for_ten_seconds_errors_until_seen

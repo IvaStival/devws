@@ -599,9 +599,10 @@ stop_running_apps() {
   jungleforge_job stop stop "$root" -- $(cut -f1 <<<"$rows")
 }
 
-# The background jobs' newest log that matters (job.sh): a failure first.
+# The background jobs' newest log that matters (job.sh): a failure first, in
+# the workspace's log panel.
 show_job_log() {
-  "$HOME/.tmuxinator/job.sh" log || pause
+  "$HOME/.tmuxinator/job.sh" open || pause
 }
 
 start_services() {

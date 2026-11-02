@@ -788,22 +788,28 @@ A repo jungleforge does not know says so: register it in jungleforge's `.env`.
 Long work never holds the screen: Run this branch, Switch, Stop, Services,
 Migrate, Push and closing a running branch's workspace ask their questions,
 close the menu and carry on as a **background job**. While jobs run, the
-header shows them where the network and weather are — each job with its
-state and time, and the newest running job's last two log lines:
+header shows them on one line where the network and weather are — each job
+with its state, progress and time:
 
 ```
-CPU … │ claude 5h … │ ⏵ phi-planner → feat/login 0:42  … phi-planner-web → feat/login queued
-MEM … │ work   5h … │   #7 [dev 4/9] RUN composer install
-DSK … │ month $588  │   Installing laravel/framework (v11.9)
+CPU … │ claude 5h … │ ⏵ phi-planner → feat/login ▓▓▓▓░░░░░░ 4/9 0:42  … phi-planner-web → feat/login queued
 ```
 
-A success shows `✓` for 10 seconds, then the network and weather come back;
-a failure stays `✗ … failed` until you open its log. **Click the job group**
-(or the `⏵ 2 jobs · ✗ 1 failed` summary on tmux's top line, there with the
-header hidden too) to read the log in a large popup that follows it; `q`
-closes it. Jobs on the same app wait in line (`queued`), so two builds of
-one container never race. A Docker build shows its progress from the step
-count it prints (`⏵ phi-planner ▓▓▓▓░░░░░░ 4/9 0:42`).
+A job still running after 3 seconds opens its **log panel** below the
+terminal of the workspace that started it: the live log, in color, with the
+job in the panel's header. It never takes the focus, so you keep typing where
+you were. A success says `✓ … done` and closes after 5 seconds; a failure
+says `✗ … failed` and stays until you press `q` in it. `q` closes it at any
+time — the job carries on. One panel per workspace, on its newest job;
+toggling the layout or minimizing the agent and terminal closes it.
+
+In the header a success shows `✓` for 10 seconds, then the network and
+weather come back; a failure stays `✗ … failed` until you open its log.
+**Click the job group** (or the `⏵ 2 jobs · ✗ 1 failed` summary on tmux's top
+line, there with the header hidden too), press `C-b j` or choose **◷ Job
+log** to open the log panel again. Jobs on the same app wait in line
+(`queued`), so two builds of one container never race. A Docker build shows
+its progress from the step count it prints.
 
 When a job ends while you are elsewhere, macOS tells you: a failure always,
 a success when it took over 30 seconds. Clicking the notification opens the

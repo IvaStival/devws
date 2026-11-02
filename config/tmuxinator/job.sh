@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Background jobs: long work (a build, a push) runs apart from what started
 # it, so the devws menu closes at once and nothing waits on it. The header
-# shows them where the network and weather are (header_ticker.sh), and a click
-# there opens the log.
+# shows them where the network and weather are (header_ticker.sh); a job that
+# runs a few seconds opens its log in a panel of the workspace that started it
+# (job_panel.sh), as a click on the header or C-b j does.
 #
 #   job.sh start <title> [--lock <name>]... -- <command> [args]
 #                         starts the job; prints its id. Jobs holding the same
@@ -12,11 +13,13 @@
 #   job.sh list           "<id> <state> <title>", newest first
 #   job.sh log [id]       pages the log, following it (the failed one first,
 #                         else the newest); a failure counts as seen after
-#   job.sh open [client] [id]   the log in a large popup (a click on the
-#                         header, or on a job's notification)
-#   job.sh rows <width>   the header's three rows while a job is active
-#                         (queued, running, done < 10 s ago, failed and not
-#                         seen); nothing otherwise
+#   job.sh open [client] [id]   the log panel in the client's workspace, else
+#                         a large popup (a click on the header, C-b j, a
+#                         job's notification)
+#   job.sh follow <id>    (the log panel) the log as it grows; q closes
+#   job.sh rows <width>   the header's jobs line (and two empty rows) while a
+#                         job is active (queued, running, done < 10 s ago,
+#                         failed and not seen); nothing otherwise
 #   job.sh summary        "⏵ 2 jobs · ✗ 1 failed", for tmux's top line
 #   job.sh header <width> the summary's line, then the rows: what the header
 #                         ticker reads each second, in one call
@@ -63,7 +66,7 @@ new_job() {
 }
 
 start() {
-  local title="$1" id
+  local title="$1" id session
   local -a locks=()
   shift
   while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
@@ -78,6 +81,11 @@ start() {
   id="$(new_job "$title")"
   printf '%q ' "$@" > "$jobs_dir/$id/command"
   [ "${#locks[@]}" -eq 0 ] || printf '%s\n' "${locks[@]}" | LC_ALL=C sort -u > "$jobs_dir/$id/locks"
+  # The workspace it was started from, where its log panel opens.
+  if [ -n "${TMUX:-}" ]; then
+    session="$(tmux display-message -p ${TMUX_PANE:+-t "$TMUX_PANE"} '#{session_name}' 2>/dev/null)"
+    case "$session" in dev-*) printf '%s\n' "$session" > "$jobs_dir/$id/session" ;; esac
+  fi
   printf 'queued\n' > "$jobs_dir/$id/state"
   # Inside tmux the server runs it, so closing the menu's popup cannot end it.
   # The jobs folder goes along: the server has its own environment.
@@ -128,6 +136,7 @@ run() {
   take_locks "$id"
   now > "$jobs_dir/$id/started_at"
   printf 'running\n' > "$jobs_dir/$id/state"
+  open_panel_later "$id"
   bash -c "$(cat "$jobs_dir/$id/command")" </dev/null > "$jobs_dir/$id/log" 2>&1
   status=$?
   printf '%s\n' "$status" > "$jobs_dir/$id/exit"
@@ -138,6 +147,58 @@ run() {
     printf 'failed\n' > "$jobs_dir/$id/state"
   fi
   notify_end "$id"
+}
+
+# A job still running after a few seconds (DEVWS_JOB_PANEL_AFTER, 3) opens
+# its log panel in the workspace it was started from (job_panel.sh); a quick
+# one never flashes it.
+open_panel_later() {
+  local id="$1" session
+  session="$(field "$id" session)"
+  [ -n "$session" ] || return 0
+  (
+    sleep "${DEVWS_JOB_PANEL_AFTER:-3}"
+    [ "$(field "$id" state)" = running ] || exit 0
+    "$(dirname "$script")/job_panel.sh" open "$session" "$id"
+  ) </dev/null >/dev/null 2>&1 &
+}
+
+# The log panel's program: the job's log as it grows, its state in the
+# panel's header (@devws_job_title). q closes it at any time — the job goes
+# on. Once the job ends: a success closes after DEVWS_JOB_PANEL_LINGER (5 s),
+# a failure stays until q, which marks it seen.
+follow() {
+  local id="$1" pane="${TMUX_PANE:-}" key tailer state
+  title_panel() {
+    [ -n "$pane" ] && tmux set-option -p -t "$pane" @devws_job_title "$1" 2>/dev/null
+  }
+  [ -d "$jobs_dir/$id" ] || die "no such job: $id"
+  tail -n +1 -F "$jobs_dir/$id/log" 2>/dev/null &
+  tailer=$!
+  while :; do
+    state="$(field "$id" state)"
+    case "$state" in
+      ok | failed) break ;;
+      queued) title_panel "… $(field "$id" title) · queued" ;;
+      *) title_panel "⏵ $(field "$id" title)$(progress "$jobs_dir/$id/log") $(elapsed "$(field "$id" started_at)")" ;;
+    esac
+    if read -r -s -n 1 -t 1 key && [ "$key" = q ]; then
+      kill "$tailer" 2>/dev/null
+      return 0
+    fi
+  done
+  # The log's last lines reach the screen before it says how it ended.
+  sleep 0.3
+  kill "$tailer" 2>/dev/null
+  if [ "$state" = ok ]; then
+    title_panel "✓ $(field "$id" title) · done"
+    read -r -s -n 1 -t "${DEVWS_JOB_PANEL_LINGER:-5}" key
+    return 0
+  fi
+  title_panel "✗ $(field "$id" title) · failed"
+  printf '\n\033[31m✗ failed (exit %s) — q closes\033[0m\n' "$(field "$id" exit)"
+  until read -r -s -n 1 key && [ "$key" = q ]; do :; done
+  : > "$jobs_dir/$id/seen"
 }
 
 notify_end() {
@@ -216,16 +277,6 @@ elapsed() {
   printf '%d:%02d' $((seconds / 60)) $((seconds % 60))
 }
 
-# The log's last lines as the terminal would show them: after a carriage
-# return only the text written last stays, and control sequences go.
-log_tail() {
-  tail -n 200 "$1" 2>/dev/null |
-    awk -F '\r' '{ print $NF }' |
-    sed -E $'s/\x1b\\[[0-9;?]*[ -\\/]*[@-~]//g; s/\x1b[()][A-Za-z0-9]//g' |
-    tr -d '\000-\010\013-\037' |
-    grep -v '^[[:space:]]*$' | tail -n "$2"
-}
-
 # A build's step count (Docker's "#7 [dev 4/9] RUN …") as " ▓▓▓▓░░░░░░ 4/9";
 # nothing for a log without one.
 progress() {
@@ -249,46 +300,27 @@ fit() {
   printf '%s' "${text//#/##}"
 }
 
+# The jobs line, then two empty rows: the log itself is in the workspace's
+# log panel (job_panel.sh).
 rows() {
-  local width="$1" id title entries="" newest_running="" newest_failed="" line count=0
+  local width="$1" id title entries=""
   for id in $(recent_ids); do
     active "$id" || continue
     title="$(field "$id" title)"
     case "$(field "$id" state)" in
       queued) entries+="… $title queued  " ;;
-      running)
-        entries+="⏵ $title$(progress "$jobs_dir/$id/log") $(elapsed "$(field "$id" started_at)")  "
-        [ -n "$newest_running" ] || newest_running="$id"
-        ;;
+      running) entries+="⏵ $title$(progress "$jobs_dir/$id/log") $(elapsed "$(field "$id" started_at)")  " ;;
       ok)
         if [ "$(field "$id" kind)" = note ]; then entries+="• $title  "; else entries+="✓ $title  "; fi
         ;;
       failed)
         if [ "$(field "$id" kind)" = note ]; then entries+="✗ $title  "; else entries+="✗ $title failed  "; fi
-        [ -n "$newest_failed" ] || newest_failed="$id"
         ;;
     esac
   done
   [ -n "$entries" ] || return 0
   fit "${entries%  }" "$width"
-  printf '\n'
-  if [ -n "$newest_running" ]; then
-    while IFS= read -r line; do
-      fit "  $line" "$width"
-      printf '\n'
-      count=$((count + 1))
-    done < <(log_tail "$jobs_dir/$newest_running/log" 2)
-  elif [ -n "$newest_failed" ] && [ "$(field "$newest_failed" kind)" != note ]; then
-    fit "  $(log_tail "$jobs_dir/$newest_failed/log" 1)" "$width"
-    printf '\n'
-    fit '  click here for the log' "$width"
-    printf '\n'
-    count=2
-  fi
-  while [ "$count" -lt 2 ]; do
-    printf '\n'
-    count=$((count + 1))
-  done
+  printf '\n\n\n'
 }
 
 summary() {
@@ -329,10 +361,19 @@ log() {
   ${DEVWS_PAGER:-less -R +F} "$jobs_dir/$id/log"
 }
 
+# In the client's workspace, the log panel (job_panel.sh); anywhere else a
+# large popup.
 open() {
-  local client="${1:-}" id="${2:-}"
+  local client="${1:-}" id="${2:-}" session
   [ -n "$id" ] || id="$(relevant)"
   [ -n "$id" ] || { tmux display-message ${client:+-c "$client"} "No jobs yet"; return 0; }
+  session="$(tmux display-message ${client:+-c "$client"} -p '#{session_name}' 2>/dev/null)"
+  case "$session" in
+    dev-*)
+      "$(dirname "$script")/job_panel.sh" open "$session" "$id"
+      return
+      ;;
+  esac
   tmux display-popup ${client:+-c "$client"} -E -w 90% -h 80% -T " $(field "$id" title) — q closes " \
     "$(printf '%q ' "$script" log "$id")"
 }
@@ -359,6 +400,7 @@ command="${1:-}"
 case "$command" in
   start) [ -n "${1:-}" ] || die "no title given"; start "$@" ;;
   run) [ -n "${1:-}" ] || die "no job given"; run "$1" ;;
+  follow) [ -n "${1:-}" ] || die "no job given"; follow "$1" ;;
   note) [ -n "${1:-}" ] || die "no text given"; note "$1" "${2:-}" ;;
   list) list ;;
   log) log "${1:-}" ;;
@@ -371,5 +413,5 @@ case "$command" in
     rows "${1:-60}"
     ;;
   prune) prune ;;
-  *) die "usage: job.sh <start|note|list|log|open|rows|summary|header|prune> …" ;;
+  *) die "usage: job.sh <start|note|list|log|open|follow|rows|summary|header|prune> …" ;;
 esac

@@ -24,6 +24,10 @@ fail() {
 
 . "$script_dir/workspace_panes.sh"
 
+# A job's log panel would be left wherever the moves put it: it closes
+# (C-b j opens it again).
+"$script_dir/job_panel.sh" close "$session" 2>/dev/null
+
 # Minimized panes are expanded first: while minimized the real panes live in a
 # hidden window, and the toggle should produce full-size panes anyway.
 "$script_dir/minimize_panes.sh" "$session" restore all ||
