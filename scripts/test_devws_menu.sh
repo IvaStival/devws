@@ -511,6 +511,13 @@ test_sidebar_opens_the_menu() {
   bash -n "$SCRIPTS/session_picker.sh" || fail "the sidebar script has a syntax error"
 }
 
+# With scroll margins (which tmux turns on for iTerm2), a pane scrolling
+# under the menu drags the popup's cells: the pane showed through the menu.
+test_scroll_margins_are_off() {
+  grep -q "^set -as terminal-overrides ',\*:Cmg@:Clmg@:Dsmg@:Enmg@'" "$ROOT/config/tmux/tmux.conf" ||
+    fail "tmux.conf leaves the scroll margins on"
+}
+
 test_space_opens_the_menu() {
   grep -q "^bind Space run-shell -b \"~/.tmuxinator/devws_menu.sh --popup '#{client_name}'\"" \
     "$ROOT/config/tmux/tmux.conf" || fail "C-b Space does not open the menu"
@@ -541,5 +548,6 @@ test_closing_the_running_branch_switches_back_to_main
 test_every_action_has_a_function
 test_sidebar_opens_the_menu
 test_space_opens_the_menu
+test_scroll_margins_are_off
 
 printf 'devws menu tests passed.\n'
