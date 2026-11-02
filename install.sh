@@ -75,6 +75,36 @@ ensure_fzf() {
   ok "Installed fzf"
 }
 
+# GitHub workspaces (`devws` with no folder) list repos and PRs through gh,
+# which needs a login once per machine. Declining only skips GitHub
+# workspaces; local folders work without it.
+ensure_github_login() {
+  local reply
+
+  if ! command -v gh >/dev/null 2>&1; then
+    warn "gh is missing, so devws cannot open GitHub workspaces; run ./install.sh --deps"
+    return
+  fi
+  gh auth status >/dev/null 2>&1 && return
+
+  printf 'Log in to GitHub now, for GitHub workspaces (gh auth login)? [Y/n] '
+  if ! IFS= read -r reply; then
+    printf '\n'
+    warn "Not logged in to GitHub; run gh auth login before using devws with no folder"
+    return
+  fi
+  case "$reply" in
+    n|N|no|NO|No)
+      warn "Not logged in to GitHub; run gh auth login before using devws with no folder"
+      return
+      ;;
+  esac
+  # gh asks which protocol devws clones with: SSH uses your key, HTTPS has
+  # gh log git in as well.
+  gh auth login ||
+    warn "GitHub login failed; run gh auth login before using devws with no folder"
+}
+
 upgrade_tmuxinator_if_needed() {
   if ! command -v brew >/dev/null 2>&1; then
     command -v tmuxinator >/dev/null 2>&1 &&
@@ -279,6 +309,8 @@ if ! grep -Fqx "$source_line" "$zshrc"; then
   ok "Added devws to $zshrc"
 fi
 
+ensure_github_login
+
 if [[ ! -d "$HOME/.tmux/plugins/tpm" ]]; then
   warn "tmux plugin manager is missing; run ./install.sh --deps"
 fi
@@ -309,4 +341,4 @@ printf '\n\n'
 printf '\033[1;33mReload your shell before using devws:\033[0m\n'
 printf '\033[1;36m  source ~/.zshrc\033[0m\n'
 printf '\n'
-printf 'Start a workspace: devws /path/to/project\n'
+printf 'Start a workspace: devws (a GitHub repo) or devws /path/to/project\n'

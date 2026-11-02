@@ -116,6 +116,42 @@ test_preexisting_fzf_is_preserved() {
     fail "pre-existing fzf was uninstalled"
 }
 
+# gh is logged in when GH_LOGGED_IN is 1; every call is logged.
+make_fake_gh() {
+  cat > "$1/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HOME/gh.log"
+case "$1 $2" in
+  "auth status") [[ "${GH_LOGGED_IN:-0}" == 1 ]] ;;
+esac
+EOF
+  chmod +x "$1/gh"
+}
+
+test_install_offers_the_github_login() {
+  local test_home="$TEST_ROOT/github"
+  local fake_bin="$test_home/bin"
+  local output
+  mkdir -p "$test_home"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+  make_fake_gh "$fake_bin"
+
+  GH_LOGGED_IN=1 run_install "$test_home" "$fake_bin" </dev/null >/dev/null 2>&1
+  ! grep -q '^auth login' "$test_home/gh.log" || fail "a logged-in gh was asked to log in"
+
+  output="$(printf 'n\n' | run_install "$test_home" "$fake_bin" 2>&1)"
+  ! grep -q '^auth login' "$test_home/gh.log" || fail "gh logged in after the answer was no"
+  grep -q 'run gh auth login' <<<"$output" || fail "declining the login gave no hint"
+
+  printf 'y\n' | run_install "$test_home" "$fake_bin" >/dev/null 2>&1
+  grep -q '^auth login' "$test_home/gh.log" || fail "the GitHub login was not offered"
+
+  rm "$fake_bin/gh"
+  output="$(run_install "$test_home" "$fake_bin" </dev/null 2>&1)"
+  grep -q 'gh is missing' <<<"$output" || fail "a missing gh was not reported"
+}
+
 test_homebrew_tmuxinator_is_upgraded() {
   local test_home="$TEST_ROOT/tmuxinator"
   local fake_bin="$test_home/bin"
@@ -313,6 +349,7 @@ test_picker_fails_once_without_fzf() {
 test_declining_fzf_leaves_home_untouched
 test_owned_fzf_is_removed
 test_preexisting_fzf_is_preserved
+test_install_offers_the_github_login
 test_homebrew_tmuxinator_is_upgraded
 test_non_homebrew_tmuxinator_is_preserved
 test_owned_glow_is_removed

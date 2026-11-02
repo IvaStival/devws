@@ -112,6 +112,13 @@ When installation finishes, run the highlighted reload command it prints:
 source ~/.zshrc
 ```
 
+The installer also offers to log in to GitHub (`gh auth login`), which
+[GitHub workspaces](#github-workspaces) need. gh asks how git should reach
+GitHub: **SSH** clones with your SSH key, **HTTPS** lets gh log git in too.
+To change it later, run `gh config set git_protocol ssh` (or `https` followed
+by `gh auth setup-git`). Skip the login and only `devws` with no folder is
+unavailable until you run `gh auth login`.
+
 Install either Codex or Claude Code separately, authenticate it, and edit
 `config/tmuxinator/.env` if you want to change the available/default agent or
 editor.
