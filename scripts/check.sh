@@ -22,6 +22,8 @@ bash -n "$ROOT/scripts/test_agent_status.sh"
 "$ROOT/scripts/test_jungleforge.sh"
 "$ROOT/scripts/test_job.sh"
 "$ROOT/scripts/test_recent.sh"
+"$ROOT/scripts/test_picker.sh"
+"$ROOT/scripts/test_tidy.sh"
 bash -n "$ROOT/scripts/test_header.sh"
 bash -n "$ROOT/scripts/test_devws_reload.sh"
 bash -n "$ROOT/scripts/test_new_panel.sh"
@@ -79,6 +81,8 @@ for file in "$ROOT/install.sh" "$ROOT/delete.sh" "$ROOT/scripts/check.sh" \
             "$ROOT/scripts/test_jungleforge.sh" \
             "$ROOT/scripts/test_job.sh" \
             "$ROOT/scripts/test_recent.sh" \
+            "$ROOT/scripts/test_picker.sh" \
+            "$ROOT/scripts/test_tidy.sh" \
             "$ROOT/scripts/test_header.sh" \
             "$ROOT/scripts/test_devws_reload.sh" \
             "$ROOT/scripts/test_new_panel.sh" \

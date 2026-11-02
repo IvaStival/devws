@@ -22,17 +22,19 @@ save_state() {
   "$HOME/.tmuxinator/save_state.sh"
 }
 
+# Every question from a list, in one look (picker.sh):
+#   pick <prompt> <header> [fzf options...]   the list on stdin
+pick() {
+  "$HOME/.tmuxinator/picker.sh" "$@"
+}
+
 # [header]: what the agent is for.
 choose_agent() {
   local agents="${DEVWS_AGENTS:-claude codex}"
-  local header="${1:-Choose the agent for the new workspace}"
+  local header="${1:-The agent for the new workspace}"
   local agent
 
-  agent="$(
-    printf '%s\n' $agents |
-      fzf --height=~10 --layout=reverse --prompt='Agent > ' \
-        --header="$header"
-  )"
+  agent="$(printf '%s\n' $agents | pick Agent "$header")"
   [ -n "$agent" ] && printf '%s\n' "$agent"
 }
 
@@ -40,11 +42,7 @@ choose_editor() {
   local editors="${DEVWS_EDITORS:-nvim vim code zed}"
   local editor
 
-  editor="$(
-    printf '%s\n' $editors |
-      fzf --height=~10 --layout=reverse --prompt='Editor > ' \
-        --header='Choose the editor for the workspace'
-  )"
+  editor="$(printf '%s\n' $editors | pick Editor 'The editor for the workspace')"
   [ -n "$editor" ] && printf '%s\n' "$editor"
 }
 
@@ -188,13 +186,11 @@ unregistered_folders() {
 # writes them to .env (register_agent.sh).
 register_agent() {
   local kind folder name suggested
-  kind="$(printf '%s\n' claude codex |
-    fzf --height=~10 --layout=reverse --prompt='Kind > ' --header='Register an agent: which program it runs')" || return
+  kind="$(printf '%s\n' claude codex | pick Kind 'Register an agent: which program it runs')" || return
   [ -n "$kind" ] || return
 
   folder="$(unregistered_folders "$kind" |
-    fzf --height=~12 --layout=reverse --print-query --prompt='Folder > ' \
-      --header="Its config folder (pick one, or type a path)" | tail -n 1)"
+    pick Folder 'Its config folder (pick one, or type a path)' --print-query | tail -n 1)"
   [ -n "$folder" ] || return
 
   # ~/.claude-work suggests "work"; any other folder its own name.
@@ -224,8 +220,7 @@ register_agent() {
 remove_agent() {
   local agent
   agent="$(printf '%s\n' ${DEVWS_AGENTS:-claude codex} |
-    fzf --height=~10 --layout=reverse --prompt='Remove > ' \
-      --header='Remove an agent from devws (its folder is kept)')" || return
+    pick Remove 'Remove an agent from devws (its folder is kept)')" || return
   [ -n "$agent" ] || return
   "$HOME/.tmuxinator/register_agent.sh" remove "$agent"
   read -r -p 'Press Enter to return…'
@@ -234,47 +229,40 @@ remove_agent() {
 # Another agent, terminal or Neovim, right of, left of, below or above the
 # focused pane (new_panel.sh).
 new_panel() {
-  local session kind program agent="" place position
+  local session kind program agent place position
   session="$(tmux display-message -p '#S')"
-  kind="$(
-    printf '%s\n' Agent Terminal Neovim |
-      fzf --height=~10 --layout=reverse --prompt='New panel > ' \
-        --header='What to open in the new panel'
-  )" || return 0
-  case "$kind" in
-    Agent)
-      program=agent
-      agent="$(choose_agent 'Choose the agent for the new panel')" || return 0
-      [ -n "$agent" ] || return 0
-      ;;
-    Terminal) program=terminal ;;
-    Neovim) program=nvim ;;
-    # Cancelled: nothing to open.
-    *) return 0 ;;
-  esac
-  place="$(
-    printf '%s\n' Right Left Below Above |
-      fzf --height=~10 --layout=reverse --prompt='Where > ' \
-        --header='Where to open it, next to the pane you are in'
-  )" || return 0
-  case "$place" in
-    Right) position=right ;;
-    Left) position=left ;;
-    Below) position=below ;;
-    Above) position=above ;;
-    *) return 0 ;;
-  esac
+  # Esc on a later question goes back to the one before.
+  while :; do
+    kind="$(printf '%s\n' Agent Terminal Neovim | pick 'New panel' 'What to open in the new panel')" || return 0
+    agent=""
+    case "$kind" in
+      Agent)
+        program=agent
+        agent="$(choose_agent 'The agent for the new panel')" || continue
+        [ -n "$agent" ] || continue
+        ;;
+      Terminal) program=terminal ;;
+      Neovim) program=nvim ;;
+      *) return 0 ;;
+    esac
+    place="$(printf '%s\n' Right Left Below Above |
+      pick Where 'Where to open it, next to the pane you are in')" || continue
+    case "$place" in
+      Right) position=right ;;
+      Left) position=left ;;
+      Below) position=below ;;
+      Above) position=above ;;
+      *) continue ;;
+    esac
+    break
+  done
   "$HOME/.tmuxinator/new_panel.sh" "$session" "$position" "$program" ${agent:+"$agent"} >/dev/null
 }
 
 # The focused panel trades places with its neighbour on a side (move_panel.sh).
 move_panel() {
   local place direction
-  place="$(
-    printf '%s\n' Right Left Below Above |
-      fzf --height=~10 --layout=reverse --prompt='Move > ' \
-        --header='Move the panel you are in'
-  )" || return 0
+  place="$(printf '%s\n' Right Left Below Above | pick Move 'Move the panel you are in')" || return 0
   case "$place" in
     Right) direction=right ;;
     Left) direction=left ;;
@@ -322,10 +310,8 @@ choose_database_folder() {
   choice="$(
     { printf 'Automatic\tfind the database settings by itself\n'
       printf '%s\n' "$choices"; } |
-      fzf --height=100% --layout=reverse --prompt='Database folder > ' \
-        --delimiter=$'\t' --tabstop=24 \
-        --header=".env folders in $(basename "$root")" \
-        --info=inline --no-separator --border=none --margin=0 --padding=0
+      pick 'Database folder' ".env folders in $(basename "$root")" \
+        --height=100% --delimiter=$'\t' --tabstop=24
   )" || return
   folder="${choice%%$'\t'*}"
   [ "$folder" = Automatic ] && folder=""
@@ -340,10 +326,7 @@ open_folder() {
   root="$(tmux show-options -t "$session" -v @devws_root 2>/dev/null)"
   [ -d "$root" ] || return
 
-  choice="$(
-    printf '%s\n' 'Finder' 'Zed' 'VS Code' |
-      fzf --height=~10 --layout=reverse --prompt='Open with > '
-  )"
+  choice="$(printf '%s\n' 'Finder' 'Zed' 'VS Code' | pick 'Open with' "Open $(basename "$root") in")"
   case "$choice" in
     Finder) open "$root" >/dev/null 2>&1 & ;;
     Zed) command -v zed >/dev/null && zed "$root" >/dev/null 2>&1 & ;;
@@ -441,9 +424,7 @@ new_worktree_workspace() {
       printf '%s\n' "$new_branch"
       git -C "$root" for-each-ref --format='%(refname:short)' refs/heads
       git -C "$root" for-each-ref --format='%(refname:lstrip=3)' refs/remotes | grep -vx HEAD
-    } | awk '!seen[$0]++' |
-      fzf --height=~20 --layout=reverse --prompt='Branch > ' \
-        --header='Branch for the new worktree (Esc: cancel)'
+    } | awk '!seen[$0]++' | pick Branch 'Branch for the new worktree'
   )"
   [ -n "$branch" ] || return
   if [ "$branch" = "$new_branch" ]; then
@@ -521,8 +502,7 @@ choose_apps() {
     printf '%s\n' "$apps"
     return 0
   fi
-  fzf --multi --height=~40% --layout=reverse --bind 'load:select-all' --prompt='Apps > ' \
-    --header='Apps to move to this branch (Tab unticks one)' <<<"$apps"
+  pick Apps 'Apps to move to this branch' --multi --bind 'load:select-all' <<<"$apps"
 }
 
 # One app, for Migrate, Shell and Logs.
@@ -534,7 +514,7 @@ choose_app() {
     printf '%s\n' "$apps"
     return 0
   fi
-  fzf --height=~40% --layout=reverse --prompt='App > ' <<<"$apps"
+  pick App 'Which app' <<<"$apps"
 }
 
 # "--lock <app>" for each app: jobs on one app run one after another.
@@ -568,12 +548,13 @@ branch_label() {
   git -C "$1" branch --show-current 2>/dev/null || basename "$1"
 }
 
-# Runs <folder>'s branch: the ticked apps start on it, as a job.
+# Runs <folder>'s branch: the ticked apps start on it, as a job. Esc on the
+# apps returns 130, for Switch to ask the branch again.
 run_branch_at() {
   local folder="$1" apps
   printf '\033c'
   apps="$(choose_apps "$folder")" || return
-  [ -n "$apps" ] || return
+  [ -n "$apps" ] || return 130
   # shellcheck disable=SC2086
   jungleforge_job "$(branch_label "$folder")" run "$folder" -- $apps
 }
@@ -583,7 +564,7 @@ run_this_branch() {
 }
 
 switch_running_branch() {
-  local root targets running label folder mark choice
+  local root targets running label folder mark choice status
   root="$(workspace_root)"
   printf '\033c'
   if ! jungleforge apps "$root" >/dev/null; then
@@ -592,18 +573,22 @@ switch_running_branch() {
   fi
   targets="$(jungleforge targets "$root")"
   running="$(jungleforge running "$root" | cut -f2)"
-  choice="$(
-    while IFS=$'\t' read -r label folder; do
-      mark="  "
-      grep -qxF "$folder" <<<"$running" && mark="▶ "
-      [ "$label" = main ] && label="main ($folder)"
-      printf '%s%s\t%s\n' "$mark" "$label" "$folder"
-    done <<<"$targets" |
-      fzf --height=~50% --layout=reverse --prompt='Run > ' --delimiter=$'\t' --with-nth=1 \
-        --header='Branch to run (▶ running now; Esc: cancel)'
-  )" || return
-  [ -n "$choice" ] || return
-  run_branch_at "${choice##*$'\t'}"
+  # Esc on the apps comes back here.
+  while :; do
+    choice="$(
+      while IFS=$'\t' read -r label folder; do
+        mark="  "
+        grep -qxF "$folder" <<<"$running" && mark="▶ "
+        [ "$label" = main ] && label="main ($folder)"
+        printf '%s%s\t%s\n' "$mark" "$label" "$folder"
+      done <<<"$targets" |
+        pick Run 'Branch to run (▶ running now)' --delimiter=$'\t' --with-nth=1
+    )" || return
+    [ -n "$choice" ] || return
+    run_branch_at "${choice##*$'\t'}"
+    status=$?
+    [ "$status" -eq 130 ] || return "$status"
+  done
 }
 
 stop_running_apps() {
@@ -734,6 +719,13 @@ move_clients_off() {
   done
 }
 
+# Branch folders done with (PR merged or closed, no changes) go, as a job
+# (tidy.sh); the popup stays only to say there is nothing to tidy.
+tidy_up() {
+  printf '\033c'
+  "$HOME/.tmuxinator/tidy.sh" || pause
+}
+
 detach_client() {
   tmux detach-client
 }
@@ -744,9 +736,7 @@ close_workspace() {
   selected="$(
     dev_sessions |
       awk -v cur="$current" '{ print ($0 == cur ? "* " : "  ") $0 }' |
-      fzf --height=100% --layout=reverse \
-        --header='Close workspace (Esc: cancel)' --prompt='Close > ' \
-        --info=inline --no-separator --border=none --margin=0 --padding=0
+      pick Close 'Close a workspace (* the one you are in)' --height=100%
   )"
   [ -n "$selected" ] || return
 

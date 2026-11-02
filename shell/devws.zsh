@@ -87,6 +87,11 @@ devws() {
     return
   fi
 
+  if [[ "${1:-}" == "tidy" ]]; then
+    "$HOME/.tmuxinator/tidy.sh"
+    return
+  fi
+
   if [[ "${1:-}" == "detach" ]]; then
     tmux detach-client
     return

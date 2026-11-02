@@ -98,8 +98,7 @@ commit_manually() {
     [ -n "$file" ] && files+=("$file")
   done < <(
     changed_paths "$root" |
-      fzf --multi --height=~60% --layout=reverse --bind 'load:select-all' \
-        --prompt='Commit > ' --header='Files to commit (Tab unticks one, Enter commits, Esc cancels)'
+      "$script_dir/picker.sh" Commit 'Files to commit' --multi --bind 'load:select-all'
   )
   [ "${#files[@]}" -gt 0 ] || { printf 'Nothing selected; no commit.\n'; return 1; }
 

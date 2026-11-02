@@ -198,6 +198,10 @@ test_the_start_screen_reopens_a_folder() {
   "$ROOT/config/tmuxinator/recent.sh" add "$folder" codex vim
   printf '%s\n' 'feat/seeded' > "$TEST_ROOT/fzf.answers"
   [ "$("$GITHUB_WORKSPACE" 2>/dev/null </dev/null)" = "$folder" ] || fail "the recent folder was not reopened"
+  # Esc on the owners goes back to the start screen, not out.
+  printf '%s\n' '＋ New branch' '' 'feat/seeded' > "$TEST_ROOT/fzf.answers"
+  [ "$("$GITHUB_WORKSPACE" 2>/dev/null </dev/null)" = "$folder" ] ||
+    fail "Esc on the owners did not go back to the start screen"
 }
 
 test_branch_names_from_a_prefix_and_description() {

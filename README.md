@@ -168,16 +168,22 @@ group, and shows each action's own shortcut:
 
 | Tab | Actions |
 | --- | ------- |
-| Workspace | Open or start a workspace · New folder workspace · New worktree workspace · Open folder in… · Close workspace · Detach `C-b d` |
+| Workspace | Open or start a workspace · New folder workspace · New worktree workspace · Open folder in… · Close workspace · Tidy up merged branches · Detach `C-b d` |
 | Layout | Toggle layout `C-b \` · Minimize agent and terminal `C-b _` · Hide or show the header `C-b C-s` · New panel `C-b N` · Move panel `C-b Shift+arrow` · Switch editor |
 | Agent | Go to waiting agent `C-b a` · Switch agent · Restart agent · Agent follow `C-b F` · Initialize agent · Register agent · Remove agent |
-| Git | Commit (agent) · Commit manually · Push / PR |
-| App | Run this branch · Switch running branch · Stop · Services · Migrate · Shell · Logs · Database `C-b B` · Database folder · Job log |
+| Git | Commit (agent) `C-b g` · Commit manually · Push / PR `C-b G` |
+| App | Run this branch `C-b e` · Switch running branch `C-b E` · Stop · Services · Migrate · Shell · Logs · Database `C-b B` · Database folder · Job log `C-b j` |
 
 `←`/`→` or `Tab` change tabs, `↑`/`↓` move, `Enter` runs the action and `Esc`
-closes; typing filters the tab. Clicking a tab or an action works too. The
-menu reopens on the tab you used last in that workspace. Actions that ask
-something (which agent, which folder…) ask inside the popup.
+closes. **Typing searches every tab**: `C-b Space` then `push` finds Push /
+PR wherever you are, each match tagged with its tab (`App · ⛁ Database`);
+clearing the text shows the tab again. Clicking a tab or an action works too.
+The menu reopens on the tab you used last in that workspace.
+
+Every question devws asks from a list — which repo, which apps, which
+branch… — looks the same, with its keys at the bottom: `Enter` chooses, `Tab`
+unticks in a list of ticked choices, and `Esc` goes back one step (from the
+repos to the owners, from the apps to the branches) or, at the first, closes.
 
 ### Layouts
 
@@ -546,6 +552,9 @@ The tmux prefix is `C-b` (tmux's default key set is restored by
 | Keys | Action |
 | ---- | ------ |
 | `C-b Space` | Open the devws menu (every workspace action, in tabs) |
+| `C-b e` / `C-b E` | Run this branch / switch the running branch (jungleforge) |
+| `C-b g` / `C-b G` | Commit (the agent) / push and open the PR |
+| `C-b j` | The latest background job's log (a failure first) |
 | `C-b \` | Toggle the workspace layout |
 | `C-b _` | Minimize or restore the agent and terminal |
 | `C-b B` | Open the database pane, or focus it |
@@ -793,7 +802,13 @@ a failure stays `✗ … failed` until you open its log. **Click the job group**
 (or the `⏵ 2 jobs · ✗ 1 failed` summary on tmux's top line, there with the
 header hidden too) to read the log in a large popup that follows it; `q`
 closes it. Jobs on the same app wait in line (`queued`), so two builds of
-one container never race.
+one container never race. A Docker build shows its progress from the step
+count it prints (`⏵ phi-planner ▓▓▓▓░░░░░░ 4/9 0:42`).
+
+When a job ends while you are elsewhere, macOS tells you: a failure always,
+a success when it took over 30 seconds. Clicking the notification opens the
+job's log. `DEVWS_NOTIFY=0` in `config/tmuxinator/.env` turns these off, as it
+does the agents'.
 
 Anything can use them:
 
@@ -830,6 +845,12 @@ always kept: devws lists them instead of asking. The branch and its commits
 are never deleted, and the folder is removed with `git worktree remove`,
 which refuses one with changes. Delete a branch yourself with `git branch -d`
 once it is merged.
+
+**⌫ Tidy up merged branches** (Workspace tab, or `devws tidy`) clears the
+branch folders under `~/.devws` you are done with: those whose PR is merged
+or closed, with no uncommitted changes and no workspace open on them. They
+come all ticked (`Tab` unticks one) and go as a background job. Only the
+folders go; the branches stay.
 
 ### Closing and leaving
 

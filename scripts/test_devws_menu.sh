@@ -27,7 +27,8 @@ cat > "$TEST_ROOT/bin/tmux" <<EOF
 exec "$REAL_TMUX" -L "$SOCKET" -f /dev/null "\$@"
 EOF
 # fzf answers from a queue, one line per call (after the query line that
-# --print-query adds); the agent folders it offers are recorded.
+# --print-query adds); an empty answer is Esc (130, as fzf). The agent
+# folders it offers are recorded.
 cat > "$TEST_ROOT/bin/fzf" <<EOF
 #!/usr/bin/env bash
 # Whether the menu marked a popup open while it asks (devws_menu.sh).
@@ -36,7 +37,8 @@ cat > "$TEST_ROOT/calls/fzf.input"
 answer="\$(head -n 1 "$TEST_ROOT/fzf.answers")"
 sed -i '' 1d "$TEST_ROOT/fzf.answers"
 case " \$* " in *" --print-query "*) printf '\\n' ;; esac
-[ -n "\$answer" ] && printf '%s\\n' "\$answer"
+[ -n "\$answer" ] || exit 130
+printf '%s\\n' "\$answer"
 EOF
 # tmuxinator records the workspace it was asked to start.
 cat > "$TEST_ROOT/bin/tmuxinator" <<EOF
@@ -45,7 +47,7 @@ printf '%s\n' "\$*" > "$TEST_ROOT/calls/tmuxinator"
 EOF
 chmod +x "$TEST_ROOT/bin/tmux" "$TEST_ROOT/bin/fzf" "$TEST_ROOT/bin/tmuxinator"
 mkdir -p "$TEST_ROOT/home/.claude" "$TEST_ROOT/home/.claude-work"
-for script in devws_menu.sh workspace_actions.sh workspace_panes.sh session_picker.sh agents.sh worktree.sh recent.sh .env; do
+for script in devws_menu.sh workspace_actions.sh workspace_panes.sh session_picker.sh agents.sh worktree.sh recent.sh picker.sh .env; do
   ln -s "$SCRIPTS/$script" "$TEST_ROOT/home/.tmuxinator/$script"
 done
 for script in toggle_layout.sh minimize_panes.sh header_toggle.sh open_database.sh follow_mode.sh register_agent.sh \
@@ -92,7 +94,7 @@ actions_of() {
 }
 
 test_tabs_list_their_actions() {
-  [ "$(actions_of workspace)" = "github new worktree open-folder close detach" ] ||
+  [ "$(actions_of workspace)" = "github new worktree open-folder close tidy detach" ] ||
     fail "Workspace tab: $(actions_of workspace)"
   [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor" ] ||
     fail "Layout tab: $(actions_of layout)"
@@ -119,10 +121,37 @@ test_items_show_labels_and_shortcuts() {
   grep -q $'^switch-agent\t.*Switch agent' <<<"$agent" || fail "Switch agent has no label"
 }
 
+# With an empty query the menu shows its tab; typing searches every tab, each
+# match tagged with its tab.
+test_typing_searches_every_tab() {
+  local all
+  tmux set-option -t dev-menu @devws_menu_tab workspace
+  [ "$(menu --items-for '')" = "$(menu --items workspace)" ] || fail "an empty query does not show the tab"
+  all="$(menu --items-for data)"
+  grep -q $'^open-database\tApp · ⛁ Database' <<<"$all" || fail "typing does not reach the App tab: $all"
+  grep -q $'^jump\tAgent · ! Go to waiting agent' <<<"$all" || fail "not every tab is searched: $all"
+  [ "$(grep -c . <<<"$all")" -eq "$(grep -c '|' <<<"$(menu --actions)")" ] ||
+    fail "a search does not list every action once"
+}
+
+# The frequent actions have keys of their own, which open them in the menu's
+# popup.
+test_the_frequent_actions_have_keys() {
+  local key action
+  for key in e:run-here E:switch-run g:commit G:push j:job-log; do
+    action="${key#*:}"
+    key="${key%%:*}"
+    grep -q "^bind $key run-shell -b \"~/.tmuxinator/devws_menu.sh --popup-run $action '#{client_name}'\"" \
+      "$ROOT/config/tmux/tmux.conf" || fail "C-b $key does not open $action"
+    grep -q $'^'"$action"$'\t.*C-b '"$key"'$' <<<"$(menu --items-for "$action" | sed $'s/\033\\[[0-9;]*m//g; s/ *$//')" ||
+      fail "the menu does not show C-b $key beside $action"
+  done
+}
+
 test_switching_tabs() {
   tmux set-option -t dev-menu -u @devws_menu_tab
   [ "$(menu --tab)" = "workspace" ] || fail "the menu does not start on Workspace"
-  [[ "$(menu --switch next)" == *"reload("*"--items layout)"* ]] || fail "next did not reload the Layout tab"
+  [[ "$(menu --switch next)" == *"reload("*"--items-for {q})"* ]] || fail "next did not reload the items"
   [ "$(menu --tab)" = "layout" ] || fail "next did not move to Layout"
   menu --switch prev >/dev/null
   menu --switch prev >/dev/null
@@ -410,6 +439,20 @@ test_run_this_branch_moves_the_ticked_apps() {
     fail "run-here started '$(job_call)'"
 }
 
+# Esc on the apps goes back to the branch list (the stub's empty answer is
+# Esc: nothing chosen).
+test_esc_on_the_apps_goes_back_to_the_branches() {
+  local main="$TEST_ROOT/projects/PhiPlanner"
+  tmux set-option -t dev-menu @devws_root "$TEST_ROOT/devws/app-feat-x"
+  printf 'phi-planner\tbackend\nphi-planner-web\tweb\n' > "$TEST_ROOT/jf.apps"
+  printf 'main\t%s\n' "$main" > "$TEST_ROOT/jf.targets"
+  printf '  main (%s)\t%s\n\n  main (%s)\t%s\nphi-planner\n' "$main" "$main" "$main" "$main" > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/job.sh"
+  menu --run switch-run </dev/null >/dev/null 2>&1
+  [ "$(job_call)" = "start phi-planner → PhiPlanner --lock phi-planner -- $HOME/.tmuxinator/jungleforge.sh run $main phi-planner" ] ||
+    fail "after Esc on the apps, switch started '$(job_call)'"
+}
+
 # Switch lists main and the worktrees, the running one marked, and runs the
 # chosen one; a repo with a single app is not asked which.
 test_switch_marks_the_running_branch_and_runs_the_chosen_one() {
@@ -475,6 +518,8 @@ test_space_opens_the_menu() {
 
 test_tabs_list_their_actions
 test_items_show_labels_and_shortcuts
+test_typing_searches_every_tab
+test_the_frequent_actions_have_keys
 test_switching_tabs
 test_header_marks_the_current_tab
 test_script_actions_run_for_the_session
@@ -490,6 +535,7 @@ test_a_worktree_workspace_on_a_new_branch
 test_a_github_workspace_opens_the_chosen_folder
 test_push_asks_then_runs_as_a_job
 test_run_this_branch_moves_the_ticked_apps
+test_esc_on_the_apps_goes_back_to_the_branches
 test_switch_marks_the_running_branch_and_runs_the_chosen_one
 test_closing_the_running_branch_switches_back_to_main
 test_every_action_has_a_function

@@ -18,6 +18,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 github_repo="$script_dir/github_repo.sh"
 worktree="$script_dir/worktree.sh"
 shared_files="$script_dir/shared_files.sh"
+picker="$script_dir/picker.sh"
 prefixes='feat fix chore refactor docs'
 custom_name='Custom name…'
 
@@ -50,9 +51,7 @@ pick_repo() {
         done
         printf '%s\t\t\n' "$other_row" "$refresh_row"
       } |
-        fzf --height=~50% --layout=reverse --prompt='Owner > ' \
-          --delimiter=$'\t' --with-nth=1,2 --tabstop=32 \
-          --header='GitHub repos by owner (Esc: cancel)'
+        "$picker" Owner 'Whose repo' --delimiter=$'\t' --with-nth=1,2 --tabstop=32
     )" || return 1
     refresh=""
     case "${choice%%$'\t'*}" in
@@ -77,9 +76,7 @@ pick_repo() {
           printf '  %s\t%s\n' "${repo#*/}" "$repo"
         fi
       done |
-        fzf --height=~50% --layout=reverse --prompt="$owner > " \
-          --delimiter=$'\t' --with-nth=1 \
-          --header="$owner's repos (● cloned; Esc: back to the owners)"
+        "$picker" "$owner" "$owner's repos (● cloned)" --delimiter=$'\t' --with-nth=1
     )" || continue
     printf '%s\n' "${choice##*$'\t'}"
     return 0
@@ -100,9 +97,8 @@ pick_worktree() {
   [ -n "$rows" ] || return 0
   choice="$(
     { printf '%s\t\t\n' "$new_row"; printf '%s\n' "$rows"; } |
-      fzf --height=~50% --layout=reverse --prompt='Worktree > ' \
-        --delimiter=$'\t' --with-nth=1,2 --tabstop=32 \
-        --header='Continue a worktree, or start a new branch (Esc: cancel)'
+      "$picker" Worktree 'Continue a worktree, or start a new branch' \
+        --delimiter=$'\t' --with-nth=1,2 --tabstop=32
   )" || return 1
   printf '%s\n' "${choice##*$'\t'}"
 }
@@ -116,8 +112,7 @@ seed_shared() {
   [ -d "$repo_dir/.shared" ] && return 0
   source="$(
     { "$shared_files" candidates "$name"; printf '%s\n' "$other_row" "$skip_row"; } |
-      fzf --height=~40% --layout=reverse --prompt='Import from > ' \
-        --header="Copy $name's untracked files (.env, .docker-env…) from a checkout you have"
+      "$picker" 'Import from' "Copy $name's untracked files (.env, .docker-env…) from a checkout you have"
   )" || return 0
   case "$source" in
     "$skip_row")
@@ -135,8 +130,7 @@ seed_shared() {
     [ -n "$file" ] && files+=("$file")
   done < <(
     "$shared_files" ignored "$source" |
-      fzf --multi --height=~60% --layout=reverse --bind 'load:select-all' --prompt='Files > ' \
-        --header='Files every branch gets (Tab unticks one, Enter copies)'
+      "$picker" Files 'Files every branch gets' --multi --bind 'load:select-all'
   )
   mkdir -p "$repo_dir/.shared"
   [ "${#files[@]}" -eq 0 ] || "$shared_files" seed "$repo_dir" "$source" "${files[@]}"
@@ -144,11 +138,7 @@ seed_shared() {
 
 ask_branch() {
   local prefix description branch
-  prefix="$(
-    printf '%s\n' $prefixes "$custom_name" |
-      fzf --height=~10 --layout=reverse --prompt='Kind > ' \
-        --header='What the branch is for (Esc: cancel)'
-  )" || return 1
+  prefix="$(printf '%s\n' $prefixes "$custom_name" | "$picker" Kind 'What the branch is for')" || return 1
   while :; do
     if [ "$prefix" = "$custom_name" ]; then
       read -e -r -p 'Branch name: ' branch || return 1
@@ -167,56 +157,62 @@ ask_branch() {
 }
 
 # Reopen a folder (printed as "open <folder>"), or start a branch of a repo
-# ("new <repo>"), picked by owner or typed.
+# ("new <repo>"), picked by owner or typed. Esc on the owners comes back here.
 start_screen() {
   local new_row='＋ New branch from GitHub…' clone_row='↓ Clone another repo (URL / owner/repo)…'
   local choice repo
-  choice="$(
-    { printf '%s\t\n' "$new_row" "$clone_row"; "$script_dir/recent.sh" rows; } |
-      fzf --height=~60% --layout=reverse --prompt='devws > ' \
-        --delimiter=$'\t' --with-nth=1 \
-        --header='Reopen a workspace, or start a new branch (Esc: cancel)'
-  )" || return 1
-  case "${choice%%$'\t'*}" in
-    "$new_row")
-      repo="$(pick_repo)" || return 1
-      ;;
-    "$clone_row")
-      read -e -r -p 'Repo (owner/repo or URL): ' repo || return 1
-      [ -n "$repo" ] || return 1
-      ;;
-    *)
-      printf 'open %s\n' "${choice##*$'\t'}"
-      return 0
-      ;;
-  esac
-  printf 'new %s\n' "$repo"
+  while :; do
+    choice="$(
+      { printf '%s\t\n' "$new_row" "$clone_row"; "$script_dir/recent.sh" rows; } |
+        "$picker" devws 'Reopen a workspace, or start a new branch' --delimiter=$'\t' --with-nth=1
+    )" || return 1
+    case "${choice%%$'\t'*}" in
+      "$new_row")
+        repo="$(pick_repo)" || continue
+        ;;
+      "$clone_row")
+        read -e -r -p 'Repo (owner/repo or URL): ' repo || continue
+        [ -n "$repo" ] || continue
+        ;;
+      *)
+        printf 'open %s\n' "${choice##*$'\t'}"
+        return 0
+        ;;
+    esac
+    printf 'new %s\n' "$repo"
+    return 0
+  done
 }
 
 main() {
   local repo="${1:-}" bare folder branch base choice
-  if [ -z "$repo" ]; then
-    choice="$(start_screen)" || return 1
-    if [ "${choice%% *}" = open ]; then
-      printf '%s\n' "${choice#open }"
-      return 0
+  # From the start screen, Esc on the branch's kind goes back to it.
+  while :; do
+    if [ -z "${1:-}" ]; then
+      choice="$(start_screen)" || return 1
+      if [ "${choice%% *}" = open ]; then
+        printf '%s\n' "${choice#open }"
+        return 0
+      fi
+      repo="${choice#new }"
     fi
-    repo="${choice#new }"
-  fi
-  # A failure (exit 2) is told apart from a cancelled question (1).
-  bare="$("$github_repo" ensure "$repo")" || return
-  seed_shared "$(dirname "$bare")" "$("$github_repo" parse "$repo")"
+    # A failure (exit 2) is told apart from a cancelled question (1).
+    bare="$("$github_repo" ensure "$repo")" || return
+    seed_shared "$(dirname "$bare")" "$("$github_repo" parse "$repo")"
 
-  # From the start screen it is a new branch: its worktrees were listed there.
-  folder=""
-  if [ -n "${1:-}" ]; then
-    folder="$(pick_worktree "$bare")" || return 1
-  fi
-  if [ -z "$folder" ]; then
-    branch="$(ask_branch)" || return 1
-    base="origin/$("$github_repo" default-branch "$bare")"
-    folder="$("$worktree" ensure "$bare" "$branch" "$base")" || return
-  fi
+    # From the start screen it is a new branch: its worktrees were listed there.
+    folder=""
+    if [ -n "${1:-}" ]; then
+      folder="$(pick_worktree "$bare")" || return 1
+    fi
+    [ -z "$folder" ] || break
+    if branch="$(ask_branch)"; then
+      base="origin/$("$github_repo" default-branch "$bare")"
+      folder="$("$worktree" ensure "$bare" "$branch" "$base")" || return
+      break
+    fi
+    [ -z "${1:-}" ] || return 1
+  done
   # Also for an existing worktree: it gets files added to .shared since.
   "$shared_files" link "$(dirname "$bare")" "$folder" || return
   printf '%s\n' "$folder"

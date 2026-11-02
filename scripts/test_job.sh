@@ -19,6 +19,8 @@ fail() {
 }
 
 export DEVWS_JOBS_DIR="$TEST_ROOT/jobs" DEVWS_PAGER=cat
+# A failing job would post a real notification.
+export DEVWS_NOTIFY_COMMAND=true
 unset TMUX TMUX_PANE
 
 job() {
@@ -136,6 +138,57 @@ test_notes_show_for_ten_seconds_errors_until_seen() {
   [ -z "$(job rows 80)" ] || fail "the seen error note remains"
 }
 
+# A Docker build's step count becomes a bar on the job's row.
+test_a_build_shows_its_progress() {
+  local id
+  id="$(job start 'Build api' -- sh -c 'echo "#7 [dev 4/9] RUN composer install"; sleep 2')"
+  wait_for "$id" running
+  sleep 0.3
+  grep -q '⏵ Build api ▓▓▓▓░░░░░░ 4/9 0:0' <<<"$(job rows 120 | sed -n 1p)" ||
+    fail "no progress bar: $(job rows 120 | sed -n 1p)"
+  wait_for "$id" ok
+}
+
+# A failure always notifies; a success only after a long run (30 s, here 1 s);
+# DEVWS_NOTIFY=0 none.
+test_jobs_notify_when_they_end() {
+  local id
+  export DEVWS_NOTIFY_COMMAND="$TEST_ROOT/notify" DEVWS_JOB_NOTIFY_AFTER=1
+  printf '#!/usr/bin/env bash\nprintf "%%s|" "$@" >> "%s/notified"; echo >> "%s/notified"\n' "$TEST_ROOT" "$TEST_ROOT" \
+    > "$TEST_ROOT/notify"
+  chmod +x "$TEST_ROOT/notify"
+
+  # The job notifies just after it records its end: waited for, up to 5 s.
+  notified() {
+    local attempt
+    for attempt in $(seq 1 50); do
+      grep -q "$1" "$TEST_ROOT/notified" 2>/dev/null && return 0
+      sleep 0.1
+    done
+    return 1
+  }
+  id="$(job start 'Broken build' -- sh -c 'exit 1')"
+  notified "^✗ Broken build|failed.*|$id|" || fail "a failure did not notify: $(cat "$TEST_ROOT/notified" 2>/dev/null)"
+
+  id="$(job start 'Quick' -- true)"
+  wait_for "$id" ok
+  sleep 0.3
+  ! grep -q 'Quick' "$TEST_ROOT/notified" || fail "a quick success notified"
+
+  # Times are whole seconds: 2.5 s is at least 2, over the 1 s here.
+  id="$(job start 'Long build' -- sleep 2.5)"
+  wait_for "$id" ok
+  notified "^✓ Long build|" || fail "a long success did not notify"
+
+  printf 'DEVWS_NOTIFY=0\n' > "$TEST_ROOT/quiet.env"
+  id="$(DEVWS_ENV_FILE="$TEST_ROOT/quiet.env" job start 'Silenced' -- sh -c 'exit 1')"
+  wait_for "$id" failed
+  sleep 0.3
+  ! grep -q 'Silenced' "$TEST_ROOT/notified" || fail "DEVWS_NOTIFY=0 still notified"
+  export DEVWS_NOTIFY_COMMAND=true
+  unset DEVWS_JOB_NOTIFY_AFTER
+}
+
 test_old_jobs_are_pruned() {
   local id
   id="$(job note 'Ancient')"
@@ -152,6 +205,8 @@ test_rows_show_running_jobs_and_their_last_lines
 test_rows_are_cut_and_escaped_for_tmux
 test_a_success_leaves_after_ten_seconds_a_failure_when_seen
 test_notes_show_for_ten_seconds_errors_until_seen
+test_a_build_shows_its_progress
+test_jobs_notify_when_they_end
 test_old_jobs_are_pruned
 
 printf 'Job tests passed.\n'

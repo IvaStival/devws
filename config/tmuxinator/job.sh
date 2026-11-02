@@ -12,7 +12,8 @@
 #   job.sh list           "<id> <state> <title>", newest first
 #   job.sh log [id]       pages the log, following it (the failed one first,
 #                         else the newest); a failure counts as seen after
-#   job.sh open [client]  the log in a large popup (a click on the header)
+#   job.sh open [client] [id]   the log in a large popup (a click on the
+#                         header, or on a job's notification)
 #   job.sh rows <width>   the header's three rows while a job is active
 #                         (queued, running, done < 10 s ago, failed and not
 #                         seen); nothing otherwise
@@ -25,6 +26,12 @@
 # A job lives in ~/.devws-state/jobs/<id>/ (DEVWS_JOBS_DIR): title, command,
 # locks, state (queued, running, ok, failed), its times, exit code and log.
 # It never reads input: stdin is /dev/null.
+#
+# When a job ends it posts a macOS notification — a failure always, a success
+# when it ran over 30 s (DEVWS_JOB_NOTIFY_AFTER) — which opens its log when
+# clicked. DEVWS_NOTIFY=0 in .env turns them off, as for the agents
+# (agent_status.sh); DEVWS_NOTIFY_COMMAND replaces the notifier, for tests:
+# called with the title, the message and the job's id.
 
 set -u
 
@@ -130,6 +137,40 @@ run() {
   else
     printf 'failed\n' > "$jobs_dir/$id/state"
   fi
+  notify_end "$id"
+}
+
+notify_end() {
+  local id="$1" setting state took title message click
+  setting="$(
+    env_file="${DEVWS_ENV_FILE:-$(dirname "$script")/.env}"
+    # shellcheck source=/dev/null
+    [ -r "$env_file" ] && . "$env_file"
+    printf '%s' "${DEVWS_NOTIFY:-1}"
+  )"
+  [ "$setting" != 0 ] || return 0
+  state="$(field "$id" state)"
+  took=$(($(field "$id" ended_at) - $(field "$id" started_at)))
+  if [ "$state" = failed ]; then
+    title="✗ $(field "$id" title)"
+    message="failed after $(elapsed "$(field "$id" started_at)") — click for the log"
+  elif [ "$took" -gt "${DEVWS_JOB_NOTIFY_AFTER:-30}" ]; then
+    title="✓ $(field "$id" title)"
+    message="done in $(elapsed "$(field "$id" started_at)")"
+  else
+    return 0
+  fi
+  if [ -n "${DEVWS_NOTIFY_COMMAND:-}" ]; then
+    "$DEVWS_NOTIFY_COMMAND" "$title" "$message" "$id" >/dev/null 2>&1
+  elif command -v terminal-notifier >/dev/null 2>&1; then
+    # Clicked, it opens the log on the tmux server the job ran under.
+    click="$(printf 'TMUX=%q PATH=%q %q open "" %q' "${TMUX:-}" "$PATH" "$script" "$id")"
+    terminal-notifier -title "$title" -message "$message" -group "devws-job-$id" \
+      -activate com.googlecode.iterm2 -execute "$click" >/dev/null 2>&1
+  else
+    osascript -e 'on run argv' -e 'display notification (item 2 of argv) with title (item 1 of argv)' \
+      -e 'end run' "$title" "$message" >/dev/null 2>&1
+  fi
 }
 
 note() {
@@ -185,6 +226,22 @@ log_tail() {
     grep -v '^[[:space:]]*$' | tail -n "$2"
 }
 
+# A build's step count (Docker's "#7 [dev 4/9] RUN …") as " ▓▓▓▓░░░░░░ 4/9";
+# nothing for a log without one.
+progress() {
+  local step done total cell bar=""
+  step="$(tail -n 200 "$1" 2>/dev/null | grep -oE '\[[^]]*[0-9]+/[0-9]+\]' | tail -n 1 |
+    grep -oE '[0-9]+/[0-9]+')"
+  [ -n "$step" ] || return 0
+  done="${step%/*}"
+  total="${step#*/}"
+  [ "$total" -gt 0 ] || return 0
+  for ((cell = 0; cell < 10; cell++)); do
+    if [ "$cell" -lt $((done * 10 / total)) ]; then bar+='▓'; else bar+='░'; fi
+  done
+  printf ' %s %s' "$bar" "$step"
+}
+
 # Cut to <width> characters, then "#" doubled: tmux would read the log's own
 # "#[…]" as styles.
 fit() {
@@ -200,7 +257,7 @@ rows() {
     case "$(field "$id" state)" in
       queued) entries+="… $title queued  " ;;
       running)
-        entries+="⏵ $title $(elapsed "$(field "$id" started_at)")  "
+        entries+="⏵ $title$(progress "$jobs_dir/$id/log") $(elapsed "$(field "$id" started_at)")  "
         [ -n "$newest_running" ] || newest_running="$id"
         ;;
       ok)
@@ -273,8 +330,8 @@ log() {
 }
 
 open() {
-  local client="${1:-}" id
-  id="$(relevant)"
+  local client="${1:-}" id="${2:-}"
+  [ -n "$id" ] || id="$(relevant)"
   [ -n "$id" ] || { tmux display-message ${client:+-c "$client"} "No jobs yet"; return 0; }
   tmux display-popup ${client:+-c "$client"} -E -w 90% -h 80% -T " $(field "$id" title) — q closes " \
     "$(printf '%q ' "$script" log "$id")"
@@ -305,7 +362,7 @@ case "$command" in
   note) [ -n "${1:-}" ] || die "no text given"; note "$1" "${2:-}" ;;
   list) list ;;
   log) log "${1:-}" ;;
-  open) open "${1:-}" ;;
+  open) open "${1:-}" "${2:-}" ;;
   rows) rows "${1:-80}" ;;
   summary) summary ;;
   header)
