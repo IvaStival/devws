@@ -226,6 +226,33 @@ remove_agent() {
   read -r -p 'Press Enter to return…'
 }
 
+# ai-memory (memory.sh): the agents' long-term memory. Search asks the
+# workspace's agent, which searches through ai-memory's MCP tool.
+memory() {
+  "$HOME/.tmuxinator/memory.sh" "$@"
+}
+
+search_memory() {
+  local question
+  read -e -r -p 'Search memory for: ' question || return
+  [ -n "$question" ] || return
+  memory ask "$(tmux display-message -p '#S')" "$question" || pause
+}
+
+recent_memory() {
+  memory recent "$(tmux show-options -t "$(tmux display-message -p '#S')" -v @devws_root 2>/dev/null)"
+  pause
+}
+
+open_memory_web() {
+  memory web || pause
+}
+
+memory_doctor() {
+  memory doctor
+  pause
+}
+
 # Another agent, terminal or Neovim, right of, left of, below or above the
 # focused pane (new_panel.sh).
 new_panel() {

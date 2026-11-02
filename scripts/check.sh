@@ -19,7 +19,7 @@ parallel="${DEVWS_CHECK_JOBS:-4}"
 
 # The suites --quick runs: no tmux server, no waiting on real time.
 quick_suites="test_picker test_recent test_shared_files test_worktree test_github_repo
-  test_jungleforge test_link_scripts test_tidy"
+  test_jungleforge test_link_scripts test_tidy test_memory"
 
 shell_scripts=(
   "$ROOT/install.sh" "$ROOT/delete.sh"

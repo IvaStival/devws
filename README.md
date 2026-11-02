@@ -178,7 +178,7 @@ group, and shows each action's own shortcut:
 | --- | ------- |
 | Workspace | Open or start a workspace · New folder workspace · New worktree workspace · Open folder in… · Close workspace · Tidy up merged branches · Detach `C-b d` |
 | Layout | Toggle layout `C-b \` · Minimize agent and terminal `C-b _` · Hide or show the header `C-b C-s` · New panel `C-b N` · Move panel `C-b Shift+arrow` · Switch editor |
-| Agent | Go to waiting agent `C-b a` · Switch agent · Restart agent · Agent follow `C-b F` · Initialize agent · Register agent · Remove agent |
+| Agent | Go to waiting agent `C-b a` · Switch agent · Restart agent · Agent follow `C-b F` · Initialize agent · Register agent · Remove agent · Search memory · Recent memory · Open memory web UI · Memory doctor (with ai-memory) |
 | Git | Commit (agent) `C-b g` · Commit manually · Push / PR `C-b G` |
 | App | Run this branch `C-b e` · Switch running branch `C-b E` · Stop · Services · Migrate · Shell · Logs · Database `C-b B` · Database folder · Job log `C-b j` |
 
@@ -880,6 +880,31 @@ used last, so you stay in devws; only closing the last workspace leaves it.
 To leave devws with every workspace still running, choose **⏏ Detach** in the
 Workspace tab, press `C-b d`, or run `devws detach`; `devws` or
 `tmux attach` brings you back.
+
+### Agent memory (ai-memory)
+
+[ai-memory](https://github.com/akitaonrails/ai-memory) gives the agents
+long-term memory: its hooks record each session, and its MCP server lets any
+agent search what was done before — across agents, accounts and branch
+folders, scoped per repo. `./install.sh` offers it (`[y/N]`, never silently):
+yes runs its official installer and `ai-memory setup`, which shows its plan
+and asks, then devws wires **every** agent account it runs — `claude_work`'s
+`~/.claude-work` too, which `setup` alone does not. A "no" is remembered;
+`./install.sh --ai-memory` offers it again. Registering an agent later wires
+it as well. devws keeps starting the agents itself; the memory hooks run
+alongside its own.
+
+With it installed, the Agent tab has **⁘ Search memory** (your question goes
+to the workspace's agent, which searches through ai-memory's tool), **◷
+Recent memory**, **↗ Open memory web UI** and **✚ Memory doctor**, and the
+header's agent column ends with `mem ●` — green while the memory service
+answers, red when it does not (sessions are then not recorded).
+
+```sh
+devws memory search "how did we fix the login redirect?"
+devws memory recent | web | doctor
+devws memory wire        # wire every agent account again
+```
 
 ### Initialize an agent
 

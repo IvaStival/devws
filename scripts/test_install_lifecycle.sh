@@ -152,6 +152,40 @@ test_install_offers_the_github_login() {
   grep -q 'gh is missing' <<<"$output" || fail "a missing gh was not reported"
 }
 
+# ai-memory is offered, never installed silently. A stub curl serves an
+# "installer" that puts a logging ai-memory in ~/.local/bin.
+test_install_offers_ai_memory() {
+  local test_home="$TEST_ROOT/ai-memory"
+  local fake_bin="$test_home/bin"
+  local output
+  mkdir -p "$test_home"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+  cat > "$fake_bin/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HOME/curl.log"
+cat <<'INSTALLER'
+mkdir -p "$HOME/.local/bin"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$HOME/ai-memory.log"\n' > "$HOME/.local/bin/ai-memory"
+chmod +x "$HOME/.local/bin/ai-memory"
+INSTALLER
+EOF
+  chmod +x "$fake_bin/curl"
+
+  output="$(printf 'n\n' | run_install "$test_home" "$fake_bin" 2>&1)"
+  grep -q 'Install ai-memory' <<<"$output" || fail "ai-memory was not offered"
+  [ ! -e "$test_home/curl.log" ] || fail "ai-memory was downloaded after a no"
+  output="$(run_install "$test_home" "$fake_bin" </dev/null 2>&1)"
+  ! grep -q 'Install ai-memory' <<<"$output" || fail "ai-memory was offered again after a no"
+
+  printf 'y\n' | run_install "$test_home" "$fake_bin" --ai-memory >/dev/null 2>&1
+  grep -q 'akitaonrails/ai-memory/releases/latest/download/install.sh' "$test_home/curl.log" ||
+    fail "the official installer was not fetched"
+  grep -qx 'setup' "$test_home/ai-memory.log" || fail "ai-memory setup did not run"
+  grep -q 'install-mcp --client claude-code --apply' "$test_home/ai-memory.log" ||
+    fail "the agents were not wired: $(cat "$test_home/ai-memory.log")"
+}
+
 test_homebrew_tmuxinator_is_upgraded() {
   local test_home="$TEST_ROOT/tmuxinator"
   local fake_bin="$test_home/bin"
@@ -368,6 +402,7 @@ test_declining_fzf_leaves_home_untouched
 test_owned_fzf_is_removed
 test_preexisting_fzf_is_preserved
 test_install_offers_the_github_login
+test_install_offers_ai_memory
 test_homebrew_tmuxinator_is_upgraded
 test_non_homebrew_tmuxinator_is_preserved
 test_owned_glow_is_removed

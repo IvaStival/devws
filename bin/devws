@@ -80,6 +80,11 @@ devws() {
     return
   fi
 
+  if [[ "${1:-}" == "memory" ]]; then
+    devws-memory "${@:2}"
+    return
+  fi
+
   # No folder: the start screen — a folder opened before, with the agent and
   # editor it had (recent.sh), or a new branch of a GitHub repo, which asks
   # for them. `devws .` opens the current folder.
@@ -261,6 +266,28 @@ devws-jobs() {
     log) "$HOME/.tmuxinator/job.sh" log "${2:-}" ;;
     '') "$HOME/.tmuxinator/job.sh" list ;;
     *) print -u2 "usage: devws jobs [log [id]]"; return 2 ;;
+  esac
+}
+
+# ai-memory (memory.sh): `devws memory search <question>` asks this
+# workspace's agent to search its memory; recent, web, doctor; wire re-wires
+# every agent account.
+devws-memory() {
+  local memory="$HOME/.tmuxinator/memory.sh" session
+  case "${1:-}" in
+    search)
+      [[ -n "${2:-}" ]] || { print -u2 "usage: devws memory search <question>"; return 2; }
+      session="$(tmux display-message -p ${TMUX_PANE:+-t "$TMUX_PANE"} '#S' 2>/dev/null)"
+      [[ "$session" == dev-* ]] || { print -u2 "devws memory search: run it in a workspace"; return 2; }
+      "$memory" ask "$session" "${*:2}"
+      ;;
+    recent) "$memory" recent "$(devws-root || print -r -- "$PWD")" ;;
+    web | doctor) "$memory" "$1" ;;
+    wire) "$memory" wire-all --force ;;
+    *)
+      print -u2 "usage: devws memory {search <question>|recent|web|doctor|wire}"
+      return 2
+      ;;
   esac
 }
 

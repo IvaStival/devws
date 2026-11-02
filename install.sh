@@ -5,15 +5,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WITH_DEPS=0
 WITH_ITERM_KEYS=0
+WITH_AI_MEMORY=0
 state_root="$HOME/.devws-state"
 dependency_state="$state_root/installed-dependencies"
 
 usage() {
   cat <<'EOF'
-Usage: ./install.sh [--deps] [--iterm-keys]
+Usage: ./install.sh [--deps] [--iterm-keys] [--ai-memory]
 
   --deps        Install Homebrew packages, devdb and tmux plugin manager.
   --iterm-keys  Map Shift+Enter to a newline in iTerm2 (quit iTerm2 first).
+  --ai-memory   Offer ai-memory (long-term memory for agents) again after a no.
 EOF
 }
 
@@ -21,6 +23,7 @@ for arg in "$@"; do
   case "$arg" in
     --deps) WITH_DEPS=1 ;;
     --iterm-keys) WITH_ITERM_KEYS=1 ;;
+    --ai-memory) WITH_AI_MEMORY=1 ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'Unknown option: %s\n' "$arg" >&2; usage >&2; exit 2 ;;
   esac
@@ -103,6 +106,45 @@ ensure_github_login() {
   # gh log git in as well.
   gh auth login ||
     warn "GitHub login failed; run gh auth login before using devws with no folder"
+}
+
+# ai-memory (github.com/akitaonrails/ai-memory) gives the agents long-term
+# memory. Offered, never installed silently: yes runs its official installer
+# (which checks its own download) and `ai-memory setup` (which shows its plan
+# and asks), then devws wires every agent account (memory.sh). A "no" is kept,
+# so it is not asked again; --ai-memory offers it again. Already installed,
+# agents registered since are wired.
+ensure_ai_memory() {
+  local reply declined="$state_root/ai-memory-declined"
+
+  PATH="$HOME/.local/bin:$PATH"
+  if command -v ai-memory >/dev/null 2>&1; then
+    "$ROOT/config/tmuxinator/memory.sh" wire-all
+    return
+  fi
+  [[ "$WITH_AI_MEMORY" == 1 ]] && rm -f "$declined"
+  [[ -e "$declined" ]] && return
+
+  printf 'Install ai-memory (long-term memory for agents)? [y/N] '
+  if ! IFS= read -r reply; then
+    printf '\n'
+    return
+  fi
+  case "$reply" in
+    y|Y|yes|YES|Yes) ;;
+    *)
+      mkdir -p "$state_root" && : > "$declined"
+      info "Skipped ai-memory; ./install.sh --ai-memory offers it again"
+      return
+      ;;
+  esac
+  info "Installing ai-memory"
+  if ! curl -fsSL https://github.com/akitaonrails/ai-memory/releases/latest/download/install.sh | sh; then
+    warn "ai-memory did not install"
+    return
+  fi
+  ai-memory setup || warn "ai-memory setup did not finish; run ai-memory setup"
+  "$ROOT/config/tmuxinator/memory.sh" wire-all
 }
 
 upgrade_tmuxinator_if_needed() {
@@ -320,6 +362,7 @@ if ! grep -Fqx "$source_line" "$zshrc"; then
 fi
 
 ensure_github_login
+ensure_ai_memory
 
 if [[ ! -d "$HOME/.tmux/plugins/tpm" ]]; then
   warn "tmux plugin manager is missing; run ./install.sh --deps"

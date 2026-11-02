@@ -78,6 +78,8 @@ EOF
 chmod +x "$TEST_ROOT/home/.tmuxinator/git_actions.sh"
 # TMPDIR keeps the popup flag apart from a real menu's.
 export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" TMPDIR="$TEST_ROOT"
+# As if ai-memory were not installed, whatever this machine has.
+export DEVWS_AI_MEMORY=devws-no-ai-memory
 unset TMUX
 
 MENU="$HOME/.tmuxinator/devws_menu.sh"
@@ -121,6 +123,17 @@ test_items_show_labels_and_shortcuts() {
   grep -q $'^switch-agent\t.*Switch agent' <<<"$agent" || fail "Switch agent has no label"
 }
 
+# The memory items show only with ai-memory installed (DEVWS_AI_MEMORY: none
+# for these tests, whatever the machine has, unless pointed at a stub).
+test_memory_items_need_ai_memory() {
+  ! grep -q memory- <<<"$(actions_of agent)" || fail "memory items without ai-memory"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$TEST_ROOT/bin/ai-memory-stub"
+  chmod +x "$TEST_ROOT/bin/ai-memory-stub"
+  [ "$(DEVWS_AI_MEMORY="$TEST_ROOT/bin/ai-memory-stub" actions_of agent | grep -o 'memory-[a-z]*' | tr '\n' ' ')" = \
+    "memory-search memory-recent memory-web memory-doctor " ] ||
+    fail "memory items with ai-memory: $(DEVWS_AI_MEMORY="$TEST_ROOT/bin/ai-memory-stub" actions_of agent)"
+}
+
 # With an empty query the menu shows its tab; typing searches every tab, each
 # match tagged with its tab.
 test_typing_searches_every_tab() {
@@ -130,7 +143,8 @@ test_typing_searches_every_tab() {
   all="$(menu --items-for data)"
   grep -q $'^open-database\tApp · ⛁ Database' <<<"$all" || fail "typing does not reach the App tab: $all"
   grep -q $'^jump\tAgent · ! Go to waiting agent' <<<"$all" || fail "not every tab is searched: $all"
-  [ "$(grep -c . <<<"$all")" -eq "$(grep -c '|' <<<"$(menu --actions)")" ] ||
+  # Every action shown in a tab, once.
+  [ "$(grep -c . <<<"$all")" -eq "$(for tab in workspace layout agent git app; do menu --items "$tab"; done | grep -c .)" ] ||
     fail "a search does not list every action once"
 }
 
@@ -526,6 +540,7 @@ test_space_opens_the_menu() {
 test_tabs_list_their_actions
 test_items_show_labels_and_shortcuts
 test_typing_searches_every_tab
+test_memory_items_need_ai_memory
 test_the_frequent_actions_have_keys
 test_switching_tabs
 test_header_marks_the_current_tab

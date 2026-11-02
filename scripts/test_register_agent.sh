@@ -29,6 +29,8 @@ exec "$REAL_TMUX" -L "$SOCKET" -f /dev/null "\$@"
 EOF
 chmod +x "$TEST_ROOT/bin/tmux"
 export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home"
+# As if ai-memory were not installed, whatever this machine has.
+export DEVWS_AI_MEMORY=devws-no-ai-memory
 unset TMUX
 ENV_FILE="$TEST_ROOT/repo/.env"
 mkdir -p "$HOME/.tmuxinator"
@@ -72,6 +74,17 @@ test_add_registers_a_name_with_its_folder() {
   [ -L "$DEVWS_ENV_FILE" ] || fail "add replaced the .env symlink"
 }
 
+# With ai-memory installed, a new account is wired in its own folder.
+test_add_wires_the_account_to_ai_memory() {
+  local stub="$TEST_ROOT/bin/ai-memory-stub"
+  printf '#!/usr/bin/env bash\nprintf "%%s|%%s\\n" "$*" "${CLAUDE_CONFIG_DIR:-}" >> "%s/ai-memory.log"\n' "$TEST_ROOT" > "$stub"
+  chmod +x "$stub"
+  reset_env
+  DEVWS_AI_MEMORY="$stub" register add work claude "$HOME/.claude-work" >/dev/null || fail "add failed"
+  grep -qx "install-hooks --agent claude-code --apply|$HOME/.claude-work" "$TEST_ROOT/ai-memory.log" ||
+    fail "the new account was not wired: $(cat "$TEST_ROOT/ai-memory.log" 2>/dev/null)"
+}
+
 test_add_rejects_bad_input() {
   reset_env
   register add work claude "$HOME/.claude-work" >/dev/null
@@ -102,6 +115,7 @@ test_remove_drops_a_name() {
 }
 
 test_add_registers_a_name_with_its_folder
+test_add_wires_the_account_to_ai_memory
 test_add_rejects_bad_input
 test_remove_drops_a_name
 

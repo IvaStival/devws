@@ -1,8 +1,24 @@
 # Plan: ai-memory for devws agents
 
 - **Date:** 02-11-2026
-- **Branch:** feat/ai-memory
-- **Status:** Pending
+- **Branch:** feat/ai-memory (off feat/stabilize)
+- **Status:** Executed (not committed yet)
+
+Notes from execution:
+- ai-memory has no command-line search (its README: search goes through the
+  MCP tool `memory_query`, used by the agents). So **Search memory** /
+  `devws memory search` send the question to the workspace's agent ("Search
+  your ai-memory for: …"), as Commit (agent) does.
+- `memory.sh wire-all` remembers the agents it wired
+  (`~/.devws-state/memory-wired`): every install would otherwise re-run
+  `--apply` and leave a new set of ai-memory backups. `--force` (`devws
+  memory wire`) re-wires all.
+- A "no" at the install offer is remembered (`ai-memory-declined`);
+  `./install.sh --ai-memory` asks again.
+- `DEVWS_AI_MEMORY` replaces the `ai-memory` command, so the tests act as if
+  it were absent (or a stub) whatever the machine has installed.
+- The agent column's `mem ●` goes on its last row, whichever it is (the month
+  row only shows with fewer than three agents).
 
 ## Context
 
