@@ -51,6 +51,9 @@ moods="idle working waiting done"
 # The ghost's lane, and the columns under which it is left out.
 ghost_width=12
 narrow_width=110
+# The job group's widest row (job.sh rows): more than the network's and
+# weather's room ever is, which the layout cuts it to.
+job_width=160
 # Frames a second: the loop's pace, which every other interval counts in.
 fps=20
 # Ticks between the spinner's frames (agent_spinner.sh): four a second.
@@ -158,8 +161,30 @@ add_rows() {
       frame+=(set-option "$target_flag" "@devws_header_row_$index" "$row" \;)
     fi
     index=$((index + 1))
-  done < <(printf '%s' "$clock_rows" "$system_rows" "$agent_rows" "$network_rows" "$weather_rows" |
-    "$scripts_dir/header_layout.sh" "$(groups_width "$width")" 5 --optional-first)
+  done < <(
+    # While jobs show (job.sh), they span the network's and weather's room;
+    # the groups are laid out as without them, so the others never move.
+    printf '%s' "$clock_rows" "$system_rows" "$agent_rows" "$network_rows" "$weather_rows" "$job_rows" |
+      "$scripts_dir/header_layout.sh" "$(groups_width "$width")" 5 --optional-first \
+        ${job_rows:+--span-last-two}
+  )
+}
+
+# The job group (job.sh header): its summary into jobs_summary, for tmux's
+# own line, and its three rows into job_rows — empty when no job shows. The
+# rows are a range of their own, which a click opens the log from (tmux.conf).
+read_jobs() {
+  local jobs rows row
+  # The "." keeps the empty rows that $(…) would drop.
+  jobs="$("$scripts_dir/job.sh" header "$job_width" 2>/dev/null; printf .)"
+  jobs="${jobs%.}"
+  jobs_summary="${jobs%%$'\n'*}"
+  rows="${jobs#*$'\n'}"
+  job_rows=""
+  [ -n "$rows" ] || return 0
+  while IFS= read -r row; do
+    job_rows+="#[range=user|devws-jobs]$row#[norange]"$'\n'
+  done <<<"${rows%$'\n'}"
 }
 
 # The mood of all the workspaces' agents together: the first of waiting (one
@@ -183,6 +208,7 @@ lay_out() {
   capture_rows agent_rows source_rows agents 3
   capture_rows network_rows source_rows network 3
   capture_rows weather_rows source_rows weather 3
+  read_jobs
   mood="$(overall_mood)"
   frame=()
   while IFS='|' read -r session width; do
@@ -196,6 +222,7 @@ lay_out() {
   printf '%s' "$clients" > "$state_dir/clients.new" && mv "$state_dir/clients.new" "$state_dir/clients"
   [ -n "$first_width" ] || return 0
   add_rows -g "" "$first_width"
+  frame+=(set-option -g @devws_jobs_summary "$jobs_summary" \;)
   # Rows the same as those last sent are not sent again: tmux would redraw the
   # status lines for nothing. The data changes every few seconds at most.
   checksum="$(printf '%s\n' "${frame[@]}" | cksum)"

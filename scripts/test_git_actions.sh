@@ -146,6 +146,19 @@ test_push_offers_and_creates_a_pr() {
   grep -q '^pr view --web' "$TEST_ROOT/gh/calls" || fail "the PR was not opened"
 }
 
+# As a background job: the answer comes with the call, nothing is asked.
+test_push_with_the_pr_answer_given_asks_nothing() {
+  rm -f "$TEST_ROOT/gh/pr"
+  : > "$TEST_ROOT/gh/calls"
+  git -C "$REPO" commit -q --allow-empty -m more
+  in_workspace push --pr no </dev/null >/dev/null 2>&1 || fail "push --pr no failed"
+  [ "$(git -C "$REPO" rev-parse origin/feat/login)" = "$(git -C "$REPO" rev-parse HEAD)" ] ||
+    fail "push --pr no did not push"
+  ! grep -q 'pr create' "$TEST_ROOT/gh/calls" || fail "--pr no created a PR"
+  in_workspace push --pr draft </dev/null >/dev/null 2>&1 || fail "push --pr draft failed"
+  grep -q '^pr create --fill --draft' "$TEST_ROOT/gh/calls" || fail "--pr draft made no draft PR"
+}
+
 test_push_shows_an_existing_pr() {
   : > "$TEST_ROOT/gh/calls"
   in_workspace push </dev/null 2>/dev/null | grep -q 'pull/7' || fail "the existing PR was not shown"
@@ -160,6 +173,7 @@ test_the_commit_skill_is_used_when_present
 test_a_busy_agent_falls_back_to_the_popup
 test_push_sets_upstream_and_can_skip_the_pr
 test_push_offers_and_creates_a_pr
+test_push_with_the_pr_answer_given_asks_nothing
 test_push_shows_an_existing_pr
 
 printf 'Git actions tests passed.\n'

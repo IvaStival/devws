@@ -572,6 +572,43 @@ test_the_layout_spreads_the_groups() {
   shows "$output" 'Curitiba' || fail "a narrow header cut a short group"
 }
 
+# "##" is how a row shows a "#" (the job group's build logs are full of
+# them): one column, and never the start of a style, even before "[".
+test_the_layout_counts_a_doubled_hash_as_one_column() {
+  local output line rendered
+  output="$(printf '%s\n' 'CPU' 'MEM' 'DSK' '##7 [dev 4/9] RUN composer' '##[fg=red] literal' 'x' |
+    "$SCRIPTS/header_layout.sh" 60 2)"
+  while IFS= read -r line; do
+    # As tmux draws it: "##" a "#", other #[…] styles nothing.
+    rendered="$(sed 's/##/\x01/g; s/#\[[^]]*\]//g' <<< "$line" | tr '\001' '#')"
+    [ "${#rendered}" -eq 60 ] || fail "a row with ## is ${#rendered} wide: '$rendered'"
+  done <<< "$output"
+  shows "$output" '##\[fg=red\] literal' || fail "##[ was read as a style: $output"
+}
+
+# The job group spans the last two groups' room — theirs and the │ between —
+# so the groups before it stay exactly where they were.
+test_the_job_group_spans_the_last_two_groups() {
+  local width plain_rows spanned_rows row before after line
+  for width in 238 160 120; do
+    plain_rows="$(layout_rows | "$SCRIPTS/header_layout.sh" "$width" 4 | plain)"
+    spanned_rows="$({ layout_rows; printf '%s\n' '⏵ phi-planner → feat/x 0:42' '  #7 RUN composer install' '  Installing laravel'; } |
+      "$SCRIPTS/header_layout.sh" "$width" 4 --span-last-two | plain)"
+    for row in 1 2 3; do
+      line="$(sed -n "${row}p" <<< "$spanned_rows")"
+      [ "${#line}" -eq "$width" ] || fail "a spanned row at $width is ${#line} wide: '$line'"
+      # Up to the second │, the same as without the job group.
+      before="$(sed -n "${row}p" <<< "$plain_rows" | awk -F '│' '{ print $1 "│" $2 "│" }')"
+      after="$(awk -F '│' '{ print $1 "│" $2 "│" }' <<< "$line")"
+      [ "$before" = "$after" ] || fail "the groups before the job group moved at $width: '$after' was '$before'"
+      [ "$(tr -cd '│' <<< "$line" | wc -m | tr -d ' ')" -eq 2 ] ||
+        fail "the job group is not one span at $width: '$line'"
+    done
+    shows "$(sed -n 1p <<< "$spanned_rows")" '│  *⏵ phi-planner → feat/x 0:42' ||
+      fail "the job group does not start where the third group did: $spanned_rows"
+  done
+}
+
 # The clock: HH:MM three rows tall, a digit three columns wide.
 test_the_clock() {
   local output
@@ -668,6 +705,17 @@ test_a_client_shows_the_header() {
     fail "the client shows no agent columns or weather: $(client_header)"
   wait_until header_row_shows 3 'claude 5h ▓▓▓▓░░░░░░  40% wk ▓░░░░░░░░░  10%' ||
     fail "the client shows no Claude limits: $(client_header)"
+  # A job (job.sh) takes the network's and weather's place while it shows, and
+  # tmux's own line sums the jobs up.
+  local job_id
+  job_id="$("$SCRIPTS/job.sh" note 'Deploy failed' --error)"
+  wait_until header_row_shows 3 '│ *✗ Deploy failed' || fail "the job group is not shown: $(client_header)"
+  ! header_row_shows 3 '+25°C' || fail "the weather stayed beside the job group: $(client_header)"
+  wait_until header_row_shows 1 '✗ 1 failed' || fail "tmux's line has no job summary: $(client_header)"
+  # Seen, it goes, and the network and weather are back.
+  : > "$HOME/.devws-state/jobs/$job_id/seen"
+  wait_until header_row_shows 3 '│ *+25°C  Sunny' || fail "the weather did not come back: $(client_header)"
+  ! header_row_shows 1 'failed' || fail "the summary stayed: $(client_header)"
   # tmux's own line, then a blank line before the groups.
   header_row_shows 1 'dev-work' || fail "tmux's own line moved: $(client_header)"
   [ -z "$(client_header | sed -n 2p | tr -d ' ')" ] || fail "no blank line under tmux's own line: $(client_header)"
@@ -878,6 +926,8 @@ test_network
 test_the_wifi_row_asks_corewlan_first
 test_weather
 test_the_layout_spreads_the_groups
+test_the_layout_counts_a_doubled_hash_as_one_column
+test_the_job_group_spans_the_last_two_groups
 test_the_clock
 test_the_layout_leaves_out_the_clock_when_narrow
 test_a_client_shows_the_header

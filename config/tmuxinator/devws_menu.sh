@@ -17,40 +17,44 @@
 set -u
 
 script="$HOME/.tmuxinator/devws_menu.sh"
-tabs=(workspace agent editor database git run)
+# One concern per tab: which workspaces there are, how the screen is
+# arranged, the agent, git, and the app the branch runs (jungleforge, its
+# database, the background jobs).
+tabs=(workspace layout agent git app)
 
 # tab|action|label|shortcut|function in workspace_actions.sh
-actions='workspace|github|⎇ New GitHub workspace||new_github_workspace
-workspace|new|+ New workspace||new_workspace
+actions='workspace|github|⎇ Open or start a workspace||new_github_workspace
+workspace|new|+ New folder workspace||new_workspace
 workspace|worktree|⑂ New worktree workspace||new_worktree_workspace
-workspace|open-folder|⌂ Open folder||open_folder
-workspace|toggle-layout|▥ Toggle layout|C-b \|toggle_layout
-workspace|minimize|▁ Minimize agent and terminal|C-b _|minimize_agents
-workspace|header|▔ Hide or show the header|C-b C-s|toggle_header
-workspace|new-panel|▣ New panel|C-b N|new_panel
-workspace|move-panel|⇆ Move panel|C-b S-←→↑↓|move_panel
+workspace|open-folder|⌂ Open folder in…||open_folder
 workspace|close|× Close workspace||close_workspace
+workspace|detach|⏏ Detach (workspaces keep running)|C-b d|detach_client
+layout|toggle-layout|▥ Toggle layout|C-b \|toggle_layout
+layout|minimize|▁ Minimize agent and terminal|C-b _|minimize_agents
+layout|header|▔ Hide or show the header|C-b C-s|toggle_header
+layout|new-panel|▣ New panel|C-b N|new_panel
+layout|move-panel|⇆ Move panel|C-b S-←→↑↓|move_panel
+layout|switch-editor|⇄ Switch editor||switch_editor
 agent|jump|! Go to waiting agent|C-b a|jump_agent
 agent|switch-agent|⇄ Switch agent||switch_agent
 agent|restart-agent|↻ Restart agent||restart_agent
+agent|follow-mode|◎ Agent follow|C-b F|choose_follow_mode
 agent|initialize-agent|◇ Initialize agent||initialize_agent
 agent|register-agent|＋ Register agent||register_agent
 agent|remove-agent|− Remove agent||remove_agent
-agent|follow-mode|◎ Agent follow|C-b F|choose_follow_mode
-editor|switch-editor|⇄ Switch editor||switch_editor
-editor|follow-mode|◎ Agent follow|C-b F|choose_follow_mode
-database|open-database|⛁ Database|C-b B|open_database
-database|database-folder|⛁ Database folder||choose_database_folder
 git|commit|✓ Commit (agent)||commit_with_agent
 git|commit-manual|✎ Commit manually||commit_by_hand
 git|push|↑ Push / PR||push_branch
-run|run-here|▶ Run this branch||run_this_branch
-run|switch-run|⇄ Switch running branch||switch_running_branch
-run|stop-run|■ Stop||stop_running_apps
-run|services|⛃ Services||start_services
-run|migrate|⇡ Migrate||migrate_running_app
-run|shell|⌘ Shell||open_app_shell
-run|logs|≡ Logs||open_app_logs'
+app|run-here|▶ Run this branch||run_this_branch
+app|switch-run|⇄ Switch running branch||switch_running_branch
+app|stop-run|■ Stop||stop_running_apps
+app|services|⛃ Services||start_services
+app|migrate|⇡ Migrate||migrate_running_app
+app|shell|⌘ Shell||open_app_shell
+app|logs|≡ Logs||open_app_logs
+app|open-database|⛁ Database|C-b B|open_database
+app|database-folder|⛁ Database folder||choose_database_folder
+app|job-log|◷ Job log||show_job_log'
 
 session() {
   if [ -n "${TMUX_PANE:-}" ]; then
@@ -154,14 +158,32 @@ run_action() {
 
 open_popup() {
   local client="${1:-}"
-  tmux display-popup ${client:+-c "$client"} -E -w 60 -h 16 -T ' devws ' "$script"
+  # Room for the longest tab (App) whole, and its questions (branches, apps).
+  tmux display-popup ${client:+-c "$client"} -E -w 70 -h 18 -T ' devws ' "$script"
+}
+
+# A pane that scrolls under the popup (an agent writing) drags the popup's
+# cells along with it, and fzf only redraws what it changed: what the pane
+# scrolled in would stay. The menu is redrawn whole every second while open
+# (fzf's clear-screen, through its socket), which touches only the popup.
+keep_redrawn() {
+  local socket="$1"
+  while sleep 1; do
+    [ -S "$socket" ] || continue
+    curl -s --max-time 1 --unix-socket "$socket" http://localhost -d 'clear-screen' >/dev/null 2>&1
+  done
 }
 
 show_menu() {
-  local selected
+  local selected socket redrawer status
+  socket="${TMPDIR:-/tmp}"
+  # Short and in TMPDIR: a Unix socket path is limited to about 100 bytes.
+  socket="${socket%/}/devws-menu-$$.sock"
+  keep_redrawn "$socket" &
+  redrawer=$!
   selected="$(
     items "$(current_tab)" |
-      fzf --ansi --layout=reverse --height=100% --no-sort \
+      fzf --ansi --layout=reverse --height=100% --no-sort --listen="$socket" \
         --delimiter=$'\t' --with-nth=2 \
         --header="$(header)" --footer=$'\033[2m←/→ tab · ↑/↓ move · Enter run · Esc close\033[0m' \
         --prompt='› ' --gutter=' ' --info=hidden --no-separator --border=none --margin=0 --padding=0 \
@@ -171,8 +193,11 @@ show_menu() {
         --bind="btab:transform:'$script' --switch prev" \
         --bind="click-header:transform:'$script' --switch-at \"\$FZF_CLICK_HEADER_COLUMN\"" \
         --bind='left-click:accept'
-  )" || return 0
-  [ -n "$selected" ] || return 0
+  )"
+  status=$?
+  kill "$redrawer" 2>/dev/null
+  rm -f "$socket"
+  [ "$status" -eq 0 ] && [ -n "$selected" ] || return 0
   run_action "${selected%%$'\t'*}"
 }
 

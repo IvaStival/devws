@@ -168,12 +168,11 @@ group, and shows each action's own shortcut:
 
 | Tab | Actions |
 | --- | ------- |
-| Workspace | New GitHub workspace · New workspace · New worktree workspace · Open folder · Toggle layout `C-b \` · Minimize agent and terminal `C-b _` · New panel `C-b N` · Move panel `C-b Shift+arrow` · Close workspace |
-| Agent | Go to waiting agent `C-b a` · Switch agent · Restart agent · Initialize agent · Register agent · Remove agent · Agent follow `C-b F` |
-| Editor | Switch editor · Agent follow `C-b F` |
-| Database | Database `C-b B` · Database folder |
+| Workspace | Open or start a workspace · New folder workspace · New worktree workspace · Open folder in… · Close workspace · Detach `C-b d` |
+| Layout | Toggle layout `C-b \` · Minimize agent and terminal `C-b _` · Hide or show the header `C-b C-s` · New panel `C-b N` · Move panel `C-b Shift+arrow` · Switch editor |
+| Agent | Go to waiting agent `C-b a` · Switch agent · Restart agent · Agent follow `C-b F` · Initialize agent · Register agent · Remove agent |
 | Git | Commit (agent) · Commit manually · Push / PR |
-| Run | Run this branch · Switch running branch · Stop · Services · Migrate · Shell · Logs |
+| App | Run this branch · Switch running branch · Stop · Services · Migrate · Shell · Logs · Database `C-b B` · Database folder · Job log |
 
 `←`/`→` or `Tab` change tabs, `↑`/`↓` move, `Enter` runs the action and `Esc`
 closes; typing filters the tab. Clicking a tab or an action works too. The
@@ -667,21 +666,38 @@ which is global.
 
 ### GitHub workspaces
 
-With GitHub as the source of truth, `devws` with no folder (or **⎇ New GitHub
-workspace** in the menu) asks for a repo, then works in a folder devws owns.
-It needs [gh](https://cli.github.com), logged in (`gh auth login`).
+With GitHub as the source of truth, `devws` with no folder (or **⎇ Open or
+start a workspace** in the menu) opens the start screen, and new work goes
+in a folder devws owns. It needs [gh](https://cli.github.com), logged in
+(`gh auth login`).
+
+```
+devws >
+  ＋ New branch from GitHub…
+  ↓ Clone another repo (URL / owner/repo)…
+  PhiPlanner   feat/login-page   ● changes · PR open   2h ago
+  PhiPlanner   fix/crash         ✓ clean               yesterday
+  jungleforge  main              ✓ clean               1w ago
+```
+
+**Reopen** a folder you opened before (newest first, then branch folders you
+never opened): it starts at once with the agent and editor it had — or
+switches to it when it is already open.
+
+**＋ New branch from GitHub…**:
 
 1. **Repo:** pick the owner first — **★ My repos** on top, then each of your
    organizations, with how many repos each has — then the repo; the ones
    already cloned come first, marked `●`, and Esc goes back to the owners.
-   The lists are kept for an hour; **↻ Refresh the list** asks GitHub again,
-   and **＋ Clone URL / owner/repo…** takes any other repo.
-2. **Worktree:** a repo you have worked on offers its worktrees (branch,
-   clean or changed, PR state) to continue, or **+ New branch**.
-3. **Branch:** pick its kind (feat, fix, chore, refactor, docs) and type a
+   The lists are kept for an hour; **↻ Refresh the list** asks GitHub again.
+   **↓ Clone another repo…** takes any other one, by URL or `owner/repo`.
+2. **Branch:** pick its kind (feat, fix, chore, refactor, docs) and type a
    few words — `feat` + "Login page" makes `feat/login-page` — or
    **Custom name…** for a name of your own. It starts from GitHub's
    default branch, freshly fetched.
+3. **Agent and editor:** asked for a new branch only.
+
+What was opened, and with what, is kept in `~/.devws-state/recent.tsv`.
 
 ```
 ~/.devws/                          DEVWS_HOME in config/tmuxinator/.env
@@ -726,7 +742,7 @@ ignored files (packages, caches, builds and logs left out), all ticked.
 
 ### Run branches in jungleforge
 
-The **Run** tab runs a branch's apps with
+The menu's **App** tab runs a branch's apps with
 [jungleforge](../jungleforge) (`DEVWS_JUNGLEFORGE`, `~/Projects/jungleforge` by
 default). A repo's apps are the jungleforge registry entries whose folder is a
 checkout of the same repo — PhiPlanner's `phi-planner` (`backend/`) and
@@ -758,6 +774,38 @@ devws stop
 
 A repo jungleforge does not know says so: register it in jungleforge's `.env`.
 
+### Background jobs
+
+Long work never holds the screen: Run this branch, Switch, Stop, Services,
+Migrate, Push and closing a running branch's workspace ask their questions,
+close the menu and carry on as a **background job**. While jobs run, the
+header shows them where the network and weather are — each job with its
+state and time, and the newest running job's last two log lines:
+
+```
+CPU … │ claude 5h … │ ⏵ phi-planner → feat/login 0:42  … phi-planner-web → feat/login queued
+MEM … │ work   5h … │   #7 [dev 4/9] RUN composer install
+DSK … │ month $588  │   Installing laravel/framework (v11.9)
+```
+
+A success shows `✓` for 10 seconds, then the network and weather come back;
+a failure stays `✗ … failed` until you open its log. **Click the job group**
+(or the `⏵ 2 jobs · ✗ 1 failed` summary on tmux's top line, there with the
+header hidden too) to read the log in a large popup that follows it; `q`
+closes it. Jobs on the same app wait in line (`queued`), so two builds of
+one container never race.
+
+Anything can use them:
+
+```sh
+devws job "Tests" -- make test            # [--lock <name>] to queue with others
+devws note "Deployed" [--error]           # a message in the same place
+devws jobs                                # recent jobs
+devws jobs log [id]                       # page a log (the failed one first)
+```
+
+Jobs live in `~/.devws-state/jobs/`, kept for 7 days.
+
 ### Worktree workspaces
 
 To have two agents work on the same repo without editing each other's files,
@@ -782,6 +830,14 @@ always kept: devws lists them instead of asking. The branch and its commits
 are never deleted, and the folder is removed with `git worktree remove`,
 which refuses one with changes. Delete a branch yourself with `git branch -d`
 once it is merged.
+
+### Closing and leaving
+
+**× Close workspace** on the workspace you are in moves you to the one you
+used last, so you stay in devws; only closing the last workspace leaves it.
+To leave devws with every workspace still running, choose **⏏ Detach** in the
+Workspace tab, press `C-b d`, or run `devws detach`; `devws` or
+`tmux attach` brings you back.
 
 ### Initialize an agent
 
@@ -846,6 +902,8 @@ Glow, exactly as before.
   `git_actions.sh` (Commit and Push), and `shared_files.sh` (`.shared`)
 - Running branches: `DEVWS_JUNGLEFORGE` in `config/tmuxinator/.env`;
   `config/tmuxinator/jungleforge.sh`
+- Background jobs: `config/tmuxinator/job.sh`, shown by
+  `header_ticker.sh`; the click in `config/tmux/tmux.conf`
 - iTerm2 Shift+Enter mapping: `scripts/setup_iterm_keys.sh`
 - Workspace layout: `config/tmuxinator/dev.yml`
 - Layout toggle: `config/tmuxinator/toggle_layout.sh`

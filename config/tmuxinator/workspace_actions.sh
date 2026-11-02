@@ -114,6 +114,8 @@ switch_agent() {
   root="$(tmux show-options -t "$session" -v @devws_root 2>/dev/null)"
 
   tmux set-option -t "$session" @devws_agent "$agent"
+  [ -z "$root" ] || remember_opening "$root" "$agent" \
+    "$(tmux show-options -t "$session" -v @devws_editor 2>/dev/null)"
   tmux respawn-pane -k -t "$pane" -c "${root:-$PWD}" \
     "$HOME/.tmuxinator/agent_runner.sh $agent"
   "$HOME/.tmuxinator/agent_status.sh" "$session" idle
@@ -130,6 +132,8 @@ switch_editor() {
   root="$(tmux show-options -t "$session" -v @devws_root 2>/dev/null)"
 
   tmux set-option -t "$session" @devws_editor "$editor"
+  [ -z "$root" ] || remember_opening "$root" \
+    "$(tmux show-options -t "$session" -v @devws_agent 2>/dev/null)" "$editor"
   tmux respawn-pane -k -t "$pane" -c "${root:-$PWD}" \
     "$HOME/.tmuxinator/editor_runner.sh $editor"
   save_state
@@ -351,14 +355,24 @@ pause() {
   read -r -p 'Press Enter to return…'
 }
 
-# Asks for the agent and editor, then opens a workspace on <folder>.
-start_workspace_at() {
-  local folder="$1" agent editor
-  agent="$(choose_agent)" || return
-  [ -n "$agent" ] || return
-  editor="$(choose_editor)" || return
-  [ -n "$editor" ] || return
+# The folder opened, with its agent and editor: `devws` with no folder lists
+# it to reopen with them (recent.sh).
+remember_opening() {
+  "$HOME/.tmuxinator/recent.sh" add "$1" "$2" "$3" 2>/dev/null
+}
 
+# Opens a workspace on <folder>, asking for the agent and editor unless given.
+#   start_workspace_at <folder> [<agent> <editor>]
+start_workspace_at() {
+  local folder="$1" agent="${2:-}" editor="${3:-}"
+  if [ -z "$agent" ] || [ -z "$editor" ]; then
+    agent="$(choose_agent)" || return
+    [ -n "$agent" ] || return
+    editor="$(choose_editor)" || return
+    [ -n "$editor" ] || return
+  fi
+
+  remember_opening "$folder" "$agent" "$editor"
   tmuxinator start dev project_root="$folder" agent="$agent" editor="$editor"
   save_state
   refresh_pickers
@@ -391,12 +405,11 @@ new_workspace() {
   start_workspace_at "$project_root"
 }
 
-# Opens a workspace on a GitHub repo's worktree under DEVWS_HOME: one it has,
-# or a new branch (github_workspace.sh).
+# The start screen (github_workspace.sh): reopens a folder with the agent and
+# editor it had, or opens a new branch of a GitHub repo, asking for them.
 new_github_workspace() {
   local folder status
   printf '\033c'
-  printf 'New GitHub workspace\n\n'
   folder="$("$HOME/.tmuxinator/github_workspace.sh")"
   status=$?
   # 1 is a cancelled question; anything else failed and says why.
@@ -404,7 +417,8 @@ new_github_workspace() {
     [ "$status" -eq 1 ] || pause
     return
   fi
-  start_workspace_at "$folder"
+  # shellcheck disable=SC2046
+  start_workspace_at "$folder" $("$HOME/.tmuxinator/recent.sh" get "$folder")
 }
 
 # Opens a workspace on a git worktree of the current workspace's repo: an
@@ -453,14 +467,22 @@ new_worktree_workspace() {
     read -r
     return
   fi
+  remember_opening "$folder" "$agent" "$editor"
   tmuxinator start dev project_root="$folder" agent="$agent" editor="$editor"
   save_state
   refresh_pickers
 }
 
-# The workspace's changes, committed by its agent or by hand, and pushed
-# (git_actions.sh). A commit reports on the status bar, so the popup only
-# stays to show a failure; Push always stays, for its PR link.
+# Long work runs as a background job (job.sh): the menu closes at once and the
+# header shows it, where the network and weather are, until it is done.
+#   start_job <title> [--lock <name>]... -- <command> [args]
+start_job() {
+  "$HOME/.tmuxinator/job.sh" start "$@" >/dev/null || pause
+}
+
+# The workspace's changes, committed by its agent or by hand (git_actions.sh):
+# the popup only stays to show a failure. Push asks about the PR, then runs
+# as a job.
 commit_with_agent() {
   "$HOME/.tmuxinator/git_actions.sh" commit || pause
 }
@@ -470,8 +492,12 @@ commit_by_hand() {
 }
 
 push_branch() {
-  "$HOME/.tmuxinator/git_actions.sh" push
-  pause
+  local root branch pr
+  root="$(workspace_root)"
+  pr="$("$HOME/.tmuxinator/git_actions.sh" ask-pr)" || return
+  branch="$(git -C "$root" branch --show-current 2>/dev/null)"
+  start_job "Push ${branch:-$(basename "$root")}" -- \
+    env DEVWS_ROOT="$root" "$HOME/.tmuxinator/git_actions.sh" push --pr "$pr"
 }
 
 # The repo's apps in jungleforge, run on one of its branches (jungleforge.sh):
@@ -511,22 +537,45 @@ choose_app() {
   fzf --height=~40% --layout=reverse --prompt='App > ' <<<"$apps"
 }
 
-# Runs <folder>'s branch: the ticked apps start on it.
+# "--lock <app>" for each app: jobs on one app run one after another.
+app_locks() {
+  local app
+  for app in "$@"; do
+    printf -- '--lock\n%s\n' "$app"
+  done
+}
+
+# A job running jungleforge.sh on the apps, titled "<apps> → <what>".
+#   jungleforge_job <what> <jungleforge.sh arguments…> -- <app>...
+jungleforge_job() {
+  local what="$1" arguments=() apps=() locks=() line
+  shift
+  while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
+    arguments+=("$1")
+    shift
+  done
+  shift
+  apps=("$@")
+  while IFS= read -r line; do
+    locks+=("$line")
+  done < <(app_locks "${apps[@]}")
+  start_job "${apps[*]} → $what" "${locks[@]}" -- \
+    "$HOME/.tmuxinator/jungleforge.sh" "${arguments[@]}" "${apps[@]}"
+}
+
+# The branch checked out in <folder>, or "main" for the registry's checkout.
+branch_label() {
+  git -C "$1" branch --show-current 2>/dev/null || basename "$1"
+}
+
+# Runs <folder>'s branch: the ticked apps start on it, as a job.
 run_branch_at() {
   local folder="$1" apps
   printf '\033c'
   apps="$(choose_apps "$folder")" || return
   [ -n "$apps" ] || return
   # shellcheck disable=SC2086
-  jungleforge run "$folder" $apps
-  refresh_running_marks
-  pause
-}
-
-# The sidebars ask Docker again now rather than at their next check.
-refresh_running_marks() {
-  tmux set-option -gu @devws_states_checked 2>/dev/null
-  refresh_pickers
+  jungleforge_job "$(branch_label "$folder")" run "$folder" -- $apps
 }
 
 run_this_branch() {
@@ -558,13 +607,20 @@ switch_running_branch() {
 }
 
 stop_running_apps() {
-  jungleforge stop "$(workspace_root)" || { pause; return; }
-  refresh_running_marks
-  tmux display-message "Stopped the apps"
+  local root rows
+  root="$(workspace_root)"
+  rows="$(jungleforge apps "$root")" || { pause; return; }
+  # shellcheck disable=SC2046
+  jungleforge_job stop stop "$root" -- $(cut -f1 <<<"$rows")
+}
+
+# The background jobs' newest log that matters (job.sh): a failure first.
+show_job_log() {
+  "$HOME/.tmuxinator/job.sh" log || pause
 }
 
 start_services() {
-  jungleforge services || pause
+  start_job "Services" --lock services -- "$HOME/.tmuxinator/jungleforge.sh" services
 }
 
 migrate_running_app() {
@@ -572,8 +628,7 @@ migrate_running_app() {
   root="$(workspace_root)"
   app="$(choose_app "$root")" || return
   [ -n "$app" ] || return
-  jungleforge migrate "$root" "$app"
-  pause
+  start_job "$app → migrate" --lock "$app" -- "$HOME/.tmuxinator/jungleforge.sh" migrate "$root" "$app"
 }
 
 # Shell and Logs open in a panel below, which stays a terminal after Ctrl-C.
@@ -597,9 +652,12 @@ open_app_logs() {
 
 # The repo's apps running from <root>, which is closing: asks to move them back
 # to main (the default), stop them, or leave them running — not offered when
-# the folder is going away. Prints the command for close_workspace to run.
+# the folder is going away. Prints the command for close_workspace to run: a
+# background job, which also removes the folder (when <removing>) once the
+# apps no longer run from it.
 ask_about_running_apps() {
-  local root="$1" removing="$2" apps main answer choices='[M]ain/[s]top/[l]eave'
+  local root="$1" removing="$2" apps main answer choices='[M]ain/[s]top/[l]eave' line
+  local -a command=() job=()
   apps="$(jungleforge running "$root" 2>/dev/null | awk -F '\t' -v root="$root" '$2 == root { print $1 }' | paste -sd ' ' -)"
   [ -n "$apps" ] || return 0
   main="$(jungleforge targets "$root" 2>/dev/null | awk -F '\t' '$1 == "main" { print $2; exit }')"
@@ -614,9 +672,21 @@ ask_about_running_apps() {
   esac
   # shellcheck disable=SC2086
   case "$answer" in
-    stop) printf '%q ' "$HOME/.tmuxinator/jungleforge.sh" stop "$root" $apps ;;
-    main) printf '%q ' "$HOME/.tmuxinator/jungleforge.sh" run "$main" $apps ;;
+    stop) command=("$HOME/.tmuxinator/jungleforge.sh" stop "$root" $apps) ;;
+    main) command=("$HOME/.tmuxinator/jungleforge.sh" run "$main" $apps) ;;
+    *) return 0 ;;
   esac
+  # The folder goes once the apps run elsewhere ($0 is the folder, "$@" the
+  # command).
+  [ -z "$removing" ] ||
+    command=(sh -c '"$@" && exec "$HOME/.tmuxinator/worktree.sh" remove "$0"' "$root" "${command[@]}")
+  job=("$HOME/.tmuxinator/job.sh" start "$apps → $answer")
+  # shellcheck disable=SC2086
+  while IFS= read -r line; do
+    job+=("$line")
+  done < <(app_locks $apps)
+  job+=(-- "${command[@]}")
+  printf '%q ' "${job[@]}"
 }
 
 # Closing a workspace on a worktree of its own asks whether to remove the
@@ -644,8 +714,32 @@ ask_to_remove_worktree() {
   esac
 }
 
+# The workspace to go to instead of <session>: the one used last, else any.
+next_workspace() {
+  # A workspace never attached has no time: it counts as 0.
+  tmux list-sessions -F '#{session_last_attached}|#{session_name}' 2>/dev/null |
+    awk -F '|' -v closing="$1" '$2 ~ /^dev-/ && $2 != closing { print ($1 == "" ? 0 : $1) "|" $2 }' |
+    sort -t '|' -k1,1rn | awk -F '|' 'NR == 1 { print $2 }'
+}
+
+# The clients on <session> go to the next workspace first, so closing the one
+# you are in moves you to another rather than out of devws; with no other
+# workspace left they leave. Prints the commands, for close_workspace.
+move_clients_off() {
+  local session="$1" next client
+  next="$(next_workspace "$session")"
+  [ -n "$next" ] || return 0
+  tmux list-clients -t "=$session:" -F '#{client_name}' 2>/dev/null | while IFS= read -r client; do
+    printf 'tmux switch-client -c %q -t %q;' "$client" "=$next:"
+  done
+}
+
+detach_client() {
+  tmux detach-client
+}
+
 close_workspace() {
-  local current selected target quoted_target root quoted_root remove_worktree="" move_apps=""
+  local current selected target quoted_target root quoted_root remove_worktree="" move_apps="" move_clients
   current="$(tmux display-message -p '#S' 2>/dev/null)"
   selected="$(
     dev_sessions |
@@ -666,13 +760,18 @@ close_workspace() {
     printf -v quoted_root '%q' "$root"
     remove_worktree="'$HOME/.tmuxinator/worktree.sh' remove $quoted_root 2>/dev/null || tmux display-message 'Kept the worktree '$quoted_root': git would not remove it';"
   fi
-  # Apps running from the folder move (or stop) before it can go.
+  # Apps running from the folder move (or stop) first, as a job that then
+  # removes the folder itself: it cannot go while they run from it.
   if [ -d "$root" ]; then
     move_apps="$(ask_about_running_apps "$root" "$remove_worktree")"
-    [ -z "$move_apps" ] || move_apps="$move_apps >/dev/null 2>&1 || tmux display-message 'The apps did not switch: see the Run tab';"
+    if [ -n "$move_apps" ]; then
+      move_apps="$move_apps >/dev/null;"
+      remove_worktree=""
+    fi
   fi
+  move_clients="$(move_clients_off "$target")"
   # Run through the tmux server so closing the workspace containing this
   # sidebar does not terminate the refresh command along with the pane.
   tmux run-shell -b \
-    "tmux kill-session -t $quoted_target; $move_apps $remove_worktree '$HOME/.tmuxinator/save_state.sh'; '$HOME/.tmuxinator/refresh_devws_pickers.sh'"
+    "$move_clients tmux kill-session -t $quoted_target; $move_apps $remove_worktree '$HOME/.tmuxinator/save_state.sh'; '$HOME/.tmuxinator/refresh_devws_pickers.sh'"
 }

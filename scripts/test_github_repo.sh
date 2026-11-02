@@ -26,6 +26,9 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
 # The clones land here and come from local "GitHub" remotes, never the network.
 export DEVWS_HOME="$TEST_ROOT/devws"
 export DEVWS_CLONE_BASE="$TEST_ROOT/remotes/"
+# The recent folders (recent.sh) are this test's own.
+export HOME="$TEST_ROOT/home"
+mkdir -p "$HOME"
 
 # A stub gh: repo lists per owner, the user's orgs, and PR states per branch,
 # all read from files the tests write; every call is logged.
@@ -179,13 +182,22 @@ test_a_new_workspace_gets_the_imported_files() {
     fail "the import was asked again, or the worktree was not reopened"
 }
 
-# With no repo given: the owner, then its repo (Esc there goes back to the
-# owners), then the worktree.
-test_the_repo_is_picked_by_owner() {
-  printf '%s\n' '  acme' '' '  acme' '● app' 'feat/seeded' > "$TEST_ROOT/fzf.answers"
-  [ "$("$GITHUB_WORKSPACE" 2>/dev/null </dev/null)" = "$DEVWS_HOME/acme/app/app-feat-seeded" ] ||
-    fail "picking acme, then app, did not reopen its worktree"
+# The start screen: New branch, then the owner, then its repo (Esc there goes
+# back to the owners), then the branch's name.
+test_a_new_branch_is_picked_by_owner() {
+  printf '%s\n' '＋ New branch' '  acme' '' '  acme' '● app' 'fix' > "$TEST_ROOT/fzf.answers"
+  [ "$(printf 'by owner\n' | "$GITHUB_WORKSPACE" 2>/dev/null)" = "$DEVWS_HOME/acme/app/app-fix-by-owner" ] ||
+    fail "acme, then app, then fix 'by owner' did not make app-fix-by-owner"
   grep -q '★ My repos (me)' "$TEST_ROOT/fzf.owners" || fail "your repos are not first: $(cat "$TEST_ROOT/fzf.owners")"
+}
+
+# The start screen lists the folders opened before, newest first, and the
+# worktrees never opened; picking one reopens it, asking nothing more.
+test_the_start_screen_reopens_a_folder() {
+  local folder="$DEVWS_HOME/acme/app/app-feat-seeded"
+  "$ROOT/config/tmuxinator/recent.sh" add "$folder" codex vim
+  printf '%s\n' 'feat/seeded' > "$TEST_ROOT/fzf.answers"
+  [ "$("$GITHUB_WORKSPACE" 2>/dev/null </dev/null)" = "$folder" ] || fail "the recent folder was not reopened"
 }
 
 test_branch_names_from_a_prefix_and_description() {
@@ -203,7 +215,8 @@ test_owners_put_mine_first_then_the_orgs
 test_worktrees_lists_branch_and_folder
 test_pr_state_is_queried_then_cached
 test_a_new_workspace_gets_the_imported_files
-test_the_repo_is_picked_by_owner
+test_a_new_branch_is_picked_by_owner
+test_the_start_screen_reopens_a_folder
 test_branch_names_from_a_prefix_and_description
 
 printf 'GitHub repo tests passed.\n'

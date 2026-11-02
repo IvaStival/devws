@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# The folder for a new GitHub workspace: asks for the repo, clones or fetches
-# it (github_repo.sh), then for one of its worktrees or a new branch off a
-# fresh origin/<default branch> (worktree.sh). The questions use the terminal;
-# only the folder is printed. Run by `devws` with no folder and by the menu's
-# "New GitHub workspace".
+# The folder for a workspace, chosen from the start screen: a folder opened
+# before (recent.sh, newest first, and the worktrees never opened), a new
+# branch of one of your GitHub repos, or of another repo cloned by URL — off
+# a fresh origin/<default branch> (github_repo.sh, worktree.sh). The questions
+# use the terminal; only the folder is printed. Run by `devws` with no folder
+# and by the menu's "New GitHub workspace".
 #
-#   github_workspace.sh [repo]                 the folder; asks for the repo
-#                                              unless one is given
+#   github_workspace.sh                        the start screen
+#   github_workspace.sh <repo>                 that repo: one of its worktrees,
+#                                              or a new branch
 #   github_workspace.sh branch-name <prefix> <description>
 #                                              <prefix>/<description as a slug>
 
@@ -33,7 +35,7 @@ branch_name() {
 # repos, the cloned ones first and marked ●. Esc among the repos goes back to
 # the owners.
 pick_repo() {
-  local refresh_row='↻ Refresh the list' other_row='＋ Clone URL / owner/repo…'
+  local refresh_row='↻ Refresh the list' other_row='↓ Clone another repo (URL / owner/repo)…'
   local refresh="" root choice owner repos
   root="$("$github_repo" home)"
   while :; do
@@ -164,16 +166,52 @@ ask_branch() {
   printf '%s\n' "$branch"
 }
 
+# Reopen a folder (printed as "open <folder>"), or start a branch of a repo
+# ("new <repo>"), picked by owner or typed.
+start_screen() {
+  local new_row='＋ New branch from GitHub…' clone_row='↓ Clone another repo (URL / owner/repo)…'
+  local choice repo
+  choice="$(
+    { printf '%s\t\n' "$new_row" "$clone_row"; "$script_dir/recent.sh" rows; } |
+      fzf --height=~60% --layout=reverse --prompt='devws > ' \
+        --delimiter=$'\t' --with-nth=1 \
+        --header='Reopen a workspace, or start a new branch (Esc: cancel)'
+  )" || return 1
+  case "${choice%%$'\t'*}" in
+    "$new_row")
+      repo="$(pick_repo)" || return 1
+      ;;
+    "$clone_row")
+      read -e -r -p 'Repo (owner/repo or URL): ' repo || return 1
+      [ -n "$repo" ] || return 1
+      ;;
+    *)
+      printf 'open %s\n' "${choice##*$'\t'}"
+      return 0
+      ;;
+  esac
+  printf 'new %s\n' "$repo"
+}
+
 main() {
-  local repo="${1:-}" bare folder branch base
+  local repo="${1:-}" bare folder branch base choice
   if [ -z "$repo" ]; then
-    repo="$(pick_repo)" || return 1
+    choice="$(start_screen)" || return 1
+    if [ "${choice%% *}" = open ]; then
+      printf '%s\n' "${choice#open }"
+      return 0
+    fi
+    repo="${choice#new }"
   fi
   # A failure (exit 2) is told apart from a cancelled question (1).
   bare="$("$github_repo" ensure "$repo")" || return
   seed_shared "$(dirname "$bare")" "$("$github_repo" parse "$repo")"
 
-  folder="$(pick_worktree "$bare")" || return 1
+  # From the start screen it is a new branch: its worktrees were listed there.
+  folder=""
+  if [ -n "${1:-}" ]; then
+    folder="$(pick_worktree "$bare")" || return 1
+  fi
   if [ -z "$folder" ]; then
     branch="$(ask_branch)" || return 1
     base="origin/$("$github_repo" default-branch "$bare")"

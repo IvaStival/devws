@@ -161,7 +161,7 @@ test_moves_are_saved() {
 
 test_the_menu_and_keys() {
   local items
-  items="$(TMUX_PANE="$(pane_id "$SESSION" editor)" TMUX="fake,1,0" "$SCRIPTS/devws_menu.sh" --items workspace)"
+  items="$(TMUX_PANE="$(pane_id "$SESSION" editor)" TMUX="fake,1,0" "$SCRIPTS/devws_menu.sh" --items layout)"
   grep -q $'^move-panel\t.*Move panel.*C-b S-' <<<"$items" || fail "the menu has no Move panel"
   for binding in "S-Right.*move_panel.sh.* right" "S-Left.*move_panel.sh.* left" \
     "S-Up.*move_panel.sh.* above" "S-Down.*move_panel.sh.* below"; do

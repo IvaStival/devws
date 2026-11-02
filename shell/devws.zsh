@@ -54,17 +54,41 @@ devws() {
     return
   fi
 
-  if [[ "${1:-}" == "commit" || "${1:-}" == "push" ]]; then
+  if [[ "${1:-}" == "commit" ]]; then
     "$HOME/.tmuxinator/git_actions.sh" "$@"
     return
   fi
 
-  # No folder: a GitHub repo's worktree under DEVWS_HOME, one it has or a new
-  # branch off origin's default branch. `devws .` opens the current folder.
+  if [[ "${1:-}" == "push" ]]; then
+    devws-push
+    return
+  fi
+
+  # Background jobs (job.sh), shown in the header: `devws job <title>
+  # [--lock <name>]... -- <command>`, `devws note <text> [--error]`.
+  if [[ "${1:-}" == "job" || "${1:-}" == "note" ]]; then
+    local job_command="${1/job/start}"
+    "$HOME/.tmuxinator/job.sh" "$job_command" "${@:2}"
+    return
+  fi
+
+  if [[ "${1:-}" == "jobs" ]]; then
+    devws-jobs "${@:2}"
+    return
+  fi
+
+  # No folder: the start screen — a folder opened before, with the agent and
+  # editor it had (recent.sh), or a new branch of a GitHub repo, which asks
+  # for them. `devws .` opens the current folder.
   if (( $# == 0 )); then
     local github_folder
     github_folder="$("$HOME/.tmuxinator/github_workspace.sh")" || return
-    devws "$github_folder"
+    devws "$github_folder" ${=$("$HOME/.tmuxinator/recent.sh" get "$github_folder")}
+    return
+  fi
+
+  if [[ "${1:-}" == "detach" ]]; then
+    tmux detach-client
     return
   fi
 
@@ -130,6 +154,7 @@ devws() {
     "$HOME/.tmuxinator/restore_state.sh" >/dev/null
   fi
 
+  "$HOME/.tmuxinator/recent.sh" add "$project_root" "$agent" "$editor"
   tmuxinator start dev project_root="$project_root" agent="$agent" editor="$editor"
   "$HOME/.tmuxinator/save_state.sh"
   [[ -n "$TMUX" ]] && "$HOME/.tmuxinator/refresh_devws_pickers.sh"
@@ -167,37 +192,68 @@ devws-restore() {
 
 # The workspace's repo in jungleforge (jungleforge.sh): `devws run` runs this
 # branch, `devws run <branch|main>` another, `devws stop` stops the apps.
-devws-run() {
-  local action="$1" target="${2:-}" root="" folder
-  local jungleforge="$HOME/.tmuxinator/jungleforge.sh"
-
+# The repo folder a command acts on: the workspace's, or the current one's.
+devws-root() {
+  local root=""
   if [[ -n "$TMUX" && "$(tmux display-message -p ${TMUX_PANE:+-t "$TMUX_PANE"} '#S')" == dev-* ]]; then
     root="$(tmux show-options -v ${TMUX_PANE:+-t "$TMUX_PANE"} @devws_root 2>/dev/null)"
   fi
-  if ! root="$(git -C "${root:-$PWD}" rev-parse --show-toplevel 2>/dev/null)"; then
+  git -C "${root:-$PWD}" rev-parse --show-toplevel 2>/dev/null
+}
+
+# `devws run`, `devws run <branch|main>` and `devws stop` start background
+# jobs (job.sh): the header shows them while you carry on.
+devws-run() {
+  local action="$1" target="${2:-}" root folder rows app
+  local jungleforge="$HOME/.tmuxinator/jungleforge.sh"
+  local -a apps locks
+
+  if ! root="$(devws-root)"; then
     print -u2 "devws $action: not in a git repo"
     return 2
   fi
+  rows="$("$jungleforge" apps "$root")" || return 2
+  apps=("${(@f)$(cut -f1 <<<"$rows")}")
+  # Jobs on one app run one after another.
+  for app in "${apps[@]}"; do
+    locks+=(--lock "$app")
+  done
 
   if [[ "$action" == stop ]]; then
-    "$jungleforge" stop "$root"
-  else
-    folder="$root"
-    if [[ -n "$target" ]]; then
-      folder="$("$jungleforge" targets "$root" | awk -F '\t' -v target="$target" '$1 == target { print $2; exit }')"
-      if [[ -z "$folder" ]]; then
-        print -u2 "devws run: no branch '$target' (choose: $("$jungleforge" targets "$root" | cut -f1 | paste -sd ' ' -))"
-        return 2
-      fi
-    fi
-    "$jungleforge" run "$folder"
-  fi || return
-  if [[ -n "$TMUX" ]]; then
-    # The sidebars ask Docker again now rather than at their next check.
-    tmux set-option -gu @devws_states_checked
-    "$HOME/.tmuxinator/refresh_devws_pickers.sh" --reload
+    "$HOME/.tmuxinator/job.sh" start "${apps[*]} → stop" "${locks[@]}" -- "$jungleforge" stop "$root" "${apps[@]}"
+    return
   fi
-  return 0
+  folder="$root"
+  if [[ -n "$target" ]]; then
+    folder="$("$jungleforge" targets "$root" | awk -F '\t' -v target="$target" '$1 == target { print $2; exit }')"
+    if [[ -z "$folder" ]]; then
+      print -u2 "devws run: no branch '$target' (choose: $("$jungleforge" targets "$root" | cut -f1 | paste -sd ' ' -))"
+      return 2
+    fi
+  fi
+  "$HOME/.tmuxinator/job.sh" start "${apps[*]} → ${target:-$(git -C "$folder" branch --show-current)}" \
+    "${locks[@]}" -- "$jungleforge" run "$folder" "${apps[@]}"
+}
+
+# `devws push`: the PR question first, then the push as a background job.
+devws-push() {
+  local root pr
+  if ! root="$(devws-root)"; then
+    print -u2 "devws push: not in a git repo"
+    return 2
+  fi
+  pr="$(DEVWS_ROOT="$root" "$HOME/.tmuxinator/git_actions.sh" ask-pr)" || return
+  "$HOME/.tmuxinator/job.sh" start "Push $(git -C "$root" branch --show-current)" -- \
+    env DEVWS_ROOT="$root" "$HOME/.tmuxinator/git_actions.sh" push --pr "$pr"
+}
+
+# `devws jobs` lists the background jobs; `devws jobs log [id]` pages one.
+devws-jobs() {
+  case "${1:-}" in
+    log) "$HOME/.tmuxinator/job.sh" log "${2:-}" ;;
+    '') "$HOME/.tmuxinator/job.sh" list ;;
+    *) print -u2 "usage: devws jobs [log [id]]"; return 2 ;;
+  esac
 }
 
 devws-markdown() {

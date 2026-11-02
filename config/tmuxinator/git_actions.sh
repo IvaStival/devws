@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Commit and push the workspace's changes: the devws menu's Git tab and
-# `devws commit` / `devws push`. They work on the workspace's folder
-# (@devws_root), or the current folder outside a workspace.
+# `devws commit` / `devws push`. They work on DEVWS_ROOT when set, else the
+# workspace's folder (@devws_root), or the current folder outside a workspace.
 #
 #   git_actions.sh commit            asks the workspace's agent to commit (its
 #                                    /commit skill when there is one); a busy
@@ -9,8 +9,13 @@
 #   git_actions.sh commit --manual   ticks the changed files (Tab unticks one)
 #                                    and asks for the message, suggested from
 #                                    the branch: feat/login → "feat: "
-#   git_actions.sh push              pushes the branch, setting its upstream;
-#                                    offers to open a PR when it has none
+#   git_actions.sh push [--pr yes|no|draft]
+#                                    pushes the branch, setting its upstream;
+#                                    opens a PR when it has none and the
+#                                    answer (asked first, unless given) is yes
+#   git_actions.sh ask-pr            asks the PR question: prints yes, no or
+#                                    draft (Push as a background job); no
+#                                    without asking when the PR exists
 #
 # Nothing here forces a push or adds AI credits to a message.
 
@@ -49,8 +54,10 @@ workspace_option() {
 }
 
 root_folder() {
-  local workspace root=""
-  if workspace="$(session)"; then
+  # DEVWS_ROOT: given by a background job (job.sh), which runs outside any
+  # workspace.
+  local workspace root="${DEVWS_ROOT:-}"
+  if [ -z "$root" ] && workspace="$(session)"; then
     root="$(workspace_option "$workspace" @devws_root)"
   fi
   root="${root:-$PWD}"
@@ -157,25 +164,44 @@ commit() {
   tell 'Asked the agent to commit.'
 }
 
+# The PR question, asked before the push so the push itself can run
+# unattended (a background job): yes, no or draft.
+ask_about_pr() {
+  local answer
+  read -r -p 'Open a pull request after pushing? [Y/n, d = draft] ' answer || answer=n
+  case "$answer" in
+    n | N | no) printf 'no' ;;
+    d | D | draft) printf 'draft' ;;
+    *) printf 'yes' ;;
+  esac
+}
+
+# [--pr yes|no|draft]: the answer to the PR question, which is then not asked.
 push() {
-  local root branch answer draft="" url
+  local root branch pr="" url=""
+  if [ "${1:-}" = --pr ]; then
+    case "${2:-}" in
+      yes | no | draft) pr="$2" ;;
+      *) die "--pr takes yes, no or draft" ;;
+    esac
+  fi
   root="$(root_folder)" || return
   branch="$(git -C "$root" symbolic-ref --quiet --short HEAD)" || die "no branch to push: HEAD is detached"
+
+  if command -v gh >/dev/null 2>&1; then
+    url="$(cd "$root" && gh pr view --json url -q .url 2>/dev/null)"
+    [ -n "$url" ] || [ -n "$pr" ] || pr="$(ask_about_pr)"
+  fi
   git -C "$root" push -u origin "$branch" || return 1
 
   if ! command -v gh >/dev/null 2>&1; then
     printf 'Pushed %s. Install gh to open its pull request from devws.\n' "$branch"
     return 0
   fi
-  if url="$(cd "$root" && gh pr view --json url -q .url 2>/dev/null)" && [ -n "$url" ]; then
+  if [ -n "$url" ]; then
     printf 'Pull request: %s\n' "$url"
-  else
-    read -r -p 'Open a pull request? [Y/n, d = draft] ' answer || answer=n
-    case "$answer" in
-      n | N | no) return 0 ;;
-      d | D | draft) draft=--draft ;;
-    esac
-    (cd "$root" && gh pr create --fill $draft) || return 1
+  elif [ "$pr" = yes ] || [ "$pr" = draft ]; then
+    (cd "$root" && gh pr create --fill $([ "$pr" = draft ] && printf -- --draft)) || return 1
     (cd "$root" && gh pr view --web) || true
   fi
 
@@ -188,6 +214,15 @@ push() {
 
 case "${1:-}" in
   commit) commit "${2:-}" ;;
-  push) push ;;
-  *) die "usage: git_actions.sh <commit [--manual]|push>" ;;
+  push) push "${2:-}" "${3:-}" ;;
+  ask-pr)
+    # A branch with a PR already has nothing to ask.
+    if command -v gh >/dev/null 2>&1 &&
+        [ -n "$(cd "$(root_folder)" && gh pr view --json url -q .url 2>/dev/null)" ]; then
+      printf 'no'
+    else
+      ask_about_pr
+    fi
+    ;;
+  *) die "usage: git_actions.sh <commit [--manual]|push [--pr yes|no|draft]|ask-pr>" ;;
 esac

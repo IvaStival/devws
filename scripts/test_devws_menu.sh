@@ -45,11 +45,11 @@ printf '%s\n' "\$*" > "$TEST_ROOT/calls/tmuxinator"
 EOF
 chmod +x "$TEST_ROOT/bin/tmux" "$TEST_ROOT/bin/fzf" "$TEST_ROOT/bin/tmuxinator"
 mkdir -p "$TEST_ROOT/home/.claude" "$TEST_ROOT/home/.claude-work"
-for script in devws_menu.sh workspace_actions.sh workspace_panes.sh session_picker.sh agents.sh worktree.sh .env; do
+for script in devws_menu.sh workspace_actions.sh workspace_panes.sh session_picker.sh agents.sh worktree.sh recent.sh .env; do
   ln -s "$SCRIPTS/$script" "$TEST_ROOT/home/.tmuxinator/$script"
 done
 for script in toggle_layout.sh minimize_panes.sh header_toggle.sh open_database.sh follow_mode.sh register_agent.sh \
-  new_panel.sh move_panel.sh save_state.sh refresh_devws_pickers.sh git_actions.sh jungleforge.sh; do
+  new_panel.sh move_panel.sh save_state.sh refresh_devws_pickers.sh git_actions.sh jungleforge.sh job.sh; do
   cat > "$TEST_ROOT/home/.tmuxinator/$script" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" > "$TEST_ROOT/calls/$script"
@@ -66,6 +66,14 @@ case "\$1" in
 esac
 EOF
 chmod +x "$TEST_ROOT/home/.tmuxinator/jungleforge.sh"
+# git_actions.sh answers the PR question "no".
+cat > "$TEST_ROOT/home/.tmuxinator/git_actions.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" > "$TEST_ROOT/calls/git_actions.sh"
+[ "\$1" = ask-pr ] && printf 'no'
+exit 0
+EOF
+chmod +x "$TEST_ROOT/home/.tmuxinator/git_actions.sh"
 # TMPDIR keeps the popup flag apart from a real menu's.
 export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" TMPDIR="$TEST_ROOT"
 unset TMUX
@@ -84,30 +92,29 @@ actions_of() {
 }
 
 test_tabs_list_their_actions() {
-  [ "$(actions_of workspace)" = "github new worktree open-folder toggle-layout minimize header new-panel move-panel close" ] ||
+  [ "$(actions_of workspace)" = "github new worktree open-folder close detach" ] ||
     fail "Workspace tab: $(actions_of workspace)"
-  [ "$(actions_of agent)" = "jump switch-agent restart-agent initialize-agent register-agent remove-agent follow-mode" ] ||
+  [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor" ] ||
+    fail "Layout tab: $(actions_of layout)"
+  [ "$(actions_of agent)" = "jump switch-agent restart-agent follow-mode initialize-agent register-agent remove-agent" ] ||
     fail "Agent tab: $(actions_of agent)"
-  [ "$(actions_of editor)" = "switch-editor follow-mode" ] || fail "Editor tab: $(actions_of editor)"
-  [ "$(actions_of database)" = "open-database database-folder" ] ||
-    fail "Database tab: $(actions_of database)"
   [ "$(actions_of git)" = "commit commit-manual push" ] || fail "Git tab: $(actions_of git)"
-  [ "$(actions_of run)" = "run-here switch-run stop-run services migrate shell logs" ] ||
-    fail "Run tab: $(actions_of run)"
+  [ "$(actions_of app)" = "run-here switch-run stop-run services migrate shell logs open-database database-folder job-log" ] ||
+    fail "App tab: $(actions_of app)"
 }
 
 test_items_show_labels_and_shortcuts() {
   # Captured first: with pipefail, grep -q stopping early would fail the pipe.
-  local workspace agent database
-  workspace="$(menu --items workspace)"
+  local layout agent app
+  layout="$(menu --items layout)"
   agent="$(menu --items agent)"
-  database="$(menu --items database)"
-  grep -q $'^toggle-layout\t.*Toggle layout.*C-b \\\\' <<<"$workspace" || fail "Toggle layout has no shortcut"
-  grep -q $'^minimize\t.*Minimize agent and terminal.*C-b _' <<<"$workspace" || fail "Minimize has no shortcut"
-  grep -q $'^header\t.*Hide or show the header.*C-b C-s' <<<"$workspace" || fail "Hide header has no shortcut"
-  grep -q $'^new-panel\t.*New panel.*C-b N' <<<"$workspace" || fail "New panel has no shortcut"
-  grep -q $'^move-panel\t.*Move panel.*C-b S-' <<<"$workspace" || fail "Move panel has no shortcut"
-  grep -q $'^open-database\t.*Database.*C-b B' <<<"$database" || fail "Database has no shortcut"
+  app="$(menu --items app)"
+  grep -q $'^toggle-layout\t.*Toggle layout.*C-b \\\\' <<<"$layout" || fail "Toggle layout has no shortcut"
+  grep -q $'^minimize\t.*Minimize agent and terminal.*C-b _' <<<"$layout" || fail "Minimize has no shortcut"
+  grep -q $'^header\t.*Hide or show the header.*C-b C-s' <<<"$layout" || fail "Hide header has no shortcut"
+  grep -q $'^new-panel\t.*New panel.*C-b N' <<<"$layout" || fail "New panel has no shortcut"
+  grep -q $'^move-panel\t.*Move panel.*C-b S-' <<<"$layout" || fail "Move panel has no shortcut"
+  grep -q $'^open-database\t.*Database.*C-b B' <<<"$app" || fail "Database has no shortcut"
   grep -q $'^follow-mode\t.*Agent follow.*C-b F' <<<"$agent" || fail "Agent follow has no shortcut"
   grep -q $'^switch-agent\t.*Switch agent' <<<"$agent" || fail "Switch agent has no label"
 }
@@ -115,32 +122,32 @@ test_items_show_labels_and_shortcuts() {
 test_switching_tabs() {
   tmux set-option -t dev-menu -u @devws_menu_tab
   [ "$(menu --tab)" = "workspace" ] || fail "the menu does not start on Workspace"
-  [[ "$(menu --switch next)" == *"reload("*"--items agent)"* ]] || fail "next did not reload the Agent tab"
-  [ "$(menu --tab)" = "agent" ] || fail "next did not move to Agent"
+  [[ "$(menu --switch next)" == *"reload("*"--items layout)"* ]] || fail "next did not reload the Layout tab"
+  [ "$(menu --tab)" = "layout" ] || fail "next did not move to Layout"
   menu --switch prev >/dev/null
   menu --switch prev >/dev/null
-  [ "$(menu --tab)" = "run" ] || fail "prev did not wrap around to Run"
+  [ "$(menu --tab)" = "app" ] || fail "prev did not wrap around to App"
   menu --switch next >/dev/null
   [ "$(menu --tab)" = "workspace" ] || fail "next did not wrap around to Workspace"
-  # A click on the tab bar " Workspace   Agent   Editor   Database   Git   Run " gives its column.
+  # A click on the tab bar " Workspace   Layout   Agent   Git   App " gives its column.
   [[ "$(menu --switch-at 23)" == *transform-header* ]] || fail "a tab click did not change the header"
-  [ "$(menu --tab)" = "editor" ] || fail "clicking Editor (column 23) did not open it"
+  [ "$(menu --tab)" = "agent" ] || fail "clicking Agent (column 23) did not open it"
   menu --switch-at 1 >/dev/null
   [ "$(menu --tab)" = "workspace" ] || fail "clicking Workspace (column 1) did not open it"
   menu --switch-at 39 >/dev/null
-  [ "$(menu --tab)" = "database" ] || fail "clicking Database (column 39) did not open it"
+  [ "$(menu --tab)" = "app" ] || fail "clicking App (column 39) did not open it"
   menu --switch-at 12 >/dev/null
-  [ "$(menu --tab)" = "database" ] || fail "a click between tabs changed the tab"
-  menu --switch-at 55 >/dev/null
-  [ "$(menu --tab)" = "database" ] || fail "a click beside the tabs changed the tab"
-  menu --switch Editor >/dev/null
+  [ "$(menu --tab)" = "app" ] || fail "a click between tabs changed the tab"
+  menu --switch-at 50 >/dev/null
+  [ "$(menu --tab)" = "app" ] || fail "a click beside the tabs changed the tab"
+  menu --switch Layout >/dev/null
 }
 
 test_header_marks_the_current_tab() {
-  menu --switch Database >/dev/null
+  menu --switch App >/dev/null
   local header
   header="$(menu --header)"
-  grep -q $'\033\\[1;30;46m Database ' <<<"$header" || fail "the header does not mark Database"
+  grep -q $'\033\\[1;30;46m App ' <<<"$header" || fail "the header does not mark App"
   grep -q $'\033\\[2m Workspace ' <<<"$header" || fail "the header does not list every tab"
 }
 
@@ -345,28 +352,62 @@ test_a_github_workspace_opens_the_chosen_folder() {
     "start dev project_root=$TEST_ROOT/devws/acme/app/app-feat-x agent=claude editor=nvim" ] ||
     fail "the GitHub workspace started with '$(cat "$TEST_ROOT/calls/tmuxinator" 2>/dev/null)'"
 
+  # Reopened, it has the agent and editor it had, and asks nothing.
+  : > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/tmuxinator"
+  menu --run github </dev/null >/dev/null 2>&1
+  [ "$(cat "$TEST_ROOT/calls/tmuxinator" 2>/dev/null)" = \
+    "start dev project_root=$TEST_ROOT/devws/acme/app/app-feat-x agent=claude editor=nvim" ] ||
+    fail "a reopened folder did not start with its agent and editor: '$(cat "$TEST_ROOT/calls/tmuxinator" 2>/dev/null)'"
+
   printf '#!/usr/bin/env bash\nexit 1\n' > "$HOME/.tmuxinator/github_workspace.sh"
   rm -f "$TEST_ROOT/calls/tmuxinator"
   menu --run github </dev/null >/dev/null 2>&1
   [ ! -e "$TEST_ROOT/calls/tmuxinator" ] || fail "a cancelled GitHub workspace started one"
 }
 
-test_push_runs_and_waits_for_enter() {
-  rm -f "$TEST_ROOT/calls/git_actions.sh"
-  printf '\n' | menu --run push >/dev/null 2>&1
-  [ "$(cat "$TEST_ROOT/calls/git_actions.sh" 2>/dev/null)" = push ] ||
-    fail "push ran git_actions.sh with '$(cat "$TEST_ROOT/calls/git_actions.sh" 2>/dev/null)'"
+# Closing the workspace you are in moves you to another one, not out of
+# devws: a real client (on its own tmux server) is attached to it.
+test_closing_your_workspace_moves_you_to_another() {
+  local client_socket="devws-menu-client-$$"
+  workspace_on dev-yours "$TEST_ROOT"
+  "$REAL_TMUX" -L "$client_socket" -f /dev/null new-session -d -x 120 -y 30 \
+    "TMUX= $REAL_TMUX -L $SOCKET -f /dev/null attach -t dev-yours"
+  attached() { [ -n "$(tmux list-clients -t dev-yours -F '#{client_name}' 2>/dev/null)" ]; }
+  wait_until attached || fail "the test client did not attach"
+  printf '  dev-yours\n' > "$TEST_ROOT/fzf.answers"
+  menu --run close </dev/null >/dev/null 2>&1
+  wait_until closed dev-yours || fail "the workspace was not closed"
+  moved() { tmux list-clients -F '#{session_name}' 2>/dev/null | grep -q '^dev-'; }
+  wait_until moved || fail "the client left devws instead of moving to another workspace"
+  "$REAL_TMUX" -L "$client_socket" kill-server
 }
 
-# Run this branch moves the ticked apps to the workspace's folder.
+job_call() {
+  cat "$TEST_ROOT/calls/job.sh" 2>/dev/null
+}
+
+# Push asks about the PR first, then pushes as a background job, with nothing
+# left to wait for in the menu.
+test_push_asks_then_runs_as_a_job() {
+  tmux set-option -t dev-menu @devws_root "$TEST_ROOT/projects/app"
+  rm -f "$TEST_ROOT/calls/job.sh"
+  menu --run push </dev/null >/dev/null 2>&1
+  [ "$(job_call)" = "start Push main -- env DEVWS_ROOT=$TEST_ROOT/projects/app $HOME/.tmuxinator/git_actions.sh push --pr no" ] ||
+    fail "push started '$(job_call)'"
+  tmux set-option -u -t dev-menu @devws_root
+}
+
+# Run this branch moves the ticked apps to the workspace's folder, as a job
+# holding each app's lock.
 test_run_this_branch_moves_the_ticked_apps() {
   tmux set-option -t dev-menu @devws_root "$TEST_ROOT/devws/app-feat-x"
   printf 'phi-planner\tbackend\nphi-planner-web\tweb\n' > "$TEST_ROOT/jf.apps"
   printf 'phi-planner\n' > "$TEST_ROOT/fzf.answers"
-  rm -f "$TEST_ROOT/calls/jungleforge.sh"
-  printf '\n' | menu --run run-here >/dev/null 2>&1
-  [ "$(cat "$TEST_ROOT/calls/jungleforge.sh" 2>/dev/null)" = "run $TEST_ROOT/devws/app-feat-x phi-planner" ] ||
-    fail "run-here ran '$(cat "$TEST_ROOT/calls/jungleforge.sh" 2>/dev/null)'"
+  rm -f "$TEST_ROOT/calls/job.sh"
+  menu --run run-here </dev/null >/dev/null 2>&1
+  [ "$(job_call)" = "start phi-planner → app-feat-x --lock phi-planner -- $HOME/.tmuxinator/jungleforge.sh run $TEST_ROOT/devws/app-feat-x phi-planner" ] ||
+    fail "run-here started '$(job_call)'"
 }
 
 # Switch lists main and the worktrees, the running one marked, and runs the
@@ -378,11 +419,11 @@ test_switch_marks_the_running_branch_and_runs_the_chosen_one() {
   printf 'main\t%s\nfeat/x\t%s\n' "$main" "$branch" > "$TEST_ROOT/jf.targets"
   printf 'phi-planner\t%s\n' "$branch" > "$TEST_ROOT/jf.running"
   printf '  main (%s)\t%s\n' "$main" "$main" > "$TEST_ROOT/fzf.answers"
-  rm -f "$TEST_ROOT/calls/jungleforge.sh"
-  printf '\n' | menu --run switch-run >/dev/null 2>&1
+  rm -f "$TEST_ROOT/calls/job.sh"
+  menu --run switch-run </dev/null >/dev/null 2>&1
   grep -qF "▶ feat/x" "$TEST_ROOT/calls/fzf.input" || fail "the running branch is not marked: $(cat "$TEST_ROOT/calls/fzf.input")"
-  [ "$(cat "$TEST_ROOT/calls/jungleforge.sh" 2>/dev/null)" = "run $main phi-planner" ] ||
-    fail "switch ran '$(cat "$TEST_ROOT/calls/jungleforge.sh" 2>/dev/null)'"
+  [ "$(job_call)" = "start phi-planner → PhiPlanner --lock phi-planner -- $HOME/.tmuxinator/jungleforge.sh run $main phi-planner" ] ||
+    fail "switch started '$(job_call)'"
   rm -f "$TEST_ROOT/jf.running"
 }
 
@@ -397,18 +438,20 @@ test_closing_the_running_branch_switches_back_to_main() {
   printf 'main\t%s\nrunning\t%s\n' "$main" "$folder" > "$TEST_ROOT/jf.targets"
   printf 'phi-planner\t%s\n' "$folder" > "$TEST_ROOT/jf.running"
   printf '  dev-running\n' > "$TEST_ROOT/fzf.answers"
-  rm -f "$TEST_ROOT/calls/jungleforge.sh"
+  rm -f "$TEST_ROOT/calls/job.sh"
   # Keep the folder (Enter), then the default: back to main (Enter).
   printf '\n\n' | menu --run close >/dev/null 2>&1
   wait_until closed dev-running || fail "the workspace was not closed"
-  switched() { grep -qx "run $main phi-planner" "$TEST_ROOT/calls/jungleforge.sh" 2>/dev/null; }
-  wait_until switched || fail "the apps were not switched back to main: $(cat "$TEST_ROOT/calls/jungleforge.sh" 2>/dev/null)"
+  switched() {
+    [ "$(job_call)" = "start phi-planner → main --lock phi-planner -- $HOME/.tmuxinator/jungleforge.sh run $main phi-planner" ]
+  }
+  wait_until switched || fail "the apps were not switched back to main: $(job_call)"
   rm -f "$TEST_ROOT/jf.running"
 }
 
 test_every_action_has_a_function() {
   local tab action function
-  for tab in workspace agent editor database git run; do
+  for tab in workspace layout agent git app; do
     for action in $(actions_of "$tab"); do
       function="$(menu --function "$action")" || fail "no function for $action"
       bash -c ". '$SCRIPTS/workspace_actions.sh'; declare -F '$function' >/dev/null" ||
@@ -442,9 +485,10 @@ test_register_and_remove_agents
 test_closing_a_worktree_workspace_asks_before_removing_it
 test_a_worktree_with_changes_is_kept_without_asking
 test_closing_the_main_folder_never_asks
+test_closing_your_workspace_moves_you_to_another
 test_a_worktree_workspace_on_a_new_branch
 test_a_github_workspace_opens_the_chosen_folder
-test_push_runs_and_waits_for_enter
+test_push_asks_then_runs_as_a_job
 test_run_this_branch_moves_the_ticked_apps
 test_switch_marks_the_running_branch_and_runs_the_chosen_one
 test_closing_the_running_branch_switches_back_to_main

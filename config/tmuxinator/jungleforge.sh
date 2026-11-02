@@ -169,6 +169,15 @@ jungleforge_make() {
   make -C "$(jungleforge_folder)" "$@"
 }
 
+# Run and stop are background jobs (job.sh) that end long after the menu
+# closed: the sidebars ask Docker again now for their ▶ running marks.
+refresh_running_marks() {
+  [ -n "${TMUX:-}" ] || return 0
+  tmux set-option -gu @devws_states_checked 2>/dev/null
+  "$script_dir/refresh_devws_pickers.sh" --reload >/dev/null 2>&1
+  return 0
+}
+
 # The lock files' fingerprint, kept per app in the folder's git dir after an
 # install, so a switch installs only when the branch changes its packages.
 deps_file() {
@@ -225,6 +234,9 @@ case "$command" in
   run | stop)
     [ -d "${1:-}" ] || die "no folder given"
     "$command" "$@"
+    status=$?
+    refresh_running_marks
+    exit "$status"
     ;;
   services) jungleforge_make services-start ;;
   running-folders) running_folders "$@" ;;
