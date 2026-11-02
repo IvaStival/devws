@@ -2,7 +2,9 @@
 
 - **Date:** 02-11-2026
 - **Branch:** feat/background-jobs
-- **Status:** Executed (not committed yet)
+- **Status:** Executed
+- **Commit:** 3466ef2 (with the menu reorganization, the start screen and
+  close/detach, made on the same branch)
 
 Notes from execution:
 - `header_layout.sh` now counts `##` (a literal `#`, as job rows escape the
