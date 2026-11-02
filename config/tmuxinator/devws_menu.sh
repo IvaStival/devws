@@ -17,10 +17,11 @@
 set -u
 
 script="$HOME/.tmuxinator/devws_menu.sh"
-tabs=(workspace agent editor database)
+tabs=(workspace agent editor database git)
 
 # tab|action|label|shortcut|function in workspace_actions.sh
-actions='workspace|new|+ New workspace||new_workspace
+actions='workspace|github|⎇ New GitHub workspace||new_github_workspace
+workspace|new|+ New workspace||new_workspace
 workspace|worktree|⑂ New worktree workspace||new_worktree_workspace
 workspace|open-folder|⌂ Open folder||open_folder
 workspace|toggle-layout|▥ Toggle layout|C-b \|toggle_layout
@@ -39,7 +40,10 @@ agent|follow-mode|◎ Agent follow|C-b F|choose_follow_mode
 editor|switch-editor|⇄ Switch editor||switch_editor
 editor|follow-mode|◎ Agent follow|C-b F|choose_follow_mode
 database|open-database|⛁ Database|C-b B|open_database
-database|database-folder|⛁ Database folder||choose_database_folder'
+database|database-folder|⛁ Database folder||choose_database_folder
+git|commit|✓ Commit (agent)||commit_with_agent
+git|commit-manual|✎ Commit manually||commit_by_hand
+git|push|↑ Push / PR||push_branch'
 
 session() {
   if [ -n "${TMUX_PANE:-}" ]; then

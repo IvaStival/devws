@@ -16,6 +16,8 @@ bash -n "$ROOT/scripts/test_agent_follow.sh"
 bash -n "$ROOT/scripts/test_agent_status.sh"
 "$ROOT/scripts/test_jump_agent.sh"
 "$ROOT/scripts/test_worktree.sh"
+"$ROOT/scripts/test_github_repo.sh"
+"$ROOT/scripts/test_git_actions.sh"
 bash -n "$ROOT/scripts/test_header.sh"
 bash -n "$ROOT/scripts/test_devws_reload.sh"
 bash -n "$ROOT/scripts/test_new_panel.sh"
@@ -33,13 +35,21 @@ done
 zsh -n "$ROOT/shell/devws.zsh"
 
 ruby -rerb -ryaml -e '
-  settings = { "agent" => "codex", "project_root" => Dir.pwd }
-  context = Object.new
-  context.instance_variable_set(:@settings, settings)
-  rendered = ERB.new(File.read(ARGV[0])).result(context.instance_eval { binding })
-  config = YAML.safe_load(rendered, aliases: true)
+  render = lambda do |settings|
+    context = Object.new
+    context.instance_variable_set(:@settings, settings)
+    rendered = ERB.new(File.read(ARGV[0])).result(context.instance_eval { binding })
+    YAML.safe_load(rendered, aliases: true)
+  end
+  agent_pane = lambda do |config|
+    config["windows"][0]["workspace"]["panes"].find { |pane| pane.is_a?(Hash) && pane.key?("agent") }["agent"]
+  end
+  config = render.call({ "agent" => "codex", "project_root" => Dir.pwd })
   # A stray " #" in an unquoted value silently truncates it as a comment.
   abort "dev.yml: pre_window was cut short" unless config["pre_window"].end_with?("; clear")
+  abort "dev.yml: a new workspace resumes its agent" if agent_pane.call(config).include?("--resume")
+  restored = render.call({ "agent" => "codex", "project_root" => Dir.pwd, "resume" => "1" })
+  abort "dev.yml: a restored workspace does not resume its agent" unless agent_pane.call(restored).end_with?("codex --resume")
 ' "$ROOT/config/tmuxinator/dev.yml"
 
 if command -v luac >/dev/null 2>&1; then
@@ -59,6 +69,8 @@ for file in "$ROOT/install.sh" "$ROOT/delete.sh" "$ROOT/scripts/check.sh" \
             "$ROOT/scripts/test_agent_status.sh" \
             "$ROOT/scripts/test_jump_agent.sh" \
             "$ROOT/scripts/test_worktree.sh" \
+            "$ROOT/scripts/test_github_repo.sh" \
+            "$ROOT/scripts/test_git_actions.sh" \
             "$ROOT/scripts/test_header.sh" \
             "$ROOT/scripts/test_devws_reload.sh" \
             "$ROOT/scripts/test_new_panel.sh" \

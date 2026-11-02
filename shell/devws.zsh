@@ -49,6 +49,20 @@ devws() {
     return
   fi
 
+  if [[ "${1:-}" == "commit" || "${1:-}" == "push" ]]; then
+    "$HOME/.tmuxinator/git_actions.sh" "$@"
+    return
+  fi
+
+  # No folder: a GitHub repo's worktree under DEVWS_HOME, one it has or a new
+  # branch off origin's default branch. `devws .` opens the current folder.
+  if (( $# == 0 )); then
+    local github_folder
+    github_folder="$("$HOME/.tmuxinator/github_workspace.sh")" || return
+    devws "$github_folder"
+    return
+  fi
+
   if [[ "${1:-}" == "fresh" ]]; then
     rm -f "$HOME/.devws-state/sessions.tsv"
     print "devws: saved workspaces cleared"

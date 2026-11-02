@@ -1,5 +1,7 @@
 brew "fd"
 brew "fzf"
+# GitHub workspaces: the repo list, PRs and their states (github_repo.sh).
+brew "gh"
 brew "git"
 brew "glow"
 brew "neovim"

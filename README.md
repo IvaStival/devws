@@ -118,10 +118,18 @@ editor.
 
 ## Use
 
-Start a workspace with the interactive agent and editor picker:
+Start a workspace on a GitHub repo — devws clones it and gives the task a
+branch of its own (see [GitHub workspaces](#github-workspaces)):
+
+```sh
+devws
+```
+
+Or on a local folder, with the interactive agent and editor picker:
 
 ```sh
 devws ~/Projects/my-app
+devws .
 ```
 
 Choose an agent and editor directly:
@@ -153,10 +161,11 @@ group, and shows each action's own shortcut:
 
 | Tab | Actions |
 | --- | ------- |
-| Workspace | New workspace · New worktree workspace · Open folder · Toggle layout `C-b \` · Minimize agent and terminal `C-b _` · New panel `C-b N` · Move panel `C-b Shift+arrow` · Close workspace |
+| Workspace | New GitHub workspace · New workspace · New worktree workspace · Open folder · Toggle layout `C-b \` · Minimize agent and terminal `C-b _` · New panel `C-b N` · Move panel `C-b Shift+arrow` · Close workspace |
 | Agent | Go to waiting agent `C-b a` · Switch agent · Restart agent · Initialize agent · Register agent · Remove agent · Agent follow `C-b F` |
 | Editor | Switch editor · Agent follow `C-b F` |
 | Database | Database `C-b B` · Database folder |
+| Git | Commit (agent) · Commit manually · Push / PR |
 
 `←`/`→` or `Tab` change tabs, `↑`/`↓` move, `Enter` runs the action and `Esc`
 closes; typing filters the tab. Clicking a tab or an action works too. The
@@ -544,7 +553,8 @@ The tmux prefix is `C-b` (tmux's default key set is restored by
 Open workspaces are saved automatically, so a reboot or an iTerm2/tmux crash
 does not cost you the arrangement. Saved per workspace:
 
-- the workspace folder, agent, and editor
+- the workspace folder, agent, and editor — the agent continues its last
+  conversation in that folder
 - the pane layout (including the full-height editor layout) and each pane's
   working directory
 - extra terminals created from the devws menu
@@ -647,6 +657,52 @@ sets, such as the workspace name on the status bar (reopen the workspace).
 Sessions that are not devws workspaces are left alone, apart from tmux.conf,
 which is global.
 
+### GitHub workspaces
+
+With GitHub as the source of truth, `devws` with no folder (or **⎇ New GitHub
+workspace** in the menu) asks for a repo, then works in a folder devws owns.
+It needs [gh](https://cli.github.com), logged in (`gh auth login`).
+
+1. **Repo:** your repos and your organizations', the ones already cloned
+   first. The list is kept for an hour; **↻ Refresh the list** asks GitHub
+   again, and **＋ Clone URL / owner/repo…** takes any other repo.
+2. **Worktree:** a repo you have worked on offers its worktrees (branch,
+   clean or changed, PR state) to continue, or **+ New branch**.
+3. **Branch:** pick its kind (feat, fix, chore, refactor, docs) and type a
+   few words — `feat` + "Login page" makes `feat/login-page` — or
+   **Custom name…** for a name of your own. It starts from GitHub's
+   default branch, freshly fetched.
+
+```
+~/.devws/                          DEVWS_HOME in config/tmuxinator/.env
+  acme/my-app/
+    .bare/                         the clone (hidden, fetched each time)
+    my-app-feat-login-page/        a worktree per task
+    my-app-fix-crash/
+```
+
+There is no main checkout to keep up to date: every task gets its own folder,
+and closing the workspace offers to remove it, as for any
+[worktree workspace](#worktree-workspaces) — kept unless you type `y`, never
+removed with changes, the branch never deleted.
+
+**Commit and push** from the menu's **Git** tab, or from any pane:
+
+```sh
+devws commit           # the agent commits (its /commit skill when it has one)
+devws commit --manual  # tick the files, type the message
+devws push             # push the branch; offers to open its pull request
+```
+
+Commit asks the workspace's agent. An agent that is working or waiting on
+you is not interrupted: you commit by hand instead, with every changed file
+ticked (`Tab` unticks one) and a message suggested from the branch
+(`feat/…` → `feat: `). Push sets the branch's upstream, then shows its pull
+request or offers to create one (`gh pr create --fill`, `d` for a draft) and
+opens it in the browser. The sidebar shows each workspace's PR state next to
+its branch (`feat/login-page · PR open`), checked in the background every
+few minutes.
+
 ### Worktree workspaces
 
 To have two agents work on the same repo without editing each other's files,
@@ -721,11 +777,17 @@ Glow, exactly as before.
 - A lighter opaque gray background marks the selected workspace.
 - Yellow `●` means the Git working tree has uncommitted or untracked changes.
 - Green `✓` means the Git working tree is clean.
+- `· PR draft`, `· PR open`, `· PR merged` or `· PR closed` after the branch
+  is the state of its pull request.
 
 ## Configuration
 
 - Agents and editors, automatic restore: `config/tmuxinator/.env`
 - Saved workspaces: `~/.devws-state/sessions.tsv`
+- GitHub workspaces: `DEVWS_HOME` in `config/tmuxinator/.env`;
+  `config/tmuxinator/github_repo.sh` (clones, repo list, PR states),
+  `github_workspace.sh` (the questions), `worktree.sh`, and
+  `git_actions.sh` (Commit and Push)
 - iTerm2 Shift+Enter mapping: `scripts/setup_iterm_keys.sh`
 - Workspace layout: `config/tmuxinator/dev.yml`
 - Layout toggle: `config/tmuxinator/toggle_layout.sh`

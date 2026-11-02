@@ -36,7 +36,7 @@ print_padded_row() {
 workspace_rows() {
   local current="$1"
   local session agent editor root agent_state branch state state_plain row_width
-  local activity activity_plain
+  local activity activity_plain pr_file pr_state
 
   row_width="$(
     tmux display-message -p -t "$TMUX_PANE" '#{pane_width}' 2>/dev/null
@@ -79,6 +79,17 @@ workspace_rows() {
     if [ -n "$root" ] && git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       branch="$(git -C "$root" branch --show-current 2>/dev/null)"
       [ -n "$branch" ] || branch="detached"
+      # The PR state github_repo.sh keeps in the worktree's git folder, read
+      # here directly: the sidebar redraws often and never waits on gh.
+      pr_file="$(git -C "$root" rev-parse --path-format=absolute --git-dir 2>/dev/null)/devws-pr"
+      if [ -r "$pr_file" ]; then
+        read -r _ pr_state < "$pr_file"
+        case "${pr_state:-none}" in
+          none) ;;
+          *) branch="$branch · PR $pr_state" ;;
+        esac
+      fi
+      pr_roots+=("$root")
       if [ -n "$(git -C "$root" status --porcelain 2>/dev/null)" ]; then
         state="\033[33m●\033[0m "
         state_plain="● "
@@ -107,10 +118,30 @@ workspace_rows() {
     -F '#{session_name}|#{@devws_agent}|#{@devws_editor}|#{@devws_root}|#{@devws_agent_state}|#{@devws_frozen}|#{@devws_needs_reopen}' 2>/dev/null)
 }
 
+# The workspaces' PR states are asked again in the background, at most once a
+# minute across all sidebars (github_repo.sh keeps each for five minutes); a
+# change redraws the sidebars.
+refresh_pr_states() {
+  local checked now
+  [ "${#pr_roots[@]}" -gt 0 ] || return 0
+  checked="$(tmux show-option -gqv @devws_pr_checked 2>/dev/null)"
+  now="$(date +%s)"
+  case "$checked" in ''|*[!0-9]*) checked=0 ;; esac
+  [ $((now - checked)) -ge 60 ] || return 0
+  tmux set-option -g @devws_pr_checked "$now" 2>/dev/null
+  (
+    "$HOME/.tmuxinator/github_repo.sh" pr-refresh "${pr_roots[@]}" &&
+      "$HOME/.tmuxinator/refresh_devws_pickers.sh" --reload
+  ) </dev/null >/dev/null 2>&1 &
+}
+
 # Swapped in whole, so a spinner frame never reads half of the rows.
 write_rows() {
+  pr_roots=()
+  # Not a subshell: the rows collect pr_roots.
   workspace_rows "$(tmux display-message -p '#S' 2>/dev/null)" > "$rows_file.new"
   mv "$rows_file.new" "$rows_file"
+  refresh_pr_states
 }
 
 if [ "${1:-}" = --rows ]; then

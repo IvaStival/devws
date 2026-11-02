@@ -49,7 +49,7 @@ for script in devws_menu.sh workspace_actions.sh workspace_panes.sh session_pick
   ln -s "$SCRIPTS/$script" "$TEST_ROOT/home/.tmuxinator/$script"
 done
 for script in toggle_layout.sh minimize_panes.sh header_toggle.sh open_database.sh follow_mode.sh register_agent.sh \
-  new_panel.sh move_panel.sh save_state.sh refresh_devws_pickers.sh; do
+  new_panel.sh move_panel.sh save_state.sh refresh_devws_pickers.sh git_actions.sh; do
   cat > "$TEST_ROOT/home/.tmuxinator/$script" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" > "$TEST_ROOT/calls/$script"
@@ -74,13 +74,14 @@ actions_of() {
 }
 
 test_tabs_list_their_actions() {
-  [ "$(actions_of workspace)" = "new worktree open-folder toggle-layout minimize header new-panel move-panel close" ] ||
+  [ "$(actions_of workspace)" = "github new worktree open-folder toggle-layout minimize header new-panel move-panel close" ] ||
     fail "Workspace tab: $(actions_of workspace)"
   [ "$(actions_of agent)" = "jump switch-agent restart-agent initialize-agent register-agent remove-agent follow-mode" ] ||
     fail "Agent tab: $(actions_of agent)"
   [ "$(actions_of editor)" = "switch-editor follow-mode" ] || fail "Editor tab: $(actions_of editor)"
   [ "$(actions_of database)" = "open-database database-folder" ] ||
     fail "Database tab: $(actions_of database)"
+  [ "$(actions_of git)" = "commit commit-manual push" ] || fail "Git tab: $(actions_of git)"
 }
 
 test_items_show_labels_and_shortcuts() {
@@ -106,10 +107,10 @@ test_switching_tabs() {
   [ "$(menu --tab)" = "agent" ] || fail "next did not move to Agent"
   menu --switch prev >/dev/null
   menu --switch prev >/dev/null
-  [ "$(menu --tab)" = "database" ] || fail "prev did not wrap around to Database"
+  [ "$(menu --tab)" = "git" ] || fail "prev did not wrap around to Git"
   menu --switch next >/dev/null
   [ "$(menu --tab)" = "workspace" ] || fail "next did not wrap around to Workspace"
-  # A click on the tab bar " Workspace   Agent   Editor   Database " gives its column.
+  # A click on the tab bar " Workspace   Agent   Editor   Database   Git " gives its column.
   [[ "$(menu --switch-at 23)" == *transform-header* ]] || fail "a tab click did not change the header"
   [ "$(menu --tab)" = "editor" ] || fail "clicking Editor (column 23) did not open it"
   menu --switch-at 1 >/dev/null
@@ -184,7 +185,8 @@ test_script_actions_run_for_the_session() {
   local action script expected
   for action in toggle-layout:toggle_layout.sh:dev-menu minimize:minimize_panes.sh:"dev-menu toggle agents" \
     header:header_toggle.sh:toggle \
-    open-database:open_database.sh:dev-menu follow-mode:follow_mode.sh:dev-menu; do
+    open-database:open_database.sh:dev-menu follow-mode:follow_mode.sh:dev-menu \
+    commit:git_actions.sh:commit commit-manual:git_actions.sh:"commit --manual"; do
     IFS=: read -r action script expected <<<"$action"
     rm -f "$TEST_ROOT/calls/$script"
     menu --run "$action"
@@ -318,9 +320,35 @@ test_a_worktree_workspace_on_a_new_branch() {
   tmux set-option -u -t dev-menu @devws_root
 }
 
+# github_workspace.sh asks its own questions and prints the folder; a
+# cancelled one (exit 1) starts nothing.
+test_a_github_workspace_opens_the_chosen_folder() {
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "%s"\n' "$TEST_ROOT/devws/acme/app/app-feat-x" \
+    > "$HOME/.tmuxinator/github_workspace.sh"
+  chmod +x "$HOME/.tmuxinator/github_workspace.sh"
+  printf 'claude\nnvim\n' > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/tmuxinator"
+  menu --run github >/dev/null 2>&1
+  [ "$(cat "$TEST_ROOT/calls/tmuxinator" 2>/dev/null)" = \
+    "start dev project_root=$TEST_ROOT/devws/acme/app/app-feat-x agent=claude editor=nvim" ] ||
+    fail "the GitHub workspace started with '$(cat "$TEST_ROOT/calls/tmuxinator" 2>/dev/null)'"
+
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$HOME/.tmuxinator/github_workspace.sh"
+  rm -f "$TEST_ROOT/calls/tmuxinator"
+  menu --run github </dev/null >/dev/null 2>&1
+  [ ! -e "$TEST_ROOT/calls/tmuxinator" ] || fail "a cancelled GitHub workspace started one"
+}
+
+test_push_runs_and_waits_for_enter() {
+  rm -f "$TEST_ROOT/calls/git_actions.sh"
+  printf '\n' | menu --run push >/dev/null 2>&1
+  [ "$(cat "$TEST_ROOT/calls/git_actions.sh" 2>/dev/null)" = push ] ||
+    fail "push ran git_actions.sh with '$(cat "$TEST_ROOT/calls/git_actions.sh" 2>/dev/null)'"
+}
+
 test_every_action_has_a_function() {
   local tab action function
-  for tab in workspace agent editor database; do
+  for tab in workspace agent editor database git; do
     for action in $(actions_of "$tab"); do
       function="$(menu --function "$action")" || fail "no function for $action"
       bash -c ". '$SCRIPTS/workspace_actions.sh'; declare -F '$function' >/dev/null" ||
@@ -355,6 +383,8 @@ test_closing_a_worktree_workspace_asks_before_removing_it
 test_a_worktree_with_changes_is_kept_without_asking
 test_closing_the_main_folder_never_asks
 test_a_worktree_workspace_on_a_new_branch
+test_a_github_workspace_opens_the_chosen_folder
+test_push_runs_and_waits_for_enter
 test_every_action_has_a_function
 test_sidebar_opens_the_menu
 test_space_opens_the_menu

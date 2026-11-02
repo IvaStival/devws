@@ -221,11 +221,11 @@ test_restore_replays_workspaces() {
   run_restore
 
   # dev-one was saved with LunarVim, which devws no longer offers, so it comes
-  # back with the default editor.
-  grep -q "^start --no-attach dev project_root=$TEST_ROOT/project-one agent=claude editor=nvim$" \
+  # back with the default editor. Each agent resumes its conversation.
+  grep -q "^start --no-attach dev project_root=$TEST_ROOT/project-one agent=claude editor=nvim resume=1$" \
     "$TEST_ROOT/tmuxinator.log" ||
     fail "dev-one was not replayed with nvim: $(cat "$TEST_ROOT/tmuxinator.log")"
-  grep -q "^start --no-attach dev project_root=$TEST_ROOT/project-two agent=codex editor=nvim$" \
+  grep -q "^start --no-attach dev project_root=$TEST_ROOT/project-two agent=codex editor=nvim resume=1$" \
     "$TEST_ROOT/tmuxinator.log" || fail "dev-two was not replayed"
   [[ "$(sed -n '1p' "$TEST_ROOT/tmuxinator.log")" == *project-one* ]] ||
     fail "workspaces were not restored in file order"

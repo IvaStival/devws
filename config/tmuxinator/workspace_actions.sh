@@ -347,8 +347,25 @@ open_folder() {
   esac
 }
 
+pause() {
+  read -r -p 'Press Enter to return…'
+}
+
+# Asks for the agent and editor, then opens a workspace on <folder>.
+start_workspace_at() {
+  local folder="$1" agent editor
+  agent="$(choose_agent)" || return
+  [ -n "$agent" ] || return
+  editor="$(choose_editor)" || return
+  [ -n "$editor" ] || return
+
+  tmuxinator start dev project_root="$folder" agent="$agent" editor="$editor"
+  save_state
+  refresh_pickers
+}
+
 new_workspace() {
-  local entered_path project_root agent editor
+  local entered_path project_root
 
   printf '\033c'
   printf 'New workspace\n\n'
@@ -371,15 +388,23 @@ new_workspace() {
     return
   fi
 
-  agent="$(choose_agent)" || return
-  [ -n "$agent" ] || return
+  start_workspace_at "$project_root"
+}
 
-  editor="$(choose_editor)" || return
-  [ -n "$editor" ] || return
-
-  tmuxinator start dev project_root="$project_root" agent="$agent" editor="$editor"
-  save_state
-  refresh_pickers
+# Opens a workspace on a GitHub repo's worktree under DEVWS_HOME: one it has,
+# or a new branch (github_workspace.sh).
+new_github_workspace() {
+  local folder status
+  printf '\033c'
+  printf 'New GitHub workspace\n\n'
+  folder="$("$HOME/.tmuxinator/github_workspace.sh")"
+  status=$?
+  # 1 is a cancelled question; anything else failed and says why.
+  if [ "$status" -ne 0 ]; then
+    [ "$status" -eq 1 ] || pause
+    return
+  fi
+  start_workspace_at "$folder"
 }
 
 # Opens a workspace on a git worktree of the current workspace's repo: an
@@ -431,6 +456,22 @@ new_worktree_workspace() {
   tmuxinator start dev project_root="$folder" agent="$agent" editor="$editor"
   save_state
   refresh_pickers
+}
+
+# The workspace's changes, committed by its agent or by hand, and pushed
+# (git_actions.sh). A commit reports on the status bar, so the popup only
+# stays to show a failure; Push always stays, for its PR link.
+commit_with_agent() {
+  "$HOME/.tmuxinator/git_actions.sh" commit || pause
+}
+
+commit_by_hand() {
+  "$HOME/.tmuxinator/git_actions.sh" commit --manual || pause
+}
+
+push_branch() {
+  "$HOME/.tmuxinator/git_actions.sh" push
+  pause
 }
 
 # Closing a workspace on a worktree of its own asks whether to remove the
