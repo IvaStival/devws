@@ -8,9 +8,12 @@
 #   github_repo.sh home                  the root folder
 #   github_repo.sh parse <repo>          owner/repo, from owner/repo or a GitHub
 #                                        https or ssh URL
-#   github_repo.sh list [--refresh]      the user's repos and their orgs', the
-#                                        cloned ones first; gh's answer is kept
-#                                        for an hour
+#   github_repo.sh list [--refresh] [--owner <owner>]
+#                                        the user's repos and their orgs' (or
+#                                        one owner's), the cloned ones first;
+#                                        gh's answer is kept for an hour
+#   github_repo.sh owners [--refresh]    "<owner><TAB><repos><TAB>mine|" per
+#                                        owner: the user first, then the orgs
 #   github_repo.sh ensure <repo>         clones the repo, or fetches it; prints
 #                                        its bare repo's folder
 #   github_repo.sh default-branch <dir>  origin's default branch
@@ -99,16 +102,25 @@ ask_github_for_repos() {
 }
 
 list() {
-  local cache fetched_at="" temporary
+  local cache fetched_at="" temporary refresh="" owner=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --refresh) refresh=1 ;;
+      --owner) owner="${2:-}"; shift ;;
+    esac
+    shift
+  done
   cache="$(home)/.cache/repos"
   [ -r "$cache" ] && fetched_at="$(head -n 1 "$cache")"
   case "$fetched_at" in ''|*[!0-9]*) fetched_at=0 ;; esac
 
-  if [ "${1:-}" = --refresh ] || [ $(($(now) - fetched_at)) -ge "$list_max_age" ]; then
+  if [ -n "$refresh" ] || [ $(($(now) - fetched_at)) -ge "$list_max_age" ]; then
     mkdir -p "$(dirname "$cache")" || die "cannot create $(dirname "$cache")"
     temporary="$(mktemp "$cache.XXXXXX")" || die "cannot write $cache"
     if { now; ask_github_for_repos | LC_ALL=C sort -u; } > "$temporary"; then
       mv "$temporary" "$cache"
+      # Who "My repos" are, for owners.
+      gh api user -q .login > "$(home)/.cache/login" 2>/dev/null
     else
       rm -f "$temporary"
       # An old list beats none while GitHub cannot be reached.
@@ -117,7 +129,21 @@ list() {
     fi
   fi
 
-  { cloned | LC_ALL=C sort; tail -n +2 "$cache"; } | awk 'NF && !seen[$0]++'
+  { cloned | LC_ALL=C sort; tail -n +2 "$cache"; } |
+    awk -v owner="$owner" 'NF && !seen[$0]++ && (owner == "" || index($0, owner "/") == 1)'
+}
+
+owners() {
+  local repos mine=""
+  repos="$(list "$@")" || exit 2
+  [ -r "$(home)/.cache/login" ] && mine="$(cat "$(home)/.cache/login")"
+  # A leading sort key puts the user first, then the orgs by name.
+  awk -F / -v mine="$mine" '
+    { count[$1]++ }
+    END {
+      for (owner in count)
+        printf "%d\t%s\t%d\t%s\n", (owner == mine ? 0 : 1), owner, count[owner], (owner == mine ? "mine" : "")
+    }' <<<"$repos" | LC_ALL=C sort -t "$(printf '\t')" -k1,1n -k2,2f | cut -f2-
 }
 
 ensure() {
@@ -222,7 +248,8 @@ command="${1:-}"
 case "$command" in
   home) home; printf '\n' ;;
   parse) [ -n "${1:-}" ] || die "no repo given"; parse "$1" ;;
-  list) list "${1:-}" ;;
+  list) list "$@" ;;
+  owners) owners "$@" ;;
   ensure) [ -n "${1:-}" ] || die "no repo given"; ensure "$1" ;;
   default-branch) [ -n "${1:-}" ] || die "no folder given"; default_branch "$1" ;;
   worktrees) [ -n "${1:-}" ] || die "no folder given"; worktrees "$1" ;;

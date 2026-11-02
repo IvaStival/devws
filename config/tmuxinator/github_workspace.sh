@@ -29,28 +29,58 @@ branch_name() {
   printf '%s/%s\n' "$1" "$slug"
 }
 
+# The owner first — your repos, then each organization's — then one of its
+# repos, the cloned ones first and marked ●. Esc among the repos goes back to
+# the owners.
 pick_repo() {
   local refresh_row='↻ Refresh the list' other_row='＋ Clone URL / owner/repo…'
-  local refresh="" choice
+  local refresh="" root choice owner repos
+  root="$("$github_repo" home)"
   while :; do
     choice="$(
-      { printf '%s\n' "$other_row" "$refresh_row"; "$github_repo" list ${refresh:+--refresh}; } |
-        fzf --height=~50% --layout=reverse --prompt='Repo > ' \
-          --header='GitHub repo for the workspace (Esc: cancel)'
+      {
+        "$github_repo" owners ${refresh:+--refresh} | while IFS=$'\t' read -r owner repos mine; do
+          if [ -n "$mine" ]; then
+            printf '★ My repos (%s)\t%s\t%s\n' "$owner" "$repos" "$owner"
+          else
+            printf '  %s\t%s\t%s\n' "$owner" "$repos" "$owner"
+          fi
+        done
+        printf '%s\t\t\n' "$other_row" "$refresh_row"
+      } |
+        fzf --height=~50% --layout=reverse --prompt='Owner > ' \
+          --delimiter=$'\t' --with-nth=1,2 --tabstop=32 \
+          --header='GitHub repos by owner (Esc: cancel)'
     )" || return 1
-    case "$choice" in
-      "$refresh_row") refresh=1 ;;
+    refresh=""
+    case "${choice%%$'\t'*}" in
+      "$refresh_row")
+        refresh=1
+        continue
+        ;;
       "$other_row")
         read -e -r -p 'Repo (owner/repo or URL): ' choice || return 1
         [ -n "$choice" ] || return 1
         printf '%s\n' "$choice"
         return 0
         ;;
-      *)
-        printf '%s\n' "$choice"
-        return 0
-        ;;
     esac
+    owner="${choice##*$'\t'}"
+
+    choice="$(
+      "$github_repo" list --owner "$owner" | while IFS= read -r repo; do
+        if [ -d "$root/$repo/.bare" ]; then
+          printf '● %s\t%s\n' "${repo#*/}" "$repo"
+        else
+          printf '  %s\t%s\n' "${repo#*/}" "$repo"
+        fi
+      done |
+        fzf --height=~50% --layout=reverse --prompt="$owner > " \
+          --delimiter=$'\t' --with-nth=1 \
+          --header="$owner's repos (● cloned; Esc: back to the owners)"
+    )" || continue
+    printf '%s\n' "${choice##*$'\t'}"
+    return 0
   done
 }
 

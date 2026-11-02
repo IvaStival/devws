@@ -671,9 +671,11 @@ With GitHub as the source of truth, `devws` with no folder (or **⎇ New GitHub
 workspace** in the menu) asks for a repo, then works in a folder devws owns.
 It needs [gh](https://cli.github.com), logged in (`gh auth login`).
 
-1. **Repo:** your repos and your organizations', the ones already cloned
-   first. The list is kept for an hour; **↻ Refresh the list** asks GitHub
-   again, and **＋ Clone URL / owner/repo…** takes any other repo.
+1. **Repo:** pick the owner first — **★ My repos** on top, then each of your
+   organizations, with how many repos each has — then the repo; the ones
+   already cloned come first, marked `●`, and Esc goes back to the owners.
+   The lists are kept for an hour; **↻ Refresh the list** asks GitHub again,
+   and **＋ Clone URL / owner/repo…** takes any other repo.
 2. **Worktree:** a repo you have worked on offers its worktrees (branch,
    clean or changed, PR state) to continue, or **+ New branch**.
 3. **Branch:** pick its kind (feat, fix, chore, refactor, docs) and type a

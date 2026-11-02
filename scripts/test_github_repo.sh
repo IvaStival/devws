@@ -38,6 +38,7 @@ printf '%s\n' "\$*" >> "\$data/calls"
 case "\$1 \$2" in
   "repo list") owner="\${3:-me}"; [ "\${owner#-}" = "\$owner" ] || owner=me; cat "\$data/repos-\$owner" 2>/dev/null ;;
   "api user/orgs") cat "\$data/orgs" 2>/dev/null ;;
+  "api user") printf 'me\n' ;;
   "config get") printf 'https\n' ;;
   "pr view")
     branch="\$(git symbolic-ref --short HEAD)"
@@ -57,7 +58,12 @@ cat > "$FAKE_BIN/fzf" <<EOF
 #!/usr/bin/env bash
 answer="\$(head -n 1 "$TEST_ROOT/fzf.answers")"
 sed -i '' 1d "$TEST_ROOT/fzf.answers"
-if [ "\$answer" = @all ]; then cat; else grep -m 1 -F -- "\$answer" | grep -m 1 .; fi
+input="\$(cat)"
+# The owners list, for the tests to look at.
+case "\$input" in *"My repos"*) printf '%s\n' "\$input" > "$TEST_ROOT/fzf.owners" ;; esac
+# An empty answer is Esc.
+[ -n "\$answer" ] || exit 130
+if [ "\$answer" = @all ]; then printf '%s\n' "\$input"; else printf '%s\n' "\$input" | grep -m 1 -F -- "\$answer"; fi
 EOF
 chmod +x "$FAKE_BIN/fzf"
 export PATH="$FAKE_BIN:$PATH"
@@ -123,6 +129,14 @@ test_list_puts_cloned_repos_first_and_caches() {
   github_repo list --refresh | grep -qx me/new || fail "--refresh did not ask gh"
 }
 
+test_owners_put_mine_first_then_the_orgs() {
+  local expected
+  expected="me"$'\t'"3"$'\t'"mine"$'\n'"acme"$'\t'"2"$'\t'
+  [ "$(github_repo owners)" = "$expected" ] || fail "owners: $(github_repo owners)"
+  [ "$(github_repo list --owner acme | tr '\n' ' ')" = "acme/app acme/tools " ] ||
+    fail "one owner's repos: $(github_repo list --owner acme | tr '\n' ' ')"
+}
+
 test_worktrees_lists_branch_and_folder() {
   local bare="$DEVWS_HOME/acme/app/.bare" folder
   folder="$("$WORKTREE" ensure "$bare" feat/login origin/main 2>/dev/null)"
@@ -165,6 +179,15 @@ test_a_new_workspace_gets_the_imported_files() {
     fail "the import was asked again, or the worktree was not reopened"
 }
 
+# With no repo given: the owner, then its repo (Esc there goes back to the
+# owners), then the worktree.
+test_the_repo_is_picked_by_owner() {
+  printf '%s\n' '  acme' '' '  acme' '● app' 'feat/seeded' > "$TEST_ROOT/fzf.answers"
+  [ "$("$GITHUB_WORKSPACE" 2>/dev/null </dev/null)" = "$DEVWS_HOME/acme/app/app-feat-seeded" ] ||
+    fail "picking acme, then app, did not reopen its worktree"
+  grep -q '★ My repos (me)' "$TEST_ROOT/fzf.owners" || fail "your repos are not first: $(cat "$TEST_ROOT/fzf.owners")"
+}
+
 test_branch_names_from_a_prefix_and_description() {
   [ "$("$GITHUB_WORKSPACE" branch-name feat 'Login page: OAuth & SSO!')" = feat/login-page-oauth-sso ] ||
     fail "slug: $("$GITHUB_WORKSPACE" branch-name feat 'Login page: OAuth & SSO!')"
@@ -176,9 +199,11 @@ test_parse_accepts_names_and_urls
 test_ensure_clones_a_bare_repo_then_fetches
 test_a_failed_clone_leaves_nothing_behind
 test_list_puts_cloned_repos_first_and_caches
+test_owners_put_mine_first_then_the_orgs
 test_worktrees_lists_branch_and_folder
 test_pr_state_is_queried_then_cached
 test_a_new_workspace_gets_the_imported_files
+test_the_repo_is_picked_by_owner
 test_branch_names_from_a_prefix_and_description
 
 printf 'GitHub repo tests passed.\n'
