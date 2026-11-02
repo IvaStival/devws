@@ -106,11 +106,19 @@ The installer creates symlinks into the clone. Keep the cloned folder in its
 original location after installation. Existing managed files are moved to a
 timestamped directory under `~/.devws-backups/` before replacement.
 
-When installation finishes, run the highlighted reload command it prints:
+`devws` itself is a command on your PATH (`~/.local/bin/devws`, a link to
+`bin/devws`), so every pane runs the checkout's current version, and each run
+links any devws script an update added to `~/.tmuxinator` — after a `git
+pull`, there is nothing to reinstall or reload. When installation finishes,
+run the reload command it prints once, for the prompt and editor settings
+(`shell/devws.zsh`):
 
 ```sh
 source ~/.zshrc
 ```
+
+Panes opened before devws became a command keep the old shell function until
+they are reopened (or run `source ~/.zshrc` in them).
 
 The installer also offers to log in to GitHub (`gh auth login`), which
 [GitHub workspaces](#github-workspaces) need. gh asks how git should reach
@@ -811,6 +819,13 @@ log** to open the log panel again. Jobs on the same app wait in line
 (`queued`), so two builds of one container never race. A Docker build shows
 its progress from the step count it prints.
 
+A failure says why when its exit code tells — `Error 137` is "killed — usually
+out of memory: give Docker Desktop more (Settings → Resources)", 127 "command
+not found", 130/143 "interrupted" — at the end of its log and in its
+notification. And when something devws runs in the background cannot do its
+part (the log panel cannot open, the sidebar's refresh fails), the header says
+so as an error note instead of nothing happening.
+
 When a job ends while you are elsewhere, macOS tells you: a failure always,
 a success when it took over 30 seconds. Clicking the notification opens the
 job's log. `DEVWS_NOTIFY=0` in `config/tmuxinator/.env` turns these off, as it
@@ -957,25 +972,28 @@ Glow, exactly as before.
   wired up in `agent_runner.sh` and `agent_settings.json`
 - Neovim (LazyVim): `config/nvim/`
 - tmux: `config/tmux/tmux.conf`
-- Shell command and prompt: `shell/devws.zsh`
+- The `devws` command: `bin/devws`; the prompt and editor settings:
+  `shell/devws.zsh`; scripts linked into `~/.tmuxinator` on each run:
+  `config/tmuxinator/link_scripts.sh`
 - Mermaid diagram preview: `shell/render_mermaid_preview.sh`
 
-After changing a symlinked config, restart the relevant program. Reload shell
-changes with `source ~/.zshrc`; reload tmux with
-`tmux source-file ~/.tmux.conf`.
+After changing a symlinked config, restart the relevant program. Changes to
+`bin/devws` apply at once; reload prompt changes with `source ~/.zshrc`, and
+tmux with `tmux source-file ~/.tmux.conf` (or `devws reload`).
 
 ## Validate
 
 ```sh
-make check
+make check                   # everything, a few minutes
+scripts/check.sh --quick     # syntax and the fast suites, under 30 seconds
 ```
 
 This checks Bash/Zsh syntax, the tmuxinator ERB/YAML template, Lua syntax of
 the Neovim config when `luac` is available, and executable permissions, then
-runs the test suites in `scripts/`: install/uninstall, Markdown viewer,
-workspace save/restore, layout toggle, minimize and the database pane
-(including real mouse clicks on an isolated tmux server), and the iTerm2 key
-map.
+runs every test suite in `scripts/` (`test_*.sh`), four at a time
+(`DEVWS_CHECK_JOBS`), printing `✓`/`✗` per suite and the full output of any
+that fails. The suites drive isolated tmux servers, including real mouse
+clicks, and never touch your own workspaces.
 
 ## Uninstall
 

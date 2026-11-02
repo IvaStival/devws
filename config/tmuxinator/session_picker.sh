@@ -125,6 +125,18 @@ workspace_rows() {
 tmp_dir="${TMPDIR:-/tmp}"
 running_file="${tmp_dir%/}/devws-running-$(id -u)"
 
+# A background refresh that fails says so in the header (an error note), at
+# most once an hour: it runs every 30 s, and the same error would flood it.
+report_refresh_errors() {
+  local errors="$1" stamp="$1.reported" reported
+  [ -s "$errors" ] || return 0
+  reported="$(cat "$stamp" 2>/dev/null)"
+  case "$reported" in ''|*[!0-9]*) reported=0 ;; esac
+  [ $(($(date +%s) - reported)) -ge 3600 ] || return 0
+  date +%s > "$stamp"
+  "$HOME/.tmuxinator/job.sh" note "Sidebar refresh failed: $(head -n 1 "$errors")" --error >/dev/null 2>&1
+}
+
 # The workspaces' PR states and running apps are asked again in the
 # background, at most every 30 seconds across all sidebars (github_repo.sh
 # keeps each PR state for five minutes); a change redraws the sidebars. Run
@@ -140,7 +152,8 @@ refresh_states() {
   (
     changed=1
     "$HOME/.tmuxinator/github_repo.sh" pr-refresh "${pr_roots[@]}" && changed=0
-    running="$("$HOME/.tmuxinator/jungleforge.sh" running-folders "${pr_roots[@]}")"
+    running="$("$HOME/.tmuxinator/jungleforge.sh" running-folders "${pr_roots[@]}" 2>"$running_file.errors")"
+    report_refresh_errors "$running_file.errors"
     if [ "$running" != "$(cat "$running_file" 2>/dev/null)" ]; then
       printf '%s\n' "$running" > "$running_file"
       changed=0

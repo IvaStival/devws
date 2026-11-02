@@ -226,6 +226,24 @@ test_preexisting_glow_is_preserved() {
     fail "pre-existing Glow was uninstalled"
 }
 
+# The devws command goes on PATH as a link to bin/devws, and goes again on
+# uninstall.
+test_devws_command_is_linked_and_removed() {
+  local test_home="$TEST_ROOT/devws-command"
+  local fake_bin="$test_home/bin"
+  mkdir -p "$test_home"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+
+  run_install "$test_home" "$fake_bin" >/dev/null 2>&1
+  [[ "$(readlink "$test_home/.local/bin/devws")" == "$ROOT/bin/devws" ]] ||
+    fail "~/.local/bin/devws does not link to bin/devws"
+
+  HOME="$test_home" FAKE_BIN="$fake_bin" BREW_LOG="$test_home/brew.log" \
+    PATH="$fake_bin:/usr/bin:/bin" "$ROOT/delete.sh" >/dev/null
+  [[ ! -e "$test_home/.local/bin/devws" ]] || fail "uninstall left ~/.local/bin/devws"
+}
+
 test_nvim_config_is_linked_and_restored() {
   local test_home="$TEST_ROOT/nvim-config"
   local fake_bin="$test_home/bin"
@@ -355,6 +373,7 @@ test_non_homebrew_tmuxinator_is_preserved
 test_owned_glow_is_removed
 test_preexisting_glow_is_preserved
 test_nvim_config_is_linked_and_restored
+test_devws_command_is_linked_and_removed
 test_lunarvim_links_are_retired
 test_deps_install_devdb_from_its_checkout
 test_install_reloads_open_workspaces

@@ -239,6 +239,16 @@ done
 for file in "$ROOT"/config/tmuxinator/* "$ROOT"/config/tmuxinator/.env; do
   link_file "$file" "$HOME/.tmuxinator/$(basename "$file")"
 done
+# Links to scripts an update removed go too (devws does this on every start).
+"$ROOT/config/tmuxinator/link_scripts.sh" >/dev/null
+
+# The devws command, on PATH: an executable, so open shells run the current
+# version.
+link_file "$ROOT/bin/devws" "$HOME/.local/bin/devws"
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *) warn "~/.local/bin is not on PATH; add it to run devws (export PATH=\"\$HOME/.local/bin:\$PATH\")" ;;
+esac
 
 # LazyVim writes lazy-lock.json and lazyvim.json into its config folder, so
 # the whole folder is linked and those files are tracked in the repo.

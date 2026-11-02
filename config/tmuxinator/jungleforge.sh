@@ -157,6 +157,8 @@ running() {
 # sidebar's workspaces); a repo with several worktrees is asked once.
 running_folders() {
   local folder origin seen=" "
+  # Without jungleforge nothing runs: no error for the sidebar to report.
+  [ -r "$(expand_home "${DEVWS_JUNGLEFORGE:-~/Projects/jungleforge}")/.env" ] || return 0
   for folder in "$@"; do
     origin="$(origin_of "$folder")" || continue
     case "$seen" in *" $origin "*) continue ;; esac

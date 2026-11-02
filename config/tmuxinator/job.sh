@@ -144,9 +144,28 @@ run() {
   if [ "$status" -eq 0 ]; then
     printf 'ok\n' > "$jobs_dir/$id/state"
   else
+    failure_hint "$id" "$status"
     printf 'failed\n' > "$jobs_dir/$id/state"
   fi
   notify_end "$id"
+}
+
+# Why a job failed, when its exit code tells — its own, or the one make
+# reports for a step ("make: *** [deps] Error 137": make itself exits 2). The
+# hint ends the log (the log panel shows it) and goes in "hint" for the
+# notification.
+failure_hint() {
+  local id="$1" code="$2" reported hint
+  reported="$(tail -n 20 "$jobs_dir/$id/log" 2>/dev/null | grep -oE 'Error [0-9]+' | tail -n 1)"
+  [ -z "$reported" ] || code="${reported#Error }"
+  case "$code" in
+    137) hint="killed — usually out of memory: give Docker Desktop more (Settings → Resources)" ;;
+    127) hint="command not found — is it installed, and on PATH?" ;;
+    130 | 143) hint="interrupted" ;;
+    *) return 0 ;;
+  esac
+  printf '\n✗ %s\n' "$hint" >> "$jobs_dir/$id/log"
+  printf '%s\n' "$hint" > "$jobs_dir/$id/hint"
 }
 
 # A job still running after a few seconds (DEVWS_JOB_PANEL_AFTER, 3) opens
@@ -159,8 +178,17 @@ open_panel_later() {
   (
     sleep "${DEVWS_JOB_PANEL_AFTER:-3}"
     [ "$(field "$id" state)" = running ] || exit 0
-    "$(dirname "$script")/job_panel.sh" open "$session" "$id"
+    open_panel "$session" "$id"
   ) </dev/null >/dev/null 2>&1 &
+}
+
+# Opens the log panel, saying why in the header (an error note) when it
+# cannot: a log that never shows is worse than a message.
+open_panel() {
+  local errors
+  errors="$("$(dirname "$script")/job_panel.sh" open "$1" "$2" 2>&1 >/dev/null)" && return 0
+  note "Log panel could not open (${errors:-job_panel.sh failed}) — run ./install.sh" --error >/dev/null
+  return 1
 }
 
 # The log panel's program: the job's log as it grows, its state in the
@@ -214,7 +242,8 @@ notify_end() {
   took=$(($(field "$id" ended_at) - $(field "$id" started_at)))
   if [ "$state" = failed ]; then
     title="✗ $(field "$id" title)"
-    message="failed after $(elapsed "$(field "$id" started_at)") — click for the log"
+    message="$(field "$id" hint)"
+    message="${message:-failed after $(elapsed "$(field "$id" started_at)")} — click for the log"
   elif [ "$took" -gt "${DEVWS_JOB_NOTIFY_AFTER:-30}" ]; then
     title="✓ $(field "$id" title)"
     message="done in $(elapsed "$(field "$id" started_at)")"
@@ -370,7 +399,7 @@ open() {
   session="$(tmux display-message ${client:+-c "$client"} -p '#{session_name}' 2>/dev/null)"
   case "$session" in
     dev-*)
-      "$(dirname "$script")/job_panel.sh" open "$session" "$id"
+      open_panel "$session" "$id"
       return
       ;;
   esac

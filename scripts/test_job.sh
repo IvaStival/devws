@@ -191,6 +191,39 @@ test_jobs_notify_when_they_end() {
   unset DEVWS_JOB_NOTIFY_AFTER
 }
 
+# A failure says why when its exit code tells: in its log, and in the
+# notification.
+test_a_failure_says_why() {
+  local id
+  id="$(job start 'Deps' -- sh -c 'echo "make: *** [deps] Error 137"; exit 2')"
+  wait_for "$id" failed
+  grep -q 'out of memory' "$DEVWS_JOBS_DIR/$id/log" || fail "no memory hint: $(cat "$DEVWS_JOBS_DIR/$id/log")"
+  id="$(job start 'Missing' -- sh -c 'exit 127')"
+  wait_for "$id" failed
+  grep -q 'command not found' "$DEVWS_JOBS_DIR/$id/log" || fail "no command-not-found hint"
+  id="$(job start 'Plain' -- sh -c 'exit 1')"
+  wait_for "$id" failed
+  [ -z "$(cat "$DEVWS_JOBS_DIR/$id/log")" ] || fail "a failure with no known cause got a hint"
+}
+
+# When the log panel cannot open, the header says so (an error note) rather
+# than nothing showing: a job started in a workspace (a stub tmux names it
+# dev-ws, and runs nothing, so the job starts on its own) from a copy of
+# job.sh with no job_panel.sh beside it.
+test_a_panel_that_cannot_open_says_so() {
+  local copy="$TEST_ROOT/lonely" attempt
+  mkdir -p "$copy/bin"
+  cp "$JOB" "$copy/job.sh"
+  printf '#!/usr/bin/env bash\n[ "$1" = display-message ] && echo dev-ws && exit 0\nexit 1\n' > "$copy/bin/tmux"
+  chmod +x "$copy/bin/tmux"
+  PATH="$copy/bin:$PATH" TMUX=fake DEVWS_JOB_PANEL_AFTER=0.2 "$copy/job.sh" start 'Lonely' -- sleep 1 >/dev/null
+  for attempt in $(seq 1 30); do
+    grep -q 'Log panel could not open' "$DEVWS_JOBS_DIR"/*/title 2>/dev/null && return 0
+    sleep 0.1
+  done
+  fail "no note about the panel"
+}
+
 test_old_jobs_are_pruned() {
   local id
   id="$(job note 'Ancient')"
@@ -209,6 +242,8 @@ test_a_success_leaves_after_ten_seconds_a_failure_when_seen
 test_notes_show_for_ten_seconds_errors_until_seen
 test_a_build_shows_its_progress
 test_jobs_notify_when_they_end
+test_a_failure_says_why
+test_a_panel_that_cannot_open_says_so
 test_old_jobs_are_pruned
 
 printf 'Job tests passed.\n'

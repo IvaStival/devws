@@ -9,7 +9,8 @@
 #     placeholders (role minimized-*), which run the scripts' new versions;
 #   - stops the spinner an older devws ran for each working agent, now the
 #     header's ticker's job;
-#   - first, brings back every frozen workspace (suspend_workspace.sh).
+#   - first, brings back every frozen workspace (suspend_workspace.sh), and
+#     links scripts the update added (link_scripts.sh).
 #
 # Agent, editor, terminal and database panes keep running: what they read only
 # at start (the agents' hooks, the editor config, dev.yml) applies to new or
@@ -21,6 +22,8 @@
 set -u
 
 scripts_dir="$(cd "$(dirname "$0")" && pwd)"
+
+"$scripts_dir/link_scripts.sh" >/dev/null
 
 if ! tmux list-sessions >/dev/null 2>&1; then
   printf 'devws: no tmux server, nothing to reload\n'

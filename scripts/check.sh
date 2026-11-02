@@ -1,45 +1,42 @@
 #!/usr/bin/env bash
+# Every check devws has: syntax, executable bits and dev.yml first, then every
+# test suite (scripts/test_*.sh), in parallel — each to its own log, shown
+# only when it fails.
+#
+#   scripts/check.sh           everything (a few minutes)
+#   scripts/check.sh --quick   the syntax checks and the suites that need no
+#                              tmux server or real timing (seconds)
+#
+# DEVWS_CHECK_JOBS suites run at once (4 by default): more makes the suites
+# that wait on timings flaky on a loaded machine.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+quick=""
+[ "${1:-}" = --quick ] && quick=1
+parallel="${DEVWS_CHECK_JOBS:-4}"
 
-bash -n "$ROOT/install.sh"
-bash -n "$ROOT/delete.sh"
-bash -n "$ROOT/scripts/test_install_lifecycle.sh"
-bash -n "$ROOT/scripts/test_markdown_viewer.sh"
-bash -n "$ROOT/scripts/test_workspace_state.sh"
-bash -n "$ROOT/scripts/test_workspace_layout.sh"
-bash -n "$ROOT/scripts/test_workspace_minimize.sh"
-bash -n "$ROOT/scripts/test_workspace_database.sh"
-bash -n "$ROOT/scripts/test_agent_follow.sh"
-bash -n "$ROOT/scripts/test_agent_status.sh"
-"$ROOT/scripts/test_jump_agent.sh"
-"$ROOT/scripts/test_worktree.sh"
-"$ROOT/scripts/test_github_repo.sh"
-"$ROOT/scripts/test_git_actions.sh"
-"$ROOT/scripts/test_shared_files.sh"
-"$ROOT/scripts/test_jungleforge.sh"
-"$ROOT/scripts/test_job.sh"
-"$ROOT/scripts/test_job_panel.sh"
-"$ROOT/scripts/test_recent.sh"
-"$ROOT/scripts/test_picker.sh"
-"$ROOT/scripts/test_tidy.sh"
-bash -n "$ROOT/scripts/test_header.sh"
-bash -n "$ROOT/scripts/test_devws_reload.sh"
-bash -n "$ROOT/scripts/test_new_panel.sh"
-bash -n "$ROOT/scripts/test_move_panel.sh"
-bash -n "$ROOT/scripts/test_suspend_workspace.sh"
-bash -n "$ROOT/scripts/test_devws_menu.sh"
-bash -n "$ROOT/scripts/test_register_agent.sh"
-bash -n "$ROOT/scripts/measure_load.sh"
-bash -n "$ROOT/scripts/test_iterm_keys.sh"
-bash -n "$ROOT/scripts/setup_iterm_keys.sh"
-bash -n "$ROOT/shell/render_mermaid_preview.sh"
-for file in "$ROOT"/config/tmux/*.sh "$ROOT"/config/tmuxinator/*.sh; do
+# The suites --quick runs: no tmux server, no waiting on real time.
+quick_suites="test_picker test_recent test_shared_files test_worktree test_github_repo
+  test_jungleforge test_link_scripts test_tidy"
+
+shell_scripts=(
+  "$ROOT/install.sh" "$ROOT/delete.sh"
+  "$ROOT"/scripts/*.sh "$ROOT/shell/render_mermaid_preview.sh"
+  "$ROOT"/config/tmux/*.sh "$ROOT"/config/tmuxinator/*.sh
+)
+
+for file in "${shell_scripts[@]}"; do
   bash -n "$file"
+  [[ -x "$file" ]] || {
+    printf 'Not executable: %s\n' "$file" >&2
+    exit 1
+  }
 done
 zsh -n "$ROOT/shell/devws.zsh"
+zsh -n "$ROOT/bin/devws"
+[[ -x "$ROOT/bin/devws" ]] || { printf 'Not executable: %s\n' "$ROOT/bin/devws" >&2; exit 1; }
 
 ruby -rerb -ryaml -e '
   render = lambda do |settings|
@@ -65,59 +62,43 @@ if command -v luac >/dev/null 2>&1; then
   done < <(find "$ROOT/config/nvim" -name '*.lua' -print0)
 fi
 
-for file in "$ROOT/install.sh" "$ROOT/delete.sh" "$ROOT/scripts/check.sh" \
-            "$ROOT/scripts/test_install_lifecycle.sh" \
-            "$ROOT/scripts/test_markdown_viewer.sh" \
-            "$ROOT/scripts/test_workspace_state.sh" \
-            "$ROOT/scripts/test_workspace_layout.sh" \
-            "$ROOT/scripts/test_workspace_minimize.sh" \
-            "$ROOT/scripts/test_workspace_database.sh" \
-            "$ROOT/scripts/test_agent_follow.sh" \
-            "$ROOT/scripts/test_agent_status.sh" \
-            "$ROOT/scripts/test_jump_agent.sh" \
-            "$ROOT/scripts/test_worktree.sh" \
-            "$ROOT/scripts/test_github_repo.sh" \
-            "$ROOT/scripts/test_git_actions.sh" \
-            "$ROOT/scripts/test_shared_files.sh" \
-            "$ROOT/scripts/test_jungleforge.sh" \
-            "$ROOT/scripts/test_job.sh" \
-            "$ROOT/scripts/test_job_panel.sh" \
-            "$ROOT/scripts/test_recent.sh" \
-            "$ROOT/scripts/test_picker.sh" \
-            "$ROOT/scripts/test_tidy.sh" \
-            "$ROOT/scripts/test_header.sh" \
-            "$ROOT/scripts/test_devws_reload.sh" \
-            "$ROOT/scripts/test_new_panel.sh" \
-            "$ROOT/scripts/test_move_panel.sh" \
-            "$ROOT/scripts/test_suspend_workspace.sh" \
-            "$ROOT/scripts/test_devws_menu.sh" \
-            "$ROOT/scripts/test_register_agent.sh" \
-            "$ROOT/scripts/test_iterm_keys.sh" \
-            "$ROOT/scripts/setup_iterm_keys.sh" \
-            "$ROOT/scripts/measure_load.sh" \
-            "$ROOT/shell/render_mermaid_preview.sh" \
-            "$ROOT"/config/tmux/*.sh "$ROOT"/config/tmuxinator/*.sh; do
-  [[ -x "$file" ]] || {
-    printf 'Not executable: %s\n' "$file" >&2
-    exit 1
-  }
+suites=()
+for suite in "$ROOT"/scripts/test_*.sh; do
+  name="$(basename "$suite" .sh)"
+  if [ -n "$quick" ]; then
+    case " $(printf '%s' "$quick_suites" | tr '\n' ' ') " in *" $name "*) ;; *) continue ;; esac
+  fi
+  suites+=("$suite")
 done
 
-"$ROOT/scripts/test_install_lifecycle.sh"
-"$ROOT/scripts/test_markdown_viewer.sh"
-"$ROOT/scripts/test_workspace_state.sh"
-"$ROOT/scripts/test_workspace_layout.sh"
-"$ROOT/scripts/test_workspace_minimize.sh"
-"$ROOT/scripts/test_workspace_database.sh"
-"$ROOT/scripts/test_agent_follow.sh"
-"$ROOT/scripts/test_agent_status.sh"
-"$ROOT/scripts/test_header.sh"
-"$ROOT/scripts/test_devws_reload.sh"
-"$ROOT/scripts/test_new_panel.sh"
-"$ROOT/scripts/test_move_panel.sh"
-"$ROOT/scripts/test_suspend_workspace.sh"
-"$ROOT/scripts/test_devws_menu.sh"
-"$ROOT/scripts/test_register_agent.sh"
-"$ROOT/scripts/test_iterm_keys.sh"
+logs="$(mktemp -d "${TMPDIR:-/tmp}/devws-check.XXXXXX")"
+trap 'rm -rf "$logs"' EXIT
+failed=0
 
+# A batch of suites at a time (bash 3.2 has no `wait -n`), each reported as
+# it is collected.
+for ((start = 0; start < ${#suites[@]}; start += parallel)); do
+  pids=()
+  for suite in "${suites[@]:start:parallel}"; do
+    "$suite" > "$logs/$(basename "$suite" .sh).log" 2>&1 &
+    pids+=("$!")
+  done
+  index=0
+  for suite in "${suites[@]:start:parallel}"; do
+    name="$(basename "$suite" .sh)"
+    if wait "${pids[index]}"; then
+      printf '✓ %s\n' "$name"
+    else
+      printf '✗ %s\n' "$name"
+      sed 's/^/    /' "$logs/$name.log"
+      failed=1
+    fi
+    index=$((index + 1))
+  done
+done
+
+if [ "$failed" = 1 ]; then
+  printf 'Some checks failed.\n' >&2
+  exit 1
+fi
 printf 'All checks passed.\n'
