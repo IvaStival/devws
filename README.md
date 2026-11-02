@@ -173,6 +173,7 @@ group, and shows each action's own shortcut:
 | Editor | Switch editor · Agent follow `C-b F` |
 | Database | Database `C-b B` · Database folder |
 | Git | Commit (agent) · Commit manually · Push / PR |
+| Run | Run this branch · Switch running branch · Stop · Services · Migrate · Shell · Logs |
 
 `←`/`→` or `Tab` change tabs, `↑`/`↓` move, `Enter` runs the action and `Esc`
 closes; typing filters the tab. Clicking a tab or an action works too. The
@@ -710,6 +711,51 @@ opens it in the browser. The sidebar shows each workspace's PR state next to
 its branch (`feat/login-page · PR open`), checked in the background every
 few minutes.
 
+**Untracked files.** A branch's folder only has what git tracks, so each repo
+keeps the files git ignores but the app needs — `.env`, `deploy/.docker-env`,
+a SQLite database — once, in `~/.devws/<owner>/<repo>/.shared/` (same layout
+as the repo). Every branch folder gets them: a link per file, so editing
+`.shared/backend/.env` reaches every branch, except databases (`*.sqlite`,
+`*.sqlite3`, `*.db`), copied so each branch has its own data. A file already in
+the folder is never replaced. The first workspace of a repo asks where to
+import them from: your checkouts of the same repo in `DEVWS_PROJECTS`
+(`~/Projects` by default), another folder, or Skip; then lists the folder's
+ignored files (packages, caches, builds and logs left out), all ticked.
+
+### Run branches in jungleforge
+
+The **Run** tab runs a branch's apps with
+[jungleforge](../jungleforge) (`DEVWS_JUNGLEFORGE`, `~/Projects/jungleforge` by
+default). A repo's apps are the jungleforge registry entries whose folder is a
+checkout of the same repo — PhiPlanner's `phi-planner` (`backend/`) and
+`phi-planner-web` (`web/`), say. Running a branch starts the same containers,
+ports and shared databases on the branch's folder, overriding the app's path
+for that one command (`make start phi-planner PHI_PLANNER_PATH=<branch>/backend`):
+jungleforge's `.env` is never edited, and only one branch of an app runs at a
+time.
+
+- **▶ Run this branch** — the workspace's branch. With several apps, all are
+  ticked (Tab unticks one). The shared services start first if they are down.
+- **⇄ Switch running branch** — `main` (the registry's own checkout, e.g.
+  `~/Projects/PhiPlanner`) and every branch folder, `▶` on the one running.
+- **■ Stop**, **⛃ Services**, **⇡ Migrate** (switching never migrates: the
+  databases are shared), **⌘ Shell** and **≡ Logs** (in a panel below).
+
+Packages install in the container after a start only when `composer.lock` or
+`package-lock.json` changed since that folder's last install, so a new branch
+installs once and switching back and forth stays fast. The sidebar shows
+`· ▶ running` on the workspace whose branch runs. Closing that workspace asks
+whether to switch its apps back to main (the default), stop them, or leave
+them running.
+
+```sh
+devws run          # this branch
+devws run main     # or another: main, feat/login-page…
+devws stop
+```
+
+A repo jungleforge does not know says so: register it in jungleforge's `.env`.
+
 ### Worktree workspaces
 
 To have two agents work on the same repo without editing each other's files,
@@ -786,6 +832,7 @@ Glow, exactly as before.
 - Green `✓` means the Git working tree is clean.
 - `· PR draft`, `· PR open`, `· PR merged` or `· PR closed` after the branch
   is the state of its pull request.
+- `· ▶ running` means jungleforge runs that workspace's branch.
 
 ## Configuration
 
@@ -793,8 +840,10 @@ Glow, exactly as before.
 - Saved workspaces: `~/.devws-state/sessions.tsv`
 - GitHub workspaces: `DEVWS_HOME` in `config/tmuxinator/.env`;
   `config/tmuxinator/github_repo.sh` (clones, repo list, PR states),
-  `github_workspace.sh` (the questions), `worktree.sh`, and
-  `git_actions.sh` (Commit and Push)
+  `github_workspace.sh` (the questions), `worktree.sh`,
+  `git_actions.sh` (Commit and Push), and `shared_files.sh` (`.shared`)
+- Running branches: `DEVWS_JUNGLEFORGE` in `config/tmuxinator/.env`;
+  `config/tmuxinator/jungleforge.sh`
 - iTerm2 Shift+Enter mapping: `scripts/setup_iterm_keys.sh`
 - Workspace layout: `config/tmuxinator/dev.yml`
 - Layout toggle: `config/tmuxinator/toggle_layout.sh`

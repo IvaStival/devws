@@ -51,6 +51,15 @@ case "\$1 \$2" in
 esac
 EOF
 chmod +x "$FAKE_BIN/gh"
+# A stub fzf answering from a queue: the first line it is offered that starts
+# with the answer, or every line for "@all".
+cat > "$FAKE_BIN/fzf" <<EOF
+#!/usr/bin/env bash
+answer="\$(head -n 1 "$TEST_ROOT/fzf.answers")"
+sed -i '' 1d "$TEST_ROOT/fzf.answers"
+if [ "\$answer" = @all ]; then cat; else grep -m 1 -F -- "\$answer" | grep -m 1 .; fi
+EOF
+chmod +x "$FAKE_BIN/fzf"
 export PATH="$FAKE_BIN:$PATH"
 
 # acme/app on "GitHub", with main and a feature branch of its own.
@@ -133,6 +142,29 @@ test_pr_state_is_queried_then_cached() {
   [ "$(github_repo pr "$folder")" = open ] || fail "the queried state was not cached"
 }
 
+# The first workspace of a repo imports its untracked files from a checkout
+# you have; the new branch's folder gets them.
+test_a_new_workspace_gets_the_imported_files() {
+  local checkout="$TEST_ROOT/projects/app" folder
+  export DEVWS_PROJECTS="$TEST_ROOT/projects"
+  git init -q -b main "$checkout"
+  git -C "$checkout" remote add origin git@github.com:acme/app.git
+  printf '.env\n' > "$checkout/.gitignore"
+  printf 'APP_KEY=x\n' > "$checkout/.env"
+
+  printf '%s\n' "$checkout" @all '+ New branch' feat > "$TEST_ROOT/fzf.answers"
+  folder="$(printf 'seeded\n' | "$GITHUB_WORKSPACE" acme/app 2>/dev/null)" ||
+    fail "the GitHub workspace flow failed"
+  [ "$folder" = "$DEVWS_HOME/acme/app/app-feat-seeded" ] || fail "the flow gave $folder"
+  [ "$(readlink "$folder/.env")" = "$DEVWS_HOME/acme/app/.shared/.env" ] ||
+    fail "the new branch did not get the imported .env"
+
+  # Asked once: the next workspace goes straight to the worktrees.
+  printf '%s\n' 'feat/seeded' > "$TEST_ROOT/fzf.answers"
+  [ "$("$GITHUB_WORKSPACE" acme/app 2>/dev/null </dev/null)" = "$folder" ] ||
+    fail "the import was asked again, or the worktree was not reopened"
+}
+
 test_branch_names_from_a_prefix_and_description() {
   [ "$("$GITHUB_WORKSPACE" branch-name feat 'Login page: OAuth & SSO!')" = feat/login-page-oauth-sso ] ||
     fail "slug: $("$GITHUB_WORKSPACE" branch-name feat 'Login page: OAuth & SSO!')"
@@ -146,6 +178,7 @@ test_a_failed_clone_leaves_nothing_behind
 test_list_puts_cloned_repos_first_and_caches
 test_worktrees_lists_branch_and_folder
 test_pr_state_is_queried_then_cached
+test_a_new_workspace_gets_the_imported_files
 test_branch_names_from_a_prefix_and_description
 
 printf 'GitHub repo tests passed.\n'

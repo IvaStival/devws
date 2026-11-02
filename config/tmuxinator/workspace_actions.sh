@@ -474,6 +474,151 @@ push_branch() {
   pause
 }
 
+# The repo's apps in jungleforge, run on one of its branches (jungleforge.sh):
+# the same containers, ports and databases on another folder.
+jungleforge() {
+  "$HOME/.tmuxinator/jungleforge.sh" "$@"
+}
+
+workspace_root() {
+  tmux show-options -t "$(tmux display-message -p '#S')" -v @devws_root 2>/dev/null
+}
+
+# The apps to move, one per line: all ticked, Tab unticks one; a repo with a
+# single app is not asked. A repo jungleforge does not know is explained
+# (choose_app too), and a cancelled question just fails.
+choose_apps() {
+  local rows apps
+  rows="$(jungleforge apps "$1")" || { pause; return 1; }
+  apps="$(cut -f1 <<<"$rows")"
+  if [ "$(grep -c . <<<"$apps")" -eq 1 ]; then
+    printf '%s\n' "$apps"
+    return 0
+  fi
+  fzf --multi --height=~40% --layout=reverse --bind 'load:select-all' --prompt='Apps > ' \
+    --header='Apps to move to this branch (Tab unticks one)' <<<"$apps"
+}
+
+# One app, for Migrate, Shell and Logs.
+choose_app() {
+  local rows apps
+  rows="$(jungleforge apps "$1")" || { pause; return 1; }
+  apps="$(cut -f1 <<<"$rows")"
+  if [ "$(grep -c . <<<"$apps")" -eq 1 ]; then
+    printf '%s\n' "$apps"
+    return 0
+  fi
+  fzf --height=~40% --layout=reverse --prompt='App > ' <<<"$apps"
+}
+
+# Runs <folder>'s branch: the ticked apps start on it.
+run_branch_at() {
+  local folder="$1" apps
+  printf '\033c'
+  apps="$(choose_apps "$folder")" || return
+  [ -n "$apps" ] || return
+  # shellcheck disable=SC2086
+  jungleforge run "$folder" $apps
+  refresh_running_marks
+  pause
+}
+
+# The sidebars ask Docker again now rather than at their next check.
+refresh_running_marks() {
+  tmux set-option -gu @devws_states_checked 2>/dev/null
+  refresh_pickers
+}
+
+run_this_branch() {
+  run_branch_at "$(workspace_root)"
+}
+
+switch_running_branch() {
+  local root targets running label folder mark choice
+  root="$(workspace_root)"
+  printf '\033c'
+  if ! jungleforge apps "$root" >/dev/null; then
+    pause
+    return
+  fi
+  targets="$(jungleforge targets "$root")"
+  running="$(jungleforge running "$root" | cut -f2)"
+  choice="$(
+    while IFS=$'\t' read -r label folder; do
+      mark="  "
+      grep -qxF "$folder" <<<"$running" && mark="▶ "
+      [ "$label" = main ] && label="main ($folder)"
+      printf '%s%s\t%s\n' "$mark" "$label" "$folder"
+    done <<<"$targets" |
+      fzf --height=~50% --layout=reverse --prompt='Run > ' --delimiter=$'\t' --with-nth=1 \
+        --header='Branch to run (▶ running now; Esc: cancel)'
+  )" || return
+  [ -n "$choice" ] || return
+  run_branch_at "${choice##*$'\t'}"
+}
+
+stop_running_apps() {
+  jungleforge stop "$(workspace_root)" || { pause; return; }
+  refresh_running_marks
+  tmux display-message "Stopped the apps"
+}
+
+start_services() {
+  jungleforge services || pause
+}
+
+migrate_running_app() {
+  local root app
+  root="$(workspace_root)"
+  app="$(choose_app "$root")" || return
+  [ -n "$app" ] || return
+  jungleforge migrate "$root" "$app"
+  pause
+}
+
+# Shell and Logs open in a panel below, which stays a terminal after Ctrl-C.
+open_app_panel() {
+  local command="$1" root app session pane
+  root="$(workspace_root)"
+  app="$(choose_app "$root")" || return
+  [ -n "$app" ] || return
+  session="$(tmux display-message -p '#S')"
+  pane="$("$HOME/.tmuxinator/new_panel.sh" "$session" below terminal)" || return
+  tmux send-keys -t "$pane" "$(printf '%q ' "$HOME/.tmuxinator/jungleforge.sh" "$command" "$root" "$app")" Enter
+}
+
+open_app_shell() {
+  open_app_panel shell
+}
+
+open_app_logs() {
+  open_app_panel logs
+}
+
+# The repo's apps running from <root>, which is closing: asks to move them back
+# to main (the default), stop them, or leave them running — not offered when
+# the folder is going away. Prints the command for close_workspace to run.
+ask_about_running_apps() {
+  local root="$1" removing="$2" apps main answer choices='[M]ain/[s]top/[l]eave'
+  apps="$(jungleforge running "$root" 2>/dev/null | awk -F '\t' -v root="$root" '$2 == root { print $1 }' | paste -sd ' ' -)"
+  [ -n "$apps" ] || return 0
+  main="$(jungleforge targets "$root" 2>/dev/null | awk -F '\t' '$1 == "main" { print $2; exit }')"
+  [ -n "$removing" ] && choices='[M]ain/[s]top'
+  printf '\n%s run from this branch. Switch them back to main, stop them%s? %s ' \
+    "$apps" "$([ -z "$removing" ] && printf ', or leave them running')" "$choices" >&2
+  read -r answer
+  case "$answer" in
+    s | S | stop) answer=stop ;;
+    l | L | leave) [ -n "$removing" ] && answer=main || answer=leave ;;
+    *) answer=main ;;
+  esac
+  # shellcheck disable=SC2086
+  case "$answer" in
+    stop) printf '%q ' "$HOME/.tmuxinator/jungleforge.sh" stop "$root" $apps ;;
+    main) printf '%q ' "$HOME/.tmuxinator/jungleforge.sh" run "$main" $apps ;;
+  esac
+}
+
 # Closing a workspace on a worktree of its own asks whether to remove the
 # worktree's folder too, "keep" being the answer unless "y" is typed. One with
 # uncommitted changes is always kept, and the branch is never deleted.
@@ -500,7 +645,7 @@ ask_to_remove_worktree() {
 }
 
 close_workspace() {
-  local current selected target quoted_target root quoted_root remove_worktree=""
+  local current selected target quoted_target root quoted_root remove_worktree="" move_apps=""
   current="$(tmux display-message -p '#S' 2>/dev/null)"
   selected="$(
     dev_sessions |
@@ -521,8 +666,13 @@ close_workspace() {
     printf -v quoted_root '%q' "$root"
     remove_worktree="'$HOME/.tmuxinator/worktree.sh' remove $quoted_root 2>/dev/null || tmux display-message 'Kept the worktree '$quoted_root': git would not remove it';"
   fi
+  # Apps running from the folder move (or stop) before it can go.
+  if [ -d "$root" ]; then
+    move_apps="$(ask_about_running_apps "$root" "$remove_worktree")"
+    [ -z "$move_apps" ] || move_apps="$move_apps >/dev/null 2>&1 || tmux display-message 'The apps did not switch: see the Run tab';"
+  fi
   # Run through the tmux server so closing the workspace containing this
   # sidebar does not terminate the refresh command along with the pane.
   tmux run-shell -b \
-    "tmux kill-session -t $quoted_target; $remove_worktree '$HOME/.tmuxinator/save_state.sh'; '$HOME/.tmuxinator/refresh_devws_pickers.sh'"
+    "tmux kill-session -t $quoted_target; $move_apps $remove_worktree '$HOME/.tmuxinator/save_state.sh'; '$HOME/.tmuxinator/refresh_devws_pickers.sh'"
 }

@@ -49,6 +49,11 @@ devws() {
     return
   fi
 
+  if [[ "${1:-}" == "run" || "${1:-}" == "stop" ]]; then
+    devws-run "$@"
+    return
+  fi
+
   if [[ "${1:-}" == "commit" || "${1:-}" == "push" ]]; then
     "$HOME/.tmuxinator/git_actions.sh" "$@"
     return
@@ -158,6 +163,41 @@ devws-restore() {
   elif [[ -t 1 ]]; then
     tmux attach -t "$first"
   fi
+}
+
+# The workspace's repo in jungleforge (jungleforge.sh): `devws run` runs this
+# branch, `devws run <branch|main>` another, `devws stop` stops the apps.
+devws-run() {
+  local action="$1" target="${2:-}" root="" folder
+  local jungleforge="$HOME/.tmuxinator/jungleforge.sh"
+
+  if [[ -n "$TMUX" && "$(tmux display-message -p ${TMUX_PANE:+-t "$TMUX_PANE"} '#S')" == dev-* ]]; then
+    root="$(tmux show-options -v ${TMUX_PANE:+-t "$TMUX_PANE"} @devws_root 2>/dev/null)"
+  fi
+  if ! root="$(git -C "${root:-$PWD}" rev-parse --show-toplevel 2>/dev/null)"; then
+    print -u2 "devws $action: not in a git repo"
+    return 2
+  fi
+
+  if [[ "$action" == stop ]]; then
+    "$jungleforge" stop "$root"
+  else
+    folder="$root"
+    if [[ -n "$target" ]]; then
+      folder="$("$jungleforge" targets "$root" | awk -F '\t' -v target="$target" '$1 == target { print $2; exit }')"
+      if [[ -z "$folder" ]]; then
+        print -u2 "devws run: no branch '$target' (choose: $("$jungleforge" targets "$root" | cut -f1 | paste -sd ' ' -))"
+        return 2
+      fi
+    fi
+    "$jungleforge" run "$folder"
+  fi || return
+  if [[ -n "$TMUX" ]]; then
+    # The sidebars ask Docker again now rather than at their next check.
+    tmux set-option -gu @devws_states_checked
+    "$HOME/.tmuxinator/refresh_devws_pickers.sh" --reload
+  fi
+  return 0
 }
 
 devws-markdown() {

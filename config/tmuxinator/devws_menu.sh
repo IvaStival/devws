@@ -17,7 +17,7 @@
 set -u
 
 script="$HOME/.tmuxinator/devws_menu.sh"
-tabs=(workspace agent editor database git)
+tabs=(workspace agent editor database git run)
 
 # tab|action|label|shortcut|function in workspace_actions.sh
 actions='workspace|github|⎇ New GitHub workspace||new_github_workspace
@@ -43,7 +43,14 @@ database|open-database|⛁ Database|C-b B|open_database
 database|database-folder|⛁ Database folder||choose_database_folder
 git|commit|✓ Commit (agent)||commit_with_agent
 git|commit-manual|✎ Commit manually||commit_by_hand
-git|push|↑ Push / PR||push_branch'
+git|push|↑ Push / PR||push_branch
+run|run-here|▶ Run this branch||run_this_branch
+run|switch-run|⇄ Switch running branch||switch_running_branch
+run|stop-run|■ Stop||stop_running_apps
+run|services|⛃ Services||start_services
+run|migrate|⇡ Migrate||migrate_running_app
+run|shell|⌘ Shell||open_app_shell
+run|logs|≡ Logs||open_app_logs'
 
 session() {
   if [ -n "${TMUX_PANE:-}" ]; then

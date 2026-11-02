@@ -15,6 +15,7 @@ set -u
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 github_repo="$script_dir/github_repo.sh"
 worktree="$script_dir/worktree.sh"
+shared_files="$script_dir/shared_files.sh"
 prefixes='feat fix chore refactor docs'
 custom_name='Custom name…'
 
@@ -74,6 +75,41 @@ pick_worktree() {
   printf '%s\n' "${choice##*$'\t'}"
 }
 
+# The first time: which folder's git-ignored files (.env…) the repo's branches
+# get (shared_files.sh). "Skip" settles it with an empty .shared; Esc asks
+# again next time.
+seed_shared() {
+  local repo_dir="$1" name="$2" other_row='Type a path…' skip_row='Skip' source file
+  local -a files=()
+  [ -d "$repo_dir/.shared" ] && return 0
+  source="$(
+    { "$shared_files" candidates "$name"; printf '%s\n' "$other_row" "$skip_row"; } |
+      fzf --height=~40% --layout=reverse --prompt='Import from > ' \
+        --header="Copy $name's untracked files (.env, .docker-env…) from a checkout you have"
+  )" || return 0
+  case "$source" in
+    "$skip_row")
+      mkdir -p "$repo_dir/.shared"
+      return 0
+      ;;
+    "$other_row")
+      read -e -r -p 'Folder: ' source || return 0
+      case "$source" in "~/"*) source="$HOME/${source#\~/}" ;; esac
+      ;;
+  esac
+  [ -d "$source" ] || { printf 'Not a folder: %s\n' "$source" >&2; return 0; }
+
+  while IFS= read -r file; do
+    [ -n "$file" ] && files+=("$file")
+  done < <(
+    "$shared_files" ignored "$source" |
+      fzf --multi --height=~60% --layout=reverse --bind 'load:select-all' --prompt='Files > ' \
+        --header='Files every branch gets (Tab unticks one, Enter copies)'
+  )
+  mkdir -p "$repo_dir/.shared"
+  [ "${#files[@]}" -eq 0 ] || "$shared_files" seed "$repo_dir" "$source" "${files[@]}"
+}
+
 ask_branch() {
   local prefix description branch
   prefix="$(
@@ -105,16 +141,17 @@ main() {
   fi
   # A failure (exit 2) is told apart from a cancelled question (1).
   bare="$("$github_repo" ensure "$repo")" || return
+  seed_shared "$(dirname "$bare")" "$("$github_repo" parse "$repo")"
 
   folder="$(pick_worktree "$bare")" || return 1
-  if [ -n "$folder" ]; then
-    printf '%s\n' "$folder"
-    return 0
+  if [ -z "$folder" ]; then
+    branch="$(ask_branch)" || return 1
+    base="origin/$("$github_repo" default-branch "$bare")"
+    folder="$("$worktree" ensure "$bare" "$branch" "$base")" || return
   fi
-
-  branch="$(ask_branch)" || return 1
-  base="origin/$("$github_repo" default-branch "$bare")"
-  "$worktree" ensure "$bare" "$branch" "$base"
+  # Also for an existing worktree: it gets files added to .shared since.
+  "$shared_files" link "$(dirname "$bare")" "$folder" || return
+  printf '%s\n' "$folder"
 }
 
 case "${1:-}" in

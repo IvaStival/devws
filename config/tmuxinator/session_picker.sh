@@ -89,6 +89,8 @@ workspace_rows() {
           *) branch="$branch · PR $pr_state" ;;
         esac
       fi
+      # The jungleforge apps run from this folder (refresh_states).
+      grep -qxF "$root" "$running_file" 2>/dev/null && branch="$branch · ▶ running"
       pr_roots+=("$root")
       if [ -n "$(git -C "$root" status --porcelain 2>/dev/null)" ]; then
         state="\033[33m●\033[0m "
@@ -118,20 +120,32 @@ workspace_rows() {
     -F '#{session_name}|#{@devws_agent}|#{@devws_editor}|#{@devws_root}|#{@devws_agent_state}|#{@devws_frozen}|#{@devws_needs_reopen}' 2>/dev/null)
 }
 
-# The workspaces' PR states are asked again in the background, at most once a
-# minute across all sidebars (github_repo.sh keeps each for five minutes); a
-# change redraws the sidebars.
-refresh_pr_states() {
+# The folders jungleforge's apps run from (jungleforge.sh running-folders),
+# one per line, shared by every sidebar.
+tmp_dir="${TMPDIR:-/tmp}"
+running_file="${tmp_dir%/}/devws-running-$(id -u)"
+
+# The workspaces' PR states and running apps are asked again in the
+# background, at most every 30 seconds across all sidebars (github_repo.sh
+# keeps each PR state for five minutes); a change redraws the sidebars. Run
+# and Stop clear @devws_states_checked to have it asked at once.
+refresh_states() {
   local checked now
   [ "${#pr_roots[@]}" -gt 0 ] || return 0
-  checked="$(tmux show-option -gqv @devws_pr_checked 2>/dev/null)"
+  checked="$(tmux show-option -gqv @devws_states_checked 2>/dev/null)"
   now="$(date +%s)"
   case "$checked" in ''|*[!0-9]*) checked=0 ;; esac
-  [ $((now - checked)) -ge 60 ] || return 0
-  tmux set-option -g @devws_pr_checked "$now" 2>/dev/null
+  [ $((now - checked)) -ge 30 ] || return 0
+  tmux set-option -g @devws_states_checked "$now" 2>/dev/null
   (
-    "$HOME/.tmuxinator/github_repo.sh" pr-refresh "${pr_roots[@]}" &&
-      "$HOME/.tmuxinator/refresh_devws_pickers.sh" --reload
+    changed=1
+    "$HOME/.tmuxinator/github_repo.sh" pr-refresh "${pr_roots[@]}" && changed=0
+    running="$("$HOME/.tmuxinator/jungleforge.sh" running-folders "${pr_roots[@]}")"
+    if [ "$running" != "$(cat "$running_file" 2>/dev/null)" ]; then
+      printf '%s\n' "$running" > "$running_file"
+      changed=0
+    fi
+    [ "$changed" = 1 ] || "$HOME/.tmuxinator/refresh_devws_pickers.sh" --reload
   ) </dev/null >/dev/null 2>&1 &
 }
 
@@ -141,7 +155,7 @@ write_rows() {
   # Not a subshell: the rows collect pr_roots.
   workspace_rows "$(tmux display-message -p '#S' 2>/dev/null)" > "$rows_file.new"
   mv "$rows_file.new" "$rows_file"
-  refresh_pr_states
+  refresh_states
 }
 
 if [ "${1:-}" = --rows ]; then
@@ -156,7 +170,6 @@ fi
 # the client's active pane, which may be the editor or terminal.
 tmux select-pane -t "$TMUX_PANE" -T devws-picker 2>/dev/null
 
-tmp_dir="${TMPDIR:-/tmp}"
 rows_file="$(mktemp "${tmp_dir%/}/devws-picker.XXXXXX")"
 # Where refresh_devws_pickers.sh --reload marks the rows stale.
 tmux set-option -p -t "$TMUX_PANE" @devws_picker_rows "$rows_file" 2>/dev/null

@@ -49,13 +49,23 @@ for script in devws_menu.sh workspace_actions.sh workspace_panes.sh session_pick
   ln -s "$SCRIPTS/$script" "$TEST_ROOT/home/.tmuxinator/$script"
 done
 for script in toggle_layout.sh minimize_panes.sh header_toggle.sh open_database.sh follow_mode.sh register_agent.sh \
-  new_panel.sh move_panel.sh save_state.sh refresh_devws_pickers.sh git_actions.sh; do
+  new_panel.sh move_panel.sh save_state.sh refresh_devws_pickers.sh git_actions.sh jungleforge.sh; do
   cat > "$TEST_ROOT/home/.tmuxinator/$script" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" > "$TEST_ROOT/calls/$script"
 EOF
   chmod +x "$TEST_ROOT/home/.tmuxinator/$script"
 done
+# jungleforge.sh answers its questions from jf.<question> files and logs the
+# rest (run, stop…), one call per line.
+cat > "$TEST_ROOT/home/.tmuxinator/jungleforge.sh" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+  apps | targets | running) cat "$TEST_ROOT/jf.\$1" 2>/dev/null ;;
+  *) printf '%s\n' "\$*" >> "$TEST_ROOT/calls/jungleforge.sh" ;;
+esac
+EOF
+chmod +x "$TEST_ROOT/home/.tmuxinator/jungleforge.sh"
 # TMPDIR keeps the popup flag apart from a real menu's.
 export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" TMPDIR="$TEST_ROOT"
 unset TMUX
@@ -82,6 +92,8 @@ test_tabs_list_their_actions() {
   [ "$(actions_of database)" = "open-database database-folder" ] ||
     fail "Database tab: $(actions_of database)"
   [ "$(actions_of git)" = "commit commit-manual push" ] || fail "Git tab: $(actions_of git)"
+  [ "$(actions_of run)" = "run-here switch-run stop-run services migrate shell logs" ] ||
+    fail "Run tab: $(actions_of run)"
 }
 
 test_items_show_labels_and_shortcuts() {
@@ -107,10 +119,10 @@ test_switching_tabs() {
   [ "$(menu --tab)" = "agent" ] || fail "next did not move to Agent"
   menu --switch prev >/dev/null
   menu --switch prev >/dev/null
-  [ "$(menu --tab)" = "git" ] || fail "prev did not wrap around to Git"
+  [ "$(menu --tab)" = "run" ] || fail "prev did not wrap around to Run"
   menu --switch next >/dev/null
   [ "$(menu --tab)" = "workspace" ] || fail "next did not wrap around to Workspace"
-  # A click on the tab bar " Workspace   Agent   Editor   Database   Git " gives its column.
+  # A click on the tab bar " Workspace   Agent   Editor   Database   Git   Run " gives its column.
   [[ "$(menu --switch-at 23)" == *transform-header* ]] || fail "a tab click did not change the header"
   [ "$(menu --tab)" = "editor" ] || fail "clicking Editor (column 23) did not open it"
   menu --switch-at 1 >/dev/null
@@ -346,9 +358,57 @@ test_push_runs_and_waits_for_enter() {
     fail "push ran git_actions.sh with '$(cat "$TEST_ROOT/calls/git_actions.sh" 2>/dev/null)'"
 }
 
+# Run this branch moves the ticked apps to the workspace's folder.
+test_run_this_branch_moves_the_ticked_apps() {
+  tmux set-option -t dev-menu @devws_root "$TEST_ROOT/devws/app-feat-x"
+  printf 'phi-planner\tbackend\nphi-planner-web\tweb\n' > "$TEST_ROOT/jf.apps"
+  printf 'phi-planner\n' > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/jungleforge.sh"
+  printf '\n' | menu --run run-here >/dev/null 2>&1
+  [ "$(cat "$TEST_ROOT/calls/jungleforge.sh" 2>/dev/null)" = "run $TEST_ROOT/devws/app-feat-x phi-planner" ] ||
+    fail "run-here ran '$(cat "$TEST_ROOT/calls/jungleforge.sh" 2>/dev/null)'"
+}
+
+# Switch lists main and the worktrees, the running one marked, and runs the
+# chosen one; a repo with a single app is not asked which.
+test_switch_marks_the_running_branch_and_runs_the_chosen_one() {
+  local main="$TEST_ROOT/projects/PhiPlanner" branch="$TEST_ROOT/devws/app-feat-x"
+  tmux set-option -t dev-menu @devws_root "$branch"
+  printf 'phi-planner\tbackend\n' > "$TEST_ROOT/jf.apps"
+  printf 'main\t%s\nfeat/x\t%s\n' "$main" "$branch" > "$TEST_ROOT/jf.targets"
+  printf 'phi-planner\t%s\n' "$branch" > "$TEST_ROOT/jf.running"
+  printf '  main (%s)\t%s\n' "$main" "$main" > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/jungleforge.sh"
+  printf '\n' | menu --run switch-run >/dev/null 2>&1
+  grep -qF "▶ feat/x" "$TEST_ROOT/calls/fzf.input" || fail "the running branch is not marked: $(cat "$TEST_ROOT/calls/fzf.input")"
+  [ "$(cat "$TEST_ROOT/calls/jungleforge.sh" 2>/dev/null)" = "run $main phi-planner" ] ||
+    fail "switch ran '$(cat "$TEST_ROOT/calls/jungleforge.sh" 2>/dev/null)'"
+  rm -f "$TEST_ROOT/jf.running"
+}
+
+# Closing the running branch's workspace switches its apps back to main by
+# default.
+test_closing_the_running_branch_switches_back_to_main() {
+  local folder main="$TEST_ROOT/projects/app"
+  make_repo_with_worktree running
+  folder="$TEST_ROOT/projects/app-running"
+  workspace_on dev-running "$folder"
+  printf 'phi-planner\tbackend\n' > "$TEST_ROOT/jf.apps"
+  printf 'main\t%s\nrunning\t%s\n' "$main" "$folder" > "$TEST_ROOT/jf.targets"
+  printf 'phi-planner\t%s\n' "$folder" > "$TEST_ROOT/jf.running"
+  printf '  dev-running\n' > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/jungleforge.sh"
+  # Keep the folder (Enter), then the default: back to main (Enter).
+  printf '\n\n' | menu --run close >/dev/null 2>&1
+  wait_until closed dev-running || fail "the workspace was not closed"
+  switched() { grep -qx "run $main phi-planner" "$TEST_ROOT/calls/jungleforge.sh" 2>/dev/null; }
+  wait_until switched || fail "the apps were not switched back to main: $(cat "$TEST_ROOT/calls/jungleforge.sh" 2>/dev/null)"
+  rm -f "$TEST_ROOT/jf.running"
+}
+
 test_every_action_has_a_function() {
   local tab action function
-  for tab in workspace agent editor database git; do
+  for tab in workspace agent editor database git run; do
     for action in $(actions_of "$tab"); do
       function="$(menu --function "$action")" || fail "no function for $action"
       bash -c ". '$SCRIPTS/workspace_actions.sh'; declare -F '$function' >/dev/null" ||
@@ -385,6 +445,9 @@ test_closing_the_main_folder_never_asks
 test_a_worktree_workspace_on_a_new_branch
 test_a_github_workspace_opens_the_chosen_folder
 test_push_runs_and_waits_for_enter
+test_run_this_branch_moves_the_ticked_apps
+test_switch_marks_the_running_branch_and_runs_the_chosen_one
+test_closing_the_running_branch_switches_back_to_main
 test_every_action_has_a_function
 test_sidebar_opens_the_menu
 test_space_opens_the_menu
