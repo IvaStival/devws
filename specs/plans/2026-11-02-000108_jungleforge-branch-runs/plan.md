@@ -2,7 +2,8 @@
 
 - **Date:** 02-11-2026
 - **Branch:** feat/jungleforge-runs (devws), feat/devws-targets (jungleforge)
-- **Status:** Executed (not committed in devws yet; jungleforge cafb6eb)
+- **Status:** Executed
+- **Commits:** devws dba4825, jungleforge cafb6eb
 
 Notes from execution:
 - jungleforge's branch is based on `fix/assets-stage-vendor`, which the local
