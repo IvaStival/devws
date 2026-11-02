@@ -2,7 +2,9 @@
 
 - **Date:** 02-11-2026
 - **Branch:** feat/stabilize (off feat/job-log-panel)
-- **Status:** Steps 1–5 executed (not committed yet); step 6 (merge) waits for confirmation
+- **Status:** Executed
+- **Commits:** 1e654b9, 1537d2c
+- **PRs:** IvaStival/devws#6 (the whole stack), IvaStival/jungleforge#7
 
 Notes from execution:
 - `bin/devws` is the old functions moved as they are, ending in `devws "$@"`;
@@ -15,6 +17,12 @@ Notes from execution:
   needs bash 4.3, and macOS's `/usr/bin/env bash` may be 3.2.
 - `jungleforge.sh running-folders` is silent without jungleforge, so the
   sidebar's hourly error note only reports real failures.
+- The full run takes about 4–5 min (was ~10). Under parallel load one suite
+  once failed with "fork failed: Device not configured" (the machine briefly
+  out of pseudo-terminals); check.sh now re-runs such a suite alone and says
+  so when that is what made it pass.
+- jungleforge's base work (fix/assets-stage-vendor) was already merged into
+  GitHub's main, so its PR goes into main with the one targets commit.
 
 ## 1. Scripts link themselves — new `config/tmuxinator/link_scripts.sh`
 - `link_scripts.sh` (no args): for each file in `config/tmuxinator/` (and
