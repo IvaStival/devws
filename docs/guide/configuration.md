@@ -17,7 +17,8 @@ the agent lines for you.
 | `DEVWS_HOME` | `~/.devws` | Where GitHub workspaces live: a hidden clone per repo and a folder per branch ([Workspaces](workspaces.md)) |
 | `DEVWS_PROJECTS` | `~/Projects` | Where your own checkouts are: a repo's first GitHub workspace offers to import their untracked files (`.env`…) |
 | `DEVWS_CLONE_BASE` | GitHub, as gh is set up | The address repos are cloned from, for GitHub Enterprise |
-| `DEVWS_JUNGLEFORGE` | `~/Projects/jungleforge` | The jungleforge checkout the App tab runs branches with ([App](app.md)) |
+| `DEVWS_JUNGLEFORGE` | `~/.devws/jungleforge`, else `~/Projects/jungleforge` | The jungleforge checkout the App tab runs branches with ([App](app.md)); unset, the first of those that exists |
+| `DEVWS_JUNGLEFORGE_REPO` | `https://github.com/IvaStival/jungleForge.git` | Where **Set up jungleforge** clones jungleforge from (a fork of your own) |
 | `DEVWS_AUTO_RESTORE` | `1` | `0`: the first `devws` after a restart does not reopen the saved workspaces (`devws restore` still does) |
 | `DEVWS_SUSPEND_AFTER` | `15` | Minutes a workspace stays unseen, its agent idle or done, before it is paused; `0` never pauses |
 | `DEVWS_NOTIFY` | `1` | macOS notifications: `1` all, `waiting` only agents that need you, `0` none (agents and jobs) |
@@ -38,7 +39,7 @@ Two more are read by `./install.sh` and the checks, not by `.env`:
 
 | Path | What |
 | ---- | ---- |
-| `~/.devws/` | GitHub workspaces (`DEVWS_HOME`): `<owner>/<repo>/.bare`, a folder per branch, `.shared/` |
+| `~/.devws/` | GitHub workspaces (`DEVWS_HOME`): `<owner>/<repo>/.bare`, a folder per branch, `.shared/`; `jungleforge/` when devws set it up |
 | `~/.devws-state/sessions.tsv` | The open workspaces, to restore after a restart |
 | `~/.devws-state/recent.tsv` | Folders opened before, with their agent and editor (the start screen) |
 | `~/.devws-state/jobs/` | Background jobs and their logs, kept 7 days |

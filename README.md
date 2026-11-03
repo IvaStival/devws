@@ -123,6 +123,15 @@ To change it later, run `gh config set git_protocol ssh` (or `https` followed
 by `gh auth setup-git`). Skip the login and only `devws` with no folder is
 unavailable until you run `gh auth login`.
 
+It then offers two optional parts, each asked once (`--ai-memory` or
+`--jungleforge` asks again after a no):
+
+- [ai-memory](docs/guide/agents.md#agent-memory-ai-memory), long-term memory
+  shared by your agents;
+- [jungleforge](docs/guide/app.md#set-up-jungleforge), which runs your
+  branches' apps in Docker: it is cloned into `~/.devws/jungleforge` with a
+  `.env` of generated passwords. It needs Docker Desktop.
+
 Install either Codex or Claude Code separately, authenticate it, and edit
 `config/tmuxinator/.env` if you want to change the available/default agent or
 editor.

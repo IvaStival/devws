@@ -56,13 +56,15 @@ agent|memory-doctor|✚ Memory doctor||memory_doctor|memory
 git|commit|✓ Commit (agent)|C-b g|commit_with_agent
 git|commit-manual|✎ Commit manually||commit_by_hand
 git|push|↑ Push / PR|C-b G|push_branch
-app|run-here|▶ Run this branch|C-b e|run_this_branch
-app|switch-run|⇄ Switch running branch|C-b E|switch_running_branch
-app|stop-run|■ Stop||stop_running_apps
-app|services|⛃ Services||start_services
-app|migrate|⇡ Migrate||migrate_running_app
-app|shell|⌘ Shell||open_app_shell
-app|logs|≡ Logs||open_app_logs
+app|setup-jungleforge|⚒ Set up jungleforge||setup_jungleforge|no-jungleforge
+app|run-here|▶ Run this branch|C-b e|run_this_branch|jungleforge
+app|switch-run|⇄ Switch running branch|C-b E|switch_running_branch|jungleforge
+app|stop-run|■ Stop||stop_running_apps|jungleforge
+app|services|⛃ Services||start_services|jungleforge
+app|migrate|⇡ Migrate||migrate_running_app|jungleforge
+app|shell|⌘ Shell||open_app_shell|jungleforge
+app|logs|≡ Logs||open_app_logs|jungleforge
+app|register-jungleforge|＋ Register in jungleforge||register_in_jungleforge|jungleforge
 app|open-database|⛁ Database|C-b B|open_database
 app|database-folder|⛁ Database folder||choose_database_folder
 app|job-log|◷ Job log|C-b j|show_job_log
@@ -107,13 +109,29 @@ items() {
   done <<<"$actions"
 }
 
-# An action's "when": empty is always; memory is with ai-memory installed.
+# An action's "when": empty is always; memory is with ai-memory installed;
+# jungleforge / no-jungleforge with or without jungleforge set up (asked once
+# per listing).
 shown() {
   case "$1" in
     '') return 0 ;;
     memory) command -v "${DEVWS_AI_MEMORY:-ai-memory}" >/dev/null 2>&1 ;;
+    jungleforge) jungleforge_available ;;
+    no-jungleforge) ! jungleforge_available ;;
     *) return 1 ;;
   esac
+}
+
+jungleforge_state=""
+jungleforge_available() {
+  if [ -z "$jungleforge_state" ]; then
+    if "$HOME/.tmuxinator/jungleforge.sh" available 2>/dev/null; then
+      jungleforge_state=yes
+    else
+      jungleforge_state=no
+    fi
+  fi
+  [ "$jungleforge_state" = yes ]
 }
 
 # While nothing is typed, the tab; once something is, every tab's actions
