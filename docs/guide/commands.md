@@ -57,7 +57,7 @@ folder.
 | ------- | ------------ |
 | `devws memory search "<question>"` | Ask this workspace's agent to search its memory |
 | `devws memory recent` | What was done recently in this repo |
-| `devws memory web` | Open ai-memory's web page |
+| `devws memory web` | Open ai-memory's web page (the first time, offers an admin login) |
 | `devws memory doctor` | Check ai-memory's setup |
 | `devws memory wire` | Wire every agent account to ai-memory again |
 

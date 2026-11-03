@@ -15,7 +15,9 @@
 #                              its memory (ai-memory has no search command:
 #                              agents search through its MCP tool)
 #   memory.sh recent [folder]  the newest memory pages of the folder's project
-#   memory.sh web              opens the web UI
+#   memory.sh web              opens the web UI; with no login yet (ai-memory
+#                              has no user until one is added), first offers
+#                              an admin (root) account named after you
 #   memory.sh doctor           ai-memory's own checks
 #
 # AI_MEMORY_SERVER_URL replaces http://127.0.0.1:49374. DEVWS_ENV_FILE
@@ -98,6 +100,33 @@ ask() {
   tmux send-keys -t "$pane" Enter
 }
 
+# The web UI needs a human login, which ai-memory does not create: with no
+# user yet, the page stops at a login nobody has. A failing `user list`
+# (an older ai-memory) is taken as users present, so the page still opens.
+has_login() {
+  local users
+  users="$("$ai_memory" user list 2>/dev/null)" || return 0
+  ! grep -q '(no registered users)' <<<"$users"
+}
+
+offer_login() {
+  local username answer
+  username="$(id -un)"
+  printf 'ai-memory has no web login yet.\n'
+  read -r -p "Create an admin (root) account \"$username\"? [Y/n] " answer || return 0
+  case "$answer" in n | N | no) return 0 ;; esac
+  "$ai_memory" user add-human --username "$username" --role root ||
+    die "could not create the account; try: ai-memory user add-human --username $username --role root"
+  printf '\nLog in with that temporary password: the page then asks for your own.\n'
+  read -r -p 'Press Enter to open the web page… ' _ || true
+}
+
+web() {
+  available || die "ai-memory is not installed"
+  has_login || offer_login
+  open "$server/web"
+}
+
 command="${1:-}"
 [ "$#" -gt 0 ] && shift
 case "$command" in
@@ -107,7 +136,7 @@ case "$command" in
   wire-all) wire_all "${1:-}" ;;
   ask) [ "$#" -eq 2 ] || die "usage: memory.sh ask <session> <question>"; ask "$1" "$2" ;;
   recent) available || die "ai-memory is not installed"; (cd "${1:-$PWD}" && "$ai_memory" recent) ;;
-  web) open "$server/web" ;;
+  web) web ;;
   doctor) available || die "ai-memory is not installed"; "$ai_memory" doctor ;;
   *) die "usage: memory.sh <available|up|wire|wire-all|ask|recent|web|doctor> …" ;;
 esac

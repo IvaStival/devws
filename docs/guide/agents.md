@@ -77,7 +77,13 @@ search what was done before, across agents, accounts and branch folders.
   - **⁘ Search memory**: your question goes to the workspace's agent, which
     searches its memory and answers in its pane;
   - **◷ Recent memory**: what was done recently in this repo;
-  - **↗ Open memory web UI**: ai-memory's page in the browser;
+  - **↗ Open memory web UI**: ai-memory's page in the browser. It needs a
+    login, which ai-memory does not create: the first time, devws offers
+    an admin (root) account named after you and shows its temporary
+    password once; the page then asks for your own. Later, add users with
+    `ai-memory user add-human --username <name>` (`--role root` for an
+    admin), or promote one with `ai-memory user patch <name> --role root`;
+    the agents need no login;
   - **✚ Memory doctor**: checks its setup.
 - The header's agent column ends with `mem ●`: green while the memory
   service answers, red when not (sessions are then not recorded; run
