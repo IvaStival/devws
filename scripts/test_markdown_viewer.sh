@@ -41,8 +41,8 @@ run_devws() {
     FZF_INPUT="$TEST_ROOT/fzf-input" FZF_SELECTION="${FZF_SELECTION:-}" \
     OPEN_LOG="$TEST_ROOT/open.log" \
     PATH="$fake_bin:/usr/bin:/bin" \
-    "$ZSH_BIN" -c 'source "$1"; cd "$2"; shift 2; devws md "$@"' \
-    -- "$ROOT/shell/devws.zsh" "$project" "$@"
+    "$ZSH_BIN" -c 'devws="$1"; cd "$2"; shift 2; "$devws" md "$@"' \
+    -- "$ROOT/bin/devws" "$project" "$@"
 }
 
 test_direct_file_with_spaces() {

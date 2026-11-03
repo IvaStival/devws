@@ -25,11 +25,12 @@
 #   4 times a s.   the working agents' spinner turns (agent_spinner.sh), in
 #                  the status bar, the agents' headers and the sidebars on
 #                  screen; header or not
-#   20 times a s.  the ghost (header_pet.sh) moves, into each attached
+#   10 times a s.  the ghost (header_pet.sh) moves, into each attached
 #                  workspace's @devws_ghost_<1-3>, in one mood for all the
 #                  agents (overall_mood).
 #                  Its cycles are drawn once at start and played back, so a
 #                  frame is a single tmux call.
+# The spinner and the ghost rest while no client's terminal is focused.
 # Both send tmux only what changed: each change makes tmux redraw the status
 # lines and the terminal draw them, so a frame the same as the last one, or
 # rows whose data has not moved, are skipped.
@@ -50,6 +51,9 @@ moods="idle working waiting done"
 # The ghost's lane, and the columns under which it is left out.
 ghost_width=12
 narrow_width=110
+# The job group's widest row (job.sh rows): more than the network's and
+# weather's room ever is, which the layout cuts it to.
+job_width=160
 # Frames a second: the loop's pace, which every other interval counts in.
 fps=20
 # Ticks between the spinner's frames (agent_spinner.sh): four a second.
@@ -157,8 +161,30 @@ add_rows() {
       frame+=(set-option "$target_flag" "@devws_header_row_$index" "$row" \;)
     fi
     index=$((index + 1))
-  done < <(printf '%s' "$clock_rows" "$system_rows" "$agent_rows" "$network_rows" "$weather_rows" |
-    "$scripts_dir/header_layout.sh" "$(groups_width "$width")" 5 --optional-first)
+  done < <(
+    # While jobs show (job.sh), they span the network's and weather's room;
+    # the groups are laid out as without them, so the others never move.
+    printf '%s' "$clock_rows" "$system_rows" "$agent_rows" "$network_rows" "$weather_rows" "$job_rows" |
+      "$scripts_dir/header_layout.sh" "$(groups_width "$width")" 5 --optional-first \
+        ${job_rows:+--span-last-two}
+  )
+}
+
+# The job group (job.sh header): its summary into jobs_summary, for tmux's
+# own line, and its three rows into job_rows — empty when no job shows. The
+# rows are a range of their own, which a click opens the log from (tmux.conf).
+read_jobs() {
+  local jobs rows row
+  # The "." keeps the empty rows that $(…) would drop.
+  jobs="$("$scripts_dir/job.sh" header "$job_width" 2>/dev/null; printf .)"
+  jobs="${jobs%.}"
+  jobs_summary="${jobs%%$'\n'*}"
+  rows="${jobs#*$'\n'}"
+  job_rows=""
+  [ -n "$rows" ] || return 0
+  while IFS= read -r row; do
+    job_rows+="#[range=user|devws-jobs]$row#[norange]"$'\n'
+  done <<<"${rows%$'\n'}"
 }
 
 # The mood of all the workspaces' agents together: the first of waiting (one
@@ -182,6 +208,7 @@ lay_out() {
   capture_rows agent_rows source_rows agents 3
   capture_rows network_rows source_rows network 3
   capture_rows weather_rows source_rows weather 3
+  read_jobs
   mood="$(overall_mood)"
   frame=()
   while IFS='|' read -r session width; do
@@ -195,6 +222,7 @@ lay_out() {
   printf '%s' "$clients" > "$state_dir/clients.new" && mv "$state_dir/clients.new" "$state_dir/clients"
   [ -n "$first_width" ] || return 0
   add_rows -g "" "$first_width"
+  frame+=(set-option -g @devws_jobs_summary "$jobs_summary" \;)
   # Rows the same as those last sent are not sent again: tmux would redraw the
   # status lines for nothing. The data changes every few seconds at most.
   checksum="$(printf '%s\n' "${frame[@]}" | cksum)"
@@ -258,8 +286,29 @@ draw_ghost() {
   tmux "${frame[@]:0:${#frame[@]}-1}"
 }
 
+# Waits <seconds> without starting a process: a read that times out on a pipe
+# nobody writes to. The loop waits 20 times a second, and a sleep each time
+# would be 20 processes a second. Bash 3.2's read only times out in whole
+# seconds, so there it is sleep.
+nap() {
+  if [ -n "${nap_fd:-}" ]; then
+    read -r -t "$1" -u "$nap_fd" _ 2>/dev/null
+  else
+    sleep "$1"
+  fi
+  return 0
+}
+
+# Whether a client's terminal has the focus: with none (iTerm2 behind another
+# app), nothing animates, so tmux and the terminal rest.
+any_focused() {
+  tmux list-clients -F '#{client_flags}' 2>/dev/null | grep -q focused
+}
+
 run() {
-  local tick=0
+  local tick=0 focused=1
+  # Opened read-write, the pipe never reports its end: reads only time out.
+  [ "${BASH_VERSINFO[0]}" -ge 4 ] && exec 9<> <(:) && nap_fd=9
   mkdir -p "$state_dir"
   tmux set-option -g @devws_header_ticker "$$" || exit 0
   load_settings
@@ -270,6 +319,8 @@ run() {
   ghost_shown=()
   while true; do
     if [ $((tick % fps)) -eq 0 ]; then
+      focused=1
+      any_focused || focused=0
       header_hidden="$(tmux show-option -gqv @devws_header_hidden 2>/dev/null)"
       if [ -z "$header_hidden" ] && [ ! -e "$popup_flag" ]; then
         read_clients
@@ -286,20 +337,22 @@ run() {
     [ $((tick % (60 * fps))) -eq 0 ] && in_background tokens update_tokens
     [ $((tick % (60 * fps))) -eq 0 ] && in_background suspend "$scripts_dir/suspend_workspace.sh" sweep
     [ $((tick % (1800 * fps))) -eq 0 ] && in_background weather keep weather "$scripts_dir/header_weather.sh"
-    # The working agents' spinner, four turns a second, header or not.
-    [ $((tick % spin_ticks)) -eq 0 ] && spin_agents $((tick / spin_ticks))
+    # The working agents' spinner, four turns a second, header or not, while
+    # a client is focused.
+    [ "$focused" = 1 ] && [ $((tick % spin_ticks)) -eq 0 ] && spin_agents $((tick / spin_ticks))
     # While the header is hidden (header_toggle.sh) nothing is drawn: a turn
     # each spinner frame keeps the sources current for when it comes back.
     if [ -n "$header_hidden" ]; then
       tick=$((tick + spin_ticks))
-      sleep 0.25
+      nap 0.25
       continue
     fi
-    if [ "$show_pet" = 1 ] && [ ! -e "$popup_flag" ]; then
+    # The ghost: 10 frames a second at most, while a client is focused.
+    if [ "$show_pet" = 1 ] && [ "$focused" = 1 ] && [ $((tick % 2)) -eq 0 ] && [ ! -e "$popup_flag" ]; then
       draw_ghost "$tick" 2>/dev/null || exit 0
     fi
     tick=$((tick + 1))
-    sleep 0.05
+    nap 0.05
   done
 }
 

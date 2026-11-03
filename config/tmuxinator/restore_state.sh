@@ -111,9 +111,10 @@ start_workspace() {
       "$pending_session" "$pending_editor" "$editor" >&2
 
   # stdin is detached from the record loop's descriptor so the generated
-  # tmuxinator script cannot swallow the rest of the state file.
+  # tmuxinator script cannot swallow the rest of the state file. resume=1:
+  # the agent picks up its last conversation in the folder.
   tmuxinator start --no-attach dev \
-    project_root="$pending_root" agent="$agent" editor="$editor" \
+    project_root="$pending_root" agent="$agent" editor="$editor" resume=1 \
     </dev/null >/dev/null 2>&1
 
   if ! wait_for_workspace "$pending_session"; then

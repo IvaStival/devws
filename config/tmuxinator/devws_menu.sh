@@ -5,9 +5,15 @@
 #
 #   devws_menu.sh                   the menu (run inside the popup)
 #   devws_menu.sh --popup [client]  opens the popup on a tmux client
+#   devws_menu.sh --popup-run <action> [client]
+#                                   one action alone in the menu's popup (its
+#                                   key: C-b e, C-b g…)
 #
 # fzf calls these back while the menu is open; the tests use them too:
 #   --items <tab>   the tab's actions: "<action><TAB><label and shortcut>"
+#   --items-for <query>   the current tab's while nothing is typed; else
+#                   every tab's, each tagged "<Tab> · ", for fzf to search
+#   --actions       the actions table
 #   --header        the tab bar, the current tab marked
 #   --tab           the current tab
 #   --switch <next|prev|tab title>   changes tab; prints fzf actions to show it
@@ -17,28 +23,45 @@
 set -u
 
 script="$HOME/.tmuxinator/devws_menu.sh"
-tabs=(workspace agent editor database)
+# One concern per tab: which workspaces there are, how the screen is
+# arranged, the agent, git, and the app the branch runs (jungleforge, its
+# database, the background jobs).
+tabs=(workspace layout agent git app)
 
 # tab|action|label|shortcut|function in workspace_actions.sh
-actions='workspace|new|+ New workspace||new_workspace
+actions='workspace|github|⎇ Open or start a workspace||new_github_workspace
+workspace|new|+ New folder workspace||new_workspace
 workspace|worktree|⑂ New worktree workspace||new_worktree_workspace
-workspace|open-folder|⌂ Open folder||open_folder
-workspace|toggle-layout|▥ Toggle layout|C-b \|toggle_layout
-workspace|minimize|▁ Minimize agent and terminal|C-b _|minimize_agents
-workspace|header|▔ Hide or show the header|C-b C-s|toggle_header
-workspace|new-panel|▣ New panel|C-b N|new_panel
+workspace|open-folder|⌂ Open folder in…||open_folder
 workspace|close|× Close workspace||close_workspace
+workspace|tidy|⌫ Tidy up merged branches||tidy_up
+workspace|detach|⏏ Detach (workspaces keep running)|C-b d|detach_client
+layout|toggle-layout|▥ Toggle layout|C-b \|toggle_layout
+layout|minimize|▁ Minimize agent and terminal|C-b _|minimize_agents
+layout|header|▔ Hide or show the header|C-b C-s|toggle_header
+layout|new-panel|▣ New panel|C-b N|new_panel
+layout|move-panel|⇆ Move panel|C-b S-←→↑↓|move_panel
+layout|switch-editor|⇄ Switch editor||switch_editor
 agent|jump|! Go to waiting agent|C-b a|jump_agent
 agent|switch-agent|⇄ Switch agent||switch_agent
 agent|restart-agent|↻ Restart agent||restart_agent
+agent|follow-mode|◎ Agent follow|C-b F|choose_follow_mode
 agent|initialize-agent|◇ Initialize agent||initialize_agent
 agent|register-agent|＋ Register agent||register_agent
 agent|remove-agent|− Remove agent||remove_agent
-agent|follow-mode|◎ Agent follow|C-b F|choose_follow_mode
-editor|switch-editor|⇄ Switch editor||switch_editor
-editor|follow-mode|◎ Agent follow|C-b F|choose_follow_mode
-database|open-database|⛁ Database|C-b B|open_database
-database|database-folder|⛁ Database folder||choose_database_folder'
+git|commit|✓ Commit (agent)|C-b g|commit_with_agent
+git|commit-manual|✎ Commit manually||commit_by_hand
+git|push|↑ Push / PR|C-b G|push_branch
+app|run-here|▶ Run this branch|C-b e|run_this_branch
+app|switch-run|⇄ Switch running branch|C-b E|switch_running_branch
+app|stop-run|■ Stop||stop_running_apps
+app|services|⛃ Services||start_services
+app|migrate|⇡ Migrate||migrate_running_app
+app|shell|⌘ Shell||open_app_shell
+app|logs|≡ Logs||open_app_logs
+app|open-database|⛁ Database|C-b B|open_database
+app|database-folder|⛁ Database folder||choose_database_folder
+app|job-log|◷ Job log|C-b j|show_job_log'
 
 session() {
   if [ -n "${TMUX_PANE:-}" ]; then
@@ -61,12 +84,26 @@ current_tab() {
   esac
 }
 
+#   items <tab> [tag]   the tab's actions, their labels led by [tag]
 items() {
   local tab action label shortcut function
   while IFS='|' read -r tab action label shortcut function; do
     [ "$tab" = "$1" ] || continue
-    printf '%s\t%-32s \033[2m%s\033[0m\n' "$action" "$label" "$shortcut"
+    printf '%s\t%-40s \033[2m%s\033[0m\n' "$action" "${2:-}$label" "$shortcut"
   done <<<"$actions"
+}
+
+# While nothing is typed, the tab; once something is, every tab's actions
+# tagged with theirs, which fzf then filters by what was typed.
+items_for() {
+  local tab
+  if [ -z "$1" ]; then
+    items "$(current_tab)"
+    return
+  fi
+  for tab in "${tabs[@]}"; do
+    items "$tab" "$(title "$tab") · "
+  done
 }
 
 header() {
@@ -101,7 +138,8 @@ switch_tab() {
   esac
   [ -n "$target" ] || return 0
   tmux set-option -t "$(session)" @devws_menu_tab "$target"
-  printf "reload('%s' --items %s)+transform-header('%s' --header)+first\n" "$script" "$target" "$script"
+  # With something typed, the search across every tab stays.
+  printf "reload('%s' --items-for {q})+transform-header('%s' --header)+first\n" "$script" "$script"
 }
 
 # The tab bar is " Title " per tab, one space apart; fzf reports a header
@@ -142,17 +180,28 @@ run_action() {
 
 open_popup() {
   local client="${1:-}"
-  tmux display-popup ${client:+-c "$client"} -E -w 60 -h 16 -T ' devws ' "$script"
+  # Room for the longest tab (App) whole, and its questions (branches, apps).
+  tmux display-popup ${client:+-c "$client"} -E -w 70 -h 18 -T ' devws ' "$script"
 }
 
+# One action alone in the menu's popup: what its key (C-b e, C-b g…) opens.
+popup_run() {
+  local action="$1" client="${2:-}"
+  function_for "$action" >/dev/null || { printf 'devws menu: unknown action: %s\n' "$action" >&2; return 2; }
+  tmux display-popup ${client:+-c "$client"} -E -w 70 -h 18 -T ' devws ' "$script --run $action"
+}
+
+# The menu in the shared picker look (picker.sh), which also keeps it
+# redrawn while a pane scrolls under it. Typing searches every tab.
 show_menu() {
   local selected
   selected="$(
     items "$(current_tab)" |
-      fzf --ansi --layout=reverse --height=100% --no-sort \
-        --delimiter=$'\t' --with-nth=2 \
-        --header="$(header)" --footer=$'\033[2m←/→ tab · ↑/↓ move · Enter run · Esc close\033[0m' \
-        --prompt='› ' --gutter=' ' --info=hidden --no-separator --border=none --margin=0 --padding=0 \
+      "$HOME/.tmuxinator/picker.sh" Search "$(header)" \
+        --height=100% --no-sort --delimiter=$'\t' --with-nth=2 \
+        --footer=$'\033[2m←/→ tab · type to search every tab · Enter run · Esc close\033[0m' \
+        --gutter=' ' --info=hidden --border=none --margin=0 --padding=0 \
+        --bind="change:reload-sync('$script' --items-for {q})" \
         --bind="right:transform:'$script' --switch next" \
         --bind="tab:transform:'$script' --switch next" \
         --bind="left:transform:'$script' --switch prev" \
@@ -181,6 +230,9 @@ esac
 
 case "${1:-}" in
   --items) items "${2:-}" ;;
+  --items-for) items_for "${2:-}" ;;
+  --actions) printf '%s\n' "$actions" ;;
+  --popup-run) popup_run "${2:-}" "${3:-}" ;;
   --header) header ;;
   --tab) current_tab ;;
   --switch) switch_tab "${2:-}" ;;

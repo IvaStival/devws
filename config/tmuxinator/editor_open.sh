@@ -5,14 +5,22 @@
 # then do what the workspace's follow mode (follow_mode.sh) says.
 #
 #   editor_open.sh [--follow|--follow-read] <file>[:<line>] [<text to find>]
+#   editor_open.sh --follow-changes <file>:<line>   an edit found by snapshot
+#                                   (agent_changes.sh): its ranges on stdin,
+#                                   "<file>\t<first>\t<last>", all marked,
+#                                   <file> shown
+#   editor_open.sh --clear-marks    the user's new prompt: no marks any more
 
 set -u
 
 follow=0
 event=""
+ranges=""
 case "${1:-}" in
   --follow) follow=1; event=edit; shift ;;
   --follow-read) follow=1; event=read; shift ;;
+  --follow-changes) follow=1; event=edit; ranges="$(cat)"; shift ;;
+  --clear-marks) follow=1; event=clear; set -- clear ;;
 esac
 target="${1:-}"
 text="${2:-}"
@@ -45,7 +53,7 @@ if [ "$follow" -eq 1 ]; then
     *) mode=follow ;;
   esac
   # Only "follow edits and reads" shows the files the agent reads.
-  [ "$event" = edit ] || [ "$mode" = explore ] || exit 0
+  [ "$event" != read ] || [ "$mode" = explore ] || exit 0
 fi
 
 file="$target"
@@ -68,7 +76,20 @@ quote() {
 # a newer one (the calls below race in the background). macOS's bash 3.2 has
 # no EPOCHREALTIME; without perl the requests go unstamped and all are shown.
 stamp="$(perl -MTime::HiRes=time -e 'printf "%d", time * 1000000' 2>/dev/null)" || stamp=""
-expression="v:lua.require'devws.follow'.show($(quote "$file"), $line, $(quote "${text%%$'\n'*}"), v:$notify_only${stamp:+, $stamp})"
+if [ "$event" = clear ]; then
+  expression="v:lua.require'devws.follow'.clear_marks()"
+  focus_editor=0
+elif [ -n "$ranges" ]; then
+  # The ranges as a Vim list: [['<file>', <first>, <last>], ...].
+  list=""
+  while IFS=$'\t' read -r range_file first last; do
+    [ -n "$range_file" ] && [ -n "$first" ] && [ -n "$last" ] || continue
+    list+="${list:+, }[$(quote "$range_file"), $first, $last]"
+  done <<<"$ranges"
+  expression="v:lua.require'devws.follow'.show_changes([$list], $(quote "$file"), $line, v:$notify_only${stamp:+, $stamp})"
+else
+  expression="v:lua.require'devws.follow'.show($(quote "$file"), $line, $(quote "${text%%$'\n'*}"), v:$notify_only${stamp:+, $stamp})"
+fi
 # In the background, and given up after a few seconds: Neovim may be waiting
 # on a prompt, and neither the agent nor a pile of these calls should wait for it.
 (

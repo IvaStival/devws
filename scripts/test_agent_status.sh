@@ -41,7 +41,7 @@ ln -s "$SCRIPTS" "$TEST_ROOT/home/.tmuxinator"
 # Notifications go to a file, never to macOS, with settings of the test's own.
 cat > "$TEST_ROOT/bin/notify" <<EOF
 #!/usr/bin/env bash
-printf '%s|%s\n' "\$1" "\$2" >> "$TEST_ROOT/notifications"
+printf '%s|%s|%s|%s|%s\n' "\$1" "\$2" "\$3" "\$4" "\$5" >> "$TEST_ROOT/notifications"
 EOF
 chmod +x "$TEST_ROOT/bin/notify"
 : > "$TEST_ROOT/devws.env"
@@ -334,15 +334,23 @@ notified() {
   notifications | grep -qxF "$1"
 }
 
+# The workspace's project: a repo on a known branch, for the alert's subtitle.
+git init -q -b feat/alerts "$TEST_ROOT/orbit"
+tmux set-option -t dev-work @devws_root "$TEST_ROOT/orbit"
+
+# An alert: title (workspace and state), subtitle (folder and branch),
+# message (the agent), and the session and pane a click goes to.
 test_notifications_name_the_workspace_and_agent() {
+  local needs_you="work ● needs you|orbit · feat/alerts|claude needs you|dev-work|$AGENT_PANE"
+  local done="work ✓ done|orbit · feat/alerts|claude is done|dev-work|$AGENT_PANE"
   "$SCRIPTS/agent_status.sh" dev-work idle
   rm -f "$TEST_ROOT/notifications"
   "$SCRIPTS/agent_status.sh" dev-work working
   "$SCRIPTS/agent_status.sh" dev-work waiting
-  wait_until notified "work|claude needs you" || fail "waiting was not notified: $(notifications)"
+  wait_until notified "$needs_you" || fail "waiting was not notified: $(notifications)"
   "$SCRIPTS/agent_status.sh" dev-work waiting
   "$SCRIPTS/agent_status.sh" dev-work done
-  wait_until notified "work|claude is done" || fail "done was not notified: $(notifications)"
+  wait_until notified "$done" || fail "done was not notified: $(notifications)"
   sleep 0.3
   [ "$(notifications | wc -l | tr -d ' ')" = 2 ] || fail "working or a repeated state notified: $(notifications)"
 
@@ -350,9 +358,9 @@ test_notifications_name_the_workspace_and_agent() {
   printf 'DEVWS_NOTIFY=waiting\n' > "$DEVWS_ENV_FILE"
   "$SCRIPTS/agent_status.sh" dev-work waiting
   "$SCRIPTS/agent_status.sh" dev-work done
-  wait_until notified "work|claude needs you" || fail "DEVWS_NOTIFY=waiting dropped waiting"
+  wait_until notified "$needs_you" || fail "DEVWS_NOTIFY=waiting dropped waiting"
   sleep 0.3
-  ! notified "work|claude is done" || fail "DEVWS_NOTIFY=waiting notified done"
+  ! notified "$done" || fail "DEVWS_NOTIFY=waiting notified done"
 
   rm -f "$TEST_ROOT/notifications"
   printf 'DEVWS_NOTIFY=0\n' > "$DEVWS_ENV_FILE"
@@ -375,6 +383,89 @@ test_no_notification_for_the_workspace_on_screen() {
   [ -z "$(notifications)" ] || fail "the workspace on screen was notified: $(notifications)"
   "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server
   "$SCRIPTS/agent_status.sh" dev-work idle
+}
+
+# An extra agent (New panel) that needs you is the one the alert names, and
+# the pane a click goes to.
+test_an_extra_agent_alert_names_it() {
+  local extra
+  extra="$(tmux split-window -t dev-work: -P -F '#{pane_id}' 'sleep 600')"
+  tmux set-option -p -t "$extra" @devws_role extra-agent
+  tmux set-option -p -t "$extra" @devws_agent codex
+  rm -f "$TEST_ROOT/notifications"
+  "$SCRIPTS/agent_status.sh" dev-work waiting "$extra"
+  wait_until notified "work ● needs you|orbit · feat/alerts|codex in a new panel needs you|dev-work|$extra" ||
+    fail "the extra agent's alert is wrong: $(notifications)"
+  "$SCRIPTS/agent_status.sh" dev-work idle "$extra"
+  tmux kill-pane -t "$extra"
+}
+
+# Without the test hook the alert goes to terminal-notifier: one alert per
+# workspace, and a click that, run as Notification Center runs it (outside
+# tmux, a bare PATH), takes the client used last to the agent.
+test_terminal_notifier_posts_a_clickable_alert() {
+  local click
+  cat > "$TEST_ROOT/bin/terminal-notifier-stub" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "$TEST_ROOT/terminal-notifier.args"
+EOF
+  chmod +x "$TEST_ROOT/bin/terminal-notifier-stub"
+  rm -f "$TEST_ROOT/terminal-notifier.args"
+  tmux new-session -d -s elsewhere 'sleep 600'
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" -f /dev/null new-session -d -s client -x 200 -y 50 \
+    "TMUX= $REAL_TMUX -L $SOCKET attach -t elsewhere"
+  attached() { [ -n "$(tmux list-clients -t elsewhere)" ]; }
+  wait_until attached || fail "the client did not attach"
+
+  DEVWS_NOTIFY_COMMAND="" DEVWS_TERMINAL_NOTIFIER="$TEST_ROOT/bin/terminal-notifier-stub" \
+    "$SCRIPTS/agent_status.sh" dev-work done
+  posted() { [ -s "$TEST_ROOT/terminal-notifier.args" ]; }
+  wait_until posted || fail "terminal-notifier was not called"
+  argument() { awk -v flag="$1" 'found { print; exit } $0 == flag { found = 1 }' "$TEST_ROOT/terminal-notifier.args"; }
+  [ "$(argument -title)" = "work ✓ done" ] && [ "$(argument -subtitle)" = "orbit · feat/alerts" ] &&
+    [ "$(argument -message)" = "claude is done" ] || fail "the alert's text is wrong: $(cat "$TEST_ROOT/terminal-notifier.args")"
+  [ "$(argument -group)" = devws-dev-work ] || fail "the alert is not grouped by workspace: $(argument -group)"
+  [ "$(argument -activate)" = com.googlecode.iterm2 ] || fail "the click does not bring iTerm2 forward"
+
+  click="$(argument -execute)"
+  [ -n "$click" ] || fail "the alert has no click"
+  env -i /bin/sh -c "$click" || fail "the click failed: $click"
+  [ "$(tmux list-clients -F '#{client_session}')" = dev-work ] &&
+    [ "$(tmux display-message -p -t dev-work: '#{pane_id}')" = "$AGENT_PANE" ] ||
+    fail "the click did not take the client to the agent: $click"
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server
+  tmux kill-session -t elsewhere
+  "$SCRIPTS/agent_status.sh" dev-work idle
+}
+
+# Without terminal-notifier, osascript shows the same text, not clickable.
+test_osascript_without_terminal_notifier() {
+  cat > "$TEST_ROOT/bin/osascript" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "$TEST_ROOT/osascript.args"
+EOF
+  chmod +x "$TEST_ROOT/bin/osascript"
+  rm -f "$TEST_ROOT/osascript.args"
+  DEVWS_NOTIFY_COMMAND="" DEVWS_TERMINAL_NOTIFIER="$TEST_ROOT/bin/no-terminal-notifier" \
+    "$SCRIPTS/agent_status.sh" dev-work waiting
+  posted() { [ -s "$TEST_ROOT/osascript.args" ]; }
+  wait_until posted || fail "osascript was not called"
+  [ "$(tail -n 3 "$TEST_ROOT/osascript.args")" = "work ● needs you
+orbit · feat/alerts
+claude needs you" ] || fail "osascript's alert is wrong: $(cat "$TEST_ROOT/osascript.args")"
+  rm "$TEST_ROOT/bin/osascript"
+  "$SCRIPTS/agent_status.sh" dev-work idle
+}
+
+# Outside a git repo the subtitle is the folder alone.
+test_an_alert_outside_a_repo_names_the_folder() {
+  tmux set-option -t dev-work @devws_root "$TEST_ROOT/project"
+  rm -f "$TEST_ROOT/notifications"
+  "$SCRIPTS/agent_status.sh" dev-work done
+  wait_until notified "work ✓ done|project|claude is done|dev-work|$AGENT_PANE" ||
+    fail "the alert outside a repo is wrong: $(notifications)"
+  "$SCRIPTS/agent_status.sh" dev-work idle
+  tmux set-option -t dev-work @devws_root "$TEST_ROOT/orbit"
 }
 
 sidebar_test_pane=""
@@ -463,7 +554,7 @@ test_agents_start_with_the_state_hooks() {
     grep -q "^hooks.$event=.*agent_state.sh" "$TEST_ROOT/agents/codex.args" ||
       fail "codex has no state hook for $event"
   done
-  grep -q '^hooks.PostToolUse=.*apply_patch.*agent_follow_hook.sh.* codex' "$TEST_ROOT/agents/codex.args" ||
+  grep -q '^hooks.PostToolUse=.*agent_follow_hook.sh.* codex' "$TEST_ROOT/agents/codex.args" ||
     fail "codex lost its follow hook"
   tmux kill-pane -t "$pane"
 
@@ -493,6 +584,10 @@ test_the_sidebar_shows_each_workspace_state
 test_the_state_records_when_it_started
 test_notifications_name_the_workspace_and_agent
 test_no_notification_for_the_workspace_on_screen
+test_an_extra_agent_alert_names_it
+test_an_alert_outside_a_repo_names_the_folder
+test_terminal_notifier_posts_a_clickable_alert
+test_osascript_without_terminal_notifier
 test_agents_start_with_the_state_hooks
 
 printf 'Agent status tests passed.\n'

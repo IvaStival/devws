@@ -10,10 +10,15 @@
 #  MEM ▓▓▓▓  80%  │  work   5h ▓░░░░░░░░░   9% …  │  Wi-Fi …     │  Curitiba
 #  DSK ▓▓▓▓  98%  │  month $588 at API prices     │  192.168…    │  humidity 94%
 #
-#   header_layout.sh <width> <groups> [--optional-first]   3 rows per group on stdin
+#   header_layout.sh <width> <groups> [--optional-first] [--span-last-two]
+#                                                     3 rows per group on stdin
 #
 # --optional-first: the first group (the clock) is left out, not cut, when the
 # groups would not fit whole with it.
+# --span-last-two: 3 more rows follow the groups' (the background jobs,
+# job.sh), drawn across the last two groups' room — theirs and the │ between —
+# instead of them. The groups are laid out as without them, so the others stay
+# where they were.
 #
 # Rows may carry tmux styles (#[...]), which take no width. DEVWS_COLOR_RULE
 # colors the separators. The ghost is drawn apart (header_ticker.sh).
@@ -22,21 +27,42 @@ set -u
 
 width="${1:?Usage: header_layout.sh <width> <groups>}"
 groups="${2:?Usage: header_layout.sh <width> <groups>}"
-optional_first="${3:-}"
+optional_first=""
+span_last_two=""
+for option in "${@:3}"; do
+  case "$option" in
+    --optional-first) optional_first="$option" ;;
+    --span-last-two) span_last_two="$option" ;;
+  esac
+done
 rule_color="${DEVWS_COLOR_RULE:-colour238}"
 
 rows=()
 while IFS= read -r row || [ -n "$row" ]; do
   rows+=("$row")
 done
+span_rows=()
+if [ -n "$span_last_two" ]; then
+  span_rows=("${rows[@]:groups * 3:3}")
+  rows=("${rows[@]:0:groups * 3}")
+  while [ "${#span_rows[@]}" -lt 3 ]; do
+    span_rows+=("")
+  done
+fi
 while [ "${#rows[@]}" -lt $((groups * 3)) ]; do
   rows+=("")
 done
 
-# Visible characters only: styles take no width.
+# Visible characters only: styles take no width, and "##" (a "#", as tmux
+# shows it) takes one — it is never the start of a style.
 visible_length() {
   local text="$1" length=0 index=0 style
   while [ "$index" -lt "${#text}" ]; do
+    if [ "${text:index:2}" = "##" ]; then
+      length=$((length + 1))
+      index=$((index + 2))
+      continue
+    fi
     if [ "${text:index:2}" = "#[" ]; then
       style="${text:index}"
       style="${style%%]*}]"
@@ -54,6 +80,13 @@ visible_length() {
 fit() {
   local text="$1" columns="$2" out="" visible=0 index=0 style
   while [ "$index" -lt "${#text}" ]; do
+    if [ "${text:index:2}" = "##" ]; then
+      [ "$visible" -ge "$columns" ] && break
+      out+="##"
+      visible=$((visible + 1))
+      index=$((index + 2))
+      continue
+    fi
     if [ "${text:index:2}" = "#[" ]; then
       style="${text:index}"
       style="${style%%]*}]"
@@ -96,7 +129,8 @@ for ((group = 0; group < groups; group++)); do
 done
 if [ "$optional_first" = --optional-first ] && [ "$groups" -gt 1 ] &&
   [ "$used" -gt "$available" ]; then
-  printf '%s\n' "${rows[@]:3}" | "$0" "$width" $((groups - 1))
+  printf '%s\n' "${rows[@]:3}" ${span_last_two:+"${span_rows[@]}"} |
+    "$0" "$width" $((groups - 1)) $span_last_two
   exit
 fi
 # Too wide for the room: the widest group gives up a column at a time, so the
@@ -127,6 +161,11 @@ done
 for row in 0 1 2; do
   line=" "
   for ((group = 0; group < groups; group++)); do
+    if [ -n "$span_last_two" ] && [ "$groups" -ge 2 ] && [ "$group" -eq $((groups - 2)) ]; then
+      line+="$(fit "${span_rows[row]}" \
+        $((columns[group] + $(visible_length "${separators[group]}") + columns[group + 1])))"
+      break
+    fi
     line+="$(fit "${rows[group * 3 + row]}" "${columns[group]}")"
     [ "$group" -lt "$gaps" ] && line+="${separators[group]}"
   done

@@ -33,7 +33,10 @@ EOF
 chmod +x "$TEST_ROOT/bin/tmux"
 # The key bindings call ~/.tmuxinator/minimize_panes.sh, as installed.
 ln -s "$ROOT/config/tmuxinator" "$TEST_ROOT/home/.tmuxinator"
-export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home"
+# TMPDIR keeps devws's temporary files (frozen workspaces' records among them)
+# apart from the real ones.
+mkdir -p "$TEST_ROOT/tmp"
+export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" TMPDIR="$TEST_ROOT/tmp"
 unset TMUX
 
 # The devws part of tmux.conf: header format and bindings, loaded on their own

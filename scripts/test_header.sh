@@ -424,8 +424,16 @@ STUB
 printf 'Name Mtu Network Address Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll\n'
 printf 'en0 1500 <Link#11> ea:96 100 0 %s 50 0 %s 0\n' \$(cat "$TEST_ROOT/stubs/counters")
 STUB
-  cat > "$stubs/system_profiler" <<'STUB'
+  # CoreWLAN, asked through osascript: the signal and the band (2 is 5 GHz),
+  # from stubs/corewlan; with none, it fails, as without Wi-Fi.
+  cat > "$stubs/osascript" <<STUB
 #!/usr/bin/env bash
+[ -f "$TEST_ROOT/stubs/corewlan" ] || exit 1
+cat "$TEST_ROOT/stubs/corewlan"
+STUB
+  cat > "$stubs/system_profiler" <<STUB
+#!/usr/bin/env bash
+touch "$TEST_ROOT/stubs/system_profiler.called"
 cat <<'OUT'
       Interfaces:
         en0:
@@ -463,6 +471,26 @@ test_network() {
   output="$(PATH="$stubs:$PATH" "$SCRIPTS/header_network.sh" "$state" | plain)"
   [ "$(sed -n 1p <<< "$output")" = offline ] || fail "being offline is not shown: $output"
   rm "$TEST_ROOT/stubs/offline"
+}
+
+# The Wi-Fi row comes from CoreWLAN, a fifth of a second; system_profiler,
+# which takes seconds, only answers when CoreWLAN can't.
+test_the_wifi_row_asks_corewlan_first() {
+  local stubs state="$TEST_ROOT/wifi-state" output
+  stubs="$(stub_network)"
+  printf '1000000 500000\n' > "$TEST_ROOT/stubs/counters"
+  printf -- '-60 2\n' > "$TEST_ROOT/stubs/corewlan"
+  rm -rf "$state" "$TEST_ROOT/stubs/system_profiler.called"
+  mkdir -p "$state"
+  output="$(PATH="$stubs:$PATH" "$SCRIPTS/header_network.sh" "$state" | sed -n 2p)"
+  [ "$output" = 'Wi-Fi ▂▄▆_ -60 dBm · 5 GHz' ] || fail "unexpected Wi-Fi row from CoreWLAN: $output"
+  [ ! -e "$TEST_ROOT/stubs/system_profiler.called" ] || fail "system_profiler ran though CoreWLAN answered"
+
+  rm -rf "$state" "$TEST_ROOT/stubs/corewlan"
+  mkdir -p "$state"
+  output="$(PATH="$stubs:$PATH" "$SCRIPTS/header_network.sh" "$state" | sed -n 2p)"
+  [ "$output" = 'Wi-Fi ▂▄▆_ -60 dBm · 5 GHz' ] || fail "unexpected Wi-Fi row from system_profiler: $output"
+  [ -e "$TEST_ROOT/stubs/system_profiler.called" ] || fail "system_profiler was not asked when CoreWLAN could not answer"
 }
 
 # ---------------------------------------------------------------- weather
@@ -542,6 +570,43 @@ test_the_layout_spreads_the_groups() {
   output="$(layout_rows | "$SCRIPTS/header_layout.sh" 100 4 | plain)"
   shows "$(sed -n 1p <<< "$output")" '[^ ]  │  [^ ]' || fail "a narrow header lost its two-space gaps: $output"
   shows "$output" 'Curitiba' || fail "a narrow header cut a short group"
+}
+
+# "##" is how a row shows a "#" (the job group's build logs are full of
+# them): one column, and never the start of a style, even before "[".
+test_the_layout_counts_a_doubled_hash_as_one_column() {
+  local output line rendered
+  output="$(printf '%s\n' 'CPU' 'MEM' 'DSK' '##7 [dev 4/9] RUN composer' '##[fg=red] literal' 'x' |
+    "$SCRIPTS/header_layout.sh" 60 2)"
+  while IFS= read -r line; do
+    # As tmux draws it: "##" a "#", other #[…] styles nothing.
+    rendered="$(sed 's/##/\x01/g; s/#\[[^]]*\]//g' <<< "$line" | tr '\001' '#')"
+    [ "${#rendered}" -eq 60 ] || fail "a row with ## is ${#rendered} wide: '$rendered'"
+  done <<< "$output"
+  shows "$output" '##\[fg=red\] literal' || fail "##[ was read as a style: $output"
+}
+
+# The job group spans the last two groups' room — theirs and the │ between —
+# so the groups before it stay exactly where they were.
+test_the_job_group_spans_the_last_two_groups() {
+  local width plain_rows spanned_rows row before after line
+  for width in 238 160 120; do
+    plain_rows="$(layout_rows | "$SCRIPTS/header_layout.sh" "$width" 4 | plain)"
+    spanned_rows="$({ layout_rows; printf '%s\n' '⏵ phi-planner → feat/x 0:42' '  #7 RUN composer install' '  Installing laravel'; } |
+      "$SCRIPTS/header_layout.sh" "$width" 4 --span-last-two | plain)"
+    for row in 1 2 3; do
+      line="$(sed -n "${row}p" <<< "$spanned_rows")"
+      [ "${#line}" -eq "$width" ] || fail "a spanned row at $width is ${#line} wide: '$line'"
+      # Up to the second │, the same as without the job group.
+      before="$(sed -n "${row}p" <<< "$plain_rows" | awk -F '│' '{ print $1 "│" $2 "│" }')"
+      after="$(awk -F '│' '{ print $1 "│" $2 "│" }' <<< "$line")"
+      [ "$before" = "$after" ] || fail "the groups before the job group moved at $width: '$after' was '$before'"
+      [ "$(tr -cd '│' <<< "$line" | wc -m | tr -d ' ')" -eq 2 ] ||
+        fail "the job group is not one span at $width: '$line'"
+    done
+    shows "$(sed -n 1p <<< "$spanned_rows")" '│  *⏵ phi-planner → feat/x 0:42' ||
+      fail "the job group does not start where the third group did: $spanned_rows"
+  done
 }
 
 # The clock: HH:MM three rows tall, a digit three columns wide.
@@ -640,6 +705,17 @@ test_a_client_shows_the_header() {
     fail "the client shows no agent columns or weather: $(client_header)"
   wait_until header_row_shows 3 'claude 5h ▓▓▓▓░░░░░░  40% wk ▓░░░░░░░░░  10%' ||
     fail "the client shows no Claude limits: $(client_header)"
+  # A job (job.sh) takes the network's and weather's place while it shows, and
+  # tmux's own line sums the jobs up.
+  local job_id
+  job_id="$("$SCRIPTS/job.sh" note 'Deploy failed' --error)"
+  wait_until header_row_shows 3 '│ *✗ Deploy failed' || fail "the job group is not shown: $(client_header)"
+  ! header_row_shows 3 '+25°C' || fail "the weather stayed beside the job group: $(client_header)"
+  wait_until header_row_shows 1 '✗ 1 failed' || fail "tmux's line has no job summary: $(client_header)"
+  # Seen, it goes, and the network and weather are back.
+  : > "$HOME/.devws-state/jobs/$job_id/seen"
+  wait_until header_row_shows 3 '│ *+25°C  Sunny' || fail "the weather did not come back: $(client_header)"
+  ! header_row_shows 1 'failed' || fail "the summary stayed: $(client_header)"
   # tmux's own line, then a blank line before the groups.
   header_row_shows 1 'dev-work' || fail "tmux's own line moved: $(client_header)"
   [ -z "$(client_header | sed -n 2p | tr -d ' ')" ] || fail "no blank line under tmux's own line: $(client_header)"
@@ -755,6 +831,44 @@ test_the_header_holds_still_under_a_popup() {
   tmux kill-server
 }
 
+# While no client's terminal is focused (iTerm2 behind another app), nothing
+# animates: no ghost frames, no spinner turns, so tmux and the terminal rest.
+# Focused, the ghost moves at most 10 times a second.
+test_animations_rest_while_unfocused() {
+  local frame
+  tmux new-session -d -s dev-work -x 200 -y 50 'sleep 600'
+  tmux source-file "$TEST_ROOT/status.conf"
+  tmux set-option -g focus-events on
+  tmux set-option -t dev-work @devws_agent_state working
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" -f /dev/null new-session -d -s client -x 200 -y 50 \
+    "TMUX= $REAL_TMUX -L $SOCKET attach -t dev-work"
+  "$SCRIPTS/header_ticker.sh" --start
+  wait_until header_row_shows 3 'CPU' || fail "the header did not show: $(client_header)"
+  sleep 1
+  : > "$TEST_ROOT/redraws.log"
+  sleep 2
+  [ "$(redraws ghost)" -gt 0 ] || fail "the working ghost does not move while focused"
+  [ "$(redraws ghost)" -le 22 ] || fail "the ghost was redrawn $(redraws ghost) times in 2 s, over 10 a second"
+
+  # The terminal reports it lost the focus.
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" send-keys -t client $'\e[O'
+  unfocused() { ! tmux list-clients -F '#{client_flags}' | grep -q focused; }
+  wait_until unfocused || fail "the client did not lose the focus: $(tmux list-clients -F '#{client_flags}')"
+  sleep 1.5
+  : > "$TEST_ROOT/redraws.log"
+  frame="$(option @devws_agent_frame)"
+  sleep 2
+  [ "$(redraws ghost)" -eq 0 ] || fail "the ghost moved $(redraws ghost) times with no client focused"
+  [ "$(option @devws_agent_frame)" = "$frame" ] || fail "the spinner turned with no client focused"
+
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" send-keys -t client $'\e[I'
+  sleep 1.5
+  [ "$(redraws ghost)" -gt 0 ] || fail "the ghost did not move again once focused"
+  [ "$(option @devws_agent_frame)" != "$frame" ] || fail "the spinner did not turn again once focused"
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server
+  tmux kill-server
+}
+
 test_the_header_hides() {
   local line marker_column
   tmux new-session -d -s dev-work -x 200 -y 50 'sleep 600'
@@ -809,13 +923,17 @@ test_claude_limits_come_from_its_status_line
 test_one_column_for_the_agents
 test_system_usage
 test_network
+test_the_wifi_row_asks_corewlan_first
 test_weather
 test_the_layout_spreads_the_groups
+test_the_layout_counts_a_doubled_hash_as_one_column
+test_the_job_group_spans_the_last_two_groups
 test_the_clock
 test_the_layout_leaves_out_the_clock_when_narrow
 test_a_client_shows_the_header
 test_the_header_redraws_only_changes
 test_the_header_holds_still_under_a_popup
+test_animations_rest_while_unfocused
 test_the_header_hides
 
 printf 'Header tests passed.\n'

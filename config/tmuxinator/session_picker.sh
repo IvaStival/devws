@@ -36,7 +36,7 @@ print_padded_row() {
 workspace_rows() {
   local current="$1"
   local session agent editor root agent_state branch state state_plain row_width
-  local activity activity_plain
+  local activity activity_plain pr_file pr_state
 
   row_width="$(
     tmux display-message -p -t "$TMUX_PANE" '#{pane_width}' 2>/dev/null
@@ -46,7 +46,7 @@ workspace_rows() {
   esac
   (( row_width > 2 )) && row_width=$((row_width - 2))
 
-  while IFS='|' read -r session agent editor root agent_state frozen; do
+  while IFS='|' read -r session agent editor root agent_state frozen needs_reopen; do
     case "$session" in dev-*) ;; *) continue ;; esac
     agent="${agent:-unknown}"
     editor="${editor:-unknown}"
@@ -59,10 +59,19 @@ workspace_rows() {
       *) activity=""; activity_plain="" ;;
     esac
     # Frozen while idle (suspend_workspace.sh) until you switch to it.
-    if [ -n "$frozen" ]; then
-      activity="$activity · paused"
-      activity_plain="$activity_plain · paused"
+    # A mark to reopen it: its editor predates the runners and has unsaved
+    # changes, or can't be asked, so only closing and reopening the workspace
+    # lets the editor pause too.
+    pause_mark=""
+    if [ -n "$frozen" ] && [ -n "$needs_reopen" ]; then
+      pause_mark=" · partly paused"
+    elif [ -n "$frozen" ]; then
+      pause_mark=" · paused"
+    elif [ -n "$needs_reopen" ]; then
+      pause_mark=" · reopen to pause"
     fi
+    activity="$activity$pause_mark"
+    activity_plain="$activity_plain$pause_mark"
 
     branch="—"
     state="  "
@@ -70,6 +79,19 @@ workspace_rows() {
     if [ -n "$root" ] && git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       branch="$(git -C "$root" branch --show-current 2>/dev/null)"
       [ -n "$branch" ] || branch="detached"
+      # The PR state github_repo.sh keeps in the worktree's git folder, read
+      # here directly: the sidebar redraws often and never waits on gh.
+      pr_file="$(git -C "$root" rev-parse --path-format=absolute --git-dir 2>/dev/null)/devws-pr"
+      if [ -r "$pr_file" ]; then
+        read -r _ pr_state < "$pr_file"
+        case "${pr_state:-none}" in
+          none) ;;
+          *) branch="$branch · PR $pr_state" ;;
+        esac
+      fi
+      # The jungleforge apps run from this folder (refresh_states).
+      grep -qxF "$root" "$running_file" 2>/dev/null && branch="$branch · ▶ running"
+      pr_roots+=("$root")
       if [ -n "$(git -C "$root" status --porcelain 2>/dev/null)" ]; then
         state="\033[33m●\033[0m "
         state_plain="● "
@@ -95,13 +117,58 @@ workspace_rows() {
       printf '\n    \033[2m%s%b · %s\033[0m\0' "$agent" "$activity" "$editor"
     fi
   done < <(tmux list-sessions \
-    -F '#{session_name}|#{@devws_agent}|#{@devws_editor}|#{@devws_root}|#{@devws_agent_state}|#{@devws_frozen}' 2>/dev/null)
+    -F '#{session_name}|#{@devws_agent}|#{@devws_editor}|#{@devws_root}|#{@devws_agent_state}|#{@devws_frozen}|#{@devws_needs_reopen}' 2>/dev/null)
+}
+
+# The folders jungleforge's apps run from (jungleforge.sh running-folders),
+# one per line, shared by every sidebar.
+tmp_dir="${TMPDIR:-/tmp}"
+running_file="${tmp_dir%/}/devws-running-$(id -u)"
+
+# A background refresh that fails says so in the header (an error note), at
+# most once an hour: it runs every 30 s, and the same error would flood it.
+report_refresh_errors() {
+  local errors="$1" stamp="$1.reported" reported
+  [ -s "$errors" ] || return 0
+  reported="$(cat "$stamp" 2>/dev/null)"
+  case "$reported" in ''|*[!0-9]*) reported=0 ;; esac
+  [ $(($(date +%s) - reported)) -ge 3600 ] || return 0
+  date +%s > "$stamp"
+  "$HOME/.tmuxinator/job.sh" note "Sidebar refresh failed: $(head -n 1 "$errors")" --error >/dev/null 2>&1
+}
+
+# The workspaces' PR states and running apps are asked again in the
+# background, at most every 30 seconds across all sidebars (github_repo.sh
+# keeps each PR state for five minutes); a change redraws the sidebars. Run
+# and Stop clear @devws_states_checked to have it asked at once.
+refresh_states() {
+  local checked now
+  [ "${#pr_roots[@]}" -gt 0 ] || return 0
+  checked="$(tmux show-option -gqv @devws_states_checked 2>/dev/null)"
+  now="$(date +%s)"
+  case "$checked" in ''|*[!0-9]*) checked=0 ;; esac
+  [ $((now - checked)) -ge 30 ] || return 0
+  tmux set-option -g @devws_states_checked "$now" 2>/dev/null
+  (
+    changed=1
+    "$HOME/.tmuxinator/github_repo.sh" pr-refresh "${pr_roots[@]}" && changed=0
+    running="$("$HOME/.tmuxinator/jungleforge.sh" running-folders "${pr_roots[@]}" 2>"$running_file.errors")"
+    report_refresh_errors "$running_file.errors"
+    if [ "$running" != "$(cat "$running_file" 2>/dev/null)" ]; then
+      printf '%s\n' "$running" > "$running_file"
+      changed=0
+    fi
+    [ "$changed" = 1 ] || "$HOME/.tmuxinator/refresh_devws_pickers.sh" --reload
+  ) </dev/null >/dev/null 2>&1 &
 }
 
 # Swapped in whole, so a spinner frame never reads half of the rows.
 write_rows() {
+  pr_roots=()
+  # Not a subshell: the rows collect pr_roots.
   workspace_rows "$(tmux display-message -p '#S' 2>/dev/null)" > "$rows_file.new"
   mv "$rows_file.new" "$rows_file"
+  refresh_states
 }
 
 if [ "${1:-}" = --rows ]; then
@@ -116,7 +183,6 @@ fi
 # the client's active pane, which may be the editor or terminal.
 tmux select-pane -t "$TMUX_PANE" -T devws-picker 2>/dev/null
 
-tmp_dir="${TMPDIR:-/tmp}"
 rows_file="$(mktemp "${tmp_dir%/}/devws-picker.XXXXXX")"
 # Where refresh_devws_pickers.sh --reload marks the rows stale.
 tmux set-option -p -t "$TMUX_PANE" @devws_picker_rows "$rows_file" 2>/dev/null

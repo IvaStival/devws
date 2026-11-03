@@ -5,15 +5,27 @@
 # content, a Read's offset); Codex passes its apply_patch call, whose patch
 # names the files. Codex reads through shell commands, so its reads are not seen.
 #
-#   agent_follow_hook.sh <claude|codex>   (hook JSON on stdin)
+#   agent_follow_hook.sh <claude|codex>          after a tool call
+#   agent_follow_hook.sh <claude|codex> pre      before one: the project is
+#                                                snapshot (agent_changes.sh)
+#   agent_follow_hook.sh <claude|codex> prompt   the user's new prompt: the
+#                                                marks of the last turn go
+#   (hook JSON on stdin)
+#
+# In a git project, what a tool call changed is found from the project itself,
+# so a shell command's changes are shown too: every changed line is marked,
+# and the file changed last is shown at its first change. Elsewhere, and for
+# reads, the tool call's own payload says what to show.
 #
 # It always exits 0: a hook that fails would interrupt the agent.
 
 set -u
 
 agent="${1:-}"
+phase="${2:-post}"
 payload="$(cat)"
-open="$(dirname "$0")/editor_open.sh"
+scripts="$(dirname "$0")"
+open="$scripts/editor_open.sh"
 
 first_line() {
   awk 'NF { print; exit }'
@@ -22,6 +34,37 @@ first_line() {
 json() {
   printf '%s' "$payload" | jq -r "$1" 2>/dev/null
 }
+
+# The project the agent works in, and this agent's own snapshot name: a
+# workspace's extra agents keep theirs apart.
+project="$(json '.cwd // empty')"
+project="${project:-$PWD}"
+snapshot="pane-${TMUX_PANE:-none}"
+
+case "$phase" in
+  pre)
+    "$scripts/agent_changes.sh" snapshot "$project" "$snapshot"
+    exit 0
+    ;;
+  prompt)
+    "$open" --clear-marks
+    exit 0
+    ;;
+esac
+
+# Changes found by snapshot: the file changed last is shown, at its first
+# changed range; all of them are marked.
+ranges="$("$scripts/agent_changes.sh" changes "$project" "$snapshot")"
+if [ -n "$ranges" ]; then
+  latest="$(cut -f1 <<<"$ranges" | sort -u | while IFS= read -r changed_file; do
+    [ -e "$changed_file" ] && printf '%s\t%s\n' "$(stat -f %Fm "$changed_file")" "$changed_file"
+  done | sort -rn | head -n 1 | cut -f2-)"
+  if [ -n "$latest" ]; then
+    first="$(awk -F '\t' -v file="$latest" '$1 == file { print $2; exit }' <<<"$ranges")"
+    printf '%s\n' "$ranges" | "$open" --follow-changes "$latest:$first"
+    exit 0
+  fi
+fi
 
 file=""
 text=""

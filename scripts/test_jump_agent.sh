@@ -141,10 +141,61 @@ test_the_waiting_extra_agent_gets_the_focus() {
   tmux set-option -u -t dev-old @devws_agent_state
 }
 
+focus() {
+  "$SCRIPTS/focus_agent.sh" "$@"
+}
+
+# focus_agent.sh takes a client to an agent pane: the one asked for, else the
+# main agent; with no client named, the one used last.
+test_focus_goes_to_the_pane_asked_for() {
+  local extra
+  extra="$(tmux split-window -h -t "$(agent_of dev-new)" -P -F '#{pane_id}' 'sleep 600')"
+  tmux set-option -p -t "$extra" @devws_role extra-agent
+  tmux switch-client -c "$CLIENT" -t dev-home
+  focus dev-new "$extra" || fail "focusing an extra agent failed"
+  [ "$(client_session)" = dev-new ] && [ "$(tmux display-message -p -t dev-new: '#{pane_id}')" = "$extra" ] ||
+    fail "focus did not land on the extra agent"
+  tmux kill-pane -t "$extra"
+  # A pane that has gone since: the workspace's main agent instead.
+  tmux switch-client -c "$CLIENT" -t dev-home
+  focus dev-new "$extra" || fail "focusing a gone pane failed"
+  lands_on dev-new || fail "with the pane gone it did not land on the main agent"
+}
+
+test_focus_restores_a_minimized_group() {
+  tmux switch-client -c "$CLIENT" -t dev-home
+  "$SCRIPTS/minimize_panes.sh" dev-old toggle agents
+  [ -z "$(agent_of dev-old)" ] || fail "the agent did not minimize"
+  focus dev-old || fail "focusing a minimized agent failed"
+  [ -n "$(agent_of dev-old)" ] || fail "the minimized group was not restored"
+  lands_on dev-old || fail "it did not land on the restored agent"
+}
+
+test_focus_on_a_gone_workspace_does_nothing() {
+  tmux switch-client -c "$CLIENT" -t dev-home
+  focus dev-gone %999 || fail "a gone workspace made focus fail"
+  [ "$(client_session)" = dev-home ] || fail "a gone workspace moved the client to $(client_session)"
+}
+
+# As a clicked alert runs it: outside tmux, with a bare PATH, the server found
+# through TMUX alone.
+test_focus_from_outside_tmux() {
+  local socket
+  socket="$(tmux display-message -p '#{socket_path}')"
+  tmux switch-client -c "$CLIENT" -t dev-home
+  env -i HOME="$HOME" PATH="$(dirname "$REAL_TMUX"):/usr/bin:/bin" TMUX="$socket,0,0" \
+    "$SCRIPTS/focus_agent.sh" dev-finished || fail "focus from outside tmux failed"
+  lands_on dev-finished || fail "focus from outside tmux went to $(client_session)"
+}
+
 test_waiting_agents_go_first_the_longest_waiting_first
 test_a_done_agent_when_none_waits
 test_nothing_to_go_to
 test_the_waiting_extra_agent_gets_the_focus
 test_a_minimized_agent_is_restored
+test_focus_goes_to_the_pane_asked_for
+test_focus_restores_a_minimized_group
+test_focus_on_a_gone_workspace_does_nothing
+test_focus_from_outside_tmux
 
 printf 'Jump to agent tests passed.\n'

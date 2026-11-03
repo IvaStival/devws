@@ -54,12 +54,15 @@ trap 'rm -f "$temporary"' EXIT
     # started before the terminal pane began marking itself have no terminal
     # role at all; there the first unclaimed pane takes it, so restoring them
     # does not add a duplicate terminal.
+    # A job's log panel (job_panel.sh) is left out: its job is long gone by
+    # the time a workspace is restored.
     printf '%s\n' "$panes" | awk -F '\t' -v session="$session" '
-      NF < 4 { next }
+      NF < 4 || $2 == "job-log" { next }
       {
-        index_of[NR] = $1
-        path_of[NR] = $4
-        agent_of[NR] = $5
+        rows++
+        index_of[rows] = $1
+        path_of[rows] = $4
+        agent_of[rows] = $5
         role = $2
         # A minimized pane is recorded as the pane its placeholder stands in for.
         sub(/^minimized-/, "", role)
@@ -68,9 +71,8 @@ trap 'rm -f "$temporary"' EXIT
           else if ($3 == "terminal") { role = "terminal" }
           else { role = "extra" }
         }
-        role_of[NR] = role
+        role_of[rows] = role
         if (role == "terminal") { has_terminal = 1 }
-        rows = NR
       }
       END {
         for (row = 1; row <= rows; row++) {

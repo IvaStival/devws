@@ -102,7 +102,50 @@ test_status_and_remove_keep_changes() {
   [ -f "$REPO/file.txt" ] || fail "the repo lost its files"
 }
 
+# A devws-managed repo (github_repo.sh): a hidden bare repo, no main checkout,
+# its worktrees beside it.
+MANAGED="$TEST_ROOT/devws/acme/app"
+git init -q --bare "$MANAGED/.bare"
+git -C "$MANAGED/.bare" remote add origin "$TEST_ROOT/remote.git"
+git -C "$MANAGED/.bare" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+git -C "$MANAGED/.bare" fetch -q origin
+# The remote moves on after the repo was cloned: a base off origin is newer.
+git -C "$REPO" commit -q --allow-empty -m second
+git -C "$REPO" push -q origin main
+git -C "$MANAGED/.bare" fetch -q origin
+
+test_a_managed_worktree_sits_beside_the_bare_repo() {
+  [ "$(worktree path "$MANAGED/.bare" feat/login)" = "$MANAGED/app-feat-login" ] ||
+    fail "unexpected managed folder: $(worktree path "$MANAGED/.bare" feat/login)"
+}
+
+test_a_new_managed_branch_comes_off_the_base_untracked() {
+  local folder
+  folder="$(worktree ensure "$MANAGED/.bare" feat/base origin/main 2>/dev/null)"
+  [ "$folder" = "$MANAGED/app-feat-base" ] || fail "the managed branch went to $folder"
+  [ "$(worktree branch "$folder")" = feat/base ] || fail "the managed worktree is not on feat/base"
+  [ "$(git -C "$folder" rev-parse HEAD)" = "$(git -C "$MANAGED/.bare" rev-parse origin/main)" ] ||
+    fail "the managed branch does not start at origin/main"
+  ! git -C "$folder" rev-parse --abbrev-ref '@{upstream}' >/dev/null 2>&1 ||
+    fail "the new branch tracks its base, so a plain push would go to main"
+  # From inside the worktree, the folder rule still sees the managed repo.
+  [ "$(worktree path "$folder" fix/x)" = "$MANAGED/app-fix-x" ] ||
+    fail "from a managed worktree: $(worktree path "$folder" fix/x)"
+}
+
+test_a_managed_worktree_is_removed_and_its_branch_kept() {
+  local folder="$MANAGED/app-feat-base"
+  worktree linked "$folder" || fail "a managed worktree is not linked"
+  worktree remove "$folder" || fail "a clean managed worktree was not removed"
+  [ ! -e "$folder" ] || fail "the managed folder is still there"
+  git -C "$MANAGED/.bare" show-ref --verify --quiet refs/heads/feat/base ||
+    fail "removing the managed worktree deleted the branch"
+}
+
 test_the_folder_sits_next_to_the_repo
+test_a_managed_worktree_sits_beside_the_bare_repo
+test_a_new_managed_branch_comes_off_the_base_untracked
+test_a_managed_worktree_is_removed_and_its_branch_kept
 test_a_new_branch_comes_off_head
 test_an_existing_branch_and_worktree
 test_a_remote_branch_is_tracked

@@ -106,11 +106,26 @@ The installer creates symlinks into the clone. Keep the cloned folder in its
 original location after installation. Existing managed files are moved to a
 timestamped directory under `~/.devws-backups/` before replacement.
 
-When installation finishes, run the highlighted reload command it prints:
+`devws` itself is a command on your PATH (`~/.local/bin/devws`, a link to
+`bin/devws`), so every pane runs the checkout's current version, and each run
+links any devws script an update added to `~/.tmuxinator` — after a `git
+pull`, there is nothing to reinstall or reload. When installation finishes,
+run the reload command it prints once, for the prompt and editor settings
+(`shell/devws.zsh`):
 
 ```sh
 source ~/.zshrc
 ```
+
+Panes opened before devws became a command keep the old shell function until
+they are reopened (or run `source ~/.zshrc` in them).
+
+The installer also offers to log in to GitHub (`gh auth login`), which
+[GitHub workspaces](#github-workspaces) need. gh asks how git should reach
+GitHub: **SSH** clones with your SSH key, **HTTPS** lets gh log git in too.
+To change it later, run `gh config set git_protocol ssh` (or `https` followed
+by `gh auth setup-git`). Skip the login and only `devws` with no folder is
+unavailable until you run `gh auth login`.
 
 Install either Codex or Claude Code separately, authenticate it, and edit
 `config/tmuxinator/.env` if you want to change the available/default agent or
@@ -118,10 +133,18 @@ editor.
 
 ## Use
 
-Start a workspace with the interactive agent and editor picker:
+Start a workspace on a GitHub repo — devws clones it and gives the task a
+branch of its own (see [GitHub workspaces](#github-workspaces)):
+
+```sh
+devws
+```
+
+Or on a local folder, with the interactive agent and editor picker:
 
 ```sh
 devws ~/Projects/my-app
+devws .
 ```
 
 Choose an agent and editor directly:
@@ -153,15 +176,22 @@ group, and shows each action's own shortcut:
 
 | Tab | Actions |
 | --- | ------- |
-| Workspace | New workspace · New worktree workspace · Open folder · Toggle layout `C-b \` · Minimize agent and terminal `C-b _` · New panel `C-b N` · Close workspace |
-| Agent | Go to waiting agent `C-b a` · Switch agent · Restart agent · Initialize agent · Register agent · Remove agent · Agent follow `C-b F` |
-| Editor | Switch editor · Agent follow `C-b F` |
-| Database | Database `C-b B` · Database folder |
+| Workspace | Open or start a workspace · New folder workspace · New worktree workspace · Open folder in… · Close workspace · Tidy up merged branches · Detach `C-b d` |
+| Layout | Toggle layout `C-b \` · Minimize agent and terminal `C-b _` · Hide or show the header `C-b C-s` · New panel `C-b N` · Move panel `C-b Shift+arrow` · Switch editor |
+| Agent | Go to waiting agent `C-b a` · Switch agent · Restart agent · Agent follow `C-b F` · Initialize agent · Register agent · Remove agent |
+| Git | Commit (agent) `C-b g` · Commit manually · Push / PR `C-b G` |
+| App | Run this branch `C-b e` · Switch running branch `C-b E` · Stop · Services · Migrate · Shell · Logs · Database `C-b B` · Database folder · Job log `C-b j` |
 
 `←`/`→` or `Tab` change tabs, `↑`/`↓` move, `Enter` runs the action and `Esc`
-closes; typing filters the tab. Clicking a tab or an action works too. The
-menu reopens on the tab you used last in that workspace. Actions that ask
-something (which agent, which folder…) ask inside the popup.
+closes. **Typing searches every tab**: `C-b Space` then `push` finds Push /
+PR wherever you are, each match tagged with its tab (`App · ⛁ Database`);
+clearing the text shows the tab again. Clicking a tab or an action works too.
+The menu reopens on the tab you used last in that workspace.
+
+Every question devws asks from a list — which repo, which apps, which
+branch… — looks the same, with its keys at the bottom: `Enter` chooses, `Tab`
+unticks in a list of ticked choices, and `Esc` goes back one step (from the
+repos to the owners, from the apps to the branches) or, at the first, closes.
 
 ### Layouts
 
@@ -207,6 +237,15 @@ after a reboot.
 - **After a restore** an extra agent comes back with the same agent in a new
   conversation (`/resume` brings the old one back), a Neovim fresh, a
   terminal at a prompt in its folder.
+
+### Moving panels
+
+Press **`C-b Shift+→`** (or ←, ↑, ↓), or choose **⇆ Move panel** in the devws
+menu, to move the pane you are in one place that way: it trades places with
+its neighbour on that side. The layout stays as it is — each place keeps its
+size — and nothing restarts; keep pressing the arrows after one `C-b` to move
+it further. The sidebar stays where it is, a minimized agent and terminal are
+expanded first, and the new order is saved with the workspace.
 
 ### Minimize the agent and terminal
 
@@ -288,7 +327,17 @@ The agent and Neovim are linked:
   command or terminal mode), or when the changed file has unsaved changes of
   yours, it doesn't jump: a notification names the file and line instead.
   Unsaved changes to other files don't stop it. When edits come quickly, the
-  editor always ends on the latest one.
+  editor always ends on the latest one. In a git project this covers changes
+  made through shell commands too (`sed -i`, a heredoc, a formatter,
+  `git checkout`): one command that changes several files shows the one it
+  changed last.
+- **Every line the agent changed is marked** with `▍` in the sign column, in
+  every file it changed, also files you open later. The marks stay until you
+  send the agent your next prompt. In a git project only: devws works out what
+  each tool call changed by snapshotting the project before and after it (into
+  an index of its own, so yours and your staging are never touched; ignored
+  files are left out). That takes about a fifth of a second per tool call on a
+  repo of a few hundred files.
 - **The agent can show you things.** Ask it to "show me the login controller"
   or "open where the total is computed", and it opens that place in the
   editor. It runs `~/.tmuxinator/editor_open.sh <path>[:<line>]`, which you
@@ -340,9 +389,21 @@ waiting longest and focuses the agent, restoring it when minimized; press it
 again for the next one. With none waiting, it goes to an agent that is done.
 
 When an agent in a workspace you are not looking at starts waiting or is
-done, macOS shows a notification (`devws · my-app — claude needs you`). Set
-`DEVWS_NOTIFY` in `config/tmuxinator/.env` to `waiting` for those only, or to
-`0` for none. There are no sounds.
+done, macOS shows a notification naming the workspace, its folder and branch,
+and the agent — the main one or one in a new panel:
+
+```
+my-app ✓ done
+my-app · feat/login
+codex in a new panel is done
+```
+
+Click it to go there: devws switches to the workspace, restores the agent
+when minimized, focuses it and brings iTerm2 forward. A newer alert from the
+same workspace replaces the older one. Clicking needs `terminal-notifier`
+(installed by `./install.sh --deps`); without it the alert still shows, but
+clicking does nothing. Set `DEVWS_NOTIFY` in `config/tmuxinator/.env` to
+`waiting` for those only, or to `0` for none. There are no sounds.
 
 How it works: the same hooks that link the editor report each agent event to
 `agent_state.sh`, which records the state on the workspace (tmux option
@@ -499,6 +560,9 @@ The tmux prefix is `C-b` (tmux's default key set is restored by
 | Keys | Action |
 | ---- | ------ |
 | `C-b Space` | Open the devws menu (every workspace action, in tabs) |
+| `C-b e` / `C-b E` | Run this branch / switch the running branch (jungleforge) |
+| `C-b g` / `C-b G` | Commit (the agent) / push and open the PR |
+| `C-b j` | The latest background job's log (a failure first) |
 | `C-b \` | Toggle the workspace layout |
 | `C-b _` | Minimize or restore the agent and terminal |
 | `C-b B` | Open the database pane, or focus it |
@@ -513,7 +577,8 @@ The tmux prefix is `C-b` (tmux's default key set is restored by
 Open workspaces are saved automatically, so a reboot or an iTerm2/tmux crash
 does not cost you the arrangement. Saved per workspace:
 
-- the workspace folder, agent, and editor
+- the workspace folder, agent, and editor — the agent continues its last
+  conversation in that folder
 - the pane layout (including the full-height editor layout) and each pane's
   working directory
 - extra terminals created from the devws menu
@@ -616,6 +681,167 @@ sets, such as the workspace name on the status bar (reopen the workspace).
 Sessions that are not devws workspaces are left alone, apart from tmux.conf,
 which is global.
 
+### GitHub workspaces
+
+With GitHub as the source of truth, `devws` with no folder (or **⎇ Open or
+start a workspace** in the menu) opens the start screen, and new work goes
+in a folder devws owns. It needs [gh](https://cli.github.com), logged in
+(`gh auth login`).
+
+```
+devws >
+  ＋ New branch from GitHub…
+  ↓ Clone another repo (URL / owner/repo)…
+  PhiPlanner   feat/login-page   ● changes · PR open   2h ago
+  PhiPlanner   fix/crash         ✓ clean               yesterday
+  jungleforge  main              ✓ clean               1w ago
+```
+
+**Reopen** a folder you opened before (newest first, then branch folders you
+never opened): it starts at once with the agent and editor it had — or
+switches to it when it is already open.
+
+**＋ New branch from GitHub…**:
+
+1. **Repo:** pick the owner first — **★ My repos** on top, then each of your
+   organizations, with how many repos each has — then the repo; the ones
+   already cloned come first, marked `●`, and Esc goes back to the owners.
+   The lists are kept for an hour; **↻ Refresh the list** asks GitHub again.
+   **↓ Clone another repo…** takes any other one, by URL or `owner/repo`.
+2. **Branch:** pick its kind (feat, fix, chore, refactor, docs) and type a
+   few words — `feat` + "Login page" makes `feat/login-page` — or
+   **Custom name…** for a name of your own. It starts from GitHub's
+   default branch, freshly fetched.
+3. **Agent and editor:** asked for a new branch only.
+
+What was opened, and with what, is kept in `~/.devws-state/recent.tsv`.
+
+```
+~/.devws/                          DEVWS_HOME in config/tmuxinator/.env
+  acme/my-app/
+    .bare/                         the clone (hidden, fetched each time)
+    my-app-feat-login-page/        a worktree per task
+    my-app-fix-crash/
+```
+
+There is no main checkout to keep up to date: every task gets its own folder,
+and closing the workspace offers to remove it, as for any
+[worktree workspace](#worktree-workspaces) — kept unless you type `y`, never
+removed with changes, the branch never deleted.
+
+**Commit and push** from the menu's **Git** tab, or from any pane:
+
+```sh
+devws commit           # the agent commits (its /commit skill when it has one)
+devws commit --manual  # tick the files, type the message
+devws push             # push the branch; offers to open its pull request
+```
+
+Commit asks the workspace's agent. An agent that is working or waiting on
+you is not interrupted: you commit by hand instead, with every changed file
+ticked (`Tab` unticks one) and a message suggested from the branch
+(`feat/…` → `feat: `). Push sets the branch's upstream, then shows its pull
+request or offers to create one (`gh pr create --fill`, `d` for a draft) and
+opens it in the browser. The sidebar shows each workspace's PR state next to
+its branch (`feat/login-page · PR open`), checked in the background every
+few minutes.
+
+**Untracked files.** A branch's folder only has what git tracks, so each repo
+keeps the files git ignores but the app needs — `.env`, `deploy/.docker-env`,
+a SQLite database — once, in `~/.devws/<owner>/<repo>/.shared/` (same layout
+as the repo). Every branch folder gets them: a link per file, so editing
+`.shared/backend/.env` reaches every branch, except databases (`*.sqlite`,
+`*.sqlite3`, `*.db`), copied so each branch has its own data. A file already in
+the folder is never replaced. The first workspace of a repo asks where to
+import them from: your checkouts of the same repo in `DEVWS_PROJECTS`
+(`~/Projects` by default), another folder, or Skip; then lists the folder's
+ignored files (packages, caches, builds and logs left out), all ticked.
+
+### Run branches in jungleforge
+
+The menu's **App** tab runs a branch's apps with
+[jungleforge](../jungleforge) (`DEVWS_JUNGLEFORGE`, `~/Projects/jungleforge` by
+default). A repo's apps are the jungleforge registry entries whose folder is a
+checkout of the same repo — PhiPlanner's `phi-planner` (`backend/`) and
+`phi-planner-web` (`web/`), say. Running a branch starts the same containers,
+ports and shared databases on the branch's folder, overriding the app's path
+for that one command (`make start phi-planner PHI_PLANNER_PATH=<branch>/backend`):
+jungleforge's `.env` is never edited, and only one branch of an app runs at a
+time.
+
+- **▶ Run this branch** — the workspace's branch. With several apps, all are
+  ticked (Tab unticks one). The shared services start first if they are down.
+- **⇄ Switch running branch** — `main` (the registry's own checkout, e.g.
+  `~/Projects/PhiPlanner`) and every branch folder, `▶` on the one running.
+- **■ Stop**, **⛃ Services**, **⇡ Migrate** (switching never migrates: the
+  databases are shared), **⌘ Shell** and **≡ Logs** (in a panel below).
+
+Packages install in the container after a start only when `composer.lock` or
+`package-lock.json` changed since that folder's last install, so a new branch
+installs once and switching back and forth stays fast. The sidebar shows
+`· ▶ running` on the workspace whose branch runs. Closing that workspace asks
+whether to switch its apps back to main (the default), stop them, or leave
+them running.
+
+```sh
+devws run          # this branch
+devws run main     # or another: main, feat/login-page…
+devws stop
+```
+
+A repo jungleforge does not know says so: register it in jungleforge's `.env`.
+
+### Background jobs
+
+Long work never holds the screen: Run this branch, Switch, Stop, Services,
+Migrate, Push and closing a running branch's workspace ask their questions,
+close the menu and carry on as a **background job**. While jobs run, the
+header shows them on one line where the network and weather are — each job
+with its state, progress and time:
+
+```
+CPU … │ claude 5h … │ ⏵ phi-planner → feat/login ▓▓▓▓░░░░░░ 4/9 0:42  … phi-planner-web → feat/login queued
+```
+
+A job still running after 3 seconds opens its **log panel** below the
+terminal of the workspace that started it: the live log, in color, with the
+job in the panel's header. It never takes the focus, so you keep typing where
+you were. A success says `✓ … done` and closes after 5 seconds; a failure
+says `✗ … failed` and stays until you press `q` in it. `q` closes it at any
+time — the job carries on. One panel per workspace, on its newest job;
+toggling the layout or minimizing the agent and terminal closes it.
+
+In the header a success shows `✓` for 10 seconds, then the network and
+weather come back; a failure stays `✗ … failed` until you open its log.
+**Click the job group** (or the `⏵ 2 jobs · ✗ 1 failed` summary on tmux's top
+line, there with the header hidden too), press `C-b j` or choose **◷ Job
+log** to open the log panel again. Jobs on the same app wait in line
+(`queued`), so two builds of one container never race. A Docker build shows
+its progress from the step count it prints.
+
+A failure says why when its exit code tells — `Error 137` is "killed — usually
+out of memory: give Docker Desktop more (Settings → Resources)", 127 "command
+not found", 130/143 "interrupted" — at the end of its log and in its
+notification. And when something devws runs in the background cannot do its
+part (the log panel cannot open, the sidebar's refresh fails), the header says
+so as an error note instead of nothing happening.
+
+When a job ends while you are elsewhere, macOS tells you: a failure always,
+a success when it took over 30 seconds. Clicking the notification opens the
+job's log. `DEVWS_NOTIFY=0` in `config/tmuxinator/.env` turns these off, as it
+does the agents'.
+
+Anything can use them:
+
+```sh
+devws job "Tests" -- make test            # [--lock <name>] to queue with others
+devws note "Deployed" [--error]           # a message in the same place
+devws jobs                                # recent jobs
+devws jobs log [id]                       # page a log (the failed one first)
+```
+
+Jobs live in `~/.devws-state/jobs/`, kept for 7 days.
+
 ### Worktree workspaces
 
 To have two agents work on the same repo without editing each other's files,
@@ -640,6 +866,20 @@ always kept: devws lists them instead of asking. The branch and its commits
 are never deleted, and the folder is removed with `git worktree remove`,
 which refuses one with changes. Delete a branch yourself with `git branch -d`
 once it is merged.
+
+**⌫ Tidy up merged branches** (Workspace tab, or `devws tidy`) clears the
+branch folders under `~/.devws` you are done with: those whose PR is merged
+or closed, with no uncommitted changes and no workspace open on them. They
+come all ticked (`Tab` unticks one) and go as a background job. Only the
+folders go; the branches stay.
+
+### Closing and leaving
+
+**× Close workspace** on the workspace you are in moves you to the one you
+used last, so you stay in devws; only closing the last workspace leaves it.
+To leave devws with every workspace still running, choose **⏏ Detach** in the
+Workspace tab, press `C-b d`, or run `devws detach`; `devws` or
+`tmux attach` brings you back.
 
 ### Initialize an agent
 
@@ -690,11 +930,22 @@ Glow, exactly as before.
 - A lighter opaque gray background marks the selected workspace.
 - Yellow `●` means the Git working tree has uncommitted or untracked changes.
 - Green `✓` means the Git working tree is clean.
+- `· PR draft`, `· PR open`, `· PR merged` or `· PR closed` after the branch
+  is the state of its pull request.
+- `· ▶ running` means jungleforge runs that workspace's branch.
 
 ## Configuration
 
 - Agents and editors, automatic restore: `config/tmuxinator/.env`
 - Saved workspaces: `~/.devws-state/sessions.tsv`
+- GitHub workspaces: `DEVWS_HOME` in `config/tmuxinator/.env`;
+  `config/tmuxinator/github_repo.sh` (clones, repo list, PR states),
+  `github_workspace.sh` (the questions), `worktree.sh`,
+  `git_actions.sh` (Commit and Push), and `shared_files.sh` (`.shared`)
+- Running branches: `DEVWS_JUNGLEFORGE` in `config/tmuxinator/.env`;
+  `config/tmuxinator/jungleforge.sh`
+- Background jobs: `config/tmuxinator/job.sh`, shown by
+  `header_ticker.sh`; the click in `config/tmux/tmux.conf`
 - iTerm2 Shift+Enter mapping: `scripts/setup_iterm_keys.sh`
 - Workspace layout: `config/tmuxinator/dev.yml`
 - Layout toggle: `config/tmuxinator/toggle_layout.sh`
@@ -708,7 +959,8 @@ Glow, exactly as before.
 - devws menu: `config/tmuxinator/devws_menu.sh` (tabs and items), with the
   actions in `config/tmuxinator/workspace_actions.sh`
 - Agent ↔ editor link: `config/tmuxinator/editor_open.sh`,
-  `agent_follow_hook.sh`, `agent_settings.json` (Claude Code hook),
+  `agent_follow_hook.sh`, `agent_changes.sh` (what a tool call changed),
+  `agent_settings.json` (Claude Code hook),
   `agent_editor_prompt.md`, `follow_mode.sh` (the modes), and
   `config/nvim/lua/devws/follow.lua`; wired up in `agent_runner.sh` and
   `editor_runner.sh`
@@ -720,25 +972,28 @@ Glow, exactly as before.
   wired up in `agent_runner.sh` and `agent_settings.json`
 - Neovim (LazyVim): `config/nvim/`
 - tmux: `config/tmux/tmux.conf`
-- Shell command and prompt: `shell/devws.zsh`
+- The `devws` command: `bin/devws`; the prompt and editor settings:
+  `shell/devws.zsh`; scripts linked into `~/.tmuxinator` on each run:
+  `config/tmuxinator/link_scripts.sh`
 - Mermaid diagram preview: `shell/render_mermaid_preview.sh`
 
-After changing a symlinked config, restart the relevant program. Reload shell
-changes with `source ~/.zshrc`; reload tmux with
-`tmux source-file ~/.tmux.conf`.
+After changing a symlinked config, restart the relevant program. Changes to
+`bin/devws` apply at once; reload prompt changes with `source ~/.zshrc`, and
+tmux with `tmux source-file ~/.tmux.conf` (or `devws reload`).
 
 ## Validate
 
 ```sh
-make check
+make check                   # everything, a few minutes
+scripts/check.sh --quick     # syntax and the fast suites, under 30 seconds
 ```
 
 This checks Bash/Zsh syntax, the tmuxinator ERB/YAML template, Lua syntax of
 the Neovim config when `luac` is available, and executable permissions, then
-runs the test suites in `scripts/`: install/uninstall, Markdown viewer,
-workspace save/restore, layout toggle, minimize and the database pane
-(including real mouse clicks on an isolated tmux server), and the iTerm2 key
-map.
+runs every test suite in `scripts/` (`test_*.sh`), four at a time
+(`DEVWS_CHECK_JOBS`), printing `✓`/`✗` per suite and the full output of any
+that fails. The suites drive isolated tmux servers, including real mouse
+clicks, and never touch your own workspaces.
 
 ## Uninstall
 

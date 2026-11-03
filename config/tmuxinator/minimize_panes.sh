@@ -41,6 +41,12 @@ esac
 
 . "$script_dir/workspace_panes.sh"
 
+# A job's log panel sits under the terminal, which this moves: it closes
+# (C-b j opens it again).
+if [ "$action" = toggle ] && [ "$group" = agents ]; then
+  "$script_dir/job_panel.sh" close "$session" 2>/dev/null
+fi
+
 load_workspace_panes "$session" || fail "session $session not found"
 editor="$(pane_with_role editor)"
 [ -n "$editor" ] || fail "editor pane not found"
