@@ -632,6 +632,17 @@ show_job_log() {
   "$HOME/.tmuxinator/job.sh" open || pause
 }
 
+# open_guide <page>: the guide's page in a popup large enough to read it.
+# Opened from the tmux server once the menu's popup has closed: a client
+# shows one popup at a time.
+open_guide() {
+  local client target=""
+  client="$(tmux display-message -p '#{client_name}' 2>/dev/null)"
+  [ -z "$client" ] || target="-c $(printf '%q' "$client")"
+  tmux run-shell -b "sleep 0.2; tmux display-popup $target -E -w 90% -h 90% \
+-T ' devws guide · / searches · q closes ' $(printf '%q' "$HOME/.tmuxinator/guide.sh $1")"
+}
+
 start_services() {
   start_job "Services" --lock services -- "$HOME/.tmuxinator/jungleforge.sh" services
 }

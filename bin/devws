@@ -18,6 +18,12 @@ devws() {
     return
   fi
 
+  # The guide (docs/guide/): `devws help [page]`.
+  if [[ "${1:-}" == "help" ]]; then
+    "$devws_checkout/config/tmuxinator/guide.sh" "${@:2}"
+    return
+  fi
+
   if [[ "${1:-}" == "menu" ]]; then
     devws-menu "${2:-toggle}" "${3:-}"
     return
