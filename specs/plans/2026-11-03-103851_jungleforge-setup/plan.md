@@ -2,7 +2,7 @@
 
 - **Date:** 03-11-2026
 - **Branch:** feat/jungleforge-setup
-- **Status:** Executed (not committed yet)
+- **Status:** Executed — 68a8bb0
 
 Notes from execution:
 - `jungleforge.sh` honors `DEVWS_ENV_FILE` (as `memory.sh` does), so its tests
