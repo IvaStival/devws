@@ -12,6 +12,7 @@ or move to it and press `Enter`, to go there.
 ```
 devws >
   ＋ New branch from GitHub…
+  ⌂ Open a local folder…
   ↓ Clone another repo (URL / owner/repo)…
   PhiPlanner   feat/login-page   ● changes · PR open   2h ago
   PhiPlanner   fix/crash         ✓ clean               yesterday
@@ -29,6 +30,10 @@ devws >
      takes any name. It starts from GitHub's default branch, freshly
      fetched.
   3. **Agent and editor.**
+- **⌂ Open a local folder…** lists the folders in `~/Projects`
+  (`DEVWS_PROJECTS`), each git repo with its branch, or **✎ Type a path…**
+  for any other (Tab completes). The folder opens as it is, no branch made;
+  devws asks for the agent and editor. Same as `devws <folder>`.
 - **↓ Clone another repo…** takes any repo by URL or `owner/repo`.
 
 It needs [gh](https://cli.github.com) logged in (`gh auth login`); the

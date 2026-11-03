@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # The folder for a workspace, chosen from the start screen: a folder opened
-# before (recent.sh, newest first, and the worktrees never opened), a new
-# branch of one of your GitHub repos, or of another repo cloned by URL — off
-# a fresh origin/<default branch> (github_repo.sh, worktree.sh). The questions
+# before (recent.sh, newest first, and the worktrees never opened), a local
+# folder (one in DEVWS_PROJECTS, or a typed path), a new branch of one of
+# your GitHub repos, or of another repo cloned by URL — off a fresh
+# origin/<default branch> (github_repo.sh, worktree.sh). The questions
 # use the terminal; only the folder is printed. Run by `devws` with no folder
 # and by the menu's "New GitHub workspace".
 #
@@ -21,6 +22,19 @@ shared_files="$script_dir/shared_files.sh"
 picker="$script_dir/picker.sh"
 prefixes='feat fix chore refactor docs'
 custom_name='Custom name…'
+# The environment wins over .env, as in github_repo.sh. Read in a subshell:
+# sourcing .env here would replace the DEVWS_HOME the scripts this runs get.
+# shellcheck source=/dev/null
+DEVWS_PROJECTS="${DEVWS_PROJECTS:-$([ -r "$script_dir/.env" ] && . "$script_dir/.env" >/dev/null 2>&1; printf '%s' "${DEVWS_PROJECTS:-}")}"
+DEVWS_PROJECTS="${DEVWS_PROJECTS:-~/Projects}"
+
+expand_home() {
+  case "$1" in
+    "~") printf '%s' "$HOME" ;;
+    "~/"*) printf '%s' "$HOME/${1#\~/}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
 
 # "Login page: OAuth & SSO!" → login-page-oauth-sso
 branch_name() {
@@ -156,19 +170,58 @@ ask_branch() {
   printf '%s\n' "$branch"
 }
 
-# Reopen a folder (printed as "open <folder>"), or start a branch of a repo
-# ("new <repo>"), picked by owner or typed. Esc on the owners comes back here.
+# A folder on this machine: one in DEVWS_PROJECTS (a git repo shows its
+# branch), or a typed path. Esc goes back to the start screen, and so does a
+# path that does not exist, once said.
+pick_local_folder() {
+  local projects typed_row='✎ Type a path…' choice folder branch
+  projects="$(expand_home "$DEVWS_PROJECTS")"
+  choice="$(
+    {
+      printf '%s\t\n' "$typed_row"
+      for folder in "$projects"/*/; do
+        [ -d "$folder" ] || continue
+        folder="${folder%/}"
+        branch=""
+        [ -e "$folder/.git" ] && branch="$(git -C "$folder" symbolic-ref --quiet --short HEAD 2>/dev/null)"
+        printf '%-28s %s\t%s\n' "$(basename "$folder")" "${branch:+⎇ $branch}" "$folder"
+      done
+    } | "$picker" Folder "A folder in $DEVWS_PROJECTS, or type a path" --delimiter=$'\t' --with-nth=1
+  )" || return 1
+  [ -n "$choice" ] || return 1
+  folder="${choice##*$'\t'}"
+  if [ -z "$folder" ]; then
+    read -e -r -p 'Folder (Tab completes): ' folder || return 1
+    [ -n "$folder" ] || return 1
+    folder="$(expand_home "$folder")"
+  fi
+  if ! (cd "$folder" 2>/dev/null && pwd -P); then
+    printf 'Folder does not exist: %s\n' "$folder" >&2
+    read -r -p 'Press Enter to go back…' _ || true
+    return 1
+  fi
+}
+
+# Reopen a folder or open a local one (printed as "open <folder>"), or start
+# a branch of a repo ("new <repo>"), picked by owner or typed. Esc on the
+# owners or the local folders comes back here.
 start_screen() {
   local new_row='＋ New branch from GitHub…' clone_row='↓ Clone another repo (URL / owner/repo)…'
-  local choice repo
+  local local_row='⌂ Open a local folder…'
+  local choice repo folder
   while :; do
     choice="$(
-      { printf '%s\t\n' "$new_row" "$clone_row"; "$script_dir/recent.sh" rows; } |
-        "$picker" devws 'Reopen a workspace, or start a new branch' --delimiter=$'\t' --with-nth=1
+      { printf '%s\t\n' "$new_row" "$local_row" "$clone_row"; "$script_dir/recent.sh" rows; } |
+        "$picker" devws 'Reopen a workspace, open a folder, or start a new branch' --delimiter=$'\t' --with-nth=1
     )" || return 1
     case "${choice%%$'\t'*}" in
       "$new_row")
         repo="$(pick_repo)" || continue
+        ;;
+      "$local_row")
+        folder="$(pick_local_folder)" || continue
+        printf 'open %s\n' "$folder"
+        return 0
         ;;
       "$clone_row")
         read -e -r -p 'Repo (owner/repo or URL): ' repo || continue
