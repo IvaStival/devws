@@ -25,7 +25,7 @@ trap 'rm -f "$temporary"' EXIT
 
 {
   printf '#devws-state\t1\n'
-  while IFS="$tab" read -r session root agent editor; do
+  while IFS="$tab" read -r session root agent editor task; do
     case "$session" in dev-*) ;; *) continue ;; esac
     [ -n "$root" ] || continue
 
@@ -36,7 +36,7 @@ trap 'rm -f "$temporary"' EXIT
     )"
     panes="$(
       tmux list-panes -t "$session:" \
-        -F "#{pane_index}${tab}#{@devws_role}${tab}#{pane_title}${tab}#{pane_current_path}${tab}#{@devws_agent}" \
+        -F "#{pane_index}${tab}#{@devws_role}${tab}#{pane_title}${tab}#{pane_current_path}${tab}#{@devws_agent}${tab}#{@devws_team}" \
         2>/dev/null
     )"
     [ -n "$panes" ] || continue
@@ -46,8 +46,10 @@ trap 'rm -f "$temporary"' EXIT
       picker_open=1
     fi
 
-    printf 'W\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$session" "$root" "$agent" "$editor" "$picker_open" "$layout"
+    # The task (a program's grouping, `devws open --task`) comes last, so a
+    # workspace without one keeps its line as it was.
+    printf 'W\t%s\t%s\t%s\t%s\t%s\t%s%s\n' \
+      "$session" "$root" "$agent" "$editor" "$picker_open" "$layout" "${task:+$tab$task}"
 
     # Extra terminals inherit neither a title nor @devws_role, so anything that
     # is not one of the four template panes is recorded as "extra". Workspaces
@@ -63,6 +65,7 @@ trap 'rm -f "$temporary"' EXIT
         index_of[rows] = $1
         path_of[rows] = $4
         agent_of[rows] = $5
+        team_of[rows] = $6
         role = $2
         # A minimized pane is recorded as the pane its placeholder stands in for.
         sub(/^minimized-/, "", role)
@@ -80,9 +83,10 @@ trap 'rm -f "$temporary"' EXIT
             role_of[row] = "terminal"
             has_terminal = 1
           }
-          # An extra agent (New panel) also records its agent.
+          # An extra agent (New panel) also records its agent, and "team" when a
+          # program started it (@devws_team): that program restarts it.
           if (role_of[row] == "extra-agent") {
-            printf "P\t%s\t%s\t%s\t%s\t%s\n", session, index_of[row], role_of[row], path_of[row], agent_of[row]
+            printf "P\t%s\t%s\t%s\t%s\t%s%s\n", session, index_of[row], role_of[row], path_of[row], agent_of[row], (team_of[row] == 1 ? "\tteam" : "")
           } else {
             printf "P\t%s\t%s\t%s\t%s\n", session, index_of[row], role_of[row], path_of[row]
           }
@@ -90,7 +94,7 @@ trap 'rm -f "$temporary"' EXIT
       }'
   done < <(
     tmux list-sessions \
-      -F "#{session_name}${tab}#{@devws_root}${tab}#{@devws_agent}${tab}#{@devws_editor}" \
+      -F "#{session_name}${tab}#{@devws_root}${tab}#{@devws_agent}${tab}#{@devws_editor}${tab}#{@devws_task}" \
       2>/dev/null
   )
 } > "$temporary"

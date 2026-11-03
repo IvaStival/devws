@@ -60,6 +60,7 @@ case "${1:-}" in
         '#{pane_title}') column='$4' ;;
         '#{pane_current_path}') column='$5' ;;
         '#{@devws_agent}') column='$6' ;;
+        '#{@devws_team}') column='$7' ;;
         *) column="\"$token\"" ;;
       esac
       if [[ -z "$program" ]]; then program="$column"; else program="$program, $column"; fi
@@ -362,6 +363,45 @@ test_restore_closes_picker() {
 FAKE_BIN="$TEST_ROOT/bin"
 make_fake_bin "$FAKE_BIN"
 
+# A program (devAgentics) groups workspaces under a task and marks its agent
+# panels as its own: the task comes back, those panels are left to the program
+# that started them, and other extra agents are restarted as before.
+test_tasks_and_team_panels_survive_a_restore() {
+  local one="$TEST_ROOT/project-one"
+  setup
+  mkdir -p "$one"
+  printf 'dev-one\t%s\tclaude\tnvim\tteam-1\n' "$one" > "$TEST_ROOT/sessions"
+  write_panes dev-one \
+    "%picker-one|0||devws-picker|$one" \
+    "%editor-one|1|editor||$one" \
+    "%agent-one|2|agent||$one|claude" \
+    "%terminal-one|3|terminal||$one" \
+    "%agent-two|4|extra-agent||$one|codex|1" \
+    "%agent-three|5|extra-agent||$one|claude"
+  FIXTURE_SESSIONS="$TEST_ROOT/sessions"
+  FIXTURE_LAYOUT="LAYOUT-ONE"
+  run_save
+  grep -q "^W${TAB}dev-one${TAB}$one${TAB}claude${TAB}nvim${TAB}[01]${TAB}LAYOUT-ONE${TAB}team-1$" "$(state_file)" ||
+    fail "the task was not saved: $(cat "$(state_file)")"
+  grep -q "^P${TAB}dev-one${TAB}4${TAB}extra-agent${TAB}$one${TAB}codex${TAB}team$" "$(state_file)" ||
+    fail "a team panel was not saved as one: $(cat "$(state_file)")"
+  grep -q "^P${TAB}dev-one${TAB}5${TAB}extra-agent${TAB}$one${TAB}claude$" "$(state_file)" ||
+    fail "another extra agent's line changed: $(cat "$(state_file)")"
+
+  : > "$TEST_ROOT/tmux.log"
+  run_restore
+  grep -q "set-option -t =dev-one: @devws_task team-1" "$TEST_ROOT/tmux.log" ||
+    fail "the task was not restored: $(cat "$TEST_ROOT/tmux.log")"
+  ! grep -q "agent_runner.sh codex --extra" "$TEST_ROOT/tmux.log" || fail "a team panel was restarted"
+  grep -q "agent_runner.sh claude --extra" "$TEST_ROOT/tmux.log" || fail "another extra agent was not restarted"
+
+  # An older file, with neither, restores as before.
+  printf '#devws-state\t1\nW\tdev-one\t%s\tclaude\tnvim\t1\tLAYOUT-ONE\n' "$one" > "$(state_file)"
+  : > "$TEST_ROOT/tmux.log"
+  run_restore
+  ! grep -q "@devws_task" "$TEST_ROOT/tmux.log" || fail "a workspace without a task got one"
+}
+
 test_save_writes_records
 test_save_adopts_terminal_in_legacy_workspace
 test_save_is_idempotent
@@ -373,5 +413,6 @@ test_restore_falls_back_to_default_agent
 test_restore_reopens_database_pane
 test_save_records_minimized_database
 test_restore_closes_picker
+test_tasks_and_team_panels_survive_a_restore
 
 printf 'Workspace state tests passed.\n'

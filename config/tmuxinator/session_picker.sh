@@ -6,6 +6,7 @@ set -u
 
 # Absolute: fzf runs it again (--rows) from wherever it is.
 picker_script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+tab="$(printf '\t')"
 
 if ! command -v fzf >/dev/null 2>&1; then
   printf 'devws picker: fzf is required; run the devws installer and restart tmux.\n' >&2
@@ -23,6 +24,12 @@ fi
 #
 #   session_picker.sh          the sidebar
 #   session_picker.sh --rows   (fzf, internal) redraws the rows and prints them
+#   session_picker.sh --position <workspace>
+#                              (internal) its place among the rows, which the
+#                              task headings count in
+#
+# A workspace with a task (@devws_task, set by `devws open --task`) is listed
+# under its task's heading, after the workspaces without one.
 print_padded_row() {
   local style="$1"
   local width="$2"
@@ -33,9 +40,31 @@ print_padded_row() {
   printf '%b%s%*s\033[0m' "$style" "$text" "$padding" ""
 }
 
+# The rows in order, as "workspace<TAB><session>" and "task<TAB><id>": the
+# workspaces without a task, then each task's heading and its workspaces. The
+# order the rows are drawn in and fzf's cursor is placed by.
+row_order() {
+  tmux list-sessions -F "#{session_name}${tab}#{@devws_task}" 2>/dev/null |
+    awk -F '\t' '
+      $1 !~ /^dev-/ { next }
+      $2 == "" { plain[++plains] = $1; next }
+      {
+        if (!($2 in members)) order[++tasks] = $2
+        members[$2] = members[$2] $1 "\t"
+      }
+      END {
+        for (i = 1; i <= plains; i++) print "workspace\t" plain[i]
+        for (t = 1; t <= tasks; t++) {
+          print "task\t" order[t]
+          n = split(members[order[t]], list, "\t")
+          for (i = 1; i < n; i++) print "workspace\t" list[i]
+        }
+      }'
+}
+
 workspace_rows() {
   local current="$1"
-  local session agent editor root agent_state branch state state_plain row_width
+  local kind session agent editor root agent_state branch state state_plain row_width
   local activity activity_plain pr_file pr_state
 
   row_width="$(
@@ -46,8 +75,13 @@ workspace_rows() {
   esac
   (( row_width > 2 )) && row_width=$((row_width - 2))
 
-  while IFS='|' read -r session agent editor root agent_state frozen needs_reopen; do
-    case "$session" in dev-*) ;; *) continue ;; esac
+  while IFS="$tab" read -r kind session; do
+    if [ "$kind" = task ]; then
+      printf 'task:%s\t\033[36m▸ %s\033[0m\0' "$session" "$session"
+      continue
+    fi
+    IFS='|' read -r agent editor root agent_state frozen needs_reopen <<< "$(tmux display-message -p -t "=$session:" \
+      '#{@devws_agent}|#{@devws_editor}|#{@devws_root}|#{@devws_agent_state}|#{@devws_frozen}|#{@devws_needs_reopen}' 2>/dev/null)"
     agent="${agent:-unknown}"
     editor="${editor:-unknown}"
 
@@ -116,8 +150,7 @@ workspace_rows() {
       printf '\n    \033[2m%s\033[0m' "$branch"
       printf '\n    \033[2m%s%b · %s\033[0m\0' "$agent" "$activity" "$editor"
     fi
-  done < <(tmux list-sessions \
-    -F '#{session_name}|#{@devws_agent}|#{@devws_editor}|#{@devws_root}|#{@devws_agent_state}|#{@devws_frozen}|#{@devws_needs_reopen}' 2>/dev/null)
+  done < <(row_order)
 }
 
 # The folders jungleforge's apps run from (jungleforge.sh running-folders),
@@ -171,6 +204,11 @@ write_rows() {
   refresh_states
 }
 
+if [ "${1:-}" = --position ]; then
+  row_order | awk -F '\t' -v workspace="${2:-}" '$1 == "workspace" && $2 == workspace { print NR; exit }'
+  exit 0
+fi
+
 if [ "${1:-}" = --rows ]; then
   rows_file="${DEVWS_PICKER_ROWS:?}"
   rm -f "$rows_file.stale"
@@ -195,13 +233,7 @@ trap 'rm -f "$rows_file" "$rows_file.stale" "$fzf_socket"' EXIT
 
 while tmux list-sessions >/dev/null 2>&1; do
   current="$(tmux display-message -p '#S' 2>/dev/null)"
-  current_position="$(
-    tmux list-sessions -F '#{session_name}' 2>/dev/null |
-      awk -v current="$current" '
-        /^dev-/ { position++ }
-        $0 == current { print position; exit }
-      '
-  )"
+  current_position="$("$picker_script" --position "$current")"
   [ -n "$current_position" ] || current_position=1
   rm -f "$rows_file.stale"
   write_rows
@@ -230,6 +262,15 @@ while tmux list-sessions >/dev/null 2>&1; do
     workspace:*)
       workspace="${selected%%$'\t'*}"
       tmux switch-client -t "${workspace#workspace:}" 2>/dev/null
+      ;;
+    # A task's heading takes you to its first workspace.
+    task:*)
+      task="${selected%%$'\t'*}"
+      workspace="$(row_order | awk -F '\t' -v task="${task#task:}" '
+        $1 == "task" && $2 == task { found = 1; next }
+        found && $1 == "workspace" { print $2; exit }
+        found { exit }')"
+      [ -z "$workspace" ] || tmux switch-client -t "$workspace" 2>/dev/null
       ;;
   esac
 done

@@ -172,8 +172,7 @@ reopen_pane() {
   # respawn-pane would start the pane's old program again.
   shell="$(tmux show-option -gqv default-shell 2>/dev/null)"
   tmux respawn-pane -k -t "$1" -c "$2" "exec $(printf '%q' "${shell:-${SHELL:-/bin/zsh}}") -l" &&
-    tmux send-keys -t "$1" -l "$3" &&
-    tmux send-keys -t "$1" Enter
+    "$script_dir/agent_cli.sh" send --force "$1" "$3"
 }
 
 # <session>: its agent and editor panes that run their program with no runner

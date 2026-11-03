@@ -113,6 +113,10 @@ Each open workspace shows its folder, branch, agent and editor:
 - the agent's state: `⠋` working, `● needs you`, `✓ done` ([Agents](agents.md));
 - `· paused`: frozen while unused (below).
 
+Workspaces a program groups under a task (`devws open --task`, [Commands](commands.md#for-programs-agent-commands))
+come after the others, under a `▸ <task>` heading; `Enter` on the heading goes
+to the task's first workspace.
+
 **☰ Menu** at its top opens the devws menu. `devws menu toggle` (or
 `open`/`close`) shows or hides it.
 
