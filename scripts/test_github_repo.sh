@@ -65,6 +65,7 @@ input="\$(cat)"
 # The owners list, for the tests to look at.
 case "\$input" in *"My repos"*) printf '%s\n' "\$input" > "$TEST_ROOT/fzf.owners" ;; esac
 case "\$input" in *"Type a path"*) printf '%s\n' "\$input" > "$TEST_ROOT/fzf.local" ;; esac
+case "\$input" in "+ New branch…"*) printf '%s\n' "\$input" > "$TEST_ROOT/fzf.branches" ;; esac
 # An empty answer is Esc.
 [ -n "\$answer" ] || exit 130
 if [ "\$answer" = @all ]; then printf '%s\n' "\$input"; else printf '%s\n' "\$input" | grep -m 1 -F -- "\$answer"; fi
@@ -170,7 +171,7 @@ test_a_new_workspace_gets_the_imported_files() {
   printf '.env\n' > "$checkout/.gitignore"
   printf 'APP_KEY=x\n' > "$checkout/.env"
 
-  printf '%s\n' "$checkout" @all '+ New branch' feat > "$TEST_ROOT/fzf.answers"
+  printf '%s\n' "$checkout" @all '+ New branch' '+ New branch' feat > "$TEST_ROOT/fzf.answers"
   folder="$(printf 'seeded\n' | "$GITHUB_WORKSPACE" acme/app 2>/dev/null)" ||
     fail "the GitHub workspace flow failed"
   [ "$folder" = "$DEVWS_HOME/acme/app/app-feat-seeded" ] || fail "the flow gave $folder"
@@ -183,10 +184,12 @@ test_a_new_workspace_gets_the_imported_files() {
     fail "the import was asked again, or the worktree was not reopened"
 }
 
-# The start screen: New branch, then the owner, then its repo (Esc there goes
-# back to the owners), then the branch's name.
+# The start screen: Branch from GitHub, then the owner, then its repo (Esc
+# there goes back to the owners), then + New branch and its name (Esc on the
+# kind goes back to the branches).
 test_a_new_branch_is_picked_by_owner() {
-  printf '%s\n' '＋ New branch' '  acme' '' '  acme' '● app' 'fix' > "$TEST_ROOT/fzf.answers"
+  printf '%s\n' '⎇ Branch' '  acme' '' '  acme' '● app' '+ New branch' '' '+ New branch' 'fix' \
+    > "$TEST_ROOT/fzf.answers"
   [ "$(printf 'by owner\n' | "$GITHUB_WORKSPACE" 2>/dev/null)" = "$DEVWS_HOME/acme/app/app-fix-by-owner" ] ||
     fail "acme, then app, then fix 'by owner' did not make app-fix-by-owner"
   grep -q '★ My repos (me)' "$TEST_ROOT/fzf.owners" || fail "your repos are not first: $(cat "$TEST_ROOT/fzf.owners")"
@@ -200,7 +203,7 @@ test_the_start_screen_reopens_a_folder() {
   printf '%s\n' 'feat/seeded' > "$TEST_ROOT/fzf.answers"
   [ "$("$GITHUB_WORKSPACE" 2>/dev/null </dev/null)" = "$folder" ] || fail "the recent folder was not reopened"
   # Esc on the owners goes back to the start screen, not out.
-  printf '%s\n' '＋ New branch' '' 'feat/seeded' > "$TEST_ROOT/fzf.answers"
+  printf '%s\n' '⎇ Branch' '' 'feat/seeded' > "$TEST_ROOT/fzf.answers"
   [ "$("$GITHUB_WORKSPACE" 2>/dev/null </dev/null)" = "$folder" ] ||
     fail "Esc on the owners did not go back to the start screen"
 }
@@ -228,6 +231,35 @@ test_the_start_screen_opens_a_local_folder() {
   unset DEVWS_PROJECTS
 }
 
+# The GitHub branches, newest commit first, with how long ago; not origin/HEAD.
+test_branches_lists_remote_branches_newest_first() {
+  local bare="$DEVWS_HOME/acme/app/.bare" listed
+  GIT_COMMITTER_DATE='2030-01-01T00:00:00' git -C "$SEED" commit -q --allow-empty -m newer
+  git -C "$SEED" push -q origin HEAD:refs/heads/fix/newest
+  github_repo ensure acme/app >/dev/null 2>&1 || fail "the repo did not fetch"
+  listed="$(github_repo branches "$bare")"
+  [ "$(printf '%s\n' "$listed" | head -n 1 | cut -f 1)" = fix/newest ] || fail "the newest branch is not first: $listed"
+  printf '%s\n' "$listed" | cut -f 1 | grep -qx feat/remote || fail "feat/remote is not listed: $listed"
+  printf '%s\n' "$listed" | cut -f 1 | grep -qx main || fail "main is not listed: $listed"
+  ! printf '%s\n' "$listed" | cut -f 1 | grep -qx HEAD || fail "origin/HEAD is listed: $listed"
+  printf '%s\n' "$listed" | head -n 1 | cut -f 2 | grep -q . || fail "no date for the branch: $listed"
+}
+
+# A branch already on GitHub opens in a folder of its own, tracking it; picked
+# again, it is marked and its folder reopened.
+test_an_existing_github_branch_is_opened() {
+  local folder="$DEVWS_HOME/acme/app/app-feat-remote"
+  printf '%s\n' '⎇ Branch' '  acme' '● app' 'feat/remote' > "$TEST_ROOT/fzf.answers"
+  [ "$("$GITHUB_WORKSPACE" 2>/dev/null </dev/null)" = "$folder" ] || fail "feat/remote did not open in $folder"
+  [ "$(git -C "$folder" rev-parse --abbrev-ref '@{u}')" = origin/feat/remote ] ||
+    fail "feat/remote does not track GitHub's branch"
+  grep -q '^+ New branch…' "$TEST_ROOT/fzf.branches" || fail "+ New branch is not first: $(cat "$TEST_ROOT/fzf.branches")"
+
+  printf '%s\n' '⎇ Branch' '  acme' '● app' 'feat/remote' > "$TEST_ROOT/fzf.answers"
+  [ "$("$GITHUB_WORKSPACE" 2>/dev/null </dev/null)" = "$folder" ] || fail "feat/remote's folder was not reopened"
+  grep -q '^feat/remote.*● folder' "$TEST_ROOT/fzf.branches" || fail "the open branch is not marked: $(cat "$TEST_ROOT/fzf.branches")"
+}
+
 test_branch_names_from_a_prefix_and_description() {
   [ "$("$GITHUB_WORKSPACE" branch-name feat 'Login page: OAuth & SSO!')" = feat/login-page-oauth-sso ] ||
     fail "slug: $("$GITHUB_WORKSPACE" branch-name feat 'Login page: OAuth & SSO!')"
@@ -246,6 +278,8 @@ test_a_new_workspace_gets_the_imported_files
 test_a_new_branch_is_picked_by_owner
 test_the_start_screen_reopens_a_folder
 test_the_start_screen_opens_a_local_folder
+test_branches_lists_remote_branches_newest_first
+test_an_existing_github_branch_is_opened
 test_branch_names_from_a_prefix_and_description
 
 printf 'GitHub repo tests passed.\n'

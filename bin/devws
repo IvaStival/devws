@@ -92,8 +92,8 @@ devws() {
   fi
 
   # No folder: the start screen — a folder opened before, with the agent and
-  # editor it had (recent.sh), or a new branch of a GitHub repo, which asks
-  # for them. `devws .` opens the current folder.
+  # editor it had (recent.sh), or a branch of a GitHub repo (one on GitHub or
+  # a new one), which asks for them. `devws .` opens the current folder.
   if (( $# == 0 )); then
     local github_folder
     github_folder="$("$HOME/.tmuxinator/github_workspace.sh")" || return

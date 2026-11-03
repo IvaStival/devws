@@ -18,6 +18,8 @@
 #                                        its bare repo's folder
 #   github_repo.sh default-branch <dir>  origin's default branch
 #   github_repo.sh worktrees <dir>       "<branch><TAB><folder>" per worktree
+#   github_repo.sh branches <dir>        "<branch><TAB><last commit, as ago>"
+#                                        per branch on GitHub, newest first
 #   github_repo.sh pr <dir>              the branch's PR state as last checked:
 #                                        none, draft, open, merged or closed;
 #                                        empty when never checked
@@ -188,6 +190,13 @@ worktrees() {
     /^branch refs\/heads\// { printf "%s\t%s\n", substr($0, 19), folder }'
 }
 
+# As last fetched (ensure). origin/HEAD only names the default branch.
+branches() {
+  git -C "$1" for-each-ref --sort=-committerdate \
+    --format='%(refname:lstrip=3)%09%(committerdate:relative)' refs/remotes/origin |
+    grep -v $'^HEAD\t'
+}
+
 pr_file() {
   local git_dir
   git_dir="$(git -C "$1" rev-parse --path-format=absolute --git-dir 2>/dev/null)" || return 1
@@ -253,6 +262,7 @@ case "$command" in
   ensure) [ -n "${1:-}" ] || die "no repo given"; ensure "$1" ;;
   default-branch) [ -n "${1:-}" ] || die "no folder given"; default_branch "$1" ;;
   worktrees) [ -n "${1:-}" ] || die "no folder given"; worktrees "$1" ;;
+  branches) [ -n "${1:-}" ] || die "no folder given"; branches "$1" ;;
   pr) [ -n "${1:-}" ] || die "no folder given"; pr "$1" ;;
   pr-query) [ -n "${1:-}" ] || die "no folder given"; pr_query "$1" ;;
   pr-refresh) pr_refresh "$@" ;;
