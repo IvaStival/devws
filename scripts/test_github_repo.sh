@@ -64,6 +64,7 @@ sed -i '' 1d "$TEST_ROOT/fzf.answers"
 input="\$(cat)"
 # The owners list, for the tests to look at.
 case "\$input" in *"My repos"*) printf '%s\n' "\$input" > "$TEST_ROOT/fzf.owners" ;; esac
+case "\$input" in *"Type a path"*) printf '%s\n' "\$input" > "$TEST_ROOT/fzf.local" ;; esac
 # An empty answer is Esc.
 [ -n "\$answer" ] || exit 130
 if [ "\$answer" = @all ]; then printf '%s\n' "\$input"; else printf '%s\n' "\$input" | grep -m 1 -F -- "\$answer"; fi
@@ -204,6 +205,29 @@ test_the_start_screen_reopens_a_folder() {
     fail "Esc on the owners did not go back to the start screen"
 }
 
+# Open a local folder: one in DEVWS_PROJECTS (a git repo shows its branch) or
+# a typed path; a path that does not exist goes back to the start screen.
+test_the_start_screen_opens_a_local_folder() {
+  local projects="$TEST_ROOT/local-projects"
+  mkdir -p "$projects/notes"
+  git init -q -b trunk "$projects/shop"
+  export DEVWS_PROJECTS="$projects"
+  printf '%s\n' '⌂ Open a local folder' 'shop' > "$TEST_ROOT/fzf.answers"
+  [ "$("$GITHUB_WORKSPACE" 2>/dev/null </dev/null)" = "$projects/shop" ] || fail "the project folder was not opened"
+  grep -q '^shop .*⎇ trunk' "$TEST_ROOT/fzf.local" || fail "the repo's branch is not shown: $(cat "$TEST_ROOT/fzf.local")"
+  grep -q '^notes ' "$TEST_ROOT/fzf.local" || fail "a plain folder is not listed"
+
+  printf '%s\n' '⌂ Open a local folder' '✎ Type a path' > "$TEST_ROOT/fzf.answers"
+  [ "$(printf '%s\n' "$projects/notes" | "$GITHUB_WORKSPACE" 2>/dev/null)" = "$projects/notes" ] ||
+    fail "a typed path was not opened"
+
+  # Missing: said, then back to the start screen, where Esc leaves.
+  printf '%s\n' '⌂ Open a local folder' '✎ Type a path' '' > "$TEST_ROOT/fzf.answers"
+  ! printf '%s\n\n' "$projects/missing" | "$GITHUB_WORKSPACE" >/dev/null 2>&1 ||
+    fail "a missing folder was opened"
+  unset DEVWS_PROJECTS
+}
+
 test_branch_names_from_a_prefix_and_description() {
   [ "$("$GITHUB_WORKSPACE" branch-name feat 'Login page: OAuth & SSO!')" = feat/login-page-oauth-sso ] ||
     fail "slug: $("$GITHUB_WORKSPACE" branch-name feat 'Login page: OAuth & SSO!')"
@@ -221,6 +245,7 @@ test_pr_state_is_queried_then_cached
 test_a_new_workspace_gets_the_imported_files
 test_a_new_branch_is_picked_by_owner
 test_the_start_screen_reopens_a_folder
+test_the_start_screen_opens_a_local_folder
 test_branch_names_from_a_prefix_and_description
 
 printf 'GitHub repo tests passed.\n'
