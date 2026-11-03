@@ -10,12 +10,15 @@ REAL_NVIM="$(command -v nvim)"
 SOCKET="devws-follow-test-$$"
 # Unix socket paths are limited to ~100 characters, and TMPDIR is long on macOS.
 NVIM_SOCKET="/tmp/devws-follow-$$.sock"
+# The editor runner's sockets (nvim_servers.sh), apart from the real ones.
+export DEVWS_NVIM_SOCKET_PREFIX="/tmp/devws-nvim-test-$$-" DEVWS_NVIM_GRACE=1
 NVIM_PID=""
 
 cleanup() {
   [ -z "$NVIM_PID" ] || kill "$NVIM_PID" 2>/dev/null || true
   "$REAL_TMUX" -L "$SOCKET" kill-server 2>/dev/null || true
-  rm -rf "$TEST_ROOT" "$NVIM_SOCKET"
+  pkill -KILL -f -- "--listen $DEVWS_NVIM_SOCKET_PREFIX" 2>/dev/null || true
+  rm -rf "$TEST_ROOT" "$NVIM_SOCKET" "$DEVWS_NVIM_SOCKET_PREFIX"*
 }
 trap cleanup EXIT
 
@@ -100,7 +103,13 @@ from_agent() {
 }
 
 test_editor_runner_links_neovim() {
-  local session="follow-runner-$$" pane socket
+  local session="follow-runner-$$" pane socket stuck
+  # A Neovim an earlier editor left stuck on the socket (busy, deaf to SIGTERM
+  # and to the socket, like one at its exit prompt): the runner stops it.
+  (exec "$REAL_NVIM" --clean --headless --listen "${DEVWS_NVIM_SOCKET_PREFIX}$session.sock" \
+    --cmd 'lua vim.uv.sleep(600000)' >/dev/null 2>&1 </dev/null &)
+  stuck_started() { stuck="$(pgrep -f -- "--listen ${DEVWS_NVIM_SOCKET_PREFIX}$session.sock")"; }
+  wait_until stuck_started || fail "the stuck Neovim did not start"
   # A minimal Neovim config with only devws's Lua modules, instead of LazyVim.
   mkdir -p "$TEST_ROOT/config/nvim"
   printf 'vim.opt.rtp:prepend([[%s]])\n' "$ROOT/config/nvim" > "$TEST_ROOT/config/nvim/init.lua"
@@ -110,6 +119,8 @@ test_editor_runner_links_neovim() {
   socket_recorded() { [ -n "$(tmux show-option -qv -t "$session" @devws_editor_socket)" ]; }
   wait_until socket_recorded || fail "the editor runner did not record Neovim's socket"
   socket="$(tmux show-option -qv -t "$session" @devws_editor_socket)"
+  [ "$socket" = "${DEVWS_NVIM_SOCKET_PREFIX}$session.sock" ] || fail "the runner's socket is $socket"
+  ! kill -0 "$stuck" 2>/dev/null || fail "the runner left the stuck Neovim $stuck on its socket"
   wait_until test -S "$socket" || fail "Neovim is not listening on $socket"
   (cd "$TEST_ROOT/project" && TMUX_PANE="$pane" "$SCRIPTS/editor_open.sh" src/a.php:2)
   shown_through_runner() {

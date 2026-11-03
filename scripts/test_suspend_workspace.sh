@@ -70,6 +70,9 @@ done
 # A minute, for the header's ticker; the sweeps called here say their own.
 printf 'DEVWS_AGENTS="claude"\nDEVWS_SUSPEND_AFTER=1\n' > "$TEST_ROOT/home/.tmuxinator/.env"
 export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" TMPDIR="$TEST_ROOT/tmp"
+# The editors' sockets apart from the real ones, which nvim_servers.sh
+# would otherwise stop.
+export DEVWS_NVIM_SOCKET_PREFIX="/tmp/devws-nvim-test-$$-"
 unset TMUX DEVWS_SUSPEND_AFTER
 SUSPEND="$HOME/.tmuxinator/suspend_workspace.sh"
 
