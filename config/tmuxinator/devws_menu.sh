@@ -13,7 +13,6 @@
 #   --items <tab>   the tab's actions: "<action><TAB><label and shortcut>"
 #   --items-for <query>   the current tab's while nothing is typed; else
 #                   every tab's, each tagged "<Tab> · ", for fzf to search
-#   --actions       the actions table
 #   --header        the tab bar, the current tab marked
 #   --tab           the current tab
 #   --switch <next|prev|tab title>   changes tab; prints fzf actions to show it
@@ -24,11 +23,12 @@ set -u
 
 script="$HOME/.tmuxinator/devws_menu.sh"
 # One concern per tab: which workspaces there are, how the screen is
-# arranged, the agent, git, and the app the branch runs (jungleforge, its
-# database, the background jobs).
-tabs=(workspace layout agent git app)
+# arranged, the agent, git, the app the branch runs (jungleforge, its
+# database, the background jobs), and the guide (docs/guide/).
+tabs=(workspace layout agent git app help)
 
-# tab|action|label|shortcut|function in workspace_actions.sh
+# tab|action|label|shortcut|function in workspace_actions.sh, with its
+# arguments[|when: see shown]
 actions='workspace|github|⎇ Open or start a workspace||new_github_workspace
 workspace|new|+ New folder workspace||new_workspace
 workspace|worktree|⑂ New worktree workspace||new_worktree_workspace
@@ -49,6 +49,10 @@ agent|follow-mode|◎ Agent follow|C-b F|choose_follow_mode
 agent|initialize-agent|◇ Initialize agent||initialize_agent
 agent|register-agent|＋ Register agent||register_agent
 agent|remove-agent|− Remove agent||remove_agent
+agent|memory-search|⁘ Search memory||search_memory|memory
+agent|memory-recent|◷ Recent memory||recent_memory|memory
+agent|memory-web|↗ Open memory web UI||open_memory_web|memory
+agent|memory-doctor|✚ Memory doctor||memory_doctor|memory
 git|commit|✓ Commit (agent)|C-b g|commit_with_agent
 git|commit-manual|✎ Commit manually||commit_by_hand
 git|push|↑ Push / PR|C-b G|push_branch
@@ -61,7 +65,16 @@ app|shell|⌘ Shell||open_app_shell
 app|logs|≡ Logs||open_app_logs
 app|open-database|⛁ Database|C-b B|open_database
 app|database-folder|⛁ Database folder||choose_database_folder
-app|job-log|◷ Job log|C-b j|show_job_log'
+app|job-log|◷ Job log|C-b j|show_job_log
+help|guide|? Start here||open_guide README
+help|guide-shortcuts|⌨ Shortcuts||open_guide shortcuts
+help|guide-workspaces|⎇ Workspaces||open_guide workspaces
+help|guide-layout|▥ Layout||open_guide layout
+help|guide-agents|◇ Agents||open_guide agents
+help|guide-git|✓ Git||open_guide git
+help|guide-app|▶ App, jobs and database||open_guide app
+help|guide-commands|$ Commands||open_guide commands
+help|guide-configuration|⚙ Configuration||open_guide configuration'
 
 session() {
   if [ -n "${TMUX_PANE:-}" ]; then
@@ -86,11 +99,21 @@ current_tab() {
 
 #   items <tab> [tag]   the tab's actions, their labels led by [tag]
 items() {
-  local tab action label shortcut function
-  while IFS='|' read -r tab action label shortcut function; do
+  local tab action label shortcut function when
+  while IFS='|' read -r tab action label shortcut function when; do
     [ "$tab" = "$1" ] || continue
+    shown "$when" || continue
     printf '%s\t%-40s \033[2m%s\033[0m\n' "$action" "${2:-}$label" "$shortcut"
   done <<<"$actions"
+}
+
+# An action's "when": empty is always; memory is with ai-memory installed.
+shown() {
+  case "$1" in
+    '') return 0 ;;
+    memory) command -v "${DEVWS_AI_MEMORY:-ai-memory}" >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
 }
 
 # While nothing is typed, the tab; once something is, every tab's actions
@@ -158,8 +181,8 @@ switch_at() {
 }
 
 function_for() {
-  local tab action label shortcut function
-  while IFS='|' read -r tab action label shortcut function; do
+  local tab action label shortcut function when
+  while IFS='|' read -r tab action label shortcut function when; do
     if [ "$action" = "$1" ]; then
       printf '%s' "$function"
       return 0
@@ -170,12 +193,14 @@ function_for() {
 
 run_action() {
   local function
+  local -a command
   if ! function="$(function_for "$1")"; then
     printf 'devws menu: unknown action: %s\n' "$1" >&2
     return 2
   fi
+  read -r -a command <<<"$function"
   . "$HOME/.tmuxinator/workspace_actions.sh"
-  "$function"
+  "${command[@]}"
 }
 
 open_popup() {
@@ -231,7 +256,6 @@ esac
 case "${1:-}" in
   --items) items "${2:-}" ;;
   --items-for) items_for "${2:-}" ;;
-  --actions) printf '%s\n' "$actions" ;;
   --popup-run) popup_run "${2:-}" "${3:-}" ;;
   --header) header ;;
   --tab) current_tab ;;

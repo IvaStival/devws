@@ -226,6 +226,33 @@ remove_agent() {
   read -r -p 'Press Enter to return…'
 }
 
+# ai-memory (memory.sh): the agents' long-term memory. Search asks the
+# workspace's agent, which searches through ai-memory's MCP tool.
+memory() {
+  "$HOME/.tmuxinator/memory.sh" "$@"
+}
+
+search_memory() {
+  local question
+  read -e -r -p 'Search memory for: ' question || return
+  [ -n "$question" ] || return
+  memory ask "$(tmux display-message -p '#S')" "$question" || pause
+}
+
+recent_memory() {
+  memory recent "$(tmux show-options -t "$(tmux display-message -p '#S')" -v @devws_root 2>/dev/null)"
+  pause
+}
+
+open_memory_web() {
+  memory web || pause
+}
+
+memory_doctor() {
+  memory doctor
+  pause
+}
+
 # Another agent, terminal or Neovim, right of, left of, below or above the
 # focused pane (new_panel.sh).
 new_panel() {
@@ -603,6 +630,17 @@ stop_running_apps() {
 # the workspace's log panel.
 show_job_log() {
   "$HOME/.tmuxinator/job.sh" open || pause
+}
+
+# open_guide <page>: the guide's page in a popup large enough to read it.
+# Opened from the tmux server once the menu's popup has closed: a client
+# shows one popup at a time.
+open_guide() {
+  local client target=""
+  client="$(tmux display-message -p '#{client_name}' 2>/dev/null)"
+  [ -z "$client" ] || target="-c $(printf '%q' "$client")"
+  tmux run-shell -b "sleep 0.2; tmux display-popup $target -E -w 90% -h 90% \
+-T ' devws guide · / searches · q closes ' $(printf '%q' "$HOME/.tmuxinator/guide.sh $1")"
 }
 
 start_services() {

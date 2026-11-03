@@ -22,8 +22,10 @@ fail() {
 # Every tmux call goes to an isolated server. ~/.tmuxinator holds the real
 # menu and actions, and logging stand-ins for the scripts the actions call.
 mkdir -p "$TEST_ROOT/bin" "$TEST_ROOT/home/.tmuxinator" "$TEST_ROOT/calls"
+# A popup needs a client, which the tests have none of: it is recorded.
 cat > "$TEST_ROOT/bin/tmux" <<EOF
 #!/usr/bin/env bash
+[ "\$1" = display-popup ] && { printf '%s\n' "\$*" > "$TEST_ROOT/calls/popup-command"; exit 0; }
 exec "$REAL_TMUX" -L "$SOCKET" -f /dev/null "\$@"
 EOF
 # fzf answers from a queue, one line per call (after the query line that
@@ -78,6 +80,8 @@ EOF
 chmod +x "$TEST_ROOT/home/.tmuxinator/git_actions.sh"
 # TMPDIR keeps the popup flag apart from a real menu's.
 export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" TMPDIR="$TEST_ROOT"
+# As if ai-memory were not installed, whatever this machine has.
+export DEVWS_AI_MEMORY=devws-no-ai-memory
 unset TMUX
 
 MENU="$HOME/.tmuxinator/devws_menu.sh"
@@ -103,6 +107,8 @@ test_tabs_list_their_actions() {
   [ "$(actions_of git)" = "commit commit-manual push" ] || fail "Git tab: $(actions_of git)"
   [ "$(actions_of app)" = "run-here switch-run stop-run services migrate shell logs open-database database-folder job-log" ] ||
     fail "App tab: $(actions_of app)"
+  [ "$(actions_of help)" = "guide guide-shortcuts guide-workspaces guide-layout guide-agents guide-git guide-app guide-commands guide-configuration" ] ||
+    fail "Help tab: $(actions_of help)"
 }
 
 test_items_show_labels_and_shortcuts() {
@@ -121,6 +127,17 @@ test_items_show_labels_and_shortcuts() {
   grep -q $'^switch-agent\t.*Switch agent' <<<"$agent" || fail "Switch agent has no label"
 }
 
+# The memory items show only with ai-memory installed (DEVWS_AI_MEMORY: none
+# for these tests, whatever the machine has, unless pointed at a stub).
+test_memory_items_need_ai_memory() {
+  ! grep -q memory- <<<"$(actions_of agent)" || fail "memory items without ai-memory"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$TEST_ROOT/bin/ai-memory-stub"
+  chmod +x "$TEST_ROOT/bin/ai-memory-stub"
+  [ "$(DEVWS_AI_MEMORY="$TEST_ROOT/bin/ai-memory-stub" actions_of agent | grep -o 'memory-[a-z]*' | tr '\n' ' ')" = \
+    "memory-search memory-recent memory-web memory-doctor " ] ||
+    fail "memory items with ai-memory: $(DEVWS_AI_MEMORY="$TEST_ROOT/bin/ai-memory-stub" actions_of agent)"
+}
+
 # With an empty query the menu shows its tab; typing searches every tab, each
 # match tagged with its tab.
 test_typing_searches_every_tab() {
@@ -130,7 +147,8 @@ test_typing_searches_every_tab() {
   all="$(menu --items-for data)"
   grep -q $'^open-database\tApp · ⛁ Database' <<<"$all" || fail "typing does not reach the App tab: $all"
   grep -q $'^jump\tAgent · ! Go to waiting agent' <<<"$all" || fail "not every tab is searched: $all"
-  [ "$(grep -c . <<<"$all")" -eq "$(grep -c '|' <<<"$(menu --actions)")" ] ||
+  # Every action shown in a tab, once.
+  [ "$(grep -c . <<<"$all")" -eq "$(for tab in workspace layout agent git app help; do menu --items "$tab"; done | grep -c .)" ] ||
     fail "a search does not list every action once"
 }
 
@@ -155,10 +173,10 @@ test_switching_tabs() {
   [ "$(menu --tab)" = "layout" ] || fail "next did not move to Layout"
   menu --switch prev >/dev/null
   menu --switch prev >/dev/null
-  [ "$(menu --tab)" = "app" ] || fail "prev did not wrap around to App"
+  [ "$(menu --tab)" = "help" ] || fail "prev did not wrap around to Help"
   menu --switch next >/dev/null
   [ "$(menu --tab)" = "workspace" ] || fail "next did not wrap around to Workspace"
-  # A click on the tab bar " Workspace   Layout   Agent   Git   App " gives its column.
+  # A click on the tab bar " Workspace   Layout   Agent   Git   App   Help " gives its column.
   [[ "$(menu --switch-at 23)" == *transform-header* ]] || fail "a tab click did not change the header"
   [ "$(menu --tab)" = "agent" ] || fail "clicking Agent (column 23) did not open it"
   menu --switch-at 1 >/dev/null
@@ -167,8 +185,10 @@ test_switching_tabs() {
   [ "$(menu --tab)" = "app" ] || fail "clicking App (column 39) did not open it"
   menu --switch-at 12 >/dev/null
   [ "$(menu --tab)" = "app" ] || fail "a click between tabs changed the tab"
-  menu --switch-at 50 >/dev/null
+  menu --switch-at 60 >/dev/null
   [ "$(menu --tab)" = "app" ] || fail "a click beside the tabs changed the tab"
+  menu --switch-at 44 >/dev/null
+  [ "$(menu --tab)" = "help" ] || fail "clicking Help (column 44) did not open it"
   menu --switch Layout >/dev/null
 }
 
@@ -494,14 +514,29 @@ test_closing_the_running_branch_switches_back_to_main() {
 
 test_every_action_has_a_function() {
   local tab action function
-  for tab in workspace layout agent git app; do
+  for tab in workspace layout agent git app help; do
     for action in $(actions_of "$tab"); do
       function="$(menu --function "$action")" || fail "no function for $action"
+      function="${function%% *}"
       bash -c ". '$SCRIPTS/workspace_actions.sh'; declare -F '$function' >/dev/null" ||
         fail "$action's function $function is not defined in workspace_actions.sh"
     done
   done
   ! menu --run no-such-action 2>/dev/null || fail "an unknown action was accepted"
+}
+
+# A Help item opens its guide page in a large popup on the same client, once
+# the menu's popup has closed (from the tmux server: run-shell -b).
+test_help_opens_the_guide_page() {
+  local opened
+  menu --run guide-shortcuts
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ -s "$TEST_ROOT/calls/popup-command" ] && break
+    sleep 0.1
+  done
+  opened="$(cat "$TEST_ROOT/calls/popup-command" 2>/dev/null)"
+  [[ "$opened" == *"-w 90% -h 90%"* ]] || fail "the guide popup is not large: $opened"
+  [[ "$opened" == *"guide.sh shortcuts"* ]] || fail "the guide popup does not show the page: $opened"
 }
 
 test_sidebar_opens_the_menu() {
@@ -526,6 +561,7 @@ test_space_opens_the_menu() {
 test_tabs_list_their_actions
 test_items_show_labels_and_shortcuts
 test_typing_searches_every_tab
+test_memory_items_need_ai_memory
 test_the_frequent_actions_have_keys
 test_switching_tabs
 test_header_marks_the_current_tab
@@ -546,6 +582,7 @@ test_esc_on_the_apps_goes_back_to_the_branches
 test_switch_marks_the_running_branch_and_runs_the_chosen_one
 test_closing_the_running_branch_switches_back_to_main
 test_every_action_has_a_function
+test_help_opens_the_guide_page
 test_sidebar_opens_the_menu
 test_space_opens_the_menu
 test_scroll_margins_are_off
