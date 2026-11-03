@@ -11,7 +11,7 @@ or move to it and press `Enter`, to go there.
 
 ```
 devws >
-  ＋ New branch from GitHub…
+  ⎇ Branch from GitHub…
   ⌂ Open a local folder…
   ↓ Clone another repo (URL / owner/repo)…
   PhiPlanner   feat/login-page   ● changes · PR open   2h ago
@@ -21,14 +21,17 @@ devws >
 - **A recent folder** (newest first, then branch folders never opened)
   starts at once with the agent and editor it had, or switches to it when it
   is already open.
-- **＋ New branch from GitHub…**
+- **⎇ Branch from GitHub…**
   1. **Repo:** the owner first (**★ My repos**, then each organization),
      then the repo. Cloned ones come first, marked `●`. The lists are kept
      an hour; **↻ Refresh the list** asks GitHub again. `Esc` goes back.
-  2. **Branch:** its kind (feat, fix, chore, refactor, docs) and a few
-     words: `feat` + "Login page" makes `feat/login-page`. **Custom name…**
-     takes any name. It starts from GitHub's default branch, freshly
-     fetched.
+  2. **Branch:** one already on GitHub, newest first, freshly fetched: it
+     gets a folder of its own, tracking GitHub's branch, or its folder
+     reopens when it has one (marked `● folder`). Or **+ New branch…**: its
+     kind (feat, fix, chore, refactor, docs) and a few words: `feat` +
+     "Login page" makes `feat/login-page`. **Custom name…** takes any name.
+     A new branch starts from GitHub's default branch. `Esc` on the kind
+     goes back to the branches.
   3. **Agent and editor.**
 - **⌂ Open a local folder…** lists the folders in `~/Projects`
   (`DEVWS_PROJECTS`), each git repo with its branch, or **✎ Type a path…**

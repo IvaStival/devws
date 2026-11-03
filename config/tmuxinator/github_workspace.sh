@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # The folder for a workspace, chosen from the start screen: a folder opened
 # before (recent.sh, newest first, and the worktrees never opened), a local
-# folder (one in DEVWS_PROJECTS, or a typed path), a new branch of one of
-# your GitHub repos, or of another repo cloned by URL — off a fresh
-# origin/<default branch> (github_repo.sh, worktree.sh). The questions
+# folder (one in DEVWS_PROJECTS, or a typed path), or a branch of one of
+# your GitHub repos, or of another repo cloned by URL: one already on GitHub,
+# tracking it, or a new one off a fresh origin/<default branch>
+# (github_repo.sh, worktree.sh). The questions
 # use the terminal; only the folder is printed. Run by `devws` with no folder
 # and by the menu's "New GitHub workspace".
 #
 #   github_workspace.sh                        the start screen
 #   github_workspace.sh <repo>                 that repo: one of its worktrees,
-#                                              or a new branch
+#                                              or a branch
 #   github_workspace.sh branch-name <prefix> <description>
 #                                              <prefix>/<description as a slug>
 
@@ -170,6 +171,35 @@ ask_branch() {
   printf '%s\n' "$branch"
 }
 
+# A branch on GitHub (its folder, when it has one, is marked), or a new one
+# named by ask_branch. Esc on the new one's kind comes back to the list.
+pick_branch() {
+  local bare="$1" new_row='+ New branch…' open choice branch age
+  open="$("$github_repo" worktrees "$bare" | cut -f 1)"
+  while :; do
+    choice="$(
+      {
+        printf '%s\t\t\n' "$new_row"
+        "$github_repo" branches "$bare" | while IFS=$'\t' read -r branch age; do
+          if printf '%s\n' "$open" | grep -qxF -- "$branch"; then
+            printf '%s\t%s  ● folder\t%s\n' "$branch" "$age" "$branch"
+          else
+            printf '%s\t%s\t%s\n' "$branch" "$age" "$branch"
+          fi
+        done
+      } |
+        "$picker" Branch 'Open a branch from GitHub, or start a new one (● has a folder)' \
+          --delimiter=$'\t' --with-nth=1,2 --tabstop=32
+    )" || return 1
+    if [ "${choice%%$'\t'*}" = "$new_row" ]; then
+      ask_branch && return 0
+      continue
+    fi
+    printf '%s\n' "${choice##*$'\t'}"
+    return 0
+  done
+}
+
 # A folder on this machine: one in DEVWS_PROJECTS (a git repo shows its
 # branch), or a typed path. Esc goes back to the start screen, and so does a
 # path that does not exist, once said.
@@ -202,17 +232,17 @@ pick_local_folder() {
   fi
 }
 
-# Reopen a folder or open a local one (printed as "open <folder>"), or start
+# Reopen a folder or open a local one (printed as "open <folder>"), or open
 # a branch of a repo ("new <repo>"), picked by owner or typed. Esc on the
 # owners or the local folders comes back here.
 start_screen() {
-  local new_row='＋ New branch from GitHub…' clone_row='↓ Clone another repo (URL / owner/repo)…'
+  local new_row='⎇ Branch from GitHub…' clone_row='↓ Clone another repo (URL / owner/repo)…'
   local local_row='⌂ Open a local folder…'
   local choice repo folder
   while :; do
     choice="$(
       { printf '%s\t\n' "$new_row" "$local_row" "$clone_row"; "$script_dir/recent.sh" rows; } |
-        "$picker" devws 'Reopen a workspace, open a folder, or start a new branch' --delimiter=$'\t' --with-nth=1
+        "$picker" devws 'Reopen a workspace, open a folder, or open a GitHub branch' --delimiter=$'\t' --with-nth=1
     )" || return 1
     case "${choice%%$'\t'*}" in
       "$new_row")
@@ -239,7 +269,7 @@ start_screen() {
 
 main() {
   local repo="${1:-}" bare folder branch base choice
-  # From the start screen, Esc on the branch's kind goes back to it.
+  # From the start screen, Esc on the branches goes back to it.
   while :; do
     if [ -z "${1:-}" ]; then
       choice="$(start_screen)" || return 1
@@ -253,13 +283,13 @@ main() {
     bare="$("$github_repo" ensure "$repo")" || return
     seed_shared "$(dirname "$bare")" "$("$github_repo" parse "$repo")"
 
-    # From the start screen it is a new branch: its worktrees were listed there.
+    # From the start screen it is a branch: its worktrees were listed there.
     folder=""
     if [ -n "${1:-}" ]; then
       folder="$(pick_worktree "$bare")" || return 1
     fi
     [ -z "$folder" ] || break
-    if branch="$(ask_branch)"; then
+    if branch="$(pick_branch "$bare")"; then
       base="origin/$("$github_repo" default-branch "$bare")"
       folder="$("$worktree" ensure "$bare" "$branch" "$base")" || return
       break
