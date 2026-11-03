@@ -2,7 +2,7 @@
 
 - **Date:** 02-11-2026
 - **Branch:** feat/devws-guide (off feat/ai-memory, 4a30a0d)
-- **Status:** Executed (not committed yet)
+- **Status:** Executed — 4c9594f (guide and Help tab), 6a64e96 (dead tmux keys), bfe25e2 (memory test stub)
 
 Notes from execution:
 - `config/tmux/tmux.conf` sources `default-keys.conf`, which wipes every
