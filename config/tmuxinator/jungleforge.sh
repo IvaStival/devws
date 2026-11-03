@@ -22,6 +22,21 @@
 #   jungleforge.sh running-folders <folder>...   the folders apps run from,
 #                                    among those folders' repos (the sidebar)
 #   jungleforge.sh migrate|logs|shell <folder> <app>    on the running branch
+#
+# Setting jungleforge up for a user who has none (the installer and the App
+# tab's Set up jungleforge / Register in jungleforge):
+#   jungleforge.sh available         jungleforge is checked out and has .env
+#   jungleforge.sh folder            where it is, or where setup puts it
+#   jungleforge.sh setup             clones it (DEVWS_JUNGLEFORGE_REPO), writes
+#                                    .env with generated passwords, checks Docker
+#   jungleforge.sh templates         "<template><TAB><stack>" per deploy template
+#   jungleforge.sh scaffold <app folder> <template> <app>   copies the template
+#                                    to <app folder>/deploy, named after the app,
+#                                    on a free port; prints the port (none for
+#                                    a stack without APP_HTTP_PORT)
+#   jungleforge.sh register <app> <folder>   adds or replaces <APP>_PATH
+#
+# DEVWS_ENV_FILE replaces devws's .env, for tests.
 
 set -u
 
@@ -32,10 +47,15 @@ die() {
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 # The environment wins over .env, as in github_repo.sh.
-from_environment="${DEVWS_JUNGLEFORGE:-}"
+jungleforge_from_environment="${DEVWS_JUNGLEFORGE:-}"
+home_from_environment="${DEVWS_HOME:-}"
+projects_from_environment="${DEVWS_PROJECTS:-}"
+env_file="${DEVWS_ENV_FILE:-$script_dir/.env}"
 # shellcheck source=/dev/null
-[ -r "$script_dir/.env" ] && . "$script_dir/.env"
-DEVWS_JUNGLEFORGE="${from_environment:-${DEVWS_JUNGLEFORGE:-}}"
+[ -r "$env_file" ] && . "$env_file"
+DEVWS_JUNGLEFORGE="${jungleforge_from_environment:-${DEVWS_JUNGLEFORGE:-}}"
+DEVWS_HOME="${home_from_environment:-${DEVWS_HOME:-~/.devws}}"
+DEVWS_PROJECTS="${projects_from_environment:-${DEVWS_PROJECTS:-~/Projects}}"
 
 expand_home() {
   case "$1" in
@@ -45,11 +65,37 @@ expand_home() {
   esac
 }
 
+# DEVWS_JUNGLEFORGE when set; else a checkout in DEVWS_HOME (where setup
+# clones) or, as devws had it before, in DEVWS_PROJECTS; else DEVWS_HOME's,
+# for setup to fill.
+location() {
+  local candidate
+  if [ -n "$DEVWS_JUNGLEFORGE" ]; then
+    candidate="$(expand_home "$DEVWS_JUNGLEFORGE")"
+    printf '%s' "${candidate%/}"
+    return
+  fi
+  for candidate in "$(expand_home "$DEVWS_HOME")/jungleforge" "$(expand_home "$DEVWS_PROJECTS")/jungleforge"; do
+    if [ -f "$candidate/Makefile" ]; then
+      printf '%s' "$candidate"
+      return
+    fi
+  done
+  printf '%s/jungleforge' "$(expand_home "$DEVWS_HOME")"
+}
+
+available() {
+  local folder
+  folder="$(location)"
+  [ -f "$folder/Makefile" ] && [ -r "$folder/.env" ]
+}
+
 jungleforge_folder() {
   local folder
-  folder="$(expand_home "${DEVWS_JUNGLEFORGE:-~/Projects/jungleforge}")"
-  [ -r "$folder/.env" ] || die "jungleforge not found at $folder (set DEVWS_JUNGLEFORGE in .env)"
-  printf '%s' "${folder%/}"
+  folder="$(location)"
+  [ -r "$folder/.env" ] ||
+    die "jungleforge is not set up at $folder: devws menu › App › Set up jungleforge, or ./install.sh --jungleforge"
+  printf '%s' "$folder"
 }
 
 # phi-planner ↔ PHI_PLANNER_PATH, jungleforge's own naming rule.
@@ -158,7 +204,7 @@ running() {
 running_folders() {
   local folder origin seen=" "
   # Without jungleforge nothing runs: no error for the sidebar to report.
-  [ -r "$(expand_home "${DEVWS_JUNGLEFORGE:-~/Projects/jungleforge}")/.env" ] || return 0
+  available || return 0
   for folder in "$@"; do
     origin="$(origin_of "$folder")" || continue
     case "$seen" in *" $origin "*) continue ;; esac
@@ -226,9 +272,116 @@ on_running_app() {
   jungleforge_make "$target" "$app" "$(path_variable "$app")=$running_root${subfolder:+/$subfolder}"
 }
 
+check_docker() {
+  if ! command -v docker >/dev/null 2>&1; then
+    printf 'Docker is missing: install Docker Desktop (https://www.docker.com/products/docker-desktop/) to run apps.\n' >&2
+  elif ! docker info >/dev/null 2>&1; then
+    printf 'Docker is not running: start Docker Desktop before running an app.\n' >&2
+  fi
+  return 0
+}
+
+# .env from .env.example: every change_me gets a password of its own, and the
+# example's placeholder registry entry is left commented out.
+write_env() {
+  local folder="$1" line
+  [ -r "$folder/.env.example" ] || die "$folder has no .env.example"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      [A-Z]*_PATH=/absolute/path/*) line="# $line" ;;
+      *change_me*) line="${line//change_me/$(openssl rand -hex 16)}" ;;
+    esac
+    printf '%s\n' "$line"
+  done < "$folder/.env.example" > "$folder/.env"
+  chmod 600 "$folder/.env"
+}
+
+setup() {
+  local folder repo="${DEVWS_JUNGLEFORGE_REPO:-https://github.com/IvaStival/jungleForge.git}"
+  folder="$(location)"
+  if [ -f "$folder/Makefile" ]; then
+    printf 'jungleforge is at %s\n' "$folder"
+  elif [ -n "$(ls -A "$folder" 2>/dev/null)" ]; then
+    die "$folder is not empty and is not jungleforge; set DEVWS_JUNGLEFORGE to another folder"
+  else
+    mkdir -p "$(dirname "$folder")" || die "could not create $(dirname "$folder")"
+    git clone --quiet "$repo" "$folder" || die "could not clone $repo"
+    printf 'Cloned jungleforge into %s\n' "$folder"
+  fi
+  if [ ! -e "$folder/.env" ]; then
+    write_env "$folder"
+    printf 'Wrote %s/.env with generated passwords\n' "$folder"
+  fi
+  check_docker
+  printf 'Next: register a repo (devws menu › App › Register in jungleforge). Its first Run builds jungleforge'"'"'s base image, which takes a few minutes.\n'
+}
+
+# "<template><TAB><stack>", sorted so deploy, the default php stack, leads.
+templates() {
+  local folder template stack
+  folder="$(jungleforge_folder)" || exit 2
+  for template in "$folder"/templates/deploy*/; do
+    [ -d "$template" ] || continue
+    template="${template%/}"
+    stack="$(sed -n 's/^STACK=\([a-z]*\).*/\1/p' "$template/.docker-env.example" 2>/dev/null | head -n 1)"
+    printf '%s\t%s\n' "$(basename "$template")" "${stack:-php}"
+  done | LC_ALL=C sort
+}
+
+# One past the highest host port a registered app uses, from 8090.
+next_port() {
+  local app folder port highest=8089
+  while IFS=$'\t' read -r app folder; do
+    port="$(sed -n 's/^APP_HTTP_PORT=\([0-9]*\).*/\1/p' "$folder/deploy/.docker-env" 2>/dev/null | head -n 1)"
+    [ -n "$port" ] && [ "$port" -gt "$highest" ] && highest="$port"
+  done < <(registry)
+  printf '%s' "$((highest + 1))"
+}
+
+scaffold() {
+  local app_folder="$1" template="$2" app="$3" source port
+  source="$(jungleforge_folder)/templates/$template"
+  [ -d "$source" ] || die "no template $template in $(jungleforge_folder)/templates"
+  [ -d "$app_folder" ] || die "$app_folder does not exist"
+  [ ! -e "$app_folder/deploy" ] || die "$app_folder/deploy already exists"
+  port="$(next_port)"
+  cp -R "$source" "$app_folder/deploy" || die "could not copy $template to $app_folder/deploy"
+  sed -e "s/^IMAGE_NAME=[^ #]*/IMAGE_NAME=$app/" \
+    -e "s/^PHP_CONTAINER=[^ #]*/PHP_CONTAINER=$app/" \
+    -e "s/^APP_CONTAINER=[^ #]*/APP_CONTAINER=$app/" \
+    -e "s/^APP_HTTP_PORT=[0-9]*/APP_HTTP_PORT=$port/" \
+    "$app_folder/deploy/.docker-env.example" > "$app_folder/deploy/.docker-env" ||
+    die "could not write $app_folder/deploy/.docker-env"
+  # Stacks without a host port of their own (node uses VITE_PORT) print none.
+  grep -q '^APP_HTTP_PORT=' "$app_folder/deploy/.docker-env" && printf '%s\n' "$port"
+  return 0
+}
+
+# Rewritten in place (cat, not mv) so .env keeps its permissions.
+register() {
+  local app="$1" folder="$2" env_file variable updated
+  case "$app" in '' | *[!a-z0-9-]* | -* | *-) die "an app name is lowercase letters, digits and dashes: $app" ;; esac
+  [ -d "$folder" ] || die "$folder does not exist"
+  env_file="$(jungleforge_folder)/.env"
+  variable="$(path_variable "$app")"
+  if grep -q "^$variable=" "$env_file"; then
+    updated="$(awk -v variable="$variable" -v line="$variable=$folder" \
+      'index($0, variable "=") == 1 { print line; next } { print }' "$env_file")" || die "could not read $env_file"
+    printf '%s\n' "$updated" > "$env_file"
+  else
+    printf '%s=%s\n' "$variable" "$folder" >> "$env_file"
+  fi
+}
+
 command="${1:-}"
 [ "$#" -gt 0 ] && shift
 case "$command" in
+  available) available ;;
+  folder) location; printf '\n' ;;
+  setup) setup ;;
+  templates) templates ;;
+  scaffold) [ "$#" -eq 3 ] || die "usage: jungleforge.sh scaffold <app folder> <template> <app>"; scaffold "$@" ;;
+  register) [ "$#" -eq 2 ] || die "usage: jungleforge.sh register <app> <folder>"; register "$@" ;;
   apps | targets | running)
     [ -n "${1:-}" ] || die "no folder given"
     "$command" "$1"
@@ -244,5 +397,5 @@ case "$command" in
   running-folders) running_folders "$@" ;;
   migrate | logs) [ "$#" -eq 2 ] || die "usage: jungleforge.sh $command <folder> <app>"; on_running_app "$command" "$1" "$2" ;;
   shell) [ "$#" -eq 2 ] || die "usage: jungleforge.sh shell <folder> <app>"; on_running_app sh "$1" "$2" ;;
-  *) die "usage: jungleforge.sh <apps|targets|running|run|stop|services|migrate|logs|shell> …" ;;
+  *) die "usage: jungleforge.sh <apps|targets|running|run|stop|services|migrate|logs|shell|available|folder|setup|templates|scaffold|register> …" ;;
 esac

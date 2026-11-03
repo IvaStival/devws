@@ -6,16 +6,18 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WITH_DEPS=0
 WITH_ITERM_KEYS=0
 WITH_AI_MEMORY=0
+WITH_JUNGLEFORGE=0
 state_root="$HOME/.devws-state"
 dependency_state="$state_root/installed-dependencies"
 
 usage() {
   cat <<'EOF'
-Usage: ./install.sh [--deps] [--iterm-keys] [--ai-memory]
+Usage: ./install.sh [--deps] [--iterm-keys] [--ai-memory] [--jungleforge]
 
   --deps        Install Homebrew packages, devdb and tmux plugin manager.
   --iterm-keys  Map Shift+Enter to a newline in iTerm2 (quit iTerm2 first).
   --ai-memory   Offer ai-memory (long-term memory for agents) again after a no.
+  --jungleforge Offer jungleforge (runs branches in Docker) again after a no.
 EOF
 }
 
@@ -24,6 +26,7 @@ for arg in "$@"; do
     --deps) WITH_DEPS=1 ;;
     --iterm-keys) WITH_ITERM_KEYS=1 ;;
     --ai-memory) WITH_AI_MEMORY=1 ;;
+    --jungleforge) WITH_JUNGLEFORGE=1 ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'Unknown option: %s\n' "$arg" >&2; usage >&2; exit 2 ;;
   esac
@@ -145,6 +148,38 @@ ensure_ai_memory() {
   fi
   ai-memory setup || warn "ai-memory setup did not finish; run ai-memory setup"
   "$ROOT/config/tmuxinator/memory.sh" wire-all
+}
+
+# jungleforge (github.com/IvaStival/jungleForge) runs a branch's apps in
+# Docker from the App tab. Offered like ai-memory: yes clones it and writes
+# its .env (jungleforge.sh setup); a "no" is kept, and --jungleforge offers it
+# again. Already there, only a stopped or missing Docker is reported.
+ensure_jungleforge() {
+  local reply declined="$state_root/jungleforge-declined"
+  local jungleforge="$ROOT/config/tmuxinator/jungleforge.sh"
+
+  if "$jungleforge" available; then
+    command -v docker >/dev/null 2>&1 ||
+      warn "Docker is missing, so the App tab cannot run branches; install Docker Desktop"
+    return
+  fi
+  [[ "$WITH_JUNGLEFORGE" == 1 ]] && rm -f "$declined"
+  [[ -e "$declined" ]] && return
+
+  printf 'Set up jungleforge (run branches in Docker) in %s? [y/N] ' "$("$jungleforge" folder)"
+  if ! IFS= read -r reply; then
+    printf '\n'
+    return
+  fi
+  case "$reply" in
+    y|Y|yes|YES|Yes) ;;
+    *)
+      mkdir -p "$state_root" && : > "$declined"
+      info "Skipped jungleforge; ./install.sh --jungleforge offers it again"
+      return
+      ;;
+  esac
+  "$jungleforge" setup || warn "jungleforge was not set up; devws menu › App › Set up jungleforge tries again"
 }
 
 upgrade_tmuxinator_if_needed() {
@@ -363,6 +398,7 @@ fi
 
 ensure_github_login
 ensure_ai_memory
+ensure_jungleforge
 
 if [[ ! -d "$HOME/.tmux/plugins/tpm" ]]; then
   warn "tmux plugin manager is missing; run ./install.sh --deps"

@@ -518,12 +518,131 @@ workspace_root() {
   tmux show-options -t "$(tmux display-message -p '#S')" -v @devws_root 2>/dev/null
 }
 
+setup_jungleforge() {
+  printf '\033c'
+  jungleforge setup
+  pause
+}
+
+# The repo's apps. A repo jungleforge does not know is offered registering
+# first; anything else wrong is explained.
+known_apps() {
+  local root="$1" rows error answer
+  rows="$(jungleforge apps "$root" 2>/dev/null)" && { printf '%s\n' "$rows"; return 0; }
+  error="$(jungleforge apps "$root" 2>&1 >/dev/null)"
+  printf '%s\n' "$error" >&2
+  case "$error" in
+    *'Not a jungleforge project'*)
+      printf 'Register it in jungleforge now? [Y/n] ' >&2
+      read -r answer || return 1
+      case "$answer" in n | N | no) return 1 ;; esac
+      register_repo "$root" >&2 || { pause >&2; return 1; }
+      rows="$(jungleforge apps "$root")" || { pause >&2; return 1; }
+      printf '%s\n' "$rows"
+      ;;
+    *) pause >&2; return 1 ;;
+  esac
+}
+
+register_in_jungleforge() {
+  printf '\033c'
+  register_repo "$(workspace_root)"
+  pause
+}
+
+# The checkout jungleforge's registry points at, its "main": for a devws
+# GitHub repo (a bare clone, github_repo.sh) the default branch's own folder,
+# made when missing, since branch folders come and go; else the folder.
+registry_checkout() {
+  local root="$1" common
+  common="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ||
+    { printf 'Not a git repo: %s\n' "$root"; return 1; }
+  if [ "$(basename "$common")" = .bare ]; then
+    "$HOME/.tmuxinator/worktree.sh" ensure "$root" "$("$HOME/.tmuxinator/github_repo.sh" default-branch "$root")"
+  else
+    git -C "$root" rev-parse --show-toplevel
+  fi
+}
+
+# "(repo root)" and the first-level folders an app may live in, those with a
+# deploy/ marked: "<label><TAB><subfolder>".
+app_folder_choices() {
+  local root="$1" folder name
+  printf '(repo root)%s\t.\n' "$([ -d "$root/deploy" ] && printf '  · deploy/')"
+  for folder in "$root"/*/; do
+    name="$(basename "$folder")"
+    case "$name" in node_modules | vendor | deploy) continue ;; esac
+    printf '%s%s\t%s\n' "$name" "$([ -d "$folder/deploy" ] && printf '  · deploy/')" "$name"
+  done
+}
+
+# PhiPlanner → phi-planner, jungleforge's naming.
+app_name_for() {
+  printf '%s' "$1" | sed 's/\([a-z0-9]\)\([A-Z]\)/\1-\2/g' | tr 'A-Z_. ' 'a-z---' | tr -cd 'a-z0-9-'
+}
+
+# Registers each app of the workspace's repo it is asked for, scaffolding a
+# deploy/ from a jungleforge template where the folder has none.
+register_repo() {
+  local root="$1" registry repo_name choice subfolder app_folder suggested app template answer port
+  local count=0
+  jungleforge available || { printf 'jungleforge is not set up: choose Set up jungleforge first.\n'; return 1; }
+  registry="$(registry_checkout "$root")" || return 1
+  repo_name="$(basename "$(dirname "$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)")")"
+  [ "$(basename "$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)")" = .bare ] ||
+    repo_name="$(basename "$registry")"
+  while :; do
+    choice="$(app_folder_choices "$root" | pick Folder "Where the app is, in $(basename "$root")" \
+      --delimiter=$'\t' --with-nth=1)" || return 1
+    [ -n "$choice" ] || return 1
+    subfolder="${choice##*$'\t'}"
+    [ "$subfolder" = . ] && subfolder=""
+    app_folder="$root${subfolder:+/$subfolder}"
+    suggested="$(app_name_for "$repo_name")"
+    [ "$count" -gt 0 ] && [ -n "$subfolder" ] && suggested="$suggested-$(app_name_for "$subfolder")"
+    read -r -p "App name [$suggested]: " app || return 1
+    app="${app:-$suggested}"
+    if [ ! -f "$app_folder/deploy/.docker-env" ]; then
+      template="$(jungleforge templates | awk -F '\t' '{ printf "%s (%s)\t%s\n", $2, $1, $1 }' |
+        pick Stack "No deploy/ in ${subfolder:-the repo root}: the template to start one from" \
+          --delimiter=$'\t' --with-nth=1)" || return 1
+      [ -n "$template" ] || return 1
+      port="$(jungleforge scaffold "$app_folder" "${template##*$'\t'}" "$app")" || return 1
+      share_docker_env "$root" "$registry" "${subfolder:+$subfolder/}deploy/.docker-env"
+      printf 'Made %s/deploy from jungleforge'"'"'s %s template%s.\n' \
+        "${subfolder:-.}" "${template##*$'\t'}" "${port:+, on port $port}"
+    fi
+    jungleforge register "$app" "$registry${subfolder:+/$subfolder}" || return 1
+    printf 'Registered %s: %s\n' "$app" "$registry${subfolder:+/$subfolder}"
+    count=$((count + 1))
+    read -r -p 'Register another app of this repo? [y/N] ' answer || break
+    case "$answer" in y | Y | yes) ;; *) break ;; esac
+  done
+  printf '\nLeft to you: commit the new deploy/ folders (main runs them once merged; Run this branch\n'
+  printf 'works now), and point the app'"'"'s own .env at the shared services: DB_HOST=postgres,\n'
+  printf 'REDIS_HOST=redis, RABBITMQ_HOST=rabbitmq.\n'
+}
+
+# A .docker-env git ignores goes to the repo's .shared, linked into this
+# branch and the registry's checkout, like the other ignored files.
+share_docker_env() {
+  local root="$1" registry="$2" file="$3" repo_dir common
+  git -C "$root" check-ignore -q "$file" 2>/dev/null || return 0
+  common="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)"
+  [ "$(basename "$common")" = .bare ] || return 0
+  repo_dir="$(dirname "$common")"
+  "$HOME/.tmuxinator/shared_files.sh" seed "$repo_dir" "$root" "$file" &&
+    rm "$root/$file" &&
+    "$HOME/.tmuxinator/shared_files.sh" link "$repo_dir" "$root" &&
+    "$HOME/.tmuxinator/shared_files.sh" link "$repo_dir" "$registry"
+}
+
 # The apps to move, one per line: all ticked, Tab unticks one; a repo with a
-# single app is not asked. A repo jungleforge does not know is explained
-# (choose_app too), and a cancelled question just fails.
+# single app is not asked. A repo jungleforge does not know is offered
+# registering (choose_app too), and a cancelled question just fails.
 choose_apps() {
   local rows apps
-  rows="$(jungleforge apps "$1")" || { pause; return 1; }
+  rows="$(known_apps "$1")" || return 1
   apps="$(cut -f1 <<<"$rows")"
   if [ "$(grep -c . <<<"$apps")" -eq 1 ]; then
     printf '%s\n' "$apps"
@@ -535,7 +654,7 @@ choose_apps() {
 # One app, for Migrate, Shell and Logs.
 choose_app() {
   local rows apps
-  rows="$(jungleforge apps "$1")" || { pause; return 1; }
+  rows="$(known_apps "$1")" || return 1
   apps="$(cut -f1 <<<"$rows")"
   if [ "$(grep -c . <<<"$apps")" -eq 1 ]; then
     printf '%s\n' "$apps"
@@ -594,10 +713,7 @@ switch_running_branch() {
   local root targets running label folder mark choice status
   root="$(workspace_root)"
   printf '\033c'
-  if ! jungleforge apps "$root" >/dev/null; then
-    pause
-    return
-  fi
+  known_apps "$root" >/dev/null || return
   targets="$(jungleforge targets "$root")"
   running="$(jungleforge running "$root" | cut -f2)"
   # Esc on the apps comes back here.
@@ -621,7 +737,7 @@ switch_running_branch() {
 stop_running_apps() {
   local root rows
   root="$(workspace_root)"
-  rows="$(jungleforge apps "$root")" || { pause; return; }
+  rows="$(known_apps "$root")" || return
   # shellcheck disable=SC2046
   jungleforge_job stop stop "$root" -- $(cut -f1 <<<"$rows")
 }

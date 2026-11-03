@@ -21,6 +21,9 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
   GIT_AUTHOR_NAME=devws GIT_AUTHOR_EMAIL=devws@example.com \
   GIT_COMMITTER_NAME=devws GIT_COMMITTER_EMAIL=devws@example.com
 export DEVWS_JUNGLEFORGE="$TEST_ROOT/jungleforge"
+# Never this machine's devws settings.
+: > "$TEST_ROOT/devws.env"
+export DEVWS_ENV_FILE="$TEST_ROOT/devws.env"
 
 # make logs its arguments; docker inspect answers from docker/<container>
 # ("true|<mount source>|…"), or fails for a container that does not exist.
@@ -54,7 +57,15 @@ OTHER="$TEST_ROOT/projects/other"
 git init -q -b main "$OTHER"
 git -C "$OTHER" remote add origin https://github.com/acme/other.git
 
-mkdir -p "$DEVWS_JUNGLEFORGE"
+# jungleforge itself: its Makefile, two deploy templates, the registry.
+mkdir -p "$DEVWS_JUNGLEFORGE/templates/deploy" "$DEVWS_JUNGLEFORGE/templates/deploy-node"
+: > "$DEVWS_JUNGLEFORGE/Makefile"
+printf 'PHP_VERSION=8.4\nIMAGE_NAME=example-app\nAPP_HTTP_PORT=8080      # nginx\nPHP_CONTAINER=example-app\n' \
+  > "$DEVWS_JUNGLEFORGE/templates/deploy/.docker-env.example"
+printf 'server {}\n' > "$DEVWS_JUNGLEFORGE/templates/deploy/nginx.conf"
+printf 'STACK=node              # node\nIMAGE_NAME=app\nAPP_HTTP_PORT=5173\nAPP_CONTAINER=app-web\n' \
+  > "$DEVWS_JUNGLEFORGE/templates/deploy-node/.docker-env.example"
+printf 'APP_HTTP_PORT=8092\n' >> "$CHECKOUT/backend/deploy/.docker-env"
 cat > "$DEVWS_JUNGLEFORGE/.env" <<EOF
 # registry
 PHI_PLANNER_PATH=$CHECKOUT/backend
@@ -144,8 +155,90 @@ test_an_unregistered_repo_says_so() {
   grep -q 'Not a jungleforge project' "$TEST_ROOT/err" || fail "no explanation: $(cat "$TEST_ROOT/err")"
 }
 
+# Unset DEVWS_JUNGLEFORGE: a checkout in DEVWS_HOME, else the old one in
+# DEVWS_PROJECTS, else DEVWS_HOME's for setup; set, it wins.
+test_the_folder_is_found_in_order() {
+  local home="$TEST_ROOT/order/devws" projects="$TEST_ROOT/order/projects"
+  folder() {
+    env -u DEVWS_JUNGLEFORGE DEVWS_HOME="$home" DEVWS_PROJECTS="$projects" "$JUNGLEFORGE" folder
+  }
+  [ "$(folder)" = "$home/jungleforge" ] || fail "with none, not DEVWS_HOME's: $(folder)"
+  mkdir -p "$projects/jungleforge" && : > "$projects/jungleforge/Makefile"
+  [ "$(folder)" = "$projects/jungleforge" ] || fail "the DEVWS_PROJECTS checkout was not found: $(folder)"
+  mkdir -p "$home/jungleforge" && : > "$home/jungleforge/Makefile"
+  [ "$(folder)" = "$home/jungleforge" ] || fail "DEVWS_HOME's checkout does not come first: $(folder)"
+  [ "$("$JUNGLEFORGE" folder)" = "$DEVWS_JUNGLEFORGE" ] || fail "DEVWS_JUNGLEFORGE does not win"
+  ! env -u DEVWS_JUNGLEFORGE DEVWS_HOME="$home" DEVWS_PROJECTS="$projects" "$JUNGLEFORGE" available ||
+    fail "a checkout without .env is available"
+  "$JUNGLEFORGE" available || fail "the configured jungleforge is not available"
+}
+
+# Setup clones the public repo (here a local one), writes .env with its own
+# passwords, never overwrites an .env, and says when Docker is not running.
+test_setup_clones_and_writes_env() {
+  local remote="$TEST_ROOT/jungleForge-remote" home="$TEST_ROOT/fresh/devws" folder output
+  git init -q -b main "$remote"
+  : > "$remote/Makefile"
+  # jungleforge's placeholder, passed as an argument so no line reads as a
+  # hard-coded password to a secret scanner.
+  printf 'EXAMPLE_APP_PATH=/absolute/path/to/your-app\nMARIADB_ROOT_PASSWORD=%s\nPOSTGRES_PASSWORD=%s\nREDIS_PORT=6379\n' \
+    change_me change_me \
+    > "$remote/.env.example"
+  git -C "$remote" add -A && git -C "$remote" commit -q -m engine
+  folder="$home/jungleforge"
+  output="$(env -u DEVWS_JUNGLEFORGE DEVWS_HOME="$home" DEVWS_PROJECTS="$TEST_ROOT/fresh/projects" DEVWS_JUNGLEFORGE_REPO="$remote" "$JUNGLEFORGE" setup 2>&1)" ||
+    fail "setup failed: $output"
+  [ -f "$folder/Makefile" ] || fail "jungleforge was not cloned into DEVWS_HOME"
+  ! grep -q change_me "$folder/.env" || fail "a change_me password is left: $(cat "$folder/.env")"
+  [ "$(grep -c '_PASSWORD=[0-9a-f]\{32\}$' "$folder/.env")" = 2 ] || fail "passwords were not generated: $(cat "$folder/.env")"
+  [ "$(sed -n 's/^MARIADB_ROOT_PASSWORD=//p' "$folder/.env")" != "$(sed -n 's/^POSTGRES_PASSWORD=//p' "$folder/.env")" ] ||
+    fail "two services share a password"
+  grep -qx '# EXAMPLE_APP_PATH=/absolute/path/to/your-app' "$folder/.env" || fail "the placeholder app is registered"
+  grep -q 'Docker is not running' <<<"$output" || fail "a stopped Docker was not reported: $output"
+  printf 'OTHER_PATH=/kept\n' >> "$folder/.env"
+  env -u DEVWS_JUNGLEFORGE DEVWS_HOME="$home" DEVWS_PROJECTS="$TEST_ROOT/fresh/projects" DEVWS_JUNGLEFORGE_REPO="$remote" "$JUNGLEFORGE" setup >/dev/null 2>&1 ||
+    fail "setup failed on an existing jungleforge"
+  grep -qx 'OTHER_PATH=/kept' "$folder/.env" || fail "setup overwrote an existing .env"
+}
+
+test_templates_name_their_stack() {
+  [ "$(jungleforge templates)" = "deploy"$'\t'"php"$'\n'"deploy-node"$'\t'"node" ] ||
+    fail "templates: $(jungleforge templates)"
+}
+
+# Scaffold copies the template as deploy/, named after the app, on the port
+# after the highest registered one (phi-planner uses 8092).
+test_scaffold_names_the_app_on_a_free_port() {
+  local app="$TEST_ROOT/projects/shop"
+  mkdir -p "$app"
+  [ "$(jungleforge scaffold "$app" deploy shop)" = 8093 ] || fail "not the next free port"
+  [ -f "$app/deploy/nginx.conf" ] || fail "the template was not copied"
+  grep -qx 'IMAGE_NAME=shop' "$app/deploy/.docker-env" &&
+    grep -qx 'PHP_CONTAINER=shop' "$app/deploy/.docker-env" &&
+    grep -q '^APP_HTTP_PORT=8093 ' "$app/deploy/.docker-env" ||
+    fail "the .docker-env is not the app's: $(cat "$app/deploy/.docker-env")"
+  ! jungleforge scaffold "$app" deploy shop 2>/dev/null || fail "an existing deploy/ was overwritten"
+}
+
+test_register_adds_then_replaces_the_line() {
+  local folder="$TEST_ROOT/projects/shop"
+  jungleforge register shop "$folder" || fail "register failed"
+  grep -qx "SHOP_PATH=$folder" "$DEVWS_JUNGLEFORGE/.env" || fail "the line was not added"
+  jungleforge register shop "$CHECKOUT" || fail "register again failed"
+  [ "$(grep -c '^SHOP_PATH=' "$DEVWS_JUNGLEFORGE/.env")" = 1 ] && grep -qx "SHOP_PATH=$CHECKOUT" "$DEVWS_JUNGLEFORGE/.env" ||
+    fail "the line was not replaced: $(cat "$DEVWS_JUNGLEFORGE/.env")"
+  grep -qx 'REGISTRY=ghcr.io/acme' "$DEVWS_JUNGLEFORGE/.env" || fail "another line was lost"
+  ! jungleforge register 'Bad_Name' "$folder" 2>/dev/null || fail "an invalid name was registered"
+  sed -i '' '/^SHOP_PATH=/d' "$DEVWS_JUNGLEFORGE/.env"
+}
+
 test_apps_are_the_repos_registered_folders
 test_targets_are_main_and_the_worktrees
+test_the_folder_is_found_in_order
+test_setup_clones_and_writes_env
+test_templates_name_their_stack
+test_scaffold_names_the_app_on_a_free_port
+test_register_adds_then_replaces_the_line
 test_running_reads_the_mounted_folder
 test_run_starts_services_then_the_apps_on_the_folder
 test_deps_run_again_only_when_a_lock_file_changes

@@ -61,11 +61,14 @@ EOF
   chmod +x "$TEST_ROOT/home/.tmuxinator/$script"
 done
 # jungleforge.sh answers its questions from jf.<question> files and logs the
-# rest (run, stop…), one call per line.
+# rest (run, stop…), one call per line; it is set up unless jf.missing exists.
 cat > "$TEST_ROOT/home/.tmuxinator/jungleforge.sh" <<EOF
 #!/usr/bin/env bash
 case "\$1" in
-  apps | targets | running) cat "$TEST_ROOT/jf.\$1" 2>/dev/null ;;
+  available) [ ! -e "$TEST_ROOT/jf.missing" ] ;;
+  apps) cat "$TEST_ROOT/jf.apps" 2>/dev/null ||
+    { echo "devws jungleforge: Not a jungleforge project: register it in /jf/.env" >&2; exit 2; } ;;
+  targets | running) cat "$TEST_ROOT/jf.\$1" 2>/dev/null ;;
   *) printf '%s\n' "\$*" >> "$TEST_ROOT/calls/jungleforge.sh" ;;
 esac
 EOF
@@ -105,7 +108,7 @@ test_tabs_list_their_actions() {
   [ "$(actions_of agent)" = "jump switch-agent restart-agent follow-mode initialize-agent register-agent remove-agent" ] ||
     fail "Agent tab: $(actions_of agent)"
   [ "$(actions_of git)" = "commit commit-manual push" ] || fail "Git tab: $(actions_of git)"
-  [ "$(actions_of app)" = "run-here switch-run stop-run services migrate shell logs open-database database-folder job-log" ] ||
+  [ "$(actions_of app)" = "run-here switch-run stop-run services migrate shell logs register-jungleforge open-database database-folder job-log" ] ||
     fail "App tab: $(actions_of app)"
   [ "$(actions_of help)" = "guide guide-shortcuts guide-workspaces guide-layout guide-agents guide-git guide-app guide-commands guide-configuration" ] ||
     fail "Help tab: $(actions_of help)"
@@ -136,6 +139,44 @@ test_memory_items_need_ai_memory() {
   [ "$(DEVWS_AI_MEMORY="$TEST_ROOT/bin/ai-memory-stub" actions_of agent | grep -o 'memory-[a-z]*' | tr '\n' ' ')" = \
     "memory-search memory-recent memory-web memory-doctor " ] ||
     fail "memory items with ai-memory: $(DEVWS_AI_MEMORY="$TEST_ROOT/bin/ai-memory-stub" actions_of agent)"
+}
+
+# Register in jungleforge: the folder the app is in, its name (the repo's by
+# default) and, with no deploy/ there, a template to scaffold one from.
+test_register_scaffolds_and_registers_an_app() {
+  local root="$TEST_ROOT/projects/app"
+  tmux set-option -t dev-menu @devws_root "$root"
+  mkdir -p "$root/web"
+  printf 'web\tweb\nphp (deploy)\tdeploy\n' > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/jungleforge.sh"
+  printf '\nn\n\n' | menu --run register-jungleforge >/dev/null 2>&1
+  grep -qx "scaffold $root/web deploy app" "$TEST_ROOT/calls/jungleforge.sh" ||
+    fail "no deploy/ was scaffolded: $(cat "$TEST_ROOT/calls/jungleforge.sh" 2>/dev/null)"
+  # The registry gets git's own (symlink-free) path of the checkout.
+  grep -qx "register app $(cd "$root" && pwd -P)/web" "$TEST_ROOT/calls/jungleforge.sh" ||
+    fail "the app was not registered: $(cat "$TEST_ROOT/calls/jungleforge.sh" 2>/dev/null)"
+  tmux set-option -u -t dev-menu @devws_root
+}
+
+# Running a repo jungleforge does not know offers to register it; a no runs
+# nothing.
+test_running_an_unregistered_repo_offers_registering() {
+  local output
+  tmux set-option -t dev-menu @devws_root "$TEST_ROOT/projects/app"
+  rm -f "$TEST_ROOT/jf.apps" "$TEST_ROOT/calls/job.sh"
+  output="$(printf 'n\n' | menu --run run-here 2>&1)" || true
+  grep -q 'Register it in jungleforge now' <<<"$output" || fail "registering was not offered: $output"
+  [ -z "$(job_call)" ] || fail "a no still ran: $(job_call)"
+  tmux set-option -u -t dev-menu @devws_root
+}
+
+# Without jungleforge the App tab offers setting it up instead of running
+# branches; the database and the job log stay.
+test_the_app_tab_follows_jungleforge() {
+  : > "$TEST_ROOT/jf.missing"
+  [ "$(actions_of app)" = "setup-jungleforge open-database database-folder job-log" ] ||
+    fail "App tab without jungleforge: $(actions_of app)"
+  rm "$TEST_ROOT/jf.missing"
 }
 
 # With an empty query the menu shows its tab; typing searches every tab, each
@@ -562,6 +603,7 @@ test_tabs_list_their_actions
 test_items_show_labels_and_shortcuts
 test_typing_searches_every_tab
 test_memory_items_need_ai_memory
+test_the_app_tab_follows_jungleforge
 test_the_frequent_actions_have_keys
 test_switching_tabs
 test_header_marks_the_current_tab
@@ -578,6 +620,8 @@ test_a_worktree_workspace_on_a_new_branch
 test_a_github_workspace_opens_the_chosen_folder
 test_push_asks_then_runs_as_a_job
 test_run_this_branch_moves_the_ticked_apps
+test_register_scaffolds_and_registers_an_app
+test_running_an_unregistered_repo_offers_registering
 test_esc_on_the_apps_goes_back_to_the_branches
 test_switch_marks_the_running_branch_and_runs_the_chosen_one
 test_closing_the_running_branch_switches_back_to_main
