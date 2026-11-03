@@ -1,8 +1,8 @@
 # Spec: ai-memory for devws agents
 
 - **Date:** 02-11-2026
-- **Branch:** feat/ai-memory (off feat/ux-round)
-- **Status:** Specified
+- **Branch:** feat/ai-memory (off feat/stabilize)
+- **Status:** Executed
 
 ## Context
 

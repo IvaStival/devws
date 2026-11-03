@@ -107,6 +107,13 @@ add() {
     }'
   restart_header
   printf 'Registered %s (%s, %s)\n' "$name" "$kind" "$written"
+  # With ai-memory installed, the new account gets memory too (memory.sh).
+  local memory="$(dirname "$0")/memory.sh"
+  if [ -x "$memory" ] && "$memory" available; then
+    "$memory" wire "$name" >/dev/null 2>&1 &&
+      printf 'Wired %s to ai-memory\n' "$name" ||
+      printf 'Could not wire %s to ai-memory; run devws memory wire\n' "$name"
+  fi
 }
 
 remove() {

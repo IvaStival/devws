@@ -152,6 +152,74 @@ test_install_offers_the_github_login() {
   grep -q 'gh is missing' <<<"$output" || fail "a missing gh was not reported"
 }
 
+# ai-memory is offered, never installed silently. A stub curl serves an
+# "installer" that puts a logging ai-memory in ~/.local/bin.
+test_install_offers_ai_memory() {
+  local test_home="$TEST_ROOT/ai-memory"
+  local fake_bin="$test_home/bin"
+  local output
+  mkdir -p "$test_home"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+  cat > "$fake_bin/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HOME/curl.log"
+cat <<'INSTALLER'
+mkdir -p "$HOME/.local/bin"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$HOME/ai-memory.log"\n' > "$HOME/.local/bin/ai-memory"
+chmod +x "$HOME/.local/bin/ai-memory"
+INSTALLER
+EOF
+  chmod +x "$fake_bin/curl"
+
+  output="$(printf 'n\n' | run_install "$test_home" "$fake_bin" 2>&1)"
+  grep -q 'Install ai-memory' <<<"$output" || fail "ai-memory was not offered"
+  [ ! -e "$test_home/curl.log" ] || fail "ai-memory was downloaded after a no"
+  output="$(run_install "$test_home" "$fake_bin" </dev/null 2>&1)"
+  ! grep -q 'Install ai-memory' <<<"$output" || fail "ai-memory was offered again after a no"
+
+  printf 'y\n' | run_install "$test_home" "$fake_bin" --ai-memory >/dev/null 2>&1
+  grep -q 'akitaonrails/ai-memory/releases/latest/download/install.sh' "$test_home/curl.log" ||
+    fail "the official installer was not fetched"
+  grep -qx 'setup' "$test_home/ai-memory.log" || fail "ai-memory setup did not run"
+  grep -q 'install-mcp --client claude-code --apply' "$test_home/ai-memory.log" ||
+    fail "the agents were not wired: $(cat "$test_home/ai-memory.log")"
+}
+
+# jungleforge is offered like ai-memory: a no is kept, --jungleforge asks
+# again, and yes clones it (from a local remote) with its .env.
+test_install_offers_jungleforge() {
+  local test_home="$TEST_ROOT/jungleforge"
+  local fake_bin="$test_home/bin" remote="$TEST_ROOT/jungleForge-remote"
+  local output folder
+  mkdir -p "$test_home"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+  git init -q -b main "$remote"
+  : > "$remote/Makefile"
+  # jungleforge's placeholder, as an argument: no hard-coded-password shape.
+  printf 'POSTGRES_PASSWORD=%s\n' change_me > "$remote/.env.example"
+  git -C "$remote" add -A
+  git -C "$remote" -c user.name=devws -c user.email=devws@example.com commit -q -m engine
+  folder="$test_home/.devws/jungleforge"
+  export DEVWS_JUNGLEFORGE="$folder" DEVWS_JUNGLEFORGE_REPO="$remote"
+  # ai-memory, asked just before, already declined: every answer is this one's.
+  mkdir -p "$test_home/.devws-state" && : > "$test_home/.devws-state/ai-memory-declined"
+
+  output="$(printf 'n\n' | run_install "$test_home" "$fake_bin" 2>&1)"
+  grep -q 'Set up jungleforge' <<<"$output" || fail "jungleforge was not offered"
+  [ ! -e "$folder" ] || fail "jungleforge was cloned after a no"
+  output="$(run_install "$test_home" "$fake_bin" </dev/null 2>&1)"
+  ! grep -q 'Set up jungleforge' <<<"$output" || fail "jungleforge was offered again after a no"
+
+  printf 'y\n' | run_install "$test_home" "$fake_bin" --jungleforge >/dev/null 2>&1
+  [ -f "$folder/Makefile" ] || fail "jungleforge was not cloned after a yes"
+  [ -f "$folder/.env" ] && ! grep -q change_me "$folder/.env" || fail "jungleforge's .env was not written"
+  output="$(run_install "$test_home" "$fake_bin" </dev/null 2>&1)"
+  ! grep -q 'Set up jungleforge' <<<"$output" || fail "an installed jungleforge was offered again"
+  unset DEVWS_JUNGLEFORGE DEVWS_JUNGLEFORGE_REPO
+}
+
 test_homebrew_tmuxinator_is_upgraded() {
   local test_home="$TEST_ROOT/tmuxinator"
   local fake_bin="$test_home/bin"
@@ -368,6 +436,8 @@ test_declining_fzf_leaves_home_untouched
 test_owned_fzf_is_removed
 test_preexisting_fzf_is_preserved
 test_install_offers_the_github_login
+test_install_offers_ai_memory
+test_install_offers_jungleforge
 test_homebrew_tmuxinator_is_upgraded
 test_non_homebrew_tmuxinator_is_preserved
 test_owned_glow_is_removed

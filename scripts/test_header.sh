@@ -53,7 +53,7 @@ ln -s "$SCRIPTS" "$TEST_ROOT/home/.tmuxinator"
 # The ticker's settings: fixed here, not the user's own .env.
 printf 'DEVWS_AGENTS="claude codex"\n' > "$TEST_ROOT/devws.env"
 export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" TMPDIR="$TEST_ROOT" LC_ALL=en_US.UTF-8 \
-  DEVWS_ENV_FILE="$TEST_ROOT/devws.env"
+  DEVWS_ENV_FILE="$TEST_ROOT/devws.env" DEVWS_AI_MEMORY=devws-no-ai-memory
 # Run from a devws agent pane, the account it runs in would leak in.
 unset TMUX CLAUDE_CONFIG_DIR CODEX_HOME DEVWS_AGENT
 SCRIPTS="$HOME/.tmuxinator"
@@ -346,6 +346,22 @@ test_one_column_for_the_agents() {
   [ "$output" = "$hint" ] || fail "no agents shows: $output"
   output="$(HOME="$TEST_ROOT/empty" DEVWS_AGENTS="claude codex" "$SCRIPTS/header_agents.sh" "$costs" | plain)"
   [ "$output" = "$hint" ] || fail "agents without their folders show: $output"
+
+  # With ai-memory installed, the last row ends with its service's state:
+  # green while /healthz answers (the stub curl answers while a weather file
+  # is there), red when not.
+  local memory_stub="$TEST_ROOT/bin/ai-memory-stub" weather="$TEST_ROOT/stubs/weather"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$memory_stub"
+  chmod +x "$memory_stub"
+  printf 'ok\n' > "$weather.memory" && [ -f "$weather" ] && cp "$weather" "$weather.saved"
+  cp "$weather.memory" "$weather"
+  output="$(DEVWS_AI_MEMORY="$memory_stub" DEVWS_AGENTS="codex" "$SCRIPTS/header_agents.sh")"
+  shows "$output" 'mem#\[nodim\] #\[fg=green\]●' || fail "no green mem dot: $output"
+  rm -f "$weather"
+  output="$(DEVWS_AI_MEMORY="$memory_stub" DEVWS_AGENTS="codex" "$SCRIPTS/header_agents.sh")"
+  shows "$output" 'mem#\[nodim\] #\[fg=red\]●' || fail "no red mem dot: $output"
+  [ ! -f "$weather.saved" ] || mv "$weather.saved" "$weather"
+  rm -f "$weather.memory"
   tmux kill-server
 }
 

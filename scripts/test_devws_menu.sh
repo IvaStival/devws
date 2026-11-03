@@ -22,8 +22,10 @@ fail() {
 # Every tmux call goes to an isolated server. ~/.tmuxinator holds the real
 # menu and actions, and logging stand-ins for the scripts the actions call.
 mkdir -p "$TEST_ROOT/bin" "$TEST_ROOT/home/.tmuxinator" "$TEST_ROOT/calls"
+# A popup needs a client, which the tests have none of: it is recorded.
 cat > "$TEST_ROOT/bin/tmux" <<EOF
 #!/usr/bin/env bash
+[ "\$1" = display-popup ] && { printf '%s\n' "\$*" > "$TEST_ROOT/calls/popup-command"; exit 0; }
 exec "$REAL_TMUX" -L "$SOCKET" -f /dev/null "\$@"
 EOF
 # fzf answers from a queue, one line per call (after the query line that
@@ -59,11 +61,14 @@ EOF
   chmod +x "$TEST_ROOT/home/.tmuxinator/$script"
 done
 # jungleforge.sh answers its questions from jf.<question> files and logs the
-# rest (run, stop…), one call per line.
+# rest (run, stop…), one call per line; it is set up unless jf.missing exists.
 cat > "$TEST_ROOT/home/.tmuxinator/jungleforge.sh" <<EOF
 #!/usr/bin/env bash
 case "\$1" in
-  apps | targets | running) cat "$TEST_ROOT/jf.\$1" 2>/dev/null ;;
+  available) [ ! -e "$TEST_ROOT/jf.missing" ] ;;
+  apps) cat "$TEST_ROOT/jf.apps" 2>/dev/null ||
+    { echo "devws jungleforge: Not a jungleforge project: register it in /jf/.env" >&2; exit 2; } ;;
+  targets | running) cat "$TEST_ROOT/jf.\$1" 2>/dev/null ;;
   *) printf '%s\n' "\$*" >> "$TEST_ROOT/calls/jungleforge.sh" ;;
 esac
 EOF
@@ -78,6 +83,8 @@ EOF
 chmod +x "$TEST_ROOT/home/.tmuxinator/git_actions.sh"
 # TMPDIR keeps the popup flag apart from a real menu's.
 export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" TMPDIR="$TEST_ROOT"
+# As if ai-memory were not installed, whatever this machine has.
+export DEVWS_AI_MEMORY=devws-no-ai-memory
 unset TMUX
 
 MENU="$HOME/.tmuxinator/devws_menu.sh"
@@ -101,8 +108,10 @@ test_tabs_list_their_actions() {
   [ "$(actions_of agent)" = "jump switch-agent restart-agent follow-mode initialize-agent register-agent remove-agent" ] ||
     fail "Agent tab: $(actions_of agent)"
   [ "$(actions_of git)" = "commit commit-manual push" ] || fail "Git tab: $(actions_of git)"
-  [ "$(actions_of app)" = "run-here switch-run stop-run services migrate shell logs open-database database-folder job-log" ] ||
+  [ "$(actions_of app)" = "run-here switch-run stop-run services migrate shell logs register-jungleforge open-database database-folder job-log" ] ||
     fail "App tab: $(actions_of app)"
+  [ "$(actions_of help)" = "guide guide-shortcuts guide-workspaces guide-layout guide-agents guide-git guide-app guide-commands guide-configuration" ] ||
+    fail "Help tab: $(actions_of help)"
 }
 
 test_items_show_labels_and_shortcuts() {
@@ -121,6 +130,55 @@ test_items_show_labels_and_shortcuts() {
   grep -q $'^switch-agent\t.*Switch agent' <<<"$agent" || fail "Switch agent has no label"
 }
 
+# The memory items show only with ai-memory installed (DEVWS_AI_MEMORY: none
+# for these tests, whatever the machine has, unless pointed at a stub).
+test_memory_items_need_ai_memory() {
+  ! grep -q memory- <<<"$(actions_of agent)" || fail "memory items without ai-memory"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$TEST_ROOT/bin/ai-memory-stub"
+  chmod +x "$TEST_ROOT/bin/ai-memory-stub"
+  [ "$(DEVWS_AI_MEMORY="$TEST_ROOT/bin/ai-memory-stub" actions_of agent | grep -o 'memory-[a-z]*' | tr '\n' ' ')" = \
+    "memory-search memory-recent memory-web memory-doctor " ] ||
+    fail "memory items with ai-memory: $(DEVWS_AI_MEMORY="$TEST_ROOT/bin/ai-memory-stub" actions_of agent)"
+}
+
+# Register in jungleforge: the folder the app is in, its name (the repo's by
+# default) and, with no deploy/ there, a template to scaffold one from.
+test_register_scaffolds_and_registers_an_app() {
+  local root="$TEST_ROOT/projects/app"
+  tmux set-option -t dev-menu @devws_root "$root"
+  mkdir -p "$root/web"
+  printf 'web\tweb\nphp (deploy)\tdeploy\n' > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/jungleforge.sh"
+  printf '\nn\n\n' | menu --run register-jungleforge >/dev/null 2>&1
+  grep -qx "scaffold $root/web deploy app" "$TEST_ROOT/calls/jungleforge.sh" ||
+    fail "no deploy/ was scaffolded: $(cat "$TEST_ROOT/calls/jungleforge.sh" 2>/dev/null)"
+  # The registry gets git's own (symlink-free) path of the checkout.
+  grep -qx "register app $(cd "$root" && pwd -P)/web" "$TEST_ROOT/calls/jungleforge.sh" ||
+    fail "the app was not registered: $(cat "$TEST_ROOT/calls/jungleforge.sh" 2>/dev/null)"
+  tmux set-option -u -t dev-menu @devws_root
+}
+
+# Running a repo jungleforge does not know offers to register it; a no runs
+# nothing.
+test_running_an_unregistered_repo_offers_registering() {
+  local output
+  tmux set-option -t dev-menu @devws_root "$TEST_ROOT/projects/app"
+  rm -f "$TEST_ROOT/jf.apps" "$TEST_ROOT/calls/job.sh"
+  output="$(printf 'n\n' | menu --run run-here 2>&1)" || true
+  grep -q 'Register it in jungleforge now' <<<"$output" || fail "registering was not offered: $output"
+  [ -z "$(job_call)" ] || fail "a no still ran: $(job_call)"
+  tmux set-option -u -t dev-menu @devws_root
+}
+
+# Without jungleforge the App tab offers setting it up instead of running
+# branches; the database and the job log stay.
+test_the_app_tab_follows_jungleforge() {
+  : > "$TEST_ROOT/jf.missing"
+  [ "$(actions_of app)" = "setup-jungleforge open-database database-folder job-log" ] ||
+    fail "App tab without jungleforge: $(actions_of app)"
+  rm "$TEST_ROOT/jf.missing"
+}
+
 # With an empty query the menu shows its tab; typing searches every tab, each
 # match tagged with its tab.
 test_typing_searches_every_tab() {
@@ -130,7 +188,8 @@ test_typing_searches_every_tab() {
   all="$(menu --items-for data)"
   grep -q $'^open-database\tApp · ⛁ Database' <<<"$all" || fail "typing does not reach the App tab: $all"
   grep -q $'^jump\tAgent · ! Go to waiting agent' <<<"$all" || fail "not every tab is searched: $all"
-  [ "$(grep -c . <<<"$all")" -eq "$(grep -c '|' <<<"$(menu --actions)")" ] ||
+  # Every action shown in a tab, once.
+  [ "$(grep -c . <<<"$all")" -eq "$(for tab in workspace layout agent git app help; do menu --items "$tab"; done | grep -c .)" ] ||
     fail "a search does not list every action once"
 }
 
@@ -155,10 +214,10 @@ test_switching_tabs() {
   [ "$(menu --tab)" = "layout" ] || fail "next did not move to Layout"
   menu --switch prev >/dev/null
   menu --switch prev >/dev/null
-  [ "$(menu --tab)" = "app" ] || fail "prev did not wrap around to App"
+  [ "$(menu --tab)" = "help" ] || fail "prev did not wrap around to Help"
   menu --switch next >/dev/null
   [ "$(menu --tab)" = "workspace" ] || fail "next did not wrap around to Workspace"
-  # A click on the tab bar " Workspace   Layout   Agent   Git   App " gives its column.
+  # A click on the tab bar " Workspace   Layout   Agent   Git   App   Help " gives its column.
   [[ "$(menu --switch-at 23)" == *transform-header* ]] || fail "a tab click did not change the header"
   [ "$(menu --tab)" = "agent" ] || fail "clicking Agent (column 23) did not open it"
   menu --switch-at 1 >/dev/null
@@ -167,8 +226,10 @@ test_switching_tabs() {
   [ "$(menu --tab)" = "app" ] || fail "clicking App (column 39) did not open it"
   menu --switch-at 12 >/dev/null
   [ "$(menu --tab)" = "app" ] || fail "a click between tabs changed the tab"
-  menu --switch-at 50 >/dev/null
+  menu --switch-at 60 >/dev/null
   [ "$(menu --tab)" = "app" ] || fail "a click beside the tabs changed the tab"
+  menu --switch-at 44 >/dev/null
+  [ "$(menu --tab)" = "help" ] || fail "clicking Help (column 44) did not open it"
   menu --switch Layout >/dev/null
 }
 
@@ -494,14 +555,29 @@ test_closing_the_running_branch_switches_back_to_main() {
 
 test_every_action_has_a_function() {
   local tab action function
-  for tab in workspace layout agent git app; do
+  for tab in workspace layout agent git app help; do
     for action in $(actions_of "$tab"); do
       function="$(menu --function "$action")" || fail "no function for $action"
+      function="${function%% *}"
       bash -c ". '$SCRIPTS/workspace_actions.sh'; declare -F '$function' >/dev/null" ||
         fail "$action's function $function is not defined in workspace_actions.sh"
     done
   done
   ! menu --run no-such-action 2>/dev/null || fail "an unknown action was accepted"
+}
+
+# A Help item opens its guide page in a large popup on the same client, once
+# the menu's popup has closed (from the tmux server: run-shell -b).
+test_help_opens_the_guide_page() {
+  local opened
+  menu --run guide-shortcuts
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [ -s "$TEST_ROOT/calls/popup-command" ] && break
+    sleep 0.1
+  done
+  opened="$(cat "$TEST_ROOT/calls/popup-command" 2>/dev/null)"
+  [[ "$opened" == *"-w 90% -h 90%"* ]] || fail "the guide popup is not large: $opened"
+  [[ "$opened" == *"guide.sh shortcuts"* ]] || fail "the guide popup does not show the page: $opened"
 }
 
 test_sidebar_opens_the_menu() {
@@ -526,6 +602,8 @@ test_space_opens_the_menu() {
 test_tabs_list_their_actions
 test_items_show_labels_and_shortcuts
 test_typing_searches_every_tab
+test_memory_items_need_ai_memory
+test_the_app_tab_follows_jungleforge
 test_the_frequent_actions_have_keys
 test_switching_tabs
 test_header_marks_the_current_tab
@@ -542,10 +620,13 @@ test_a_worktree_workspace_on_a_new_branch
 test_a_github_workspace_opens_the_chosen_folder
 test_push_asks_then_runs_as_a_job
 test_run_this_branch_moves_the_ticked_apps
+test_register_scaffolds_and_registers_an_app
+test_running_an_unregistered_repo_offers_registering
 test_esc_on_the_apps_goes_back_to_the_branches
 test_switch_marks_the_running_branch_and_runs_the_chosen_one
 test_closing_the_running_branch_switches_back_to_main
 test_every_action_has_a_function
+test_help_opens_the_guide_page
 test_sidebar_opens_the_menu
 test_space_opens_the_menu
 test_scroll_margins_are_off

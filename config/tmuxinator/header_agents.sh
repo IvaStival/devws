@@ -72,7 +72,7 @@ for agent in ${agents[@]+"${agents[@]}"}; do
   [ "${#agent}" -le "$width" ] || width="${#agent}"
 done
 
-rows=0
+lines=()
 total=0
 total_unpriced=0
 for agent in ${agents[@]+"${agents[@]}"}; do
@@ -84,9 +84,21 @@ for agent in ${agents[@]+"${agents[@]}"}; do
     total="$(awk -v a="$total" -v b="$cost" 'BEGIN { print a + b }')"
     [ "$unpriced" = 1 ] && total_unpriced=1
   fi
-  printf '%s\n' "$row"
-  rows=$((rows + 1))
+  lines+=("$row")
 done
-if [ "$rows" -lt 3 ] && [ -r "$costs_file" ]; then
-  printf '#[dim]month %s at API prices#[nodim]\n' "$(dollars "$total" "$total_unpriced")"
+if [ "${#lines[@]}" -lt 3 ] && [ -r "$costs_file" ]; then
+  lines+=("$(printf '#[dim]month %s at API prices#[nodim]' "$(dollars "$total" "$total_unpriced")")")
 fi
+
+# With ai-memory installed, the last row ends with its service's state: a
+# green dot while it answers, red when it does not — sessions are then not
+# being recorded (memory.sh).
+memory="$(dirname "$0")/memory.sh"
+if [ -x "$memory" ] && "$memory" available; then
+  if "$memory" up; then
+    lines[${#lines[@]} - 1]+="  #[dim]mem#[nodim] #[fg=${DEVWS_COLOR_OK:-green}]●#[fg=default]"
+  else
+    lines[${#lines[@]} - 1]+="  #[dim]mem#[nodim] #[fg=${DEVWS_COLOR_STRESS:-red}]●#[fg=default]"
+  fi
+fi
+printf '%s\n' "${lines[@]}"
