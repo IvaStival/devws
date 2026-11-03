@@ -31,7 +31,9 @@ exit 7
 EOF
 chmod +x "$TEST_ROOT/bin/"*
 printf 'DEVWS_AGENTS="claude codex claude_work"\nDEVWS_AGENT_claude_work="claude ~/.claude-work"\n' > "$TEST_ROOT/devws.env"
-export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" DEVWS_ENV_FILE="$TEST_ROOT/devws.env"
+# DEVWS_AI_MEMORY: the stub, never the ai-memory this machine may have.
+export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" DEVWS_ENV_FILE="$TEST_ROOT/devws.env" \
+  DEVWS_AI_MEMORY="$TEST_ROOT/bin/ai-memory"
 
 memory() {
   "$MEMORY" "$@"
