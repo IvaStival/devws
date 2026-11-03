@@ -38,6 +38,14 @@ zsh -n "$ROOT/shell/devws.zsh"
 zsh -n "$ROOT/bin/devws"
 [[ -x "$ROOT/bin/devws" ]] || { printf 'Not executable: %s\n' "$ROOT/bin/devws" >&2; exit 1; }
 
+# default-keys.conf wipes every binding made before it: one there is dead.
+dead_keys="$(awk '/^source-file .*default-keys\.conf/ { exit } /^[[:space:]]*(bind|bind-key|unbind) / { print FILENAME ":" NR ": " $0 }' \
+  "$ROOT/config/tmux/tmux.conf")"
+[ -z "$dead_keys" ] || {
+  printf 'tmux.conf: bound before default-keys.conf, which wipes it:\n%s\n' "$dead_keys" >&2
+  exit 1
+}
+
 ruby -rerb -ryaml -e '
   render = lambda do |settings|
     context = Object.new
