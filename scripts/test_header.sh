@@ -356,10 +356,12 @@ test_one_column_for_the_agents() {
   printf 'ok\n' > "$weather.memory" && [ -f "$weather" ] && cp "$weather" "$weather.saved"
   cp "$weather.memory" "$weather"
   output="$(DEVWS_AI_MEMORY="$memory_stub" DEVWS_AGENTS="codex" "$SCRIPTS/header_agents.sh")"
-  shows "$output" 'mem#\[nodim\] #\[fg=green\]●' || fail "no green mem dot: $output"
+  shows "$output" ' #\[fg=green\]●' || fail "no green memory dot: $output"
+  # Unlabelled: the label pushed the header's clock out at common widths.
+  case "$output" in *mem*) fail "the memory dot still has its label: $output" ;; esac
   rm -f "$weather"
   output="$(DEVWS_AI_MEMORY="$memory_stub" DEVWS_AGENTS="codex" "$SCRIPTS/header_agents.sh")"
-  shows "$output" 'mem#\[nodim\] #\[fg=red\]●' || fail "no red mem dot: $output"
+  shows "$output" ' #\[fg=red\]●' || fail "no red memory dot: $output"
   [ ! -f "$weather.saved" ] || mv "$weather.saved" "$weather"
   rm -f "$weather.memory"
   tmux kill-server

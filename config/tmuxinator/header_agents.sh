@@ -90,15 +90,15 @@ if [ "${#lines[@]}" -lt 3 ] && [ -r "$costs_file" ]; then
   lines+=("$(printf '#[dim]month %s at API prices#[nodim]' "$(dollars "$total" "$total_unpriced")")")
 fi
 
-# With ai-memory installed, the last row ends with its service's state: a
+# With ai-memory installed, the last row ends with its service's state, a
 # green dot while it answers, red when it does not — sessions are then not
 # being recorded (memory.sh).
 memory="$(dirname "$0")/memory.sh"
 if [ -x "$memory" ] && "$memory" available; then
   if "$memory" up; then
-    lines[${#lines[@]} - 1]+="  #[dim]mem#[nodim] #[fg=${DEVWS_COLOR_OK:-green}]●#[fg=default]"
+    lines[${#lines[@]} - 1]+=" #[fg=${DEVWS_COLOR_OK:-green}]●#[fg=default]"
   else
-    lines[${#lines[@]} - 1]+="  #[dim]mem#[nodim] #[fg=${DEVWS_COLOR_STRESS:-red}]●#[fg=default]"
+    lines[${#lines[@]} - 1]+=" #[fg=${DEVWS_COLOR_STRESS:-red}]●#[fg=default]"
   fi
 fi
 printf '%s\n' "${lines[@]}"
