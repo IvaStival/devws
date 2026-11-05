@@ -124,6 +124,22 @@ it is open; `devagentics board <task> --once` prints it as text, and does not.
 - At most `max_agents` running (6), the seniors included. Agents stay between
   steps; the leader stops them at the end, near a limit, or to make room.
 - No new agents on an account past 85% of its 5-hour limit.
+- **The leader moves** when its account has used 95% of its week: to its
+  role's `[fallback]` (the built-in leader's is Codex `gpt-6.1-sol`, effort
+  medium), unless that account has too. At start the leader starts there;
+  while it runs, the board hands it over once it has finished its turn: its
+  pane restarts on the fallback, which catches up from `task_status` and the
+  log (the conversation does not go with it) and tells you. The board's
+  leader row then says `· fallback`, and the log says why. It does not move
+  back on its own; the next `devws agentic` chooses again. Only the leader
+  has a fallback; your own `leader.md` sets another, or none:
+
+  ```toml
+  [fallback]
+  agent = "codex"
+  model = "gpt-6.1-sol"
+  effort = "medium"
+  ```
 - A senior changes no files; the factory floor runs only an accepted plan's
   steps.
 - Agents talk to the leader, and a hammer to the senior whose plan it

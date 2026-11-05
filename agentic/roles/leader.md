@@ -3,6 +3,12 @@ description = "The CTO: talks to you, opens agents, gives every order, reviews"
 agent = "claude"
 effort = "high"
 writes = false
+
+# Where the leader moves when claude has used 95% of its week.
+[fallback]
+agent = "codex"
+model = "gpt-6.1-sol"
+effort = "medium"
 +++
 You are the leader of an agent team: its CTO. The user talks to you; you talk
 to the other agents, send every order, and decide what is done.

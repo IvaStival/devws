@@ -9,7 +9,7 @@ use crate::lanes;
 use crate::log::Kind;
 use crate::orders;
 use crate::roles::{Role, Roles};
-use crate::start::{opening, repo_name};
+use crate::start::{AGENT_FIRST, opening, repo_name};
 use crate::state::{Agent, OrderStatus, StepStatus};
 use crate::task::{Repo, Task, TaskConfig};
 use anyhow::{Context, Result, bail};
@@ -250,7 +250,7 @@ impl Team<'_> {
         id: &str,
     ) -> Result<(String, String)> {
         let kind = self.devws.agent_kind(&role.agent)?;
-        let first_message = opening(role, config, id, repo, false);
+        let first_message = opening(role, config, id, repo, AGENT_FIRST);
         let arguments = agent_args::arguments(&Launch {
             role,
             kind,

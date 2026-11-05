@@ -6,6 +6,7 @@ use crate::board_usage::UsageReader;
 use crate::board_view;
 use crate::devws::Devws;
 use crate::home::Home;
+use crate::leader;
 use crate::roles::Roles;
 use crate::task::Task;
 use crate::watch::{self, Dispatcher};
@@ -25,6 +26,8 @@ const REFRESH: Duration = Duration::from_secs(2);
 const DISPATCH: Duration = Duration::from_secs(1);
 /// How old a reading of an agent's usage may be.
 const USAGE_EVERY: Duration = Duration::from_secs(30);
+/// How often the leader's account is looked at for a handover (leader.rs).
+const LEADER_EVERY: Duration = Duration::from_secs(60);
 const KEY_WAIT: Duration = Duration::from_millis(250);
 /// Rows one turn of the mouse wheel scrolls.
 const WHEEL: u16 = 3;
@@ -90,14 +93,31 @@ pub fn once(
     )))
 }
 
-/// Dispatches until told to stop, unless another dispatcher already does.
-fn dispatch(task: &Task, devws: &dyn Devws, stop: &AtomicBool, problem: &Mutex<Option<String>>) {
+/// Dispatches until told to stop, unless another dispatcher already does;
+/// now and then hands the leader over when its account ran out.
+fn dispatch(
+    task: &Task,
+    devws: &dyn Devws,
+    home: &Home,
+    stop: &AtomicBool,
+    problem: &Mutex<Option<String>>,
+) {
     let Ok(_lock) = watch::lock(task) else {
         return;
     };
     let mut dispatcher = Dispatcher::new(task, devws, watch::STALL_GRACE);
+    let command = std::env::current_exe()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| "devagentics".to_string());
+    let mut leader_seen: Option<Instant> = None;
     while !stop.load(Ordering::Relaxed) {
-        let outcome = dispatcher.tick().err().map(|error| format!("{error:#}"));
+        let mut outcome = dispatcher.tick().err().map(|error| format!("{error:#}"));
+        if leader_seen.is_none_or(|at| at.elapsed() >= LEADER_EVERY) {
+            leader_seen = Some(Instant::now());
+            if let Err(error) = leader::hand_over(home, task, devws, &command) {
+                outcome.get_or_insert(format!("leader handover: {error:#}"));
+            }
+        }
         if let Ok(mut slot) = problem.lock() {
             *slot = outcome;
         }
@@ -117,7 +137,7 @@ pub fn run(task: &Task, devws: &dyn Devws, home: &Home) -> Result<()> {
     let stop = AtomicBool::new(false);
     let problem = Mutex::new(None);
     std::thread::scope(|scope| {
-        scope.spawn(|| dispatch(task, devws, &stop, &problem));
+        scope.spawn(|| dispatch(task, devws, home, &stop, &problem));
         let result = show(task, devws, home, &problem);
         stop.store(true, Ordering::Relaxed);
         result

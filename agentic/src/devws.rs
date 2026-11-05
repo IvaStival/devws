@@ -111,6 +111,9 @@ pub trait Devws: Send + Sync {
         label: &str,
         args_file: &Path,
     ) -> Result<String>;
+    /// Starts another agent in an agent pane, in place of the one there (the
+    /// leader's handover): the pane keeps its place and role.
+    fn restart_agent(&self, pane: &str, agent: &str, args_file: &Path) -> Result<()>;
     fn pane_state(&self, pane: &str) -> Result<PaneState>;
     fn send(&self, pane: &str, text: &str) -> Result<Delivery>;
     /// Marks the agent `waiting` ("needs you") or `done`.
@@ -247,6 +250,18 @@ impl Devws for CommandDevws {
             "--agent-args",
             path_text(args_file)?,
         ])
+    }
+
+    fn restart_agent(&self, pane: &str, agent: &str, args_file: &Path) -> Result<()> {
+        self.devws(&[
+            "agent",
+            "run",
+            pane,
+            agent,
+            "--agent-args",
+            path_text(args_file)?,
+        ])
+        .map(drop)
     }
 
     fn pane_state(&self, pane: &str) -> Result<PaneState> {
@@ -406,6 +421,14 @@ pub mod fake {
                 .insert(pane.to_string(), state);
         }
 
+        pub fn set_limits(&self, agent: &str, limits: Limits) {
+            self.inner
+                .lock()
+                .unwrap()
+                .limits
+                .insert(agent.to_string(), limits);
+        }
+
         pub fn set_role(&self, session: &str, role: &str, pane: &str) {
             self.inner
                 .lock()
@@ -524,6 +547,12 @@ pub mod fake {
                 folder.display()
             ));
             Ok(Self::new_pane(&mut inner))
+        }
+
+        fn restart_agent(&self, pane: &str, agent: &str, args_file: &Path) -> Result<()> {
+            let mut inner = self.record(format!("run {pane} {agent} {}", args_file.display()));
+            inner.states.insert(pane.to_string(), PaneState::Idle);
+            Ok(())
         }
 
         fn pane_state(&self, pane: &str) -> Result<PaneState> {

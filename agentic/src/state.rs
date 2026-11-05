@@ -24,6 +24,9 @@ pub struct State {
     /// The seniors' execution plans, one per step they were ordered.
     pub plans: Vec<ExecutionPlan>,
     pub questions: Vec<Question>,
+    /// The devws agent the leader runs on now: its role's, or its fallback's
+    /// (leader.rs). Tasks from before have none: the role's.
+    pub leader_agent: Option<String>,
 }
 
 /// A senior's plan for the floor, kept as `plans/<step>.md`. The CTO approves

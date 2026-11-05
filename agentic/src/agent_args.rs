@@ -207,6 +207,7 @@ mod tests {
             description: None,
             instructions: "Do it.".to_string(),
             source: Source::Builtin,
+            fallback: None,
         }
     }
 

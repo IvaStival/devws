@@ -100,7 +100,17 @@ impl Board {
             .map(|role| RoleRow {
                 name: role.name.clone(),
                 group: role.group,
-                program: program(role),
+                // A leader on its fallback (leader.rs) shows the program it
+                // runs now.
+                program: match role.on_fallback() {
+                    Some(fallback)
+                        if state.leader_agent.as_deref() == Some(fallback.agent.as_str())
+                            && fallback.agent != role.agent =>
+                    {
+                        format!("{} · fallback", program(&fallback))
+                    }
+                    _ => program(role),
+                },
                 description: role.description.clone(),
                 agents: Vec::new(),
             })

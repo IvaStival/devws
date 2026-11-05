@@ -90,6 +90,31 @@ pub struct Role {
     pub description: Option<String>,
     pub instructions: String,
     pub source: Source,
+    /// Where the leader moves when its account runs out (leader.rs).
+    pub fallback: Option<Fallback>,
+}
+
+/// Another program for the same role: `[fallback]` in a role's settings.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fallback {
+    pub agent: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+impl Role {
+    /// The same role on its fallback's agent, model and effort.
+    pub fn on_fallback(&self) -> Option<Role> {
+        let fallback = self.fallback.as_ref()?;
+        Some(Role {
+            agent: fallback.agent.clone(),
+            model: fallback.model.clone(),
+            effort: fallback.effort.clone(),
+            fallback: None,
+            ..self.clone()
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -104,6 +129,7 @@ struct FrontMatter {
     sandbox: Option<String>,
     approvals: Option<String>,
     description: Option<String>,
+    fallback: Option<Fallback>,
 }
 
 const FENCE: &str = "+++";
@@ -141,6 +167,11 @@ fn parse(name: &str, text: &str, source: Source, origin: &str) -> Result<Role> {
         ),
         _ => {}
     }
+    // The other roles are refused when their account is near its limit; only
+    // the leader, who keeps the team going, moves.
+    if front.fallback.is_some() && name != "leader" {
+        bail!("{origin}: only the leader has a fallback");
+    }
     Ok(Role {
         name: name.to_string(),
         agent: front.agent,
@@ -153,6 +184,7 @@ fn parse(name: &str, text: &str, source: Source, origin: &str) -> Result<Role> {
         description: front.description,
         instructions,
         source,
+        fallback: front.fallback,
     })
 }
 
@@ -271,6 +303,55 @@ mod tests {
         assert_eq!(group("executor"), Group::Floor);
         assert_eq!(group("robson"), Group::Senior);
         assert_eq!(group("hammer"), Group::Floor);
+    }
+
+    #[test]
+    fn the_leader_falls_back_to_codex_sol_and_only_the_leader_has_a_fallback() {
+        let (_dir, home) = home_with(&[]);
+        let roles = Roles::load(&home, None).unwrap();
+        let leader = roles.get("leader").unwrap();
+        let fallback = leader
+            .fallback
+            .clone()
+            .expect("the built-in leader has one");
+        assert_eq!(
+            (
+                fallback.agent.as_str(),
+                fallback.model.as_deref(),
+                fallback.effort.as_deref()
+            ),
+            ("codex", Some("gpt-6.1-sol"), Some("medium"))
+        );
+        let moved = leader.on_fallback().unwrap();
+        assert_eq!(
+            (moved.agent.as_str(), moved.model.as_deref()),
+            ("codex", Some("gpt-6.1-sol"))
+        );
+        assert_eq!(
+            moved.instructions, leader.instructions,
+            "the same leader, another program"
+        );
+        assert!(moved.fallback.is_none(), "no fallback of the fallback");
+
+        let (_dir, home) = home_with(&[(
+            "leader.md",
+            "+++\nagent = \"claude\"\n+++\nLead without a fallback.\n",
+        )]);
+        assert!(
+            Roles::load(&home, None)
+                .unwrap()
+                .get("leader")
+                .unwrap()
+                .fallback
+                .is_none()
+        );
+
+        let (_dir, home) = home_with(&[(
+            "hammer.md",
+            "+++\nagent = \"claude\"\nwrites = true\n[fallback]\nagent = \"codex\"\n+++\nBuild.\n",
+        )]);
+        let message = format!("{:#}", Roles::load(&home, None).err().unwrap());
+        assert!(message.contains("only the leader"), "{message}");
     }
 
     #[test]

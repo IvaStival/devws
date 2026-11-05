@@ -42,7 +42,9 @@ repos get their own worktrees the same way, as the leader opens them.
 - **The leader** is where you work: the team's CTO. It is focused when the
   workspace opens. Its team has **seniors**, who plan and answer questions
   and never write the repo, and the **factory floor** (the hammers), who build
-  only what a senior planned.
+  only what a senior planned. When its account has used 95% of its week, the
+  leader moves to Codex Sol (medium): at start, or once it has finished its
+  turn; the new leader catches up from the task and tells you.
 - **The board** beside it, in a column of its own, shows where the team stands: the accounts' limits,
   one line of state, the open questions, **Who does what** (every role there is, by group, running or not,
   with what each running agent is doing and what comes next), the steps to
@@ -51,10 +53,12 @@ repos get their own worktrees the same way, as the leader opens them.
   to close. It also runs the dispatcher that types orders into the agents.
 - **The agents** open in workspaces of their own, one per group, beside the
   team's: **Seniors** (`my-app-seniors`) and **Floor** (`my-app-floor`), four
-  agents to a workspace, tiled; a fifth floor agent opens `my-app-floor-2`.
-  They are listed under the task in the sidebar, each with its agents
-  (`◦ hammer-codex-1 ● needs you · Floor`), and are never paused while you
-  are away. The team's workspace keeps only the leader and the board. Each
+  agents to a workspace, tiled beside a sidebar of their own; a fifth floor
+  agent opens `my-app-floor-2`. In the sidebar they are a tree under the
+  team's workspace, each group with its agents (`└ Floor ●` while one waits,
+  then `◦ hammer-codex-1 ● needs you`); a group whose last agent stops
+  closes. They are never paused while you are away. The team's workspace
+  keeps only the leader and the board. Each
   agent's header shows its role and state (working, `● needs you`,
   `✓ done`) as for any agent.
 - **Reaching an agent.** On the board each running agent has a number: press

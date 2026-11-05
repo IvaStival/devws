@@ -4,6 +4,7 @@
 use crate::agent_args::{self, Launch, McpServer};
 use crate::devws::Devws;
 use crate::home::Home;
+use crate::leader;
 use crate::log::Kind;
 use crate::roles::{Role, Roles};
 use crate::task::{Repo, Task, TaskConfig, slug};
@@ -62,6 +63,12 @@ pub fn session_name(folder: &Path) -> String {
     format!("dev-{}", name.replace(['.', ':'], "_"))
 }
 
+/// What the leader does first when the team starts.
+pub const LEADER_FIRST: &str =
+    "Call task_status, then tell the user in one line that you are ready for their goal, and wait.";
+/// What any other agent does first.
+pub const AGENT_FIRST: &str = "Reply with exactly: ready — then wait for your first order.";
+
 /// What an agent is told when it starts: its role, where it is, and what to do
 /// first.
 pub fn opening(
@@ -69,13 +76,8 @@ pub fn opening(
     config: &TaskConfig,
     agent_id: &str,
     repo: &Repo,
-    leader: bool,
+    first: &str,
 ) -> String {
-    let first = if leader {
-        "Call task_status, then tell the user in one line that you are ready for their goal, and wait.".to_string()
-    } else {
-        "Reply with exactly: ready — then wait for your first order.".to_string()
-    };
     format!(
         "{}\n\n---\nTask {} on branch {}. You are {agent_id}; your worktree is {}.\n{first}",
         role.instructions,
@@ -83,6 +85,37 @@ pub fn opening(
         config.branch,
         repo.worktree.display()
     )
+}
+
+/// The leader's start-up arguments, for the program its role says, with its
+/// tools (the MCP server): `leader.args` beside the task. `first` is what it
+/// does first.
+pub fn write_leader_args(
+    task: &Task,
+    devws: &dyn Devws,
+    leader: &Role,
+    command: &str,
+    first: &str,
+) -> Result<PathBuf> {
+    let config = task.config()?;
+    let kind = devws.agent_kind(&leader.agent)?;
+    let mcp = McpServer {
+        command: command.to_string(),
+        task_id: config.id.clone(),
+        config_file: task.dir().join("mcp.json"),
+    };
+    agent_args::write_mcp_config(&mcp)?;
+    let first_message = opening(leader, &config, "the leader", &config.repos[0], first);
+    let arguments = agent_args::arguments(&Launch {
+        role: leader,
+        kind,
+        first_message: &first_message,
+        mcp: Some(&mcp),
+        writable: Vec::new(),
+    });
+    let args_file = task.dir().join("leader.args");
+    agent_args::write_args_file(&args_file, &arguments)?;
+    Ok(args_file)
 }
 
 /// Starts the task for a worktree, or finds the one already started for it.
@@ -141,26 +174,18 @@ pub fn start_task(home: &Home, devws: &dyn Devws, folder: &Path, command: &str) 
         }
     };
 
-    let config = task.config()?;
     let roles = Roles::load(home, Some(&folder))?;
-    let leader = roles.get("leader").context("there is no leader role")?;
-    let kind = devws.agent_kind(&leader.agent)?;
-    let mcp = McpServer {
-        command: command.to_string(),
-        task_id: id.clone(),
-        config_file: task.dir().join("mcp.json"),
-    };
-    agent_args::write_mcp_config(&mcp)?;
-    let first_message = opening(leader, &config, "the leader", &config.repos[0], true);
-    let arguments = agent_args::arguments(&Launch {
-        role: leader,
-        kind,
-        first_message: &first_message,
-        mcp: Some(&mcp),
-        writable: Vec::new(),
-    });
-    let args_file = task.dir().join("leader.args");
-    agent_args::write_args_file(&args_file, &arguments)?;
+    let role = roles.get("leader").context("there is no leader role")?;
+    // Its account may have run out: then its fallback leads (leader.rs).
+    let (leader, why) = leader::choose(role, devws)?;
+    let args_file = write_leader_args(&task, devws, &leader, command, LEADER_FIRST)?;
+    task.transaction(|tx| {
+        tx.state.leader_agent = Some(leader.agent.clone());
+        if let Some(why) = &why {
+            tx.log(Kind::Leader, None, None, why);
+        }
+        Ok(())
+    })?;
 
     Ok(Started {
         id,

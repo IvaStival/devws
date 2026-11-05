@@ -21,6 +21,8 @@ pub enum Kind {
     Pr,
     Question,
     Answer,
+    /// The leader's program: chosen at start, or handed over to its fallback.
+    Leader,
 }
 
 /// One line of `log.jsonl`: what happened in the team, written by devAgentics

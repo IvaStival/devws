@@ -7,6 +7,7 @@ mod checks;
 mod devws;
 mod home;
 mod lanes;
+mod leader;
 mod log;
 mod mcp;
 mod orders;
