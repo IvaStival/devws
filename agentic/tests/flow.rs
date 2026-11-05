@@ -542,7 +542,7 @@ fn the_board_lists_every_role_and_shows_who_works_on_what() {
         "Who does what",
         "planner",
         "● planner-1  working",
-        "planner-1  in 1k     out 300    cache 4k     $0.50",
+        "│planner  in 1k     out 300    cache 4k     $0.50",
         "tester",
         "not running  claude · Runs the tests",
         "executor",
