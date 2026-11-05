@@ -247,9 +247,16 @@ test_busy_or_recent_workspaces_stay() {
   tmux set-option -t dev-done @devws_agent_state done
   tmux set-option -t dev-done @devws_agent_state_since "$(date +%s)"
   DEVWS_SUSPEND_AFTER=1 "$SUSPEND" sweep || fail "the sweep failed"
-  for session in dev-working dev-waiting dev-recent dev-done; do
+  # An agent team's workspace, idle and unseen for long: its agents take
+  # orders at any time.
+  create_workspace dev-team-idle
+  make_idle dev-team-idle
+  tmux set-option -t dev-team-idle @devws_task team-1
+  DEVWS_SUSPEND_AFTER=1 "$SUSPEND" sweep || fail "the sweep failed"
+  for session in dev-working dev-waiting dev-recent dev-done dev-team-idle; do
     running "$(pane_id "$session" agent)" || fail "$session was frozen"
   done
+  [ -z "$(option dev-team-idle @devws_frozen)" ] || fail "an agent team's workspace was marked frozen"
   # Done, but a job it started still runs: an action, so it stays.
   create_workspace dev-job
   tmux respawn-pane -k -t "$(pane_id dev-job agent)" "STUB_JOB=1 $HOME/.tmuxinator/agent_runner.sh claude"

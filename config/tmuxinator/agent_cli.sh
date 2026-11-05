@@ -17,16 +17,36 @@
 #   agent_cli.sh mark <pane> waiting|done sets the agent's state as its hooks
 #                                         would: the sidebar and the
 #                                         notification react
-#   agent_cli.sh spawn <session> <agent> [--beside <pane>] [--position right|left|below|above] [--agent-args <file>]
+#   agent_cli.sh usage <pane>             what the agent used: "<input> <output>
+#                                         <cache> <US$> <unpriced>" (tokens, API
+#                                         prices), - when not known yet
+#   agent_cli.sh spawn <session> <agent> [--beside <pane>] [--position right|left|below|above] [--agent-args <file>] [--label <text>] [--place team] [--group <name>] [--folder <dir>]
 #                                         adds an extra agent panel to the
 #                                         workspace and prints its pane id;
 #                                         the focus stays where it was.
+#                                         --place team: in the team area of an
+#                                         agent team (devws agentic), a grid
+#                                         right of the leader
 #                                         --agent-args: arguments for the
-#                                         program, NUL-separated (agent_runner.sh)
+#                                         program, NUL-separated (agent_runner.sh).
+#                                         --label: what the panel's header says
+#                                         in place of "Agent"
+#                                         --group: in an agent team's group, a
+#                                         workspace of its own (dev-app-floor),
+#                                         four to a group (team_groups.sh)
+#                                         --folder: start it in that folder (a
+#                                         lane's worktree), not the workspace's
+#   agent_cli.sh go <pane>                shows a group's agent: its workspace,
+#                                         focused on it
+#   agent_cli.sh peek <pane>              brings a group's agent under the
+#                                         board for a look; again sends it back
 #   agent_cli.sh run <pane> <agent> [--agent-args <file>]
 #                                         starts <agent> in an agent pane, in
 #                                         place of the one running there; the
 #                                         pane keeps its place and role
+#   agent_cli.sh kind <agent>             the program the agent runs: claude or
+#                                         codex (an account like claude_work
+#                                         runs claude); 1 when unregistered
 #   agent_cli.sh limits <agent>           "<5h> <week>": the per cent of its
 #                                         plan's limits that account has used,
 #                                         a - for what is not known
@@ -135,8 +155,8 @@ mark() {
 }
 
 spawn() {
-  local session agent position=right beside="" args_file="" options=()
-  [ "$#" -ge 2 ] || usage_fail "usage: devws agent spawn <session> <agent> [--beside <pane>] [--position p] [--agent-args <file>]"
+  local session agent position=right beside="" args_file="" label="" place="" group="" folder="" options=()
+  [ "$#" -ge 2 ] || usage_fail "usage: devws agent spawn <session> <agent> [--beside <pane>] [--position p] [--agent-args <file>] [--label <text>] [--place team] [--group <name>] [--folder <dir>]"
   session="$1"
   agent="$2"
   shift 2
@@ -146,10 +166,24 @@ spawn() {
       --beside) beside="$2" ;;
       --position) position="$2" ;;
       --agent-args) args_file="$2" ;;
+      --label) label="$2" ;;
+      --place) place="$2" ;;
+      --group) group="$2" ;;
+      --folder) folder="$2" ;;
       *) usage_fail "unknown option: $1" ;;
     esac
     shift 2
   done
+  case "$place" in
+    "" | team) ;;
+    *) usage_fail "unknown place: $place (team)" ;;
+  esac
+  [ -z "$place" ] || [ -z "$beside" ] || usage_fail "--place and --beside both say where it goes"
+  [ -z "$group" ] || [ -z "$place$beside" ] || usage_fail "--group and --place or --beside both say where it goes"
+  [ -z "$place" ] || options+=(--place "$place")
+  [ -z "$group" ] || options+=(--group "$group")
+  [ -z "$folder" ] || options+=(--folder "$folder")
+  [ -z "$label" ] || options+=(--label "$label")
   [ -z "$beside" ] || options+=(--beside "$beside")
   [ -z "$args_file" ] || options+=(--args-file "$args_file")
   "$script_dir/new_panel.sh" "$session" "$position" agent "$agent" --no-focus ${options[@]+"${options[@]}"}
@@ -187,12 +221,31 @@ run() {
   "$script_dir/agent_status.sh" "$session" idle "$pane"
 }
 
+kind() {
+  [ "$#" -eq 1 ] || usage_fail "usage: devws agent kind <agent>"
+  agent_kind "$1" 2>/dev/null || fail "unknown agent: $1 (register it in the devws menu)"
+}
+
 limits() {
   local value
   [ "$#" -eq 1 ] || usage_fail "usage: devws agent limits <agent>"
   agent_kind "$1" >/dev/null 2>&1 || fail "unknown agent: $1 (register it in the devws menu)"
   value="$(agent_limits "$1")"
   printf '%s\n' "${value:-- -}"
+}
+
+# What the pane's agent has used: "<input> <output> <cache> <US$> <unpriced>"
+# (tokens; dollars at API prices), "-" while it has not said which conversation
+# it is in.
+usage() {
+  local transcript value
+  [ "$#" -eq 1 ] || usage_fail "usage: devws agent usage <pane>"
+  require_pane "$1"
+  pane_exists "$1" || code=4 fail "$1 is gone"
+  transcript="$(tmux show-options -pqv -t "$1" @devws_transcript 2>/dev/null)"
+  value=""
+  [ -z "$transcript" ] || value="$("$script_dir/header_tokens.sh" usage "$transcript")"
+  printf '%s\n' "${value:--}"
 }
 
 # Ctrl-C twice is how Claude Code and Codex quit; what is still there after a
@@ -225,5 +278,11 @@ case "$command" in
   spawn) spawn "$@" ;;
   run) run "$@" ;;
   limits) limits "$@" ;;
-  *) usage_fail "usage: devws agent state|send|mark|stop|spawn|run|limits …" ;;
+  usage) usage "$@" ;;
+  kind) kind "$@" ;;
+  go | peek)
+    [ "$#" -eq 1 ] || usage_fail "usage: devws agent $command <pane>"
+    exec "$script_dir/team_groups.sh" "$command" "$1"
+    ;;
+  *) usage_fail "usage: devws agent state|send|mark|stop|spawn|run|limits|usage|kind|go|peek …" ;;
 esac

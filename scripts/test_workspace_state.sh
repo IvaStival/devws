@@ -72,6 +72,10 @@ case "${1:-}" in
     printf '%%split-%s\n' "$(cat "$TMUX_LOG" | grep -c '^split-window')"
     exit 0
     ;;
+  list-windows)
+    [[ -n "${FIXTURE_WINDOWS:-}" ]] && printf '@0||%s\n' $FIXTURE_WINDOWS
+    exit 0
+    ;;
   has-session)
     [[ " ${FIXTURE_OPEN_SESSIONS:-} " == *" ${target#=} "* ]] && exit 0
     exit 1
@@ -97,7 +101,7 @@ write_panes() {
 setup() {
   rm -rf "$TEST_ROOT/home" "$TEST_ROOT/panes"
   mkdir -p "$TEST_ROOT/home/.devws-state" "$TEST_ROOT/home/.tmuxinator"
-  cp "$ROOT/config/tmuxinator/save_state.sh" \
+  cp "$ROOT/config/tmuxinator/save_state.sh" "$ROOT/config/tmuxinator/workspace_panes.sh" \
     "$ROOT/config/tmuxinator/restore_state.sh" "$TEST_ROOT/home/.tmuxinator/"
   cp "$ROOT/config/tmuxinator/.env" "$TEST_ROOT/home/.tmuxinator/.env"
   : > "$TEST_ROOT/tmux.log"
@@ -114,7 +118,7 @@ run_devws_script() {
     TMUX_LOG="$TEST_ROOT/tmux.log" TMUXINATOR_LOG="$TEST_ROOT/tmuxinator.log" \
     FIXTURE_SESSIONS="$FIXTURE_SESSIONS" FIXTURE_LAYOUT="$FIXTURE_LAYOUT" \
     FIXTURE_PANES_DIR="$TEST_ROOT/panes" \
-    FIXTURE_OPEN_SESSIONS="$FIXTURE_OPEN_SESSIONS" \
+    FIXTURE_OPEN_SESSIONS="$FIXTURE_OPEN_SESSIONS" FIXTURE_WINDOWS="${FIXTURE_WINDOWS:-}" \
     PATH="$FAKE_BIN:/usr/bin:/bin" \
     "$TEST_ROOT/home/.tmuxinator/$script" "$@"
 }
@@ -402,7 +406,66 @@ test_tasks_and_team_panels_survive_a_restore() {
   ! grep -q "@devws_task" "$TEST_ROOT/tmux.log" || fail "a workspace without a task got one"
 }
 
+# An agent team (devws agentic) is saved with its template and task, but devws
+# does not rebuild it: its leader and agents are devAgentics's to restart.
+test_an_agent_team_is_saved_but_left_to_devagentics() {
+  local team="$TEST_ROOT/project-team" one="$TEST_ROOT/project-one"
+  setup
+  mkdir -p "$team" "$one"
+  printf 'dev-team\t%s\tclaude\tagent team\tteam-9\tagentic\ndev-one\t%s\tclaude\tnvim\n' "$team" "$one" > "$TEST_ROOT/sessions"
+  write_panes dev-team \
+    "%picker-team|0||devws-picker|$team" \
+    "%leader-team|1|agent||$team|claude" \
+    "%log-team|2|team-log||$team"
+  write_panes dev-one \
+    "%picker-one|0||devws-picker|$one" \
+    "%editor-one|1|editor||$one" \
+    "%agent-one|2|agent||$one|claude" \
+    "%terminal-one|3|terminal||$one"
+  FIXTURE_SESSIONS="$TEST_ROOT/sessions"
+  FIXTURE_LAYOUT="LAYOUT"
+  run_save
+  grep -q "^W${TAB}dev-team${TAB}$team${TAB}claude${TAB}agent team${TAB}[01]${TAB}LAYOUT${TAB}team-9${TAB}agentic$" "$(state_file)" ||
+    fail "the agent team was not saved with its task and template: $(cat "$(state_file)")"
+  grep -q "^W${TAB}dev-one${TAB}$one${TAB}claude${TAB}nvim${TAB}[01]${TAB}LAYOUT$" "$(state_file)" ||
+    fail "a workspace without a template changed its line: $(cat "$(state_file)")"
+
+  # No task yet (tmux prints a "-" for it): the placeholder keeps the template
+  # where restore reads it.
+  printf 'dev-team\t%s\tclaude\tagent team\t-\tagentic\n' "$team" > "$TEST_ROOT/sessions"
+  run_save
+  grep -q "^W${TAB}dev-team${TAB}$team${TAB}claude${TAB}agent team${TAB}[01]${TAB}LAYOUT${TAB}-${TAB}agentic$" "$(state_file)" ||
+    fail "a team without a task was not saved with a placeholder: $(cat "$(state_file)")"
+
+  printf 'dev-team\t%s\tclaude\tagent team\tteam-9\tagentic\ndev-one\t%s\tclaude\tnvim\n' "$team" "$one" > "$TEST_ROOT/sessions"
+  run_save
+  : > "$TEST_ROOT/tmuxinator.log"
+  run_restore
+  ! grep -q "project_root=$team" "$TEST_ROOT/tmuxinator.log" || fail "restore rebuilt the agent team"
+  grep -q "project_root=$one" "$TEST_ROOT/tmuxinator.log" || fail "restore skipped the other workspace too"
+  grep -q "dev-team.*agent team.*team-9" "$TEST_ROOT/restore.err" || fail "restore did not say it left the team: $(cat "$TEST_ROOT/restore.err")"
+  ! grep -qx 'dev-team' "$TEST_ROOT/restore.out" || fail "restore reported the team as restored"
+}
+
+# With an agent team's tabs, the tab on screen is not the workspace: the save
+# reads the window named "workspace".
+test_save_reads_the_workspace_window_not_the_active_tab() {
+  local team="$TEST_ROOT/project-tabs"
+  setup
+  mkdir -p "$team"
+  printf 'dev-tabs\t%s\tclaude\tagent team\tteam-9\tagentic\n' "$team" > "$TEST_ROOT/sessions"
+  write_panes dev-tabs "%leader|1|agent||$team|claude"
+  FIXTURE_SESSIONS="$TEST_ROOT/sessions"
+  FIXTURE_LAYOUT="LAYOUT"
+  FIXTURE_WINDOWS="workspace Seniors" run_save
+  grep -q -- "list-panes -t dev-tabs:workspace" "$TEST_ROOT/tmux.log" ||
+    fail "the save did not read the workspace window: $(grep list-panes "$TEST_ROOT/tmux.log")"
+  grep -q -- "display-message -p -t dev-tabs:workspace #{window_layout}" "$TEST_ROOT/tmux.log" ||
+    fail "the layout was not the workspace window's"
+}
+
 test_save_writes_records
+test_save_reads_the_workspace_window_not_the_active_tab
 test_save_adopts_terminal_in_legacy_workspace
 test_save_is_idempotent
 test_save_skips_during_restore
@@ -414,5 +477,6 @@ test_restore_reopens_database_pane
 test_save_records_minimized_database
 test_restore_closes_picker
 test_tasks_and_team_panels_survive_a_restore
+test_an_agent_team_is_saved_but_left_to_devagentics
 
 printf 'Workspace state tests passed.\n'

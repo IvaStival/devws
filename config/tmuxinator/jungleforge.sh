@@ -19,6 +19,8 @@
 #                                    files changed since its last install
 #   jungleforge.sh stop <folder> [app...]
 #   jungleforge.sh services          starts the shared services
+#   jungleforge.sh info              a table of every container, services and
+#                                    apps, running or not: status, image, ports
 #   jungleforge.sh running-folders <folder>...   the folders apps run from,
 #                                    among those folders' repos (the sidebar)
 #   jungleforge.sh migrate|logs|shell <folder> <app>    on the running branch
@@ -394,8 +396,9 @@ case "$command" in
     exit "$status"
     ;;
   services) jungleforge_make services-start ;;
+  info) jungleforge_make --no-print-directory info ;;
   running-folders) running_folders "$@" ;;
   migrate | logs) [ "$#" -eq 2 ] || die "usage: jungleforge.sh $command <folder> <app>"; on_running_app "$command" "$1" "$2" ;;
   shell) [ "$#" -eq 2 ] || die "usage: jungleforge.sh shell <folder> <app>"; on_running_app sh "$1" "$2" ;;
-  *) die "usage: jungleforge.sh <apps|targets|running|run|stop|services|migrate|logs|shell|available|folder|setup|templates|scaffold|register> …" ;;
+  *) die "usage: jungleforge.sh <apps|targets|running|run|stop|services|info|migrate|logs|shell|available|folder|setup|templates|scaffold|register> …" ;;
 esac

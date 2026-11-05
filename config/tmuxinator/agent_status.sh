@@ -163,6 +163,9 @@ if [ -n "$pane" ]; then
   else
     tmux set-option -p -t "$pane" @devws_pane_state "$state" 2>/dev/null
   fi
+  # shellcheck source=workspace_panes.sh
+  . "$(dirname "$script")/workspace_panes.sh"
+  mark_tab_alert "$pane"
   state="$(summary)"
 fi
 
@@ -174,6 +177,13 @@ if [ "$state" = idle ]; then
 else
   tmux set-option -t "=$session:" @devws_agent_state "$state"
   [ "$previous" = "$state" ] || tmux set-option -t "=$session:" @devws_agent_state_since "$(date +%s)"
+fi
+# The header's ticker draws these states. One that died (nothing left to say
+# why) would leave the header frozen until tmux.conf is loaded again: an agent
+# event starts a new one.
+ticker="$(tmux show-option -gqv @devws_header_ticker 2>/dev/null)"
+if [ -n "$ticker" ] && ! kill -0 "$ticker" 2>/dev/null; then
+  "$(dirname "$script")/header_ticker.sh" --start >/dev/null 2>&1
 fi
 # The sidebar redraws its rows, and a notification goes out, only when the
 # state changes.

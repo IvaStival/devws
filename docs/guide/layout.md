@@ -48,6 +48,10 @@ second account, or a second Claude on another task), a **Terminal** or a
 - After a restore an extra agent comes back in a new conversation
   (`/resume` brings the old one back), a terminal at a prompt in its folder.
 
+An [agent team](agentic.md) has no editor panel: Toggle layout, Minimize and
+Switch editor are not offered there, and New panel opens beside the focused
+pane without expanding anything.
+
 ## Move panel
 
 **⇆ Move panel** (`C-b S-Right`, `C-b S-Left`, `C-b S-Up`, `C-b S-Down`)

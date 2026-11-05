@@ -36,7 +36,7 @@ exec sleep 600
 EOF
 done
 chmod +x "$TEST_ROOT/bin/"*
-for script in "$SCRIPTS_SRC"/*.sh "$SCRIPTS_SRC"/*.json "$SCRIPTS_SRC"/*.md; do
+for script in "$SCRIPTS_SRC"/*.sh "$SCRIPTS_SRC"/*.json "$SCRIPTS_SRC"/*.md "$SCRIPTS_SRC"/*.tsv; do
   ln -s "$script" "$TEST_ROOT/home/.tmuxinator/$(basename "$script")"
 done
 printf 'DEVWS_AGENTS="claude codex"\n' > "$TEST_ROOT/home/.tmuxinator/.env"
@@ -272,6 +272,34 @@ test_run_replaces_the_agent_in_its_pane() {
     fail "run accepted a pane that is not an agent's"
 }
 
+test_kind_names_the_program_an_agent_runs() {
+  printf 'DEVWS_AGENTS="claude codex work"\nDEVWS_AGENT_work="codex %s"\n' "$HOME/.codex-work" > "$HOME/.tmuxinator/.env"
+  [ "$("$SCRIPTS/agent_cli.sh" kind claude)" = claude ] || fail "claude is not claude"
+  [ "$("$SCRIPTS/agent_cli.sh" kind work)" = codex ] || fail "an account named work running codex is not codex"
+  [ "$(status_of "$SCRIPTS/agent_cli.sh" kind nobody)" = 1 ] || fail "kind accepted an unregistered agent"
+  [ "$(status_of "$SCRIPTS/agent_cli.sh" kind)" = 2 ] || fail "kind accepted no agent"
+  printf 'DEVWS_AGENTS="claude codex"\n' > "$HOME/.tmuxinator/.env"
+}
+
+test_usage_is_what_the_panes_conversation_used() {
+  local pane transcript="$TEST_ROOT/usage-transcript.jsonl"
+  tmux new-session -d -s usage -x 100 -y 30 'sleep 600'
+  pane="$(tmux display-message -p -t usage: '#{pane_id}')"
+
+  [ "$("$SCRIPTS/agent_cli.sh" usage "$pane")" = "-" ] || fail "usage before any conversation is not -"
+  printf '{"type":"assistant","timestamp":"2026-11-04T10:00:00.000Z","message":{"id":"m1","model":"claude-opus-5-5","usage":{"input_tokens":1000,"output_tokens":500,"cache_creation_input_tokens":200,"cache_read_input_tokens":3000}}}\n' > "$transcript"
+  tmux set-option -p -t "$pane" @devws_transcript "$transcript"
+  [ "$("$SCRIPTS/agent_cli.sh" usage "$pane")" = "1000 500 3200 0.02 0" ] ||
+    fail "a Claude conversation's usage: $("$SCRIPTS/agent_cli.sh" usage "$pane")"
+
+  printf '{"type":"turn_context","payload":{"turn_id":"t1","model":"gpt-5.6-sol"}}\n{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10000,"cached_input_tokens":4000,"output_tokens":800,"total_tokens":10800},"last_token_usage":{"input_tokens":1,"total_tokens":1},"model_context_window":200000}}}\n' > "$transcript"
+  [ "$("$SCRIPTS/agent_cli.sh" usage "$pane")" = "6000 800 4000 0.04 0" ] ||
+    fail "a Codex conversation's usage: $("$SCRIPTS/agent_cli.sh" usage "$pane")"
+
+  [ "$(status_of "$SCRIPTS/agent_cli.sh" usage %9999)" = 4 ] || fail "usage of a gone pane is not exit 4"
+  [ "$(status_of "$SCRIPTS/agent_cli.sh" usage)" = 2 ] || fail "usage accepted no pane"
+}
+
 test_limits_are_the_ones_the_header_shows() {
   local logs="$HOME/.codex/sessions/2026/11/03"
   tmux new-session -d -s limits -x 100 -y 30 'sleep 600'
@@ -293,22 +321,27 @@ test_limits_are_the_ones_the_header_shows() {
 # The keys of the sidebar's rows, in order: a record starts with its key.
 sidebar_keys() {
   DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --rows | tr '\0' '\n' |
-    grep -E '^(workspace|task):' | cut -f1
+    grep -E '^(workspace|task|agent):' | cut -f1
 }
 
 test_the_sidebar_groups_a_tasks_workspaces() {
-  local session expected
+  local session expected agent
   for session in dev-plain-a dev-t1-api dev-t1-web dev-plain-b dev-t2-x; do
     tmux new-session -d -s "$session" 'sleep 600'
   done
   tmux set-option -t =dev-t1-api: @devws_task team-1
   tmux set-option -t =dev-t1-web: @devws_task team-1
   tmux set-option -t =dev-t2-x: @devws_task team-2
+  # A team agent in a tab of dev-t1-api is listed under it.
+  agent="$(tmux new-window -d -t =dev-t1-api: -n Floor -P -F '#{pane_id}' 'sleep 600')"
+  tmux set-option -p -t "$agent" @devagentics_agent hammer-1
+  tmux set-option -p -t "$agent" @devws_pane_state waiting
 
   expected="workspace:dev-plain-a
 workspace:dev-plain-b
 task:team-1
 workspace:dev-t1-api
+agent:$agent
 workspace:dev-t1-web
 task:team-2
 workspace:dev-t2-x"
@@ -316,8 +349,10 @@ workspace:dev-t2-x"
 
   # fzf is asked to put the cursor on an item by its place among all of them,
   # the headings included.
-  [ "$(DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --position dev-t1-web)" = 5 ] ||
-    fail "the cursor position ignores the task headings"
+  DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --rows | tr '\0' '\n' |
+    grep -q "^agent:$agent.*◦ hammer-1.*● needs you.* · Floor" || fail "the agent's row does not show its id, state and tab"
+  [ "$(DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --position dev-t1-web)" = 6 ] ||
+    fail "the cursor position ignores the task headings and the agents"
   [ "$(DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --position dev-plain-b)" = 2 ] ||
     fail "the position of a workspace without a task changed"
   for session in dev-plain-a dev-t1-api dev-t1-web dev-plain-b dev-t2-x; do tmux kill-session -t "$session"; done
@@ -331,7 +366,9 @@ test_mark_sets_the_state_the_sidebar_shows
 test_stop_ends_the_agent_and_clears_its_state
 test_spawn_adds_an_agent_beside_a_pane_without_taking_the_focus
 test_run_replaces_the_agent_in_its_pane
+test_kind_names_the_program_an_agent_runs
 test_limits_are_the_ones_the_header_shows
+test_usage_is_what_the_panes_conversation_used
 test_the_sidebar_groups_a_tasks_workspaces
 
 printf 'Agent CLI tests passed\n'

@@ -8,6 +8,8 @@ config="$HOME/.tmuxinator/.env"
 [ -r "$config" ] && . "$config"
 # shellcheck source=agents.sh
 . "$HOME/.tmuxinator/agents.sh"
+# shellcheck source=workspace_panes.sh
+. "$HOME/.tmuxinator/workspace_panes.sh"
 
 dev_sessions() {
   tmux list-sessions -F '#{session_name}' 2>/dev/null |
@@ -55,7 +57,7 @@ agent_pane() {
       printf '%s\n' "$pane"
       return 0
     fi
-  done < <(tmux list-panes -t "$session" \
+  done < <(tmux list-panes -t "$(main_window "$session")" \
     -F '#{pane_id}|#{@devws_role}|#{pane_current_command}' 2>/dev/null)
 
   # Compatibility for sessions created before agent_runner.sh was introduced.
@@ -66,7 +68,7 @@ agent_pane() {
         return 0
         ;;
     esac
-  done < <(tmux list-panes -t "$session" \
+  done < <(tmux list-panes -t "$(main_window "$session")" \
     -F '#{pane_id}|#{@devws_role}|#{pane_current_command}' 2>/dev/null)
   return 1
 }
@@ -80,7 +82,7 @@ editor_pane() {
       printf '%s\n' "$pane"
       return 0
     fi
-  done < <(tmux list-panes -t "$session" \
+  done < <(tmux list-panes -t "$(main_window "$session")" \
     -F '#{pane_id}|#{@devws_role}|#{pane_current_command}' 2>/dev/null)
 
   # Compatibility for workspaces created before editor_runner.sh existed.
@@ -91,7 +93,7 @@ editor_pane() {
         return 0
         ;;
     esac
-  done < <(tmux list-panes -t "$session" \
+  done < <(tmux list-panes -t "$(main_window "$session")" \
     -F '#{pane_id}|#{@devws_role}|#{pane_current_command}' 2>/dev/null)
   return 1
 }
@@ -429,6 +431,13 @@ new_github_workspace() {
   fi
   # shellcheck disable=SC2046
   start_workspace_at "$folder" $("$HOME/.tmuxinator/recent.sh" get "$folder")
+}
+
+# An agent team (devws agentic): the start screen asks for the repo and the
+# branch, devAgentics makes the task, and the workspace opens on it.
+open_agentic_team() {
+  printf '\033c'
+  "$HOME/.tmuxinator/agentic.sh" || pause
 }
 
 # Opens a workspace on a git worktree of the current workspace's repo: an
@@ -788,6 +797,13 @@ open_app_shell() {
 
 open_app_logs() {
   open_app_panel logs
+}
+
+# jungleforge's own table of its containers, read-only, in the menu's popup.
+show_app_info() {
+  printf '\033c'
+  "$HOME/.tmuxinator/jungleforge.sh" info
+  pause
 }
 
 # The repo's apps running from <root>, which is closing: asks to move them back

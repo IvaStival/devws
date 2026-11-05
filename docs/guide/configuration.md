@@ -18,6 +18,8 @@ the agent lines for you.
 | `DEVWS_PROJECTS` | `~/Projects` | Where your own checkouts are: a repo's first GitHub workspace offers to import their untracked files (`.env`…) |
 | `DEVWS_CLONE_BASE` | GitHub, as gh is set up | The address repos are cloned from, for GitHub Enterprise |
 | `DEVWS_JUNGLEFORGE` | `~/.devws/jungleforge`, else `~/Projects/jungleforge` | The jungleforge checkout the App tab runs branches with ([App](app.md)); unset, the first of those that exists |
+| `DEVWS_AGENTIC_COMMAND` | `devagentics` | The program that runs an [agent team](agentic.md): `devws agentic` asks it for the task and its log |
+| `DEVWS_TEAM_GROUP_SIZE` | `4` | How many agents an [agent team](agentic.md)'s group workspace holds before the next one opens (`Floor 2`) |
 | `DEVWS_JUNGLEFORGE_REPO` | `https://github.com/IvaStival/jungleForge.git` | Where **Set up jungleforge** clones jungleforge from (a fork of your own) |
 | `DEVWS_AUTO_RESTORE` | `1` | `0`: the first `devws` after a restart does not reopen the saved workspaces (`devws restore` still does) |
 | `DEVWS_SUSPEND_AFTER` | `15` | Minutes a workspace stays unseen, its agent idle or done, before it is paused; `0` never pauses |

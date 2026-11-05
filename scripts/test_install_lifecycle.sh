@@ -387,6 +387,74 @@ test_deps_install_devdb_from_its_checkout() {
   [[ ! -s "$test_home/uv.log" ]] || fail "--deps reinstalled an existing devdb"
 }
 
+# The agent team's program is built from agentic/ when cargo exists, and
+# uninstall removes it only when install put it there.
+test_agentic_is_built_and_removed_when_owned() {
+  local test_home="$TEST_ROOT/agentic-owned"
+  local fake_bin="$test_home/bin"
+  local output="$test_home/install-output"
+  mkdir -p "$test_home"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+  cat > "$fake_bin/cargo" <<'EOF2'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CARGO_LOG"
+case "$1" in
+  install) printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_BIN/devagentics"; chmod +x "$FAKE_BIN/devagentics" ;;
+  uninstall) rm -f "$FAKE_BIN/devagentics" ;;
+esac
+EOF2
+  chmod +x "$fake_bin/cargo"
+
+  CARGO_LOG="$test_home/cargo.log" run_install "$test_home" "$fake_bin" >"$output" 2>&1
+  grep -qx "install --path $ROOT/agentic --locked" "$test_home/cargo.log" ||
+    fail "install did not build agentic/: $(cat "$test_home/cargo.log" 2>/dev/null)"
+  grep -qx devagentics "$test_home/.devws-state/installed-dependencies" ||
+    fail "install did not record that it installed devagentics"
+
+  CARGO_LOG="$test_home/cargo.log" HOME="$test_home" FAKE_BIN="$fake_bin" BREW_LOG="$test_home/brew.log" \
+    PATH="$fake_bin:/usr/bin:/bin" "$ROOT/delete.sh" >/dev/null 2>&1
+  grep -qx "uninstall devagentics" "$test_home/cargo.log" ||
+    fail "uninstall did not remove the devagentics it installed"
+  [[ ! -e "$fake_bin/devagentics" ]] || fail "devagentics is still there after uninstall"
+}
+
+test_a_preexisting_agentic_is_rebuilt_but_kept_on_uninstall() {
+  local test_home="$TEST_ROOT/agentic-preexisting"
+  local fake_bin="$test_home/bin"
+  mkdir -p "$test_home"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+  make_command "$fake_bin/devagentics"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$CARGO_LOG"\n' > "$fake_bin/cargo"
+  chmod +x "$fake_bin/cargo"
+
+  CARGO_LOG="$test_home/cargo.log" run_install "$test_home" "$fake_bin" >/dev/null 2>&1
+  grep -qx "install --path $ROOT/agentic --locked" "$test_home/cargo.log" ||
+    fail "install did not rebuild an existing devagentics"
+  ! grep -qx devagentics "$test_home/.devws-state/installed-dependencies" 2>/dev/null ||
+    fail "install claimed a devagentics it did not put there"
+
+  CARGO_LOG="$test_home/cargo.log" HOME="$test_home" FAKE_BIN="$fake_bin" BREW_LOG="$test_home/brew.log" \
+    PATH="$fake_bin:/usr/bin:/bin" "$ROOT/delete.sh" >/dev/null 2>&1
+  ! grep -q '^uninstall' "$test_home/cargo.log" || fail "uninstall removed a devagentics it does not own"
+}
+
+test_install_without_cargo_says_what_agentic_needs() {
+  local test_home="$TEST_ROOT/agentic-no-cargo"
+  local fake_bin="$test_home/bin"
+  local output="$test_home/install-output"
+  mkdir -p "$test_home"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+
+  run_install "$test_home" "$fake_bin" >"$output" 2>&1 || fail "install failed without cargo"
+  grep -q "devws agentic needs Rust" "$output" ||
+    fail "install did not say agentic needs Rust: $(cat "$output")"
+  [[ ! -e "$test_home/.devws-state/installed-dependencies" ]] ||
+    fail "install recorded something without cargo"
+}
+
 # Install reloads the open workspaces when a tmux server answers, and leaves
 # tmux alone otherwise. The fake tmux logs its calls; TMUX_UP says whether a
 # server answers.
@@ -446,6 +514,9 @@ test_nvim_config_is_linked_and_restored
 test_devws_command_is_linked_and_removed
 test_lunarvim_links_are_retired
 test_deps_install_devdb_from_its_checkout
+test_agentic_is_built_and_removed_when_owned
+test_a_preexisting_agentic_is_rebuilt_but_kept_on_uninstall
+test_install_without_cargo_says_what_agentic_needs
 test_install_reloads_open_workspaces
 test_picker_fails_once_without_fzf
 

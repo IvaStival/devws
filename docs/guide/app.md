@@ -65,6 +65,7 @@ never edited for it). One branch of an app runs at a time.
 | **⇡ Migrate** | | | Runs the app's migrations. Switching never migrates: the databases are shared |
 | **⌘ Shell** | | | A shell in the app's container, in a panel below |
 | **≡ Logs** | | | The app's container logs, in a panel below |
+| **ⓘ Info** | | | jungleforge's table of its containers, services and apps, running or not: status, image, ports |
 
 - Each runs as a background job (below), so the screen stays yours.
 - Packages install in the container only when `composer.lock` or

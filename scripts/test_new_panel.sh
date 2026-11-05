@@ -190,6 +190,77 @@ test_new_panels_are_saved() {
     fail "the extra Neovim was not saved"
 }
 
+# An agent team's agents go to workspaces of their own, one per group, four
+# agents to a workspace, tiled; the team's workspace keeps the leader and the
+# board. A group's agent can be peeked under the board and sent back, and
+# shown with go.
+TEAM=dev-team
+group_panes() {
+  tmux list-panes -s -t "=$1" -F '#{pane_id}' 2>/dev/null | grep -c . || true
+}
+
+test_agents_open_in_their_groups_workspaces() {
+  local pane floor=() senior board main option
+  tmux new-session -d -s "$TEAM" -n workspace -x 200 -y 50 -c "$TEST_ROOT/project" 'sleep 600'
+  tmux set-option -t "$TEAM" @devws_root "$TEST_ROOT/project"
+  tmux set-option -t "$TEAM" @devws_task team-9
+  tmux set-option -t "$TEAM" @devws_template agentic
+  # As agentic.yml marks it, and kept from renaming itself after its program.
+  tmux set-option -w -t "=$TEAM:" @devws_main 1
+  tmux set-option -w -t "=$TEAM:" automatic-rename off
+  main="$(tmux display-message -p -t "=$TEAM:" '#{window_id}')"
+  board="$(tmux split-window -h -t "$main" -P -F '#{pane_id}' 'sleep 600')"
+  tmux set-option -p -t "$board" @devws_role team-log
+
+  for _ in 1 2 3 4 5; do
+    pane="$("$NEW_PANEL" "$TEAM" right agent work --group Floor --no-focus)" || fail "a floor agent did not open"
+    floor+=("$pane")
+  done
+  senior="$("$NEW_PANEL" "$TEAM" right agent work --group Seniors --no-focus)" || fail "a senior did not open"
+  [ "$(group_panes "$TEAM")" = 2 ] || fail "an agent opened in the team's workspace"
+  [ "$(group_panes "$TEAM-floor")" = 4 ] || fail "the Floor workspace holds $(group_panes "$TEAM-floor"), not 4"
+  [ "$(group_panes "$TEAM-floor-2")" = 1 ] || fail "the fifth floor agent is not in Floor 2's workspace"
+  [ "$(group_panes "$TEAM-seniors")" = 1 ] || fail "the senior is not in its group's workspace"
+  for option in @devws_task @devws_template @devws_root; do
+    [ "$(tmux show-option -qv -t "=$TEAM-floor:" "$option")" = "$(tmux show-option -qv -t "=$TEAM:" "$option")" ] ||
+      fail "the Floor workspace does not share the team's $option"
+  done
+  [ "$(tmux show-options -pqv -t "$senior" @devws_role)" = extra-agent ] || fail "a group's agent is not an extra agent"
+  ! "$NEW_PANEL" "$TEAM" right terminal --group Floor 2>/dev/null || fail "a terminal was put in a group"
+
+  # A lane's agent starts in the lane's worktree, not the workspace's folder.
+  mkdir -p "$TEST_ROOT/lane-back"
+  rm -f "$TEST_ROOT"/started/claude.*
+  pane="$("$NEW_PANEL" "$TEAM" right agent work --group Docs --folder "$TEST_ROOT/lane-back" --no-focus)" ||
+    fail "an agent with a folder did not open"
+  wait_until started claude || fail "the lane's agent did not start"
+  [ "$(sed -n 1p "$TEST_ROOT"/started/claude.*)" = "$TEST_ROOT/lane-back" ] ||
+    fail "the agent did not start in its folder: $(sed -n 1p "$TEST_ROOT"/started/claude.*)"
+  ! "$NEW_PANEL" "$TEAM" right agent work --group Docs --folder "$TEST_ROOT/nowhere" 2>/dev/null ||
+    fail "a missing folder was accepted"
+  tmux kill-session -t "=$TEAM-docs"
+  rm -f "$TEST_ROOT"/started/claude.*
+
+  # Peek: under the board, then back to its group.
+  "$SCRIPTS/agent_cli.sh" peek "$senior" || fail "peek failed"
+  [ "$(tmux display-message -p -t "$senior" '#{window_id}')" = "$main" ] || fail "the peeked agent is not in the team's window"
+  below "$senior" "$board" || fail "the peeked agent is not under the board"
+  ! tmux has-session -t "=$TEAM-seniors" 2>/dev/null || fail "the emptied Seniors workspace stayed"
+  "$SCRIPTS/agent_cli.sh" peek "${floor[0]}" || fail "peeking another failed"
+  [ "$(tmux display-message -p -t "$senior" '#{session_name}')" = "$TEAM-seniors" ] ||
+    fail "peeking another did not send the first back to a new Seniors workspace"
+  [ "$(tmux display-message -p -t "${floor[0]}" '#{window_id}')" = "$main" ] || fail "the second peek"
+  "$SCRIPTS/agent_cli.sh" peek "${floor[0]}" || fail "peeking it again failed"
+  [ "$(tmux display-message -p -t "${floor[0]}" '#{session_name}')" = "$TEAM-floor" ] ||
+    fail "peeking again did not send it back to Floor"
+  [ "$(group_panes "$TEAM")" = 2 ] || fail "the team's workspace kept a peeked panel"
+
+  # Go: its group's workspace, focused on it.
+  "$SCRIPTS/agent_cli.sh" go "${floor[4]}" || fail "go failed"
+  [ "$(tmux display-message -p -t "=$TEAM-floor-2:" '#{pane_id}')" = "${floor[4]}" ] || fail "go did not focus it"
+}
+
+test_agents_open_in_their_groups_workspaces
 test_an_extra_agent
 test_a_terminal_and_a_neovim
 test_left_and_above

@@ -53,7 +53,7 @@ for script in devws_menu.sh workspace_actions.sh workspace_panes.sh session_pick
   ln -s "$SCRIPTS/$script" "$TEST_ROOT/home/.tmuxinator/$script"
 done
 for script in toggle_layout.sh minimize_panes.sh header_toggle.sh open_database.sh follow_mode.sh register_agent.sh \
-  new_panel.sh move_panel.sh save_state.sh refresh_devws_pickers.sh git_actions.sh jungleforge.sh job.sh; do
+  new_panel.sh move_panel.sh save_state.sh refresh_devws_pickers.sh git_actions.sh jungleforge.sh job.sh agentic.sh; do
   cat > "$TEST_ROOT/home/.tmuxinator/$script" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" > "$TEST_ROOT/calls/$script"
@@ -90,6 +90,8 @@ unset TMUX
 MENU="$HOME/.tmuxinator/devws_menu.sh"
 tmux new-session -d -s dev-menu -x 120 -y 30 'sleep 600'
 PANE="$(tmux display-message -p -t dev-menu: '#{pane_id}')"
+# A normal workspace has an editor panel; the items that arrange around it show.
+tmux set-option -p -t "$PANE" @devws_role editor
 
 # Runs the menu the way the popup does: inside the workspace's tmux session.
 menu() {
@@ -101,17 +103,35 @@ actions_of() {
 }
 
 test_tabs_list_their_actions() {
-  [ "$(actions_of workspace)" = "github new worktree open-folder close tidy detach" ] ||
+  [ "$(actions_of workspace)" = "github agentic new worktree open-folder close tidy detach" ] ||
     fail "Workspace tab: $(actions_of workspace)"
   [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor" ] ||
     fail "Layout tab: $(actions_of layout)"
   [ "$(actions_of agent)" = "jump switch-agent restart-agent follow-mode initialize-agent register-agent remove-agent" ] ||
     fail "Agent tab: $(actions_of agent)"
   [ "$(actions_of git)" = "commit commit-manual push" ] || fail "Git tab: $(actions_of git)"
-  [ "$(actions_of app)" = "run-here switch-run stop-run services migrate shell logs register-jungleforge open-database database-folder job-log" ] ||
+  [ "$(actions_of app)" = "run-here switch-run stop-run services migrate shell logs info register-jungleforge open-database database-folder job-log" ] ||
     fail "App tab: $(actions_of app)"
-  [ "$(actions_of help)" = "guide guide-shortcuts guide-workspaces guide-layout guide-agents guide-git guide-app guide-commands guide-configuration" ] ||
+  [ "$(actions_of help)" = "guide guide-shortcuts guide-workspaces guide-layout guide-agents guide-agentic guide-git guide-app guide-commands guide-configuration" ] ||
     fail "Help tab: $(actions_of help)"
+}
+
+# An agent team (devws agentic) has no editor: the items that arrange the
+# screen around one, and the database that sits beside it, are not offered.
+test_an_agent_team_has_no_editor_items() {
+  tmux set-option -p -t "$PANE" @devws_role agent
+  [ "$(actions_of layout)" = "header new-panel move-panel" ] || fail "Layout tab of an agent team: $(actions_of layout)"
+  ! grep -qE 'open-database|database-folder' <<<"$(actions_of app)" || fail "an agent team is offered the database: $(actions_of app)"
+  grep -q 'job-log' <<<"$(actions_of app)" || fail "an agent team lost the job log"
+  tmux set-option -p -t "$PANE" @devws_role editor
+  [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor" ] ||
+    fail "Layout tab of a normal workspace: $(actions_of layout)"
+}
+
+test_open_an_agent_team_runs_devws_agentic() {
+  rm -f "$TEST_ROOT/calls/agentic.sh"
+  menu --run agentic </dev/null >/dev/null 2>&1 || true
+  [ -e "$TEST_ROOT/calls/agentic.sh" ] || fail "Open an agent team did not run agentic.sh"
 }
 
 test_items_show_labels_and_shortcuts() {
@@ -600,6 +620,8 @@ test_space_opens_the_menu() {
 }
 
 test_tabs_list_their_actions
+test_an_agent_team_has_no_editor_items
+test_open_an_agent_team_runs_devws_agentic
 test_items_show_labels_and_shortcuts
 test_typing_searches_every_tab
 test_memory_items_need_ai_memory

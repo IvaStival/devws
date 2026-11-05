@@ -127,6 +127,13 @@ test_deps_run_again_only_when_a_lock_file_changes() {
   grep -q ' deps phi-planner ' "$TEST_ROOT/make.log" || fail "deps did not run after composer.lock changed"
 }
 
+test_info_is_jungleforges_table() {
+  : > "$TEST_ROOT/make.log"
+  jungleforge info >/dev/null || fail "info failed"
+  [ "$(cat "$TEST_ROOT/make.log")" = "-C $DEVWS_JUNGLEFORGE --no-print-directory info" ] ||
+    fail "info: $(cat "$TEST_ROOT/make.log")"
+}
+
 test_run_without_names_moves_every_app() {
   : > "$TEST_ROOT/make.log"
   jungleforge run "$CHECKOUT" >/dev/null
@@ -243,6 +250,7 @@ test_running_reads_the_mounted_folder
 test_run_starts_services_then_the_apps_on_the_folder
 test_deps_run_again_only_when_a_lock_file_changes
 test_run_without_names_moves_every_app
+test_info_is_jungleforges_table
 test_stop_and_migrate_use_the_running_folder
 test_an_unregistered_repo_says_so
 

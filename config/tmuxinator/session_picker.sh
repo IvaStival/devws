@@ -29,7 +29,9 @@ fi
 #                              task headings count in
 #
 # A workspace with a task (@devws_task, set by `devws open --task`) is listed
-# under its task's heading, after the workspaces without one.
+# under its task's heading, after the workspaces without one. An agent team's
+# agents (@devagentics_agent) are listed under their workspace; Enter shows
+# one (team_groups.sh go).
 print_padded_row() {
   local style="$1"
   local width="$2"
@@ -40,10 +42,21 @@ print_padded_row() {
   printf '%b%s%*s\033[0m' "$style" "$text" "$padding" ""
 }
 
-# The rows in order, as "workspace<TAB><session>" and "task<TAB><id>": the
-# workspaces without a task, then each task's heading and its workspaces. The
-# order the rows are drawn in and fzf's cursor is placed by.
+# The rows in order, as "workspace<TAB><session>", "task<TAB><id>" and
+# "agent<TAB><pane>": the workspaces without a task, then each task's heading
+# and its workspaces, each followed by its team's agents. The order the rows
+# are drawn in and fzf's cursor is placed by.
 row_order() {
+  local kind name
+  workspace_order | while IFS="$tab" read -r kind name; do
+    printf '%s\t%s\n' "$kind" "$name"
+    [ "$kind" = workspace ] || continue
+    tmux list-panes -s -t "=$name" -F "#{pane_id}${tab}#{@devagentics_agent}" 2>/dev/null |
+      awk -F '\t' '$2 != "" { print "agent\t" $1 }'
+  done
+}
+
+workspace_order() {
   tmux list-sessions -F "#{session_name}${tab}#{@devws_task}" 2>/dev/null |
     awk -F '\t' '
       $1 !~ /^dev-/ { next }
@@ -62,6 +75,20 @@ row_order() {
       }'
 }
 
+# An agent of a team, under its workspace: its id, its state, its group.
+agent_row() {
+  local pane="$1" id agent_state tab_name mark
+  IFS='|' read -r id agent_state tab_name <<< "$(tmux display-message -p -t "$pane" \
+    '#{@devagentics_agent}|#{@devws_pane_state}|#{window_name}' 2>/dev/null)"
+  case "$agent_state" in
+    working) mark=" ⠋" ;;
+    waiting) mark=" \033[33m● needs you\033[0;2m" ;;
+    done) mark=" \033[32m✓ done\033[0;2m" ;;
+    *) mark="" ;;
+  esac
+  printf 'agent:%s\t    \033[2m◦ %s%b · %s\033[0m\0' "$pane" "$id" "$mark" "$tab_name"
+}
+
 workspace_rows() {
   local current="$1"
   local kind session agent editor root agent_state branch state state_plain row_width
@@ -78,6 +105,10 @@ workspace_rows() {
   while IFS="$tab" read -r kind session; do
     if [ "$kind" = task ]; then
       printf 'task:%s\t\033[36m▸ %s\033[0m\0' "$session" "$session"
+      continue
+    fi
+    if [ "$kind" = agent ]; then
+      agent_row "$session"
       continue
     fi
     IFS='|' read -r agent editor root agent_state frozen needs_reopen <<< "$(tmux display-message -p -t "=$session:" \
@@ -262,6 +293,12 @@ while tmux list-sessions >/dev/null 2>&1; do
     workspace:*)
       workspace="${selected%%$'\t'*}"
       tmux switch-client -t "${workspace#workspace:}" 2>/dev/null
+      ;;
+    # An agent of a team: its group's workspace, the agent.
+    agent:*)
+      agent="${selected%%$'\t'*}"
+      tmux switch-client -t "${agent#agent:}" 2>/dev/null
+      "$HOME/.tmuxinator/team_groups.sh" go "${agent#agent:}" 2>/dev/null
       ;;
     # A task's heading takes you to its first workspace.
     task:*)
