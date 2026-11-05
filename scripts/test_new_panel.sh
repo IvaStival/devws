@@ -41,6 +41,11 @@ chmod +x "$TEST_ROOT/bin/"*
 for script in "$SCRIPTS"/*.sh "$SCRIPTS"/*.json "$SCRIPTS"/*.md; do
   ln -s "$script" "$TEST_ROOT/home/.tmuxinator/$(basename "$script")"
 done
+# The sidebar only titles itself, as the real one does, and waits.
+rm "$TEST_ROOT/home/.tmuxinator/session_picker.sh"
+printf '#!/usr/bin/env bash\ntmux select-pane -t "$TMUX_PANE" -T devws-picker\nexec sleep 600\n' \
+  > "$TEST_ROOT/home/.tmuxinator/session_picker.sh"
+chmod +x "$TEST_ROOT/home/.tmuxinator/session_picker.sh"
 printf 'DEVWS_AGENTS="claude work"\nDEVWS_AGENT_work="claude %s"\n' "$TEST_ROOT/home/.claude-work" \
   > "$TEST_ROOT/home/.tmuxinator/.env"
 mkdir -p "$TEST_ROOT/home/.claude-work"
@@ -195,8 +200,16 @@ test_new_panels_are_saved() {
 # board. A group's agent can be peeked under the board and sent back, and
 # shown with go.
 TEAM=dev-team
+# A workspace's panels, its sidebar aside.
 group_panes() {
-  tmux list-panes -s -t "=$1" -F '#{pane_id}' 2>/dev/null | grep -c . || true
+  tmux list-panes -s -t "=$1" -F '#{pane_id} #{@devws_sidebar}' 2>/dev/null | awk '$2 != 1' | grep -c . || true
+}
+
+# The group workspace's sidebar: on the left, full height (but the border
+# line on top).
+has_sidebar() {
+  tmux list-panes -t "=$1:" -F '#{@devws_sidebar} #{pane_left} #{pane_height} #{window_height}' |
+    awk '$1 == 1 && $2 == 0 && $3 >= $4 - 1 { found = 1 } END { exit !found }'
 }
 
 test_agents_open_in_their_groups_workspaces() {
@@ -221,6 +234,9 @@ test_agents_open_in_their_groups_workspaces() {
   [ "$(group_panes "$TEAM-floor")" = 4 ] || fail "the Floor workspace holds $(group_panes "$TEAM-floor"), not 4"
   [ "$(group_panes "$TEAM-floor-2")" = 1 ] || fail "the fifth floor agent is not in Floor 2's workspace"
   [ "$(group_panes "$TEAM-seniors")" = 1 ] || fail "the senior is not in its group's workspace"
+  for option in "$TEAM-floor" "$TEAM-floor-2" "$TEAM-seniors"; do
+    has_sidebar "$option" || fail "$option has no sidebar on the left: $(tmux list-panes -t "=$option:" -F "#{@devws_sidebar} #{pane_left} #{pane_top} #{pane_height} #{window_height}")"
+  done
   for option in @devws_task @devws_template @devws_root; do
     [ "$(tmux show-option -qv -t "=$TEAM-floor:" "$option")" = "$(tmux show-option -qv -t "=$TEAM:" "$option")" ] ||
       fail "the Floor workspace does not share the team's $option"
@@ -258,6 +274,18 @@ test_agents_open_in_their_groups_workspaces() {
   # Go: its group's workspace, focused on it.
   "$SCRIPTS/agent_cli.sh" go "${floor[4]}" || fail "go failed"
   [ "$(tmux display-message -p -t "=$TEAM-floor-2:" '#{pane_id}')" = "${floor[4]}" ] || fail "go did not focus it"
+
+  # A placed-back agent's workspace has its sidebar too.
+  has_sidebar "$TEAM-seniors" || fail "the Seniors workspace made on peek has no sidebar"
+  # Its last agent stopped, a group workspace closes; one with more retiles.
+  "$SCRIPTS/agent_cli.sh" stop "${floor[4]}" >/dev/null || fail "stop failed"
+  gone "$TEAM-floor-2" || fail "the emptied Floor 2 workspace stayed (with its sidebar)"
+  "$SCRIPTS/agent_cli.sh" stop "${floor[1]}" >/dev/null || fail "stop failed"
+  has_sidebar "$TEAM-floor" && [ "$(group_panes "$TEAM-floor")" = 3 ] || fail "Floor lost its sidebar when an agent stopped"
+}
+
+gone() {
+  ! tmux has-session -t "=$1" 2>/dev/null
 }
 
 test_agents_open_in_their_groups_workspaces

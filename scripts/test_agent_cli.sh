@@ -321,41 +321,74 @@ test_limits_are_the_ones_the_header_shows() {
 # The keys of the sidebar's rows, in order: a record starts with its key.
 sidebar_keys() {
   DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --rows | tr '\0' '\n' |
-    grep -E '^(workspace|task|agent):' | cut -f1
+    grep -E '^(workspace|task|group|agent):' | cut -f1
+}
+
+# A group's workspace of dev-t1-api's team, with one agent: its pane.
+team_group() {
+  local session="$1" group="$2" id="$3" pane
+  tmux new-session -d -s "$session" 'sleep 600'
+  tmux set-option -t "=$session:" @devws_task team-1
+  tmux set-option -t "=$session:" @devws_team_of dev-t1-api
+  tmux set-option -t "=$session:" @devws_group "$group"
+  pane="$(tmux display-message -p -t "=$session:" '#{pane_id}')"
+  tmux set-option -p -t "$pane" @devagentics_agent "$id"
+  printf '%s' "$pane"
 }
 
 test_the_sidebar_groups_a_tasks_workspaces() {
-  local session expected agent
+  local session expected peeked senior agent rows
   for session in dev-plain-a dev-t1-api dev-t1-web dev-plain-b dev-t2-x; do
     tmux new-session -d -s "$session" 'sleep 600'
   done
   tmux set-option -t =dev-t1-api: @devws_task team-1
   tmux set-option -t =dev-t1-web: @devws_task team-1
   tmux set-option -t =dev-t2-x: @devws_task team-2
-  # A team agent in a tab of dev-t1-api is listed under it.
-  agent="$(tmux new-window -d -t =dev-t1-api: -n Floor -P -F '#{pane_id}' 'sleep 600')"
-  tmux set-option -p -t "$agent" @devagentics_agent hammer-1
+  # A team's agent peeked in its workspace, and its groups' workspaces, with
+  # their agents, are listed under it as a tree.
+  peeked="$(tmux split-window -d -t =dev-t1-api: -P -F '#{pane_id}' 'sleep 600')"
+  tmux set-option -p -t "$peeked" @devagentics_agent planner-2
+  agent="$(team_group dev-t1-api-floor Floor hammer-1)"
   tmux set-option -p -t "$agent" @devws_pane_state waiting
+  tmux set-option -w -t =dev-t1-api-floor: @devws_tab_alert 1
+  senior="$(team_group dev-t1-api-seniors Seniors ui-designer-1)"
 
   expected="workspace:dev-plain-a
 workspace:dev-plain-b
 task:team-1
 workspace:dev-t1-api
+agent:$peeked
+group:dev-t1-api-seniors
+agent:$senior
+group:dev-t1-api-floor
 agent:$agent
 workspace:dev-t1-web
 task:team-2
 workspace:dev-t2-x"
   [ "$(sidebar_keys)" = "$expected" ] || fail "the sidebar's rows are not grouped by task: $(sidebar_keys | tr '\n' ' ')"
 
+  # Without their colors.
+  rows="$(DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --rows | tr '\0' '\n' | sed $'s/\033\\[[0-9;]*m//g')"
+  grep -q "^agent:$peeked.*◦ planner-2.* · peeked" <<<"$rows" || fail "the peeked agent's row: $rows"
+  grep -q "^group:dev-t1-api-seniors.*├ Seniors" <<<"$rows" || fail "the Seniors row: $rows"
+  grep -q "^agent:$senior.*│  ◦ ui-designer-1" <<<"$rows" || fail "the senior's row: $rows"
+  grep -q "^group:dev-t1-api-floor.*└ Floor.*●" <<<"$rows" || fail "the last group's row, with its alert: $rows"
+  grep "^agent:$agent" <<<"$rows" | grep -q "   ◦ hammer-1.*● needs you" || fail "the floor agent's row: $rows"
+  ! grep "^agent:$agent" <<<"$rows" | grep -q 'Floor' || fail "an agent under its group repeats the group's name"
+
   # fzf is asked to put the cursor on an item by its place among all of them,
   # the headings included.
-  DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --rows | tr '\0' '\n' |
-    grep -q "^agent:$agent.*◦ hammer-1.*● needs you.* · Floor" || fail "the agent's row does not show its id, state and tab"
-  [ "$(DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --position dev-t1-web)" = 6 ] ||
+  [ "$(DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --position dev-t1-web)" = 10 ] ||
     fail "the cursor position ignores the task headings and the agents"
+  [ "$(DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --position dev-t1-api-floor)" = 8 ] ||
+    fail "the cursor is not put on the group you are in"
   [ "$(DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --position dev-plain-b)" = 2 ] ||
     fail "the position of a workspace without a task changed"
-  for session in dev-plain-a dev-t1-api dev-t1-web dev-plain-b dev-t2-x; do tmux kill-session -t "$session"; done
+
+  # A group whose team is gone is a workspace of its own again.
+  tmux kill-session -t dev-t1-api
+  sidebar_keys | grep -qx 'workspace:dev-t1-api-floor' || fail "a group without its team is not listed: $(sidebar_keys | tr '\n' ' ')"
+  for session in dev-plain-a dev-t1-web dev-plain-b dev-t2-x dev-t1-api-floor dev-t1-api-seniors; do tmux kill-session -t "$session"; done
 }
 
 test_the_runner_appends_the_args_file

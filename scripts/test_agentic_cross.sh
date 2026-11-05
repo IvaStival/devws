@@ -197,8 +197,8 @@ case "$pane_text" in *"board: "*) fail "the board pane shows an error: $pane_tex
 ok "the live board pane shows no error"
 
 # 7. A restart: the sidebar groups the task, restore leaves the team alone.
-rows="$(DEVWS_PICKER_ROWS="$ROOT/rows" "$HOME/.tmuxinator/session_picker.sh" --rows | tr '\0' '\n' | grep -E '^(workspace|task|agent):' | cut -f1 | tr '\n' ' ')"
-[ "$rows" = "task:feat-x workspace:dev-repo workspace:dev-repo-floor agent:$hammer workspace:dev-repo-seniors agent:$pane " ] ||
+rows="$(DEVWS_PICKER_ROWS="$ROOT/rows" "$HOME/.tmuxinator/session_picker.sh" --rows | tr '\0' '\n' | grep -E "^(workspace|task|group|agent):" | cut -f1 | tr '\n' ' ')"
+[ "$rows" = "task:feat-x workspace:dev-repo group:dev-repo-seniors agent:$pane group:dev-repo-floor agent:$hammer " ] ||
   fail "sidebar rows: $rows"
 ok "the sidebar lists the team's workspaces and agents under its task"
 

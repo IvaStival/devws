@@ -266,6 +266,8 @@ stop() {
   done
   pane_exists "$pane" && tmux kill-pane -t "$pane"
   "$script_dir/agent_status.sh" "$session" idle "$pane"
+  # A group's workspace retiles, or closes with its last agent.
+  "$script_dir/team_groups.sh" tidy "$session"
 }
 
 command="${1:-}"
