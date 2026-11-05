@@ -66,6 +66,7 @@ app|migrate|⇡ Migrate||migrate_running_app|jungleforge
 app|shell|⌘ Shell||open_app_shell|jungleforge
 app|logs|≡ Logs||open_app_logs|jungleforge
 app|info|ⓘ Info||show_app_info|jungleforge
+app|settings|⚙ Settings||change_app_setting|jungleforge
 app|register-jungleforge|＋ Register in jungleforge||register_in_jungleforge|jungleforge
 app|open-database|⛁ Database|C-b B|open_database|editor
 app|database-folder|⛁ Database folder||choose_database_folder|editor

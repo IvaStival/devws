@@ -239,6 +239,50 @@ test_register_adds_then_replaces_the_line() {
   sed -i '' '/^SHOP_PATH=/d' "$DEVWS_JUNGLEFORGE/.env"
 }
 
+# Settings: the app's .docker-env in the folder given, and the shared .env
+# without the registry, its passwords masked; commented-out lines are not
+# settings.
+test_settings_list_the_apps_and_the_shared_ones() {
+  printf 'APP_HTTP_PORT=8091   # the web\n# VITE_PORT=5173\n' >> "$CHECKOUT/web/deploy/.docker-env"
+  printf 'POSTGRES_PASSWORD=s3cret\nPOSTGRES_PORT=5432    # postgres\n' >> "$DEVWS_JUNGLEFORGE/.env"
+  [ "$(jungleforge settings "$CHECKOUT" phi-planner-web)" = "APP_CONTAINER"$'\t'"phi-web"$'\t'$'\n'"APP_HTTP_PORT"$'\t'"8091"$'\t'"the web" ] ||
+    fail "app settings: $(jungleforge settings "$CHECKOUT" phi-planner-web)"
+  [ "$(jungleforge settings shared)" = "REGISTRY"$'\t'"ghcr.io/acme"$'\t'$'\n'"POSTGRES_PASSWORD"$'\t'"••••"$'\t'$'\n'"POSTGRES_PORT"$'\t'"5432"$'\t'"postgres" ] ||
+    fail "shared settings: $(jungleforge settings shared)"
+  ! jungleforge settings "$CHECKOUT" shop 2>/dev/null || fail "settings of an app that is not the repo's"
+}
+
+# Set rewrites the line in place, its comment and the file's mode kept; a
+# port must be a free number, the error naming who has it.
+test_set_changes_the_line_and_checks_ports() {
+  local error
+  jungleforge set "$CHECKOUT" phi-planner-web APP_HTTP_PORT 8095 || fail "set failed"
+  grep -qx 'APP_HTTP_PORT=8095   # the web' "$CHECKOUT/web/deploy/.docker-env" ||
+    fail "the line: $(cat "$CHECKOUT/web/deploy/.docker-env")"
+  jungleforge set "$CHECKOUT" phi-planner-web APP_HTTP_PORT 8095 || fail "its own port was refused"
+  error="$(jungleforge set "$CHECKOUT" phi-planner-web APP_HTTP_PORT 8092 2>&1)" && fail "a taken port was set"
+  [[ "$error" == *"phi-planner's APP_HTTP_PORT"* ]] || fail "the owner is not named: $error"
+  error="$(jungleforge set "$CHECKOUT" phi-planner-web APP_HTTP_PORT 5432 2>&1)" && fail "a shared port was set"
+  [[ "$error" == *"shared POSTGRES_PORT"* ]] || fail "the shared owner is not named: $error"
+  local wrong
+  for wrong in abc 0 70000; do
+    ! jungleforge set "$CHECKOUT" phi-planner-web APP_HTTP_PORT "$wrong" 2>/dev/null || fail "port $wrong was set"
+  done
+  ! jungleforge set "$CHECKOUT" phi-planner-web NOPE 1 2>/dev/null || fail "an unknown key was set"
+  ! jungleforge set "$CHECKOUT" phi-planner-web APP_CONTAINER 'a b' 2>/dev/null || fail "a value with a space was set"
+
+  chmod 600 "$DEVWS_JUNGLEFORGE/.env"
+  jungleforge set shared POSTGRES_PORT 5433 || fail "set shared failed"
+  grep -qx 'POSTGRES_PORT=5433    # postgres' "$DEVWS_JUNGLEFORGE/.env" || fail "the shared line: $(cat "$DEVWS_JUNGLEFORGE/.env")"
+  [ "$(stat -f %Lp "$DEVWS_JUNGLEFORGE/.env")" = 600 ] || fail ".env lost its mode"
+
+  jungleforge set "$WORKTREE" phi-planner PHP_CONTAINER phi-feat || fail "set on the branch failed"
+  grep -qx 'PHP_CONTAINER=phi-feat' "$WORKTREE/backend/deploy/.docker-env" &&
+    grep -qx 'PHP_CONTAINER=phi-php' "$CHECKOUT/backend/deploy/.docker-env" ||
+    fail "set did not change the branch's file only"
+  git -C "$WORKTREE" checkout -q -- backend/deploy/.docker-env
+}
+
 test_apps_are_the_repos_registered_folders
 test_targets_are_main_and_the_worktrees
 test_the_folder_is_found_in_order
@@ -253,5 +297,7 @@ test_run_without_names_moves_every_app
 test_info_is_jungleforges_table
 test_stop_and_migrate_use_the_running_folder
 test_an_unregistered_repo_says_so
+test_settings_list_the_apps_and_the_shared_ones
+test_set_changes_the_line_and_checks_ports
 
 printf 'jungleforge tests passed.\n'

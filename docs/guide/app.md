@@ -66,12 +66,35 @@ never edited for it). One branch of an app runs at a time.
 | **⌘ Shell** | | | A shell in the app's container, in a panel below |
 | **≡ Logs** | | | The app's container logs, in a panel below |
 | **ⓘ Info** | | | jungleforge's table of its containers, services and apps, running or not: status, image, ports |
+| **⚙ Settings** | | | Changes an app's setting (its port…) or a shared service's: [Change a setting](#change-a-setting) |
 
 - Each runs as a background job (below), so the screen stays yours.
 - Packages install in the container only when `composer.lock` or
   `package-lock.json` changed since that folder's last install: a new branch
   installs once, switching back and forth stays fast.
 - The sidebar shows `· ▶ running` on the workspace whose branch runs.
+
+## Change a setting
+
+**⚙ Settings** changes a jungleforge setting, such as an app's port. Pick
+whose settings, then the setting (shown with its value and comment), then type
+the new value; Enter on an empty value keeps the old one.
+
+- **An app's** settings (`APP_HTTP_PORT`, `VITE_PORT`, versions…) are its
+  `deploy/.docker-env` in the workspace's folder: the one this branch runs
+  with. When that file is in git, the change shows in the branch's diff.
+- **The shared services'** (database, Redis, RabbitMQ ports…) are in
+  jungleforge's `.env`. The registry (`*_PATH`) is left to Register, and
+  passwords show as `••••`.
+- A port must be a number from 1 to 65535 that no other registered app or
+  shared service uses; the refusal says who has it, and you type again.
+- A new port only applies once the container is made again: an app running
+  from this branch is offered a restart, and a shared change offers
+  restarting the services. An app running from another branch takes the
+  change when this branch runs.
+- From the command line: `jungleforge.sh settings <folder> <app>` (or
+  `settings shared`) lists them, and `jungleforge.sh set <folder> <app> <KEY>
+  <value>` (or `set shared <KEY> <value>`) changes one.
 
 ## Database pane
 

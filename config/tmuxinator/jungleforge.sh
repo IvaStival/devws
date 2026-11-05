@@ -21,6 +21,16 @@
 #   jungleforge.sh services          starts the shared services
 #   jungleforge.sh info              a table of every container, services and
 #                                    apps, running or not: status, image, ports
+#   jungleforge.sh settings <folder> <app>   "<KEY><TAB><value><TAB><comment>"
+#                                    per line of the app's deploy/.docker-env
+#                                    in <folder> (the one that branch runs with)
+#   jungleforge.sh settings shared   the same for jungleforge's .env, without
+#                                    the registry, passwords masked
+#   jungleforge.sh set <folder> <app> <KEY> <value>
+#   jungleforge.sh set shared <KEY> <value>
+#                                    rewrites that line, keeping its comment; a
+#                                    *_PORT must be a number no other app or
+#                                    shared service uses
 #   jungleforge.sh running-folders <folder>...   the folders apps run from,
 #                                    among those folders' repos (the sidebar)
 #   jungleforge.sh migrate|logs|shell <folder> <app>    on the running branch
@@ -330,14 +340,97 @@ templates() {
   done | LC_ALL=C sort
 }
 
+# "<KEY><TAB><value><TAB><comment>" per active line of a settings file; a
+# comment is what follows a " #".
+setting_rows() {
+  awk '
+    /^[A-Z][A-Z0-9_]*=/ {
+      key = substr($0, 1, index($0, "=") - 1)
+      rest = substr($0, index($0, "=") + 1)
+      comment = ""
+      if (match(rest, /[ \t]+#/)) {
+        comment = substr(rest, RSTART + RLENGTH)
+        rest = substr(rest, 1, RSTART - 1)
+      }
+      sub(/^[ \t]+/, "", comment)
+      printf "%s\t%s\t%s\n", key, rest, comment
+    }' "$1"
+}
+
+# "<owner><TAB><key><TAB><port>" per host port in use: each registered app's
+# APP_HTTP_PORT and VITE_PORT (in its registry folder), and the shared
+# services' *_PORT (owner "shared").
+port_owners() {
+  local app folder
+  while IFS=$'\t' read -r app folder; do
+    setting_rows "$folder/deploy/.docker-env" 2>/dev/null | awk -F '\t' -v OFS='\t' -v app="$app" \
+      '$1 == "APP_HTTP_PORT" || $1 == "VITE_PORT" { print app, $1, $2 }'
+  done < <(registry)
+  setting_rows "$(jungleforge_folder)/.env" | awk -F '\t' -v OFS='\t' '$1 ~ /_PORT$/ { print "shared", $1, $2 }'
+}
+
 # One past the highest host port a registered app uses, from 8090.
 next_port() {
-  local app folder port highest=8089
-  while IFS=$'\t' read -r app folder; do
-    port="$(sed -n 's/^APP_HTTP_PORT=\([0-9]*\).*/\1/p' "$folder/deploy/.docker-env" 2>/dev/null | head -n 1)"
-    [ -n "$port" ] && [ "$port" -gt "$highest" ] && highest="$port"
-  done < <(registry)
+  local highest
+  highest="$(port_owners | awk -F '\t' '$2 == "APP_HTTP_PORT" && $3 + 0 > highest { highest = $3 + 0 }
+    END { print (highest > 8089 ? highest : 8089) }')"
   printf '%s' "$((highest + 1))"
+}
+
+# The file a setting is in: <folder>'s copy of the app's deploy/.docker-env
+# (a branch runs with its own), or, for "shared", jungleforge's .env.
+settings_file() {
+  local folder="$1" app="${2:-}" row subfolder
+  if [ "$folder" = shared ]; then
+    printf '%s/.env' "$(jungleforge_folder)"
+    return
+  fi
+  row="$(chosen_apps "$folder" "$app")" || exit 2
+  subfolder="$(cut -f2 <<<"$row")"
+  printf '%s/deploy/.docker-env' "$folder${subfolder:+/$subfolder}"
+}
+
+# The shared ones without the registry (Register's), passwords masked.
+settings() {
+  local file
+  file="$(settings_file "$@")" || exit 2
+  [ -r "$file" ] || die "$file does not exist"
+  if [ "$1" = shared ]; then
+    setting_rows "$file" | awk -F '\t' -v OFS='\t' '$1 ~ /_PATH$/ { next } $1 ~ /PASSWORD|SECRET/ { $2 = "••••" } { print }'
+  else
+    setting_rows "$file"
+  fi
+}
+
+# A port is a number no other app or service has; the owner's own key may
+# keep it.
+check_port() {
+  local owner="$1" key="$2" port="$3" taken
+  case "$port" in '' | *[!0-9]*) die "a port is a number: $port" ;; esac
+  [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die "a port is from 1 to 65535: $port"
+  taken="$(port_owners | awk -F '\t' -v owner="$owner" -v key="$key" -v port="$port" '
+    $3 == port && !($1 == owner && $2 == key) { print ($1 == "shared" ? "the shared " $2 : $1 "\047s " $2); exit }')"
+  [ -z "$taken" ] || die "$port is already $taken"
+}
+
+#   set <folder> <app> <KEY> <value>  |  set shared <KEY> <value>
+set_setting() {
+  local file owner key value
+  if [ "${1:-}" = shared ]; then
+    [ "$#" -eq 3 ] || die "usage: jungleforge.sh set shared <KEY> <value>"
+    owner=shared key="$2" value="$3"
+    case "$key" in *_PATH) die "$key is the registry's: Register in jungleforge changes it" ;; esac
+  else
+    [ "$#" -eq 4 ] || die "usage: jungleforge.sh set <folder> <app> <KEY> <value>"
+    owner="$2" key="$3" value="$4"
+  fi
+  file="$(settings_file "$1" "${2:-}")" || exit 2
+  [ -r "$file" ] || die "$file does not exist"
+  setting_rows "$file" | cut -f1 | grep -qx "$key" || die "$key is not a setting in $file"
+  # The files are sourced and read with sed: a value is one word.
+  case "$value" in *[[:space:]#]*) die "a value has no spaces or #: $value" ;; esac
+  case "$key" in *_PORT) check_port "$owner" "$key" "$value" ;; esac
+  rewrite_setting "$file" "$key" "$value"
 }
 
 scaffold() {
@@ -359,17 +452,28 @@ scaffold() {
   return 0
 }
 
-# Rewritten in place (cat, not mv) so .env keeps its permissions.
+# A setting's line rewritten, its trailing comment kept; in place (printf,
+# not mv) so the file keeps its permissions.
+rewrite_setting() {
+  local file="$1" key="$2" value="$3" updated
+  updated="$(awk -v key="$key" -v value="$value" '
+    index($0, key "=") == 1 {
+      rest = substr($0, length(key) + 2)
+      print key "=" value (match(rest, /[ \t]+#/) ? substr(rest, RSTART) : "")
+      next
+    }
+    { print }' "$file")" || die "could not read $file"
+  printf '%s\n' "$updated" > "$file"
+}
+
 register() {
-  local app="$1" folder="$2" env_file variable updated
+  local app="$1" folder="$2" env_file variable
   case "$app" in '' | *[!a-z0-9-]* | -* | *-) die "an app name is lowercase letters, digits and dashes: $app" ;; esac
   [ -d "$folder" ] || die "$folder does not exist"
   env_file="$(jungleforge_folder)/.env"
   variable="$(path_variable "$app")"
   if grep -q "^$variable=" "$env_file"; then
-    updated="$(awk -v variable="$variable" -v line="$variable=$folder" \
-      'index($0, variable "=") == 1 { print line; next } { print }' "$env_file")" || die "could not read $env_file"
-    printf '%s\n' "$updated" > "$env_file"
+    rewrite_setting "$env_file" "$variable" "$folder"
   else
     printf '%s=%s\n' "$variable" "$folder" >> "$env_file"
   fi
@@ -397,8 +501,14 @@ case "$command" in
     ;;
   services) jungleforge_make services-start ;;
   info) jungleforge_make --no-print-directory info ;;
+  settings)
+    { [ "${1:-}" = shared ] && [ "$#" -eq 1 ]; } || { [ "$#" -eq 2 ] && [ "$1" != shared ]; } ||
+      die "usage: jungleforge.sh settings <folder> <app> | settings shared"
+    settings "$@"
+    ;;
+  set) set_setting "$@" ;;
   running-folders) running_folders "$@" ;;
   migrate | logs) [ "$#" -eq 2 ] || die "usage: jungleforge.sh $command <folder> <app>"; on_running_app "$command" "$1" "$2" ;;
   shell) [ "$#" -eq 2 ] || die "usage: jungleforge.sh shell <folder> <app>"; on_running_app sh "$1" "$2" ;;
-  *) die "usage: jungleforge.sh <apps|targets|running|run|stop|services|info|migrate|logs|shell|available|folder|setup|templates|scaffold|register> …" ;;
+  *) die "usage: jungleforge.sh <apps|targets|running|run|stop|services|info|settings|set|migrate|logs|shell|available|folder|setup|templates|scaffold|register> …" ;;
 esac
