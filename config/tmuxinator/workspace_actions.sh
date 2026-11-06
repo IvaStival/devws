@@ -8,6 +8,8 @@ config="$HOME/.tmuxinator/.env"
 [ -r "$config" ] && . "$config"
 # shellcheck source=agents.sh
 . "$HOME/.tmuxinator/agents.sh"
+# shellcheck source=workspace_panes.sh
+. "$HOME/.tmuxinator/workspace_panes.sh"
 
 dev_sessions() {
   tmux list-sessions -F '#{session_name}' 2>/dev/null |
@@ -55,7 +57,7 @@ agent_pane() {
       printf '%s\n' "$pane"
       return 0
     fi
-  done < <(tmux list-panes -t "$session" \
+  done < <(tmux list-panes -t "$(main_window "$session")" \
     -F '#{pane_id}|#{@devws_role}|#{pane_current_command}' 2>/dev/null)
 
   # Compatibility for sessions created before agent_runner.sh was introduced.
@@ -66,7 +68,7 @@ agent_pane() {
         return 0
         ;;
     esac
-  done < <(tmux list-panes -t "$session" \
+  done < <(tmux list-panes -t "$(main_window "$session")" \
     -F '#{pane_id}|#{@devws_role}|#{pane_current_command}' 2>/dev/null)
   return 1
 }
@@ -80,7 +82,7 @@ editor_pane() {
       printf '%s\n' "$pane"
       return 0
     fi
-  done < <(tmux list-panes -t "$session" \
+  done < <(tmux list-panes -t "$(main_window "$session")" \
     -F '#{pane_id}|#{@devws_role}|#{pane_current_command}' 2>/dev/null)
 
   # Compatibility for workspaces created before editor_runner.sh existed.
@@ -91,7 +93,7 @@ editor_pane() {
         return 0
         ;;
     esac
-  done < <(tmux list-panes -t "$session" \
+  done < <(tmux list-panes -t "$(main_window "$session")" \
     -F '#{pane_id}|#{@devws_role}|#{pane_current_command}' 2>/dev/null)
   return 1
 }
@@ -429,6 +431,13 @@ new_github_workspace() {
   fi
   # shellcheck disable=SC2046
   start_workspace_at "$folder" $("$HOME/.tmuxinator/recent.sh" get "$folder")
+}
+
+# An agent team (devws agentic): the start screen asks for the repo and the
+# branch, devAgentics makes the task, and the workspace opens on it.
+open_agentic_team() {
+  printf '\033c'
+  "$HOME/.tmuxinator/agentic.sh" || pause
 }
 
 # Opens a workspace on a git worktree of the current workspace's repo: an
@@ -790,6 +799,66 @@ open_app_logs() {
   open_app_panel logs
 }
 
+# jungleforge's own table of its containers, read-only, in the menu's popup.
+show_app_info() {
+  printf '\033c'
+  "$HOME/.tmuxinator/jungleforge.sh" info
+  pause
+}
+
+# A jungleforge setting (a port…) of one of the repo's apps, in this branch's
+# deploy/.docker-env, or of the shared services: picked, then typed. A new
+# port needs the container made again, so a restart is offered.
+change_app_setting() {
+  local root rows app subfolder choice whose target setting key current value error answer running
+  local -a which=()
+  root="$(workspace_root)"
+  printf '\033c'
+  rows="$(known_apps "$root")" || return
+  # Esc on the settings comes back here.
+  while :; do
+    choice="$(
+      {
+        while IFS=$'\t' read -r app subfolder; do
+          printf '%s · %sdeploy/.docker-env\t%s\n' "$app" "${subfolder:+$subfolder/}" "$app"
+        done <<<"$rows"
+        printf 'shared services · jungleforge .env\tshared\n'
+      } | pick Settings 'Whose settings' --delimiter $'\t' --with-nth 1
+    )" || return
+    whose="${choice%%$'\t'*}"
+    target="${choice##*$'\t'}"
+    if [ "$target" = shared ]; then which=(shared); else which=("$root" "$target"); fi
+    setting="$(jungleforge settings "${which[@]}" |
+      awk -F '\t' '{ printf "%s = %s%s\t%s\n", $1, $2, ($3 == "" ? "" : "   # " $3), $1 }' |
+      pick Setting "$whose" --delimiter $'\t' --with-nth 1)" && break
+  done
+  key="${setting##*$'\t'}"
+  current="$(jungleforge settings "${which[@]}" | awk -F '\t' -v key="$key" '$1 == key { print $2 }')"
+  while :; do
+    printf '\n%s is %s. New value (Enter keeps it): ' "$key" "$current"
+    read -r value || return
+    [ -n "$value" ] || return 0
+    error="$(jungleforge set "${which[@]}" "$key" "$value" 2>&1)" && break
+    printf '%s\n' "${error#devws jungleforge: }"
+  done
+  printf '%s is now %s.\n' "$key" "$value"
+  if [ "$target" = shared ]; then
+    printf 'Restart the shared services now? [Y/n] '
+    read -r answer
+    case "$answer" in n | N | no) ;; *) start_services ;; esac
+    return
+  fi
+  running="$(jungleforge running "$root" 2>/dev/null | awk -F '\t' -v app="$target" '$1 == app { print $2 }')"
+  if [ "$running" = "$root" ]; then
+    printf 'Restart %s now? [Y/n] ' "$target"
+    read -r answer
+    case "$answer" in n | N | no) ;; *) jungleforge_job restart run "$root" -- "$target" ;; esac
+  elif [ -n "$running" ]; then
+    printf '%s runs from %s: the change applies when this branch runs.\n' "$target" "$running"
+    pause
+  fi
+}
+
 # The repo's apps running from <root>, which is closing: asks to move them back
 # to main (the default), stop them, or leave them running — not offered when
 # the folder is going away. Prints the command for close_workspace to run: a
@@ -839,9 +908,12 @@ ask_to_remove_worktree() {
   changes="$("$HOME/.tmuxinator/worktree.sh" status "$root" 2>/dev/null)" || return 1
   printf '\033c'
   if [ "$changes" != clean ]; then
-    printf 'Keeping the worktree %s: it has uncommitted changes.\n\n' "$root"
-    printf '%s\n' "$changes" | head -n 20
-    printf '\nPress Enter to close the workspace…'
+    # The reason comes last, by the prompt: a long list would scroll it out
+    # of a small popup.
+    printf '%s\n' "$changes" | head -n 10
+    [ "$(grep -c . <<<"$changes")" -le 10 ] || printf '… and %s more\n' "$(($(grep -c . <<<"$changes") - 10))"
+    printf '\nKeeping the worktree %s and its branch: it has uncommitted changes (above).\n' "$root"
+    printf 'Press Enter to close the workspace…'
     read -r
     return 1
   fi

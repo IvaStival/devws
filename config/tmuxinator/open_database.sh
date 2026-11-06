@@ -56,7 +56,7 @@ fi
 [ "$reconnect" = 1 ] && exit 0
 
 editor="$(pane_with_role editor)"
-[ -n "$editor" ] || fail "editor pane not found"
+[ -n "$editor" ] || exit_without_editor "Open database"
 slot="$(agent_slot_pane)"
 
 split_options=(-t "$editor" -c "${root:-$PWD}")

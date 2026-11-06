@@ -12,17 +12,29 @@
 #   agent_runner.sh <agent> --resume  continues the agent's last conversation
 #                                     in this folder (a pane reopened under
 #                                     its runner, suspend_workspace.sh)
+#   agent_runner.sh <agent> --args-file <file>
+#                                     more arguments for the program, after
+#                                     devws's own: NUL-separated, so one can
+#                                     be a prompt with line breaks
+#                                     (agent_cli.sh, devAgentics)
 
 set -u
 
 agent="${1:-}"
+[ "$#" -eq 0 ] || shift
 extra=""
 resume=""
-for option in "${@:2}"; do
-  case "$option" in
+args_file=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
     --extra) extra=--extra ;;
     --resume) resume=1 ;;
+    --args-file)
+      args_file="${2:-}"
+      [ "$#" -lt 2 ] || shift
+      ;;
   esac
+  shift
 done
 link_dir="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=/dev/null
@@ -33,6 +45,17 @@ link_dir="$(cd "$(dirname "$0")" && pwd)"
 if ! kind="$(agent_kind "$agent")"; then
   printf 'Unsupported devws agent: %s (register it in the devws menu)\n' "$agent" >&2
   exit 2
+fi
+
+extra_args=()
+if [ -n "$args_file" ]; then
+  if [ ! -r "$args_file" ]; then
+    printf 'Cannot read the agent arguments: %s\n' "$args_file" >&2
+    exit 2
+  fi
+  while IFS= read -r -d '' argument; do
+    extra_args+=("$argument")
+  done < "$args_file"
 fi
 
 # The account: the agent's own folder, or none for its kind's default folder,
@@ -61,7 +84,8 @@ fi
 prompt="$(cat "$link_dir/agent_editor_prompt.md")"
 case "$kind" in
   claude)
-    claude ${resume:+--continue} --settings "$link_dir/agent_settings.json" --append-system-prompt "$prompt"
+    claude ${resume:+--continue} --settings "$link_dir/agent_settings.json" --append-system-prompt "$prompt" \
+      ${extra_args[@]+"${extra_args[@]}"}
     ;;
   codex)
     # Config overrides are TOML; jq's JSON strings are valid TOML strings, quotes escaped.
@@ -85,6 +109,7 @@ case "$kind" in
       -c "hooks.PreToolUse=[$(follow_hook pre),$state_hook]" \
       -c "hooks.PostToolUse=[$(follow_hook),$state_hook]" \
       "${state_hooks[@]}" \
-      -c "developer_instructions=$(jq -n --arg prompt "$prompt" '$prompt')"
+      -c "developer_instructions=$(jq -n --arg prompt "$prompt" '$prompt')" \
+      ${extra_args[@]+"${extra_args[@]}"}
     ;;
 esac

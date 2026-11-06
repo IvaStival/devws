@@ -7,6 +7,9 @@
 #   header_tokens.sh limits <codex agent>   a Codex agent's plan limits, % used:
 #                                           "<5-hour session> <week>"
 #   header_tokens.sh session <transcript>   one conversation: "conv 230k · ctx 41%"
+#   header_tokens.sh usage <transcript>     what one conversation used:
+#                                           "<input> <output> <cache> <US$> <unpriced>"
+#                                           (tokens; cache is read + written)
 #
 # Read from the agents' own logs, in each agent's folder (agents.sh): Claude
 # Code's <folder>/projects/*/*.jsonl and Codex's
@@ -148,8 +151,44 @@ session() {
   return 0
 }
 
+# What one conversation used, in tokens and at API prices. A Claude Code log
+# has a usage per message; a Codex log the running total of its latest count.
+usage() {
+  local transcript="$1"
+  [ -r "$transcript" ] || return 0
+  if grep -q '"token_count"' "$transcript"; then
+    grep -h '"turn_context"\|"token_count"' "$transcript" |
+      jq -nRr --rawfile prices "$prices_file" "$price
+        [inputs | fromjson?] as \$lines
+        | (\$lines | map(select(.type == \"turn_context\") | .payload.model) | last // \"\") as \$model
+        | (\$lines | map(select(.type == \"event_msg\" and .payload.type == \"token_count\" and .payload.info) | .payload.info.total_token_usage) | last // empty) as \$total
+        | (\$total.cached_input_tokens // 0) as \$cached
+        | price(\$model) as \$rates
+        | (\$total.input_tokens - \$cached) as \$input
+        | \"\(\$input) \(\$total.output_tokens) \(\$cached) \(if \$rates == null then 0 else ((\$input * \$rates[0] + \$cached * \$rates[3] + \$total.output_tokens * \$rates[4]) / 1000000 * 100 | round / 100) end) \(if \$rates == null then 1 else 0 end)\"" 2>/dev/null
+  else
+    grep -h '"output_tokens"' "$transcript" |
+      jq -nRr --rawfile prices "$prices_file" "$epoch $price $claude_messages
+        | select(length > 0)
+        | map(select(.model != \"<synthetic>\") | . as \$message | price(.model) as \$rates
+          | (.usage.cache_creation // {}) as \$writes
+          | ((\$writes.ephemeral_5m_input_tokens // null) == null and (\$writes.ephemeral_1h_input_tokens // null) == null) as \$unsplit
+          | {input: .usage.input_tokens, output: .usage.output_tokens,
+             cache: ((.usage.cache_creation_input_tokens // 0) + (.usage.cache_read_input_tokens // 0)),
+             unpriced: (if \$rates == null then 1 else 0 end),
+             cost: (if \$rates == null then 0 else ((.usage.input_tokens * \$rates[0]
+               + (if \$unsplit then (.usage.cache_creation_input_tokens // 0) else (\$writes.ephemeral_5m_input_tokens // 0) end) * \$rates[1]
+               + (if \$unsplit then 0 else (\$writes.ephemeral_1h_input_tokens // 0) end) * \$rates[2]
+               + (.usage.cache_read_input_tokens // 0) * \$rates[3]
+               + .usage.output_tokens * \$rates[4]) / 1000000) end)})
+        | \"\(map(.input) | add // 0) \(map(.output) | add // 0) \(map(.cache) | add // 0) \(map(.cost) | add // 0 | . * 100 | round / 100) \(map(.unpriced) | max // 0)\"" 2>/dev/null
+  fi
+  return 0
+}
+
 case "$mode" in
   costs) costs ;;
+  usage) usage "${2:-}" ;;
   session) session "${2:-}" ;;
   limits)
     if [ "$(agent_kind "${2:-}")" != codex ]; then
@@ -159,7 +198,7 @@ case "$mode" in
     codex_limits "$(agent_home "$2")"
     ;;
   *)
-    printf 'Usage: header_tokens.sh costs | limits <codex agent> | session <transcript>\n' >&2
+    printf 'Usage: header_tokens.sh costs | limits <codex agent> | session <transcript> | usage <transcript>\n' >&2
     exit 2
     ;;
 esac

@@ -153,6 +153,8 @@ menu's **Help** tab and with `devws help [page]`:
 - [Layout](docs/guide/layout.md): layouts, panels, minimize, the header, the
   editor, following the agent
 - [Agents](docs/guide/agents.md): agents and accounts, status, ai-memory
+- [Agent teams](docs/guide/agentic.md): a leader that opens and drives other
+  agents (`devagentics`, in `agentic/`)
 - [Git](docs/guide/git.md): commit, push and pull requests
 - [App](docs/guide/app.md): running branches in jungleforge, the database
   pane, background jobs

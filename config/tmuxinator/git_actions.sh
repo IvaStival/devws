@@ -158,8 +158,7 @@ commit() {
   esac
 
   agent="$(workspace_option "$workspace" @devws_agent)"
-  tmux send-keys -t "$pane" -l "$(agent_message "${agent:-${DEVWS_DEFAULT_AGENT:-claude}}" "$root")"
-  tmux send-keys -t "$pane" Enter
+  "$script_dir/agent_cli.sh" send --force "$pane" "$(agent_message "${agent:-${DEVWS_DEFAULT_AGENT:-claude}}" "$root")"
   tell 'Asked the agent to commit.'
 }
 

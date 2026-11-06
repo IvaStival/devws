@@ -37,7 +37,7 @@ load_workspace_panes "$session" || fail "session $session not found"
 editor="$(pane_with_role editor)"
 agent="$(pane_with_role agent)"
 terminal="$(pane_with_role terminal)"
-[ -n "$editor" ] || fail "editor pane not found"
+[ -n "$editor" ] || exit_without_editor "Toggle layout"
 # The pane leading the agent group: the agent, else the terminal (an agent
 # started by hand there, or a closed agent pane). It goes first; the other,
 # when there is one, follows it.

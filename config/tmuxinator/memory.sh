@@ -96,8 +96,7 @@ ask() {
   pane="$(tmux list-panes -s -t "=$session:" -F '#{pane_id}|#{@devws_role}' 2>/dev/null |
     awk -F '|' '$2 == "agent" { print $1; exit }')"
   [ -n "$pane" ] || die "no agent in $session"
-  tmux send-keys -t "$pane" -l "Search your ai-memory for: $question"
-  tmux send-keys -t "$pane" Enter
+  "$script_dir/agent_cli.sh" send --force "$pane" "Search your ai-memory for: $question"
 }
 
 # The web UI needs a human login, which ai-memory does not create: with no

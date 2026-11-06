@@ -30,18 +30,19 @@ tabs=(workspace layout agent git app help)
 # tab|action|label|shortcut|function in workspace_actions.sh, with its
 # arguments[|when: see shown]
 actions='workspace|github|⎇ Open or start a workspace||new_github_workspace
+workspace|agentic|◈ Open an agent team||open_agentic_team
 workspace|new|+ New folder workspace||new_workspace
 workspace|worktree|⑂ New worktree workspace||new_worktree_workspace
 workspace|open-folder|⌂ Open folder in…||open_folder
 workspace|close|× Close workspace||close_workspace
 workspace|tidy|⌫ Tidy up merged branches||tidy_up
 workspace|detach|⏏ Detach (workspaces keep running)|C-b d|detach_client
-layout|toggle-layout|▥ Toggle layout|C-b \|toggle_layout
-layout|minimize|▁ Minimize agent and terminal|C-b _|minimize_agents
+layout|toggle-layout|▥ Toggle layout|C-b \|toggle_layout|editor
+layout|minimize|▁ Minimize agent and terminal|C-b _|minimize_agents|editor
 layout|header|▔ Hide or show the header|C-b C-s|toggle_header
 layout|new-panel|▣ New panel|C-b N|new_panel
 layout|move-panel|⇆ Move panel|C-b S-←→↑↓|move_panel
-layout|switch-editor|⇄ Switch editor||switch_editor
+layout|switch-editor|⇄ Switch editor||switch_editor|editor
 agent|jump|! Go to waiting agent|C-b a|jump_agent
 agent|switch-agent|⇄ Switch agent||switch_agent
 agent|restart-agent|↻ Restart agent||restart_agent
@@ -64,15 +65,18 @@ app|services|⛃ Services||start_services|jungleforge
 app|migrate|⇡ Migrate||migrate_running_app|jungleforge
 app|shell|⌘ Shell||open_app_shell|jungleforge
 app|logs|≡ Logs||open_app_logs|jungleforge
+app|info|ⓘ Info||show_app_info|jungleforge
+app|settings|⚙ Settings||change_app_setting|jungleforge
 app|register-jungleforge|＋ Register in jungleforge||register_in_jungleforge|jungleforge
-app|open-database|⛁ Database|C-b B|open_database
-app|database-folder|⛁ Database folder||choose_database_folder
+app|open-database|⛁ Database|C-b B|open_database|editor
+app|database-folder|⛁ Database folder||choose_database_folder|editor
 app|job-log|◷ Job log|C-b j|show_job_log
 help|guide|? Start here||open_guide README
 help|guide-shortcuts|⌨ Shortcuts||open_guide shortcuts
 help|guide-workspaces|⎇ Workspaces||open_guide workspaces
 help|guide-layout|▥ Layout||open_guide layout
 help|guide-agents|◇ Agents||open_guide agents
+help|guide-agentic|◈ Agent teams||open_guide agentic
 help|guide-git|✓ Git||open_guide git
 help|guide-app|▶ App, jobs and database||open_guide app
 help|guide-commands|$ Commands||open_guide commands
@@ -111,15 +115,29 @@ items() {
 
 # An action's "when": empty is always; memory is with ai-memory installed;
 # jungleforge / no-jungleforge with or without jungleforge set up (asked once
-# per listing).
+# per listing); editor is in a workspace with an editor panel (an agent team,
+# `devws agentic`, has none).
 shown() {
   case "$1" in
     '') return 0 ;;
     memory) command -v "${DEVWS_AI_MEMORY:-ai-memory}" >/dev/null 2>&1 ;;
     jungleforge) jungleforge_available ;;
     no-jungleforge) ! jungleforge_available ;;
+    editor) workspace_has_editor ;;
     *) return 1 ;;
   esac
+}
+
+editor_state=""
+workspace_has_editor() {
+  if [ -z "$editor_state" ]; then
+    if tmux list-panes -s -t "=$(session)" -F '#{@devws_role}' 2>/dev/null | grep -qx editor; then
+      editor_state=yes
+    else
+      editor_state=no
+    fi
+  fi
+  [ "$editor_state" = yes ]
 }
 
 jungleforge_state=""

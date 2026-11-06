@@ -56,8 +56,9 @@ narrow_width=110
 job_width=160
 # Frames a second: the loop's pace, which every other interval counts in.
 fps=20
-# Ticks between the spinner's frames (agent_spinner.sh): four a second.
-spin_ticks=5
+# Ticks between the spinner's frames (agent_spinner.sh): two a second. The
+# ghost moves on the same beat; every change costs the terminal a repaint.
+spin_ticks=10
 # shellcheck source=agent_spinner.sh
 . "$scripts_dir/agent_spinner.sh"
 
@@ -337,19 +338,22 @@ run() {
     [ $((tick % (60 * fps))) -eq 0 ] && in_background tokens update_tokens
     [ $((tick % (60 * fps))) -eq 0 ] && in_background suspend "$scripts_dir/suspend_workspace.sh" sweep
     [ $((tick % (1800 * fps))) -eq 0 ] && in_background weather keep weather "$scripts_dir/header_weather.sh"
-    # The working agents' spinner, four turns a second, header or not, while
+    # The working agents' spinner, two turns a second, header or not, while
     # a client is focused.
     [ "$focused" = 1 ] && [ $((tick % spin_ticks)) -eq 0 ] && spin_agents $((tick / spin_ticks))
     # While the header is hidden (header_toggle.sh) nothing is drawn: a turn
     # each spinner frame keeps the sources current for when it comes back.
     if [ -n "$header_hidden" ]; then
       tick=$((tick + spin_ticks))
-      nap 0.25
+      nap 0.5
       continue
     fi
-    # The ghost: 10 frames a second at most, while a client is focused.
-    if [ "$show_pet" = 1 ] && [ "$focused" = 1 ] && [ $((tick % 2)) -eq 0 ] && [ ! -e "$popup_flag" ]; then
-      draw_ghost "$tick" 2>/dev/null || exit 0
+    # The ghost moves on the spinner's beat, while a client is focused: iTerm2
+    # repaints its whole window for every change, so changes that come
+    # together cost one repaint, two a second at most. Its frames still count
+    # at 10 a second, so it keeps its pace; the beat shows where it is.
+    if [ "$show_pet" = 1 ] && [ "$focused" = 1 ] && [ $((tick % spin_ticks)) -eq 0 ] && [ ! -e "$popup_flag" ]; then
+      draw_ghost $((tick / 2)) 2>/dev/null || exit 0
     fi
     tick=$((tick + 1))
     nap 0.05

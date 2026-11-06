@@ -46,4 +46,6 @@ transcript="$(json '.transcript_path // empty')"
 role="$(tmux show-options -pqv -t "$TMUX_PANE" @devws_role 2>/dev/null)"
 [ -z "$transcript" ] || [ "$role" = extra-agent ] ||
   tmux set-option -t "=$session:" @devws_agent_transcript "$transcript" 2>/dev/null
+# Every agent's own, for what it used (devws agent usage <pane>).
+[ -z "$transcript" ] || tmux set-option -p -t "$TMUX_PANE" @devws_transcript "$transcript" 2>/dev/null
 exit 0

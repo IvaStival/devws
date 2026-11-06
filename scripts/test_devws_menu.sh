@@ -53,7 +53,7 @@ for script in devws_menu.sh workspace_actions.sh workspace_panes.sh session_pick
   ln -s "$SCRIPTS/$script" "$TEST_ROOT/home/.tmuxinator/$script"
 done
 for script in toggle_layout.sh minimize_panes.sh header_toggle.sh open_database.sh follow_mode.sh register_agent.sh \
-  new_panel.sh move_panel.sh save_state.sh refresh_devws_pickers.sh git_actions.sh jungleforge.sh job.sh; do
+  new_panel.sh move_panel.sh save_state.sh refresh_devws_pickers.sh git_actions.sh jungleforge.sh job.sh agentic.sh; do
   cat > "$TEST_ROOT/home/.tmuxinator/$script" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" > "$TEST_ROOT/calls/$script"
@@ -68,7 +68,10 @@ case "\$1" in
   available) [ ! -e "$TEST_ROOT/jf.missing" ] ;;
   apps) cat "$TEST_ROOT/jf.apps" 2>/dev/null ||
     { echo "devws jungleforge: Not a jungleforge project: register it in /jf/.env" >&2; exit 2; } ;;
-  targets | running) cat "$TEST_ROOT/jf.\$1" 2>/dev/null ;;
+  targets | running | settings) cat "$TEST_ROOT/jf.\$1" 2>/dev/null ;;
+  # A value "taken" is refused, as a port another app has.
+  set) printf '%s\n' "\$*" >> "$TEST_ROOT/calls/jungleforge.sh"
+    [ "\${@: -1}" != taken ] || { echo "devws jungleforge: 8092 is already phi-planner's APP_HTTP_PORT" >&2; exit 2; } ;;
   *) printf '%s\n' "\$*" >> "$TEST_ROOT/calls/jungleforge.sh" ;;
 esac
 EOF
@@ -90,6 +93,8 @@ unset TMUX
 MENU="$HOME/.tmuxinator/devws_menu.sh"
 tmux new-session -d -s dev-menu -x 120 -y 30 'sleep 600'
 PANE="$(tmux display-message -p -t dev-menu: '#{pane_id}')"
+# A normal workspace has an editor panel; the items that arrange around it show.
+tmux set-option -p -t "$PANE" @devws_role editor
 
 # Runs the menu the way the popup does: inside the workspace's tmux session.
 menu() {
@@ -101,17 +106,35 @@ actions_of() {
 }
 
 test_tabs_list_their_actions() {
-  [ "$(actions_of workspace)" = "github new worktree open-folder close tidy detach" ] ||
+  [ "$(actions_of workspace)" = "github agentic new worktree open-folder close tidy detach" ] ||
     fail "Workspace tab: $(actions_of workspace)"
   [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor" ] ||
     fail "Layout tab: $(actions_of layout)"
   [ "$(actions_of agent)" = "jump switch-agent restart-agent follow-mode initialize-agent register-agent remove-agent" ] ||
     fail "Agent tab: $(actions_of agent)"
   [ "$(actions_of git)" = "commit commit-manual push" ] || fail "Git tab: $(actions_of git)"
-  [ "$(actions_of app)" = "run-here switch-run stop-run services migrate shell logs register-jungleforge open-database database-folder job-log" ] ||
+  [ "$(actions_of app)" = "run-here switch-run stop-run services migrate shell logs info settings register-jungleforge open-database database-folder job-log" ] ||
     fail "App tab: $(actions_of app)"
-  [ "$(actions_of help)" = "guide guide-shortcuts guide-workspaces guide-layout guide-agents guide-git guide-app guide-commands guide-configuration" ] ||
+  [ "$(actions_of help)" = "guide guide-shortcuts guide-workspaces guide-layout guide-agents guide-agentic guide-git guide-app guide-commands guide-configuration" ] ||
     fail "Help tab: $(actions_of help)"
+}
+
+# An agent team (devws agentic) has no editor: the items that arrange the
+# screen around one, and the database that sits beside it, are not offered.
+test_an_agent_team_has_no_editor_items() {
+  tmux set-option -p -t "$PANE" @devws_role agent
+  [ "$(actions_of layout)" = "header new-panel move-panel" ] || fail "Layout tab of an agent team: $(actions_of layout)"
+  ! grep -qE 'open-database|database-folder' <<<"$(actions_of app)" || fail "an agent team is offered the database: $(actions_of app)"
+  grep -q 'job-log' <<<"$(actions_of app)" || fail "an agent team lost the job log"
+  tmux set-option -p -t "$PANE" @devws_role editor
+  [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor" ] ||
+    fail "Layout tab of a normal workspace: $(actions_of layout)"
+}
+
+test_open_an_agent_team_runs_devws_agentic() {
+  rm -f "$TEST_ROOT/calls/agentic.sh"
+  menu --run agentic </dev/null >/dev/null 2>&1 || true
+  [ -e "$TEST_ROOT/calls/agentic.sh" ] || fail "Open an agent team did not run agentic.sh"
 }
 
 test_items_show_labels_and_shortcuts() {
@@ -500,6 +523,34 @@ test_run_this_branch_moves_the_ticked_apps() {
     fail "run-here started '$(job_call)'"
 }
 
+# Settings: whose (an app of the repo, or the shared services), which one,
+# the new value, asked again while refused; an app running from this folder
+# is restarted on yes.
+test_settings_change_a_value_and_offer_a_restart() {
+  local root="$TEST_ROOT/devws/app-feat-x"
+  tmux set-option -t dev-menu @devws_root "$root"
+  printf 'phi-planner\tbackend\nphi-planner-web\tweb\n' > "$TEST_ROOT/jf.apps"
+  printf 'APP_HTTP_PORT\t8092\tnginx\nPHP_CONTAINER\tphi-php\t\n' > "$TEST_ROOT/jf.settings"
+  printf 'phi-planner\t%s\n' "$root" > "$TEST_ROOT/jf.running"
+  printf 'phi-planner · backend/deploy/.docker-env\tphi-planner\nAPP_HTTP_PORT = 8092   # nginx\tAPP_HTTP_PORT\n' > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/job.sh" "$TEST_ROOT/calls/jungleforge.sh"
+  printf 'taken\n8093\n\n' | menu --run settings >/dev/null 2>&1
+  grep -qF 'PHP_CONTAINER = phi-php' "$TEST_ROOT/calls/fzf.input" || fail "the settings list: $(cat "$TEST_ROOT/calls/fzf.input")"
+  [ "$(cat "$TEST_ROOT/calls/jungleforge.sh")" = "set $root phi-planner APP_HTTP_PORT taken"$'\n'"set $root phi-planner APP_HTTP_PORT 8093" ] ||
+    fail "settings set: $(cat "$TEST_ROOT/calls/jungleforge.sh")"
+  [ "$(job_call)" = "start phi-planner → restart --lock phi-planner -- $HOME/.tmuxinator/jungleforge.sh run $root phi-planner" ] ||
+    fail "the app was not restarted: '$(job_call)'"
+
+  # The shared services: their own restart.
+  printf 'shared services · jungleforge .env\tshared\nAPP_HTTP_PORT = 8092   # nginx\tAPP_HTTP_PORT\n' > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/job.sh" "$TEST_ROOT/calls/jungleforge.sh"
+  printf '5433\n\n' | menu --run settings >/dev/null 2>&1
+  grep -qx "set shared APP_HTTP_PORT 5433" "$TEST_ROOT/calls/jungleforge.sh" || fail "shared set: $(cat "$TEST_ROOT/calls/jungleforge.sh")"
+  [ "$(job_call)" = "start Services --lock services -- $HOME/.tmuxinator/jungleforge.sh services" ] ||
+    fail "the services were not restarted: '$(job_call)'"
+  rm -f "$TEST_ROOT/jf.running" "$TEST_ROOT/jf.settings" "$TEST_ROOT/jf.apps"
+}
+
 # Esc on the apps goes back to the branch list (the stub's empty answer is
 # Esc: nothing chosen).
 test_esc_on_the_apps_goes_back_to_the_branches() {
@@ -600,6 +651,8 @@ test_space_opens_the_menu() {
 }
 
 test_tabs_list_their_actions
+test_an_agent_team_has_no_editor_items
+test_open_an_agent_team_runs_devws_agentic
 test_items_show_labels_and_shortcuts
 test_typing_searches_every_tab
 test_memory_items_need_ai_memory
@@ -620,6 +673,7 @@ test_a_worktree_workspace_on_a_new_branch
 test_a_github_workspace_opens_the_chosen_folder
 test_push_asks_then_runs_as_a_job
 test_run_this_branch_moves_the_ticked_apps
+test_settings_change_a_value_and_offer_a_restart
 test_register_scaffolds_and_registers_an_app
 test_running_an_unregistered_repo_offers_registering
 test_esc_on_the_apps_goes_back_to_the_branches

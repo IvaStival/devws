@@ -130,6 +130,8 @@ test_the_hook_records_the_conversation() {
   claude_event UserPromptSubmit "\"transcript_path\":\"$TEST_ROOT/one.jsonl\",\"prompt\":\"go\""
   [ "$(tmux show-option -qv -t =dev-work: @devws_agent_transcript)" = "$TEST_ROOT/one.jsonl" ] ||
     fail "the conversation's transcript is not recorded"
+  [ "$(tmux show-options -pqv -t "$AGENT_PANE" @devws_transcript)" = "$TEST_ROOT/one.jsonl" ] ||
+    fail "the pane does not know its own transcript"
   claude_event Stop '"stop_hook_active":false'
   [ "$(tmux show-option -qv -t =dev-work: @devws_agent_transcript)" = "$TEST_ROOT/one.jsonl" ] ||
     fail "an event without a transcript forgot the conversation"
@@ -237,7 +239,7 @@ test_header_strip_and_status_bar_show_the_state() {
 # state, shown in its own header; the workspace's state sums them up —
 # waiting, else working, else done, else none.
 test_each_agent_pane_has_its_own_state() {
-  local header extra
+  local header extra tabs
   header="$(conf_option pane-border-format)"
   extra="$(tmux split-window -t "$AGENT_PANE" -P -F '#{pane_id}' 'sleep 600')"
   tmux set-option -p -t "$extra" @devws_role extra-agent
@@ -278,6 +280,19 @@ test_each_agent_pane_has_its_own_state() {
   extra_event SessionEnd '"reason":"exit"'
   claude_event SessionEnd '"reason":"exit"'
   state_is "" || fail "all agents idle is not idle: $(state_of dev-work)"
+
+  # In a tab of an agent team, waiting marks the tab, and only while it waits.
+  tmux break-pane -d -s "$extra" -n Floor
+  tmux set-option -w -t "$extra" @devws_tab Floor
+  extra_event Notification '"notification_type":"permission_prompt","message":"permission"'
+  [ "$(tmux show-options -wqv -t "$extra" @devws_tab_alert)" = 1 ] || fail "the waiting agent's tab is not marked"
+  tabs="$(sed -n 's/^setw -g window-status-format "\(.*\)"$/\1/p' "$ROOT/config/tmux/tmux.conf")"
+  tmux display-message -p -t "$extra" "$tabs" | grep -q "Floor.*●" ||
+    fail "the tab list does not show the mark: $(tmux display-message -p -t "$extra" "$tabs")"
+  [ -z "$(tmux show-options -wqv -t "$AGENT_PANE" @devws_tab_alert)" ] || fail "the workspace's window was marked"
+  extra_event UserPromptSubmit '"prompt":"go on"'
+  [ -z "$(tmux show-options -wqv -t "$extra" @devws_tab_alert)" ] || fail "the mark stayed after the agent went on"
+  extra_event SessionEnd '"reason":"exit"'
   tmux kill-pane -t "$extra"
 }
 
@@ -324,6 +339,23 @@ test_the_state_records_when_it_started() {
   [ "$(since_of dev-work)" != 1 ] || fail "a new state kept the old start time"
   "$SCRIPTS/agent_status.sh" dev-work idle
   [ -z "$(since_of dev-work)" ] || fail "idle kept a start time"
+}
+
+# A header ticker that died is started again by the next agent event; a
+# workspace without one (no tmux.conf loaded) gets none.
+test_an_agent_event_restarts_a_dead_header_ticker() {
+  local dead ticker
+  sleep 0 & dead=$!
+  wait "$dead"
+  tmux set-option -g @devws_header_ticker "$dead"
+  "$SCRIPTS/agent_status.sh" dev-work working
+  wait_until sh -c "p=\$(tmux show-option -gqv @devws_header_ticker); [ -n \"\$p\" ] && [ \"\$p\" != $dead ] && kill -0 \"\$p\" 2>/dev/null" ||
+    fail "the dead ticker was not replaced: $(tmux show-option -gqv @devws_header_ticker)"
+  ticker="$(tmux show-option -gqv @devws_header_ticker)"
+  tmux set-option -gu @devws_header_ticker
+  kill "$ticker" 2>/dev/null
+  "$SCRIPTS/agent_status.sh" dev-work idle
+  [ -z "$(tmux show-option -gqv @devws_header_ticker)" ] || fail "a ticker started where none ran"
 }
 
 notifications() {
@@ -494,23 +526,19 @@ test_the_sidebar_shows_each_workspace_state() {
   listening() { [ -S "$(tmux show-option -pqv -t "$sidebar_test_pane" @devws_picker_socket)" ]; }
   wait_until listening || fail "the sidebar did not publish its socket"
 
-  # No client shows it: the state changes reach it, the spinner leaves it be.
+  # The state changes reach it; the spinner leaves its ⠋ still, shown or not:
+  # each turn would make fzf draw the whole list, and the terminal repaint it.
   "$SCRIPTS/agent_status.sh" dev-other working
   shows_working() { [ -n "$(working_row)" ]; }
   wait_until shows_working || fail "the sidebar did not redraw on a state change: $(sidebar)"
   first="$(working_row)"
-  spin 4
-  sleep 0.5
-  [ "$(working_row)" = "$first" ] || fail "a sidebar no one sees was spun: $(working_row)"
-
-  # Shown by a client, it spins.
   "$REAL_TMUX" -L "$CLIENT_SOCKET" -f /dev/null new-session -d -s client -x 200 -y 50 \
     "TMUX= $REAL_TMUX -L $SOCKET attach -t dev-work"
   attached() { [ -n "$(tmux list-clients -t dev-work)" ]; }
   wait_until attached || fail "the client did not attach"
   spin 4
-  turned() { shows_working && [ "$(working_row)" != "$first" ]; }
-  wait_until turned || fail "the sidebar on screen does not spin: $(sidebar)"
+  sleep 0.5
+  [ "$(working_row)" = "$first" ] || fail "the sidebar was redrawn by a spinner turn: $(working_row)"
   "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server
 
   "$SCRIPTS/agent_status.sh" dev-other idle
@@ -582,6 +610,7 @@ test_each_agent_pane_has_its_own_state
 test_a_real_client_redraws_the_spinner
 test_the_sidebar_shows_each_workspace_state
 test_the_state_records_when_it_started
+test_an_agent_event_restarts_a_dead_header_ticker
 test_notifications_name_the_workspace_and_agent
 test_no_notification_for_the_workspace_on_screen
 test_an_extra_agent_alert_names_it

@@ -82,6 +82,8 @@ pending_layout=""
 pending_panes=0
 pending_terminal_cwd=""
 pending_extras=""
+pending_task=""
+pending_template=""
 pending_skip=1
 
 start_workspace() {
@@ -89,6 +91,13 @@ start_workspace() {
 
   pending_skip=1
   [ -n "$pending_session" ] || return 0
+
+  # An agent team's leader and agents are devAgentics's to restart.
+  if [ -n "$pending_template" ]; then
+    printf 'devws restore: skipped %s: an agent team (task %s); devagentics brings it back\n' \
+      "$pending_session" "${pending_task:-none}" >&2
+    return 0
+  fi
 
   if tmux has-session -t "=$pending_session" 2>/dev/null; then
     return 0
@@ -121,6 +130,7 @@ start_workspace() {
     printf 'devws restore: %s did not finish starting\n' "$pending_session" >&2
     return 0
   fi
+  [ -z "$pending_task" ] || tmux set-option -t "=$pending_session:" @devws_task "$pending_task" 2>/dev/null
   restored="${restored}${pending_session}"$'\n'
   pending_skip=0
 }
@@ -182,7 +192,7 @@ flush_workspace() {
 }
 
 exec 3< "$state_file"
-while IFS="$tab" read -r -u 3 record field2 field3 field4 field5 field6 field7; do
+while IFS="$tab" read -r -u 3 record field2 field3 field4 field5 field6 field7 field8 field9; do
   case "$record" in
     W)
       flush_workspace
@@ -192,6 +202,9 @@ while IFS="$tab" read -r -u 3 record field2 field3 field4 field5 field6 field7; 
       pending_editor="$field5"
       pending_picker="$field6"
       pending_layout="$field7"
+      pending_task="$field8"
+      [ "$pending_task" != - ] || pending_task=""
+      pending_template="$field9"
       pending_panes=0
       pending_terminal_cwd=""
       pending_extras=""
@@ -200,6 +213,9 @@ while IFS="$tab" read -r -u 3 record field2 field3 field4 field5 field6 field7; 
       ;;
     P)
       [ "$field2" = "$pending_session" ] || continue
+      # A panel a program started (devAgentics) is left to it: it comes back
+      # when the program says so, with what the program knows of it.
+      [ "$field7" = team ] && continue
       pending_panes=$((pending_panes + 1))
       case "$field4" in
         extra | extra-agent | extra-editor)

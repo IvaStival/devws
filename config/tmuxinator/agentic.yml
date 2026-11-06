@@ -1,0 +1,23 @@
+# The workspace of an agent team (`devws agentic`): the sidebar, the leader the
+# user talks to, and the team board beside it, full height. The agents the
+# leader opens go to workspaces of their own, by group (agent_cli.sh spawn
+# --group Seniors; team_groups.sh), and come under the board only for a peek. No
+# editor: the agents work in the folder, the user reads the leader.
+#
+# Settings (devws open --template agentic): project_root, agent (the leader's),
+# agent_args (its arguments file), task, agentic_command (the program that
+# runs the board pane's `board`). Set up as dev.yml is.
+name: dev-<%= File.basename(@settings["project_root"] || Dir.pwd) %>
+root: <%= @settings["project_root"] || Dir.pwd %>
+
+pre_window: 'tmux set-option status-position top; tmux set-option status-left-length 40; tmux set-option status-left "[#{s/^dev-//:session_name}]#{?#{@devws_agent_state}, #{E:@devws_agent_icon},}"; tmux set-option @devws_agent "<%= @settings["agent"] || "claude" %>"; tmux set-option @devws_editor "agent team"; tmux set-option @devws_template agentic; tmux set-option @devws_root "$PWD"; tmux set-option -w pane-border-indicators off; tmux set-option -w pane-border-status top; tmux set-option -w @devws_main 1; clear'
+
+windows:
+  - workspace:
+      # Captured as dev.yml's is: the sidebar at 25 columns, the leader and, to its right,
+      # the team board in a column full height; a peeked agent goes under the board.
+      layout: "8d69,200x50,0,0{25x50,0,0,0,100x50,26,0,1,73x50,127,0,2}"
+      panes:
+        - picker: ~/.tmuxinator/session_picker.sh
+        - leader: tmux set-option -p -t "$TMUX_PANE" @devws_label Leader; ~/.tmuxinator/agent_runner.sh <%= @settings["agent"] || "claude" %><%= " --args-file '" + @settings["agent_args"].gsub("'") { "'\\''" } + "'" if @settings["agent_args"] %>
+        - log: tmux set-option -p -t "$TMUX_PANE" @devws_role team-log; tmux set-option -p -t "$TMUX_PANE" @devws_place anchor; <%= @settings["agentic_command"] || "devagentics" %> board <%= @settings["task"] %>

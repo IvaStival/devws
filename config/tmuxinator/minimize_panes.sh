@@ -49,7 +49,12 @@ fi
 
 load_workspace_panes "$session" || fail "session $session not found"
 editor="$(pane_with_role editor)"
-[ -n "$editor" ] || fail "editor pane not found"
+if [ -z "$editor" ]; then
+  # Nothing is ever minimized without an editor, so expanding is a no-op that
+  # New panel and Toggle layout run before their own work.
+  [ "$action" != restore ] || exit 0
+  exit_without_editor "Minimize panes"
+fi
 
 # The pane that decides a group's slot and size: the agent, or the database.
 # Without an agent pane (an agent started by hand in the terminal, or a closed
