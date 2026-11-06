@@ -526,23 +526,19 @@ test_the_sidebar_shows_each_workspace_state() {
   listening() { [ -S "$(tmux show-option -pqv -t "$sidebar_test_pane" @devws_picker_socket)" ]; }
   wait_until listening || fail "the sidebar did not publish its socket"
 
-  # No client shows it: the state changes reach it, the spinner leaves it be.
+  # The state changes reach it; the spinner leaves its ⠋ still, shown or not:
+  # each turn would make fzf draw the whole list, and the terminal repaint it.
   "$SCRIPTS/agent_status.sh" dev-other working
   shows_working() { [ -n "$(working_row)" ]; }
   wait_until shows_working || fail "the sidebar did not redraw on a state change: $(sidebar)"
   first="$(working_row)"
-  spin 4
-  sleep 0.5
-  [ "$(working_row)" = "$first" ] || fail "a sidebar no one sees was spun: $(working_row)"
-
-  # Shown by a client, it spins.
   "$REAL_TMUX" -L "$CLIENT_SOCKET" -f /dev/null new-session -d -s client -x 200 -y 50 \
     "TMUX= $REAL_TMUX -L $SOCKET attach -t dev-work"
   attached() { [ -n "$(tmux list-clients -t dev-work)" ]; }
   wait_until attached || fail "the client did not attach"
   spin 4
-  turned() { shows_working && [ "$(working_row)" != "$first" ]; }
-  wait_until turned || fail "the sidebar on screen does not spin: $(sidebar)"
+  sleep 0.5
+  [ "$(working_row)" = "$first" ] || fail "the sidebar was redrawn by a spinner turn: $(working_row)"
   "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server
 
   "$SCRIPTS/agent_status.sh" dev-other idle

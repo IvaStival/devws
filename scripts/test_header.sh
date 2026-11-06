@@ -851,7 +851,8 @@ test_the_header_holds_still_under_a_popup() {
 
 # While no client's terminal is focused (iTerm2 behind another app), nothing
 # animates: no ghost frames, no spinner turns, so tmux and the terminal rest.
-# Focused, the ghost moves at most 10 times a second.
+# Focused, the ghost moves with the spinner, at most twice a second: iTerm2
+# repaints its window for each change, however small.
 test_animations_rest_while_unfocused() {
   local frame
   tmux new-session -d -s dev-work -x 200 -y 50 'sleep 600'
@@ -866,7 +867,7 @@ test_animations_rest_while_unfocused() {
   : > "$TEST_ROOT/redraws.log"
   sleep 2
   [ "$(redraws ghost)" -gt 0 ] || fail "the working ghost does not move while focused"
-  [ "$(redraws ghost)" -le 22 ] || fail "the ghost was redrawn $(redraws ghost) times in 2 s, over 10 a second"
+  [ "$(redraws ghost)" -le 5 ] || fail "the ghost was redrawn $(redraws ghost) times in 2 s, over twice a second"
 
   # The terminal reports it lost the focus.
   "$REAL_TMUX" -L "$CLIENT_SOCKET" send-keys -t client $'\e[O'

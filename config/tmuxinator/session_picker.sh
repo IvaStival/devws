@@ -17,9 +17,10 @@ fi
 # While fzf runs, nothing in this script polls: others talk to fzf through its
 # socket (@devws_picker_socket). refresh_devws_pickers.sh --reload has it run
 # "session_picker.sh --rows" when an agent's state changes, which redraws the
-# rows in place, and agent_spinner.sh swaps the next spinner frame into them
-# while the sidebar is on screen; so the git lookups run once per redraw and
-# the cursor stays. A reload that came before fzf listened leaves
+# rows in place; the ⠋ holds still between (agent_spinner.sh), as each
+# redraw costs the terminal a repaint. fzf's info line is hidden for the same
+# reason: it animates a spinner, ten frames a second, while the rows reload.
+# So the git lookups run once per redraw and the cursor stays. A reload that came before fzf listened leaves
 # rows_file.stale, which fzf checks once it starts.
 #
 #   session_picker.sh          the sidebar
@@ -357,7 +358,7 @@ while tmux list-sessions >/dev/null 2>&1; do
           [ "$FZF_CLICK_HEADER_LINE" = 1 ] && printf "print(menu)+accept\n"' \
         --header=$'\033[36m☰ Menu\033[0m  \033[2mC-b Space\033[0m\n\n\033[2mOPEN WORKSPACES\033[0m' \
         --prompt='> ' \
-        --info=inline --no-separator --border=none --margin=0 --padding=0 \
+        --info=hidden --no-separator --border=none --margin=0 --padding=0 \
         < "$rows_file"
   )"
   # Header actions add their command before fzf's current workspace output.
