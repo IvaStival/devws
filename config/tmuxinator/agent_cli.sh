@@ -136,6 +136,9 @@ send() {
       ;;
     *) tmux send-keys -t "$pane" -l "$text" ;;
   esac
+  # Codex takes a fast burst of input as a paste and keeps an Enter that comes
+  # with it as a new line: the message would wait in its input unsent.
+  sleep 0.5
   tmux send-keys -t "$pane" Enter
 }
 
