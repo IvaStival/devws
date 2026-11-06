@@ -10,7 +10,10 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 pub(crate) fn git(worktree: &Path, arguments: &[&str]) -> Result<String> {
+    // A status devAgentics runs while it watches takes no index lock: one
+    // left by a git stopped half way would fail the next merge.
     let output = Command::new("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .arg("-C")
         .arg(worktree)
         .args(arguments)

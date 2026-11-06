@@ -137,13 +137,18 @@ fn merge(worktree: &Path, branch: &str, what: &str) -> Result<()> {
             work.uncommitted.join(", ")
         );
     }
-    if git(worktree, &["merge", "--no-edit", branch]).is_err() {
-        let files = abort_merge(worktree);
-        bail!(
-            "{what}: the lanes clash in {files}: the plan gave the same files to two lanes; undone, nothing merged"
-        );
+    let Err(error) = git(worktree, &["merge", "--no-edit", branch]) else {
+        return Ok(());
+    };
+    let files = abort_merge(worktree);
+    // No file in conflict: the merge failed for another reason (a repo
+    // locked by another git command…), which git says.
+    if files.is_empty() {
+        bail!("{what}: {error:#}; nothing merged");
     }
-    Ok(())
+    bail!(
+        "{what}: the lanes clash in {files}: the plan gave the same files to two lanes; undone, nothing merged"
+    )
 }
 
 /// Before an order: the lane takes what the other lanes merged into the
@@ -337,6 +342,26 @@ mod tests {
             back.worktree.join("frontend/page.ts").exists(),
             "the next order took the front's accepted work"
         );
+    }
+
+    /// A merge that fails without a conflict (a repo locked by another git)
+    /// says git's own error, not an empty clash.
+    #[test]
+    fn a_merge_that_fails_otherwise_says_why() {
+        let dir = TempDir::new().unwrap();
+        let (_home, _devws, task, repo) = started(&dir);
+        let back = add(&task, "back", &["backend/**".into()], None).unwrap();
+        commit_file(&back.worktree, "backend/api.rs", "api\n", "api");
+        let lock = repo.path().join(".git/index.lock");
+        std::fs::write(&lock, "").unwrap();
+        let error = merge_into_task(&task, &back).unwrap_err().to_string();
+        assert!(!error.contains("clash"), "{error}");
+        assert!(
+            error.contains("index.lock"),
+            "git's error is shown: {error}"
+        );
+        std::fs::remove_file(&lock).unwrap();
+        merge_into_task(&task, &back).unwrap();
     }
 
     #[test]
