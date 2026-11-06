@@ -68,7 +68,8 @@ row() {
     repo="$(basename "$(git -C "$folder" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$folder")")"
   fi
   branch="$(git -C "$folder" branch --show-current 2>/dev/null)"
-  if [ -z "$(git -C "$folder" status --porcelain 2>/dev/null)" ]; then
+  # Only a look: it takes no index lock another git command could meet.
+  if [ -z "$(git --no-optional-locks -C "$folder" status --porcelain 2>/dev/null)" ]; then
     state="✓ clean"
   else
     state="● changes"

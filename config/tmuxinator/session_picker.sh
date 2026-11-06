@@ -232,7 +232,9 @@ workspace_rows() {
       # The jungleforge apps run from this folder (refresh_states).
       grep -qxF "$root" "$running_file" 2>/dev/null && branch="$branch · ▶ running"
       pr_roots+=("$root")
-      if [ -n "$(git -C "$root" status --porcelain 2>/dev/null)" ]; then
+      # Without the index lock: fzf kills a reload that is overtaken, and a
+      # git status killed holding it leaves the repo locked (merges fail).
+      if [ -n "$(git --no-optional-locks -C "$root" status --porcelain 2>/dev/null)" ]; then
         state="\033[33m●\033[0m "
         state_plain="● "
       else
