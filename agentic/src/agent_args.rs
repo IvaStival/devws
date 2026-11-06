@@ -97,7 +97,9 @@ fn claude(context: &Launch) -> Vec<String> {
 
 fn codex(context: &Launch) -> Vec<String> {
     let role = context.role;
-    let mut arguments = Vec::new();
+    // A team's agents work in view all day: Codex's shimmering status line
+    // would have the terminal repaint many times a second.
+    let mut arguments = vec!["-c".to_string(), "tui.animations=false".to_string()];
     push_option(&mut arguments, "-m", role.model.as_deref());
     if let Some(effort) = &role.effort {
         arguments.push("-c".to_string());
@@ -317,6 +319,8 @@ mod tests {
         assert_eq!(
             arguments,
             strings(&[
+                "-c",
+                "tui.animations=false",
                 "-m",
                 "gpt-5",
                 "-c",
@@ -344,6 +348,8 @@ mod tests {
             assert_eq!(
                 arguments,
                 strings(&[
+                    "-c",
+                    "tui.animations=false",
                     "-s",
                     "workspace-write",
                     "--add-dir",
@@ -374,6 +380,8 @@ mod tests {
         assert_eq!(
             arguments,
             strings(&[
+                "-c",
+                "tui.animations=false",
                 "-m",
                 "gpt-5.6-luna",
                 "--approve-for-me",
@@ -418,6 +426,8 @@ mod tests {
         assert_eq!(
             arguments,
             strings(&[
+                "-c",
+                "tui.animations=false",
                 "-s",
                 "read-only",
                 "-a",
