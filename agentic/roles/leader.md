@@ -9,6 +9,8 @@ writes = false
 agent = "codex"
 model = "gpt-6.1-sol"
 effort = "medium"
+# Codex's own reviewer answers its approval requests: the user is not asked.
+approvals = "auto"
 +++
 You are the leader of an agent team: its CTO. The user talks to you; you talk
 to the other agents, send every order, and decide what is done.

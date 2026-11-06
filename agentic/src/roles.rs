@@ -101,6 +101,8 @@ pub struct Fallback {
     pub agent: String,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// Its own: the role's suit the role's program, not this one.
+    pub approvals: Option<String>,
 }
 
 impl Role {
@@ -111,6 +113,8 @@ impl Role {
             agent: fallback.agent.clone(),
             model: fallback.model.clone(),
             effort: fallback.effort.clone(),
+            approvals: fallback.approvals.clone(),
+            sandbox: None,
             fallback: None,
             ..self.clone()
         })
@@ -326,6 +330,11 @@ mod tests {
         assert_eq!(
             (moved.agent.as_str(), moved.model.as_deref()),
             ("codex", Some("gpt-6.1-sol"))
+        );
+        assert_eq!(
+            moved.approvals.as_deref(),
+            Some("auto"),
+            "the codex leader asks no one"
         );
         assert_eq!(
             moved.instructions, leader.instructions,

@@ -139,6 +139,7 @@ it is open; `devagentics board <task> --once` prints it as text, and does not.
   agent = "codex"
   model = "gpt-6.1-sol"
   effort = "medium"
+  approvals = "auto"   # Codex's reviewer answers, not you
   ```
 - A senior changes no files; the factory floor runs only an accepted plan's
   steps.
