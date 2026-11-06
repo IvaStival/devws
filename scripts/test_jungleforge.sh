@@ -135,6 +135,49 @@ test_run_without_names_moves_every_app() {
     fail "not every app moved: $(cat "$TEST_ROOT/make.log")"
 }
 
+# An app registered at its repo's root has no subfolder: run, running and
+# migrate use the branch's folder itself, not one inside it.
+test_an_app_at_the_repo_root_runs_on_the_branch() {
+  local branch="$TEST_ROOT/devws/acme/other/other-fix-y"
+  mkdir -p "$OTHER/deploy"
+  printf 'PHP_CONTAINER=other-php\n' > "$OTHER/deploy/.docker-env"
+  git -C "$OTHER" add -A
+  git -C "$OTHER" commit -q -m first
+  git -C "$OTHER" worktree add -q -b fix/y "$branch"
+  : > "$TEST_ROOT/make.log"
+  jungleforge run "$branch" >/dev/null || fail "a root app did not run on its branch"
+  grep -q "start other OTHER_PATH=$branch$" "$TEST_ROOT/make.log" ||
+    fail "a root app started elsewhere: $(cat "$TEST_ROOT/make.log")"
+  printf 'true|%s\n' "$branch" > "$TEST_ROOT/docker/other-php"
+  [ "$(jungleforge running "$OTHER")" = "other"$'\t'"$branch" ] ||
+    fail "running, for a root app: $(jungleforge running "$OTHER")"
+  jungleforge migrate "$OTHER" other >/dev/null || fail "a root app did not migrate"
+  grep -q "migrate other OTHER_PATH=$branch$" "$TEST_ROOT/make.log" ||
+    fail "a root app migrated elsewhere: $(cat "$TEST_ROOT/make.log")"
+  rm -f "$TEST_ROOT/docker/other-php"
+}
+
+# A devws branch folder links its untracked files (.env, auth.json…) to the
+# repo's .shared (shared_files.sh): the app's container is started with that
+# folder mounted at the same path, or the links would point at nothing there.
+test_a_devws_branch_folder_mounts_its_shared_files() {
+  local repo_dir="$TEST_ROOT/devws/acme/shop" seed="$TEST_ROOT/shop-seed"
+  git init -q -b main "$seed"
+  git -C "$seed" commit -q --allow-empty -m first
+  git init -q --bare -b main "$repo_dir/.bare"
+  git -C "$repo_dir/.bare" remote add origin git@github.com:acme/shop.git
+  git -C "$seed" push -q "$repo_dir/.bare" main
+  git -C "$repo_dir/.bare" worktree add -q "$repo_dir/shop-main" main
+  git -C "$repo_dir/.bare" worktree add -q -b feat/z "$repo_dir/shop-feat-z" main
+  mkdir -p "$repo_dir/.shared"
+  printf 'SHOP_PATH=%s\n' "$repo_dir/shop-main" >> "$DEVWS_JUNGLEFORGE/.env"
+  : > "$TEST_ROOT/make.log"
+  jungleforge run "$repo_dir/shop-feat-z" >/dev/null || fail "the branch folder did not run"
+  grep -qx -- "-C $DEVWS_JUNGLEFORGE start shop SHOP_PATH=$repo_dir/shop-feat-z SHARED_PATH=$repo_dir/.shared" \
+    "$TEST_ROOT/make.log" || fail "the shared files were not mounted: $(cat "$TEST_ROOT/make.log")"
+  sed -i '' '/^SHOP_PATH=/d' "$DEVWS_JUNGLEFORGE/.env"
+}
+
 test_stop_and_migrate_use_the_running_folder() {
   printf 'true|%s\n' "$WORKTREE/backend" > "$TEST_ROOT/docker/phi-php"
   : > "$TEST_ROOT/make.log"
@@ -243,6 +286,8 @@ test_running_reads_the_mounted_folder
 test_run_starts_services_then_the_apps_on_the_folder
 test_deps_run_again_only_when_a_lock_file_changes
 test_run_without_names_moves_every_app
+test_an_app_at_the_repo_root_runs_on_the_branch
+test_a_devws_branch_folder_mounts_its_shared_files
 test_stop_and_migrate_use_the_running_folder
 test_an_unregistered_repo_says_so
 

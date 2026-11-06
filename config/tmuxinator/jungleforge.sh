@@ -122,7 +122,7 @@ origin_of() {
   "$script_dir/github_repo.sh" parse "$origin" 2>/dev/null || printf '%s\n' "$origin"
 }
 
-# "<app><TAB><subfolder><TAB><registry folder><TAB><its checkout>"
+# "<app><TAB><registry folder><TAB><its checkout><TAB><subfolder>"
 app_rows() {
   local wanted app folder top subfolder
   wanted="$(origin_of "$1")" || return 0
@@ -130,14 +130,16 @@ app_rows() {
     top="$(git -C "$folder" rev-parse --show-toplevel 2>/dev/null)" || continue
     [ "$(origin_of "$top")" = "$wanted" ] || continue
     subfolder="${folder#"$top"}"
-    printf '%s\t%s\t%s\t%s\n' "$app" "${subfolder#/}" "$folder" "$top"
+    # The subfolder last: empty for an app at the repo's root, and read with
+    # IFS=tab, an empty field before others would vanish and shift them.
+    printf '%s\t%s\t%s\t%s\n' "$app" "$folder" "$top" "${subfolder#/}"
   done
 }
 
 apps() {
   local rows
   rows="$(chosen_apps "$1")" || exit 2
-  cut -f1,2 <<<"$rows"
+  cut -f1,4 <<<"$rows"
 }
 
 # Every app needs registering; asked for by name, the name must be the repo's.
@@ -158,7 +160,7 @@ chosen_apps() {
 
 targets() {
   local main
-  main="$(app_rows "$1" | head -n 1 | cut -f4)"
+  main="$(app_rows "$1" | head -n 1 | cut -f3)"
   [ -n "$main" ] || return 0
   printf 'main\t%s\n' "$main"
   git -C "$1" worktree list --porcelain 2>/dev/null | awk -v main="$main" '
@@ -194,7 +196,7 @@ running_folder() {
 running() {
   local targets_list app subfolder registry_folder top
   targets_list="$(targets "$1")"
-  app_rows "$1" | while IFS=$'\t' read -r app subfolder registry_folder top; do
+  app_rows "$1" | while IFS=$'\t' read -r app registry_folder top subfolder; do
     printf '%s\t%s\n' "$app" "$(running_folder "$registry_folder" "$subfolder" "$targets_list")"
   done
 }
@@ -236,15 +238,29 @@ lock_fingerprint() {
   cat "$1/composer.lock" "$1/package-lock.json" 2>/dev/null | shasum | cut -d ' ' -f1
 }
 
+# A devws branch folder's untracked files (.env, auth.json…) are links into its
+# repo's .shared (shared_files.sh). The app's container mounts only the folder,
+# so jungleforge is told to mount .shared too, at the same path, for the links
+# to resolve inside it. Nothing for a folder of a repo devws does not manage.
+shared_files_of() {
+  local common shared
+  common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
+  [ "$(basename "$common")" = .bare ] || return 0
+  shared="$(dirname "$common")/.shared"
+  [ -d "$shared" ] && printf 'SHARED_PATH=%s' "$shared"
+  return 0
+}
+
 run() {
-  local folder="$1" rows app subfolder registry_folder top app_folder fingerprint
+  local folder="$1" rows app subfolder registry_folder top app_folder fingerprint shared
   shift
   rows="$(chosen_apps "$folder" "$@")" || exit 2
+  shared="$(shared_files_of "$folder")"
   jungleforge_make services-start || die "the shared services did not start"
-  while IFS=$'\t' read -r app subfolder registry_folder top; do
+  while IFS=$'\t' read -r app registry_folder top subfolder; do
     app_folder="$folder${subfolder:+/$subfolder}"
     [ -d "$app_folder" ] || die "$app_folder does not exist on this branch"
-    jungleforge_make start "$app" "$(path_variable "$app")=$app_folder" || die "$app did not start"
+    jungleforge_make start "$app" "$(path_variable "$app")=$app_folder" ${shared:+"$shared"} || die "$app did not start"
     fingerprint="$(lock_fingerprint "$app_folder")"
     [ "$(cat "$(deps_file "$folder" "$app")" 2>/dev/null)" = "$fingerprint" ] && continue
     jungleforge_make deps "$app" "$(path_variable "$app")=$app_folder" || die "$app's packages did not install"
@@ -266,7 +282,7 @@ stop() {
 on_running_app() {
   local target="$1" folder="$2" app="$3" row subfolder registry_folder running_root
   row="$(chosen_apps "$folder" "$app")" || exit 2
-  IFS=$'\t' read -r app subfolder registry_folder _ <<<"$row"
+  IFS=$'\t' read -r app registry_folder _ subfolder <<<"$row"
   running_root="$(running_folder "$registry_folder" "$subfolder" "$(targets "$folder")")"
   [ -n "$running_root" ] || die "$app is not running; run a branch first"
   jungleforge_make "$target" "$app" "$(path_variable "$app")=$running_root${subfolder:+/$subfolder}"
