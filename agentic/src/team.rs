@@ -258,7 +258,7 @@ impl Team<'_> {
             mcp: None,
             writable: [self.home.root().to_path_buf()]
                 .into_iter()
-                .chain(crate::checks::git_data(&repo.worktree).ok())
+                .chain(crate::checks::git_data(&repo.worktree).unwrap_or_default())
                 .collect(),
         });
         let directory = self.task.dir().join("agents");

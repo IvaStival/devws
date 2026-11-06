@@ -34,15 +34,29 @@ pub fn head(worktree: &Path) -> Result<String> {
     Ok(git(worktree, &["rev-parse", "HEAD"])?.trim().to_string())
 }
 
-/// The folder holding the repo's git data. For a worktree it is the main
-/// clone's `.git`, outside the worktree: an agent that commits writes there.
-pub fn git_data(worktree: &Path) -> Result<std::path::PathBuf> {
-    Ok(git(
-        worktree,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )?
-    .trim()
-    .into())
+/// The folders an agent that commits in the worktree writes, outside it: for
+/// a linked worktree (a lane) its own `.git/worktrees/<name>`, and the
+/// clone's `objects`, `refs` and `logs`. Not `.git` itself: Codex keeps a
+/// `.git` folder read-only even when it is added as writable, but not the
+/// folders inside it. A main checkout's `.git` is inside the worktree.
+pub fn git_data(worktree: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let absolute = |which: &str| -> Result<std::path::PathBuf> {
+        Ok(
+            git(worktree, &["rev-parse", "--path-format=absolute", which])?
+                .trim()
+                .into(),
+        )
+    };
+    let common = absolute("--git-common-dir")?;
+    let own = absolute("--git-dir")?;
+    let mut folders: Vec<_> = ["objects", "refs", "logs"]
+        .iter()
+        .map(|folder| common.join(folder))
+        .collect();
+    if own != common {
+        folders.insert(0, own);
+    }
+    Ok(folders)
 }
 
 /// Globs relative to the repo's root. `*` stays inside a folder, `**` crosses

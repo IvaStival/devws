@@ -153,8 +153,18 @@ fn merge(worktree: &Path, branch: &str, what: &str) -> Result<()> {
 
 /// Before an order: the lane takes what the other lanes merged into the
 /// task's branch.
+/// A lane that already has the task's branch is left as it is: a step being
+/// redone keeps its uncommitted edits.
 pub fn catch_up(task: &Task, lane: &Lane) -> Result<()> {
     let branch = task.config()?.branch;
+    if git(
+        &lane.worktree,
+        &["merge-base", "--is-ancestor", &branch, "HEAD"],
+    )
+    .is_ok()
+    {
+        return Ok(());
+    }
     merge(
         &lane.worktree,
         &branch,
@@ -204,6 +214,26 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("add_lane")
+        );
+    }
+
+    /// A lane's agent may commit: its git folders are writable, `.git`
+    /// itself is not named (Codex keeps it read-only even when added).
+    #[test]
+    fn a_lanes_git_folders_are_named_one_by_one() {
+        let dir = TempDir::new().unwrap();
+        let (_home, _devws, task, repo) = started(&dir);
+        let back = add(&task, "back", &["backend/**".into()], None).unwrap();
+        let common = repo.path().canonicalize().unwrap().join(".git");
+        let folders = checks::git_data(&back.worktree).unwrap();
+        assert_eq!(
+            folders,
+            [
+                common.join("worktrees/back"),
+                common.join("objects"),
+                common.join("refs"),
+                common.join("logs")
+            ],
         );
     }
 
@@ -341,6 +371,35 @@ mod tests {
         assert!(
             back.worktree.join("frontend/page.ts").exists(),
             "the next order took the front's accepted work"
+        );
+    }
+
+    /// A lane with a step's edits still uncommitted (a retry of the same
+    /// step) takes its next order when it has nothing to catch up with; when
+    /// the task's branch moved on, it is refused, and its edits stay.
+    #[test]
+    fn a_lane_up_to_date_keeps_its_uncommitted_edits() {
+        let dir = TempDir::new().unwrap();
+        let (_home, _devws, task, repo) = started(&dir);
+        let back = add(&task, "back", &["backend/**".into()], None).unwrap();
+        commit_file(&back.worktree, "backend/api.rs", "api\n", "api");
+        std::fs::write(back.worktree.join("backend/api.rs"), "api fixed\n").unwrap();
+        catch_up(&task, &back).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(back.worktree.join("backend/api.rs")).unwrap(),
+            "api fixed\n",
+            "the edit stays"
+        );
+
+        commit_file(repo.path(), "docs/x.md", "x\n", "docs");
+        let error = catch_up(&task, &back).unwrap_err().to_string();
+        assert!(
+            error.contains("uncommitted changes (backend/api.rs)"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(back.worktree.join("backend/api.rs")).unwrap(),
+            "api fixed\n"
         );
     }
 
