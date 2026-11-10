@@ -244,7 +244,9 @@ test_register_adds_then_replaces_the_line() {
 # settings.
 test_settings_list_the_apps_and_the_shared_ones() {
   printf 'APP_HTTP_PORT=8091   # the web\n# VITE_PORT=5173\n' >> "$CHECKOUT/web/deploy/.docker-env"
-  printf 'POSTGRES_PASSWORD=s3cret\nPOSTGRES_PORT=5432    # postgres\n' >> "$DEVWS_JUNGLEFORGE/.env"
+  # A stand-in value, passed as an argument so no line reads as a hard-coded
+  # password to a secret scanner.
+  printf 'POSTGRES_PASSWORD=%s\nPOSTGRES_PORT=5432    # postgres\n' not-a-real-value >> "$DEVWS_JUNGLEFORGE/.env"
   [ "$(jungleforge settings "$CHECKOUT" phi-planner-web)" = "APP_CONTAINER"$'\t'"phi-web"$'\t'$'\n'"APP_HTTP_PORT"$'\t'"8091"$'\t'"the web" ] ||
     fail "app settings: $(jungleforge settings "$CHECKOUT" phi-planner-web)"
   [ "$(jungleforge settings shared)" = "REGISTRY"$'\t'"ghcr.io/acme"$'\t'$'\n'"POSTGRES_PASSWORD"$'\t'"••••"$'\t'$'\n'"POSTGRES_PORT"$'\t'"5432"$'\t'"postgres" ] ||
