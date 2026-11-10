@@ -50,26 +50,28 @@ remove_owned_homebrew_dependency() {
   remove_dependency_record "$dependency"
 }
 
-remove_owned_agentic() {
+# One of devws's Rust programs (rust_tools.sh), only when devws built it.
+remove_owned_cargo_program() {
+  local program="$1"
   [[ -f "$dependency_state" ]] || return 0
-  grep -Fqx devagentics "$dependency_state" || return 0
+  grep -Fqx "$program" "$dependency_state" || return 0
 
   PATH="$HOME/.cargo/bin:$PATH"
   if ! command -v cargo >/dev/null 2>&1; then
-    warn "Kept devws-installed devagentics because cargo is unavailable"
+    warn "Kept devws-installed $program because cargo is unavailable"
     return
   fi
-  info "Removing devagentics installed by devws"
-  if ! cargo uninstall devagentics; then
-    warn "Could not remove devagentics; keeping its ownership state for retry"
+  info "Removing $program installed by devws"
+  if ! cargo uninstall "$program"; then
+    warn "Could not remove $program; keeping its ownership state for retry"
     return
   fi
-  ok "Removed devagentics"
-  remove_dependency_record devagentics
+  ok "Removed $program"
+  remove_dependency_record "$program"
 }
 
-# Rust itself, only when devws installed it (agentic_install.sh), and after
-# devagentics, which cargo removes.
+# Rust itself, only when devws installed it (rust_tools.sh), and after the
+# programs, which cargo removes.
 remove_owned_rustup() {
   [[ -f "$dependency_state" ]] || return 0
   grep -Fqx rustup "$dependency_state" || return 0
@@ -257,7 +259,8 @@ restore_link "$ROOT/config/lvim/queries/markdown/highlights.scm" \
 remove_zshrc_block
 remove_owned_homebrew_dependency "fzf"
 remove_owned_homebrew_dependency "glow"
-remove_owned_agentic
+remove_owned_cargo_program devagentics
+remove_owned_cargo_program devws-ui
 remove_owned_rustup
 remove_iterm_keys
 

@@ -38,6 +38,8 @@ go to it.
 | Typing | Search every tab's actions (`push` finds Push / PR) |
 | `Enter` | Run the action, or choose |
 | `Tab` | In a list of ticked choices (apps, files): untick one |
+| `Ctrl+U` / `Ctrl+W` | Clear what was typed / delete its last word |
+| Click | On a tab: open it; on an action in the menu: run it |
 | `Esc` | Go back one question, or close |
 
 ## In the sidebar

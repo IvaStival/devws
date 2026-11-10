@@ -409,6 +409,8 @@ EOF2
   CARGO_LOG="$test_home/cargo.log" run_install "$test_home" "$fake_bin" >"$output" 2>&1
   grep -qx "install --path $ROOT/agentic --locked" "$test_home/cargo.log" ||
     fail "install did not build agentic/: $(cat "$test_home/cargo.log" 2>/dev/null)"
+  grep -qx "install --path $ROOT/devws-ui --locked" "$test_home/cargo.log" ||
+    fail "install did not build devws-ui/: $(cat "$test_home/cargo.log" 2>/dev/null)"
   grep -qx devagentics "$test_home/.devws-state/installed-dependencies" ||
     fail "install did not record that it installed devagentics"
 
@@ -419,7 +421,7 @@ EOF2
   [[ ! -e "$fake_bin/devagentics" ]] || fail "devagentics is still there after uninstall"
 }
 
-# A Rust devws installed (agentic_install.sh records rustup) goes on
+# A Rust devws installed (rust_tools.sh records rustup) goes on
 # uninstall, after devagentics.
 test_owned_rustup_is_removed_after_devagentics() {
   local test_home="$TEST_ROOT/rustup-owned"
@@ -428,12 +430,13 @@ test_owned_rustup_is_removed_after_devagentics() {
   make_fake_bin "$fake_bin"
   make_command "$fake_bin/fzf"
   make_command "$fake_bin/devagentics"
+  make_command "$fake_bin/devws-ui"
   printf '#!/usr/bin/env bash\nprintf "cargo %%s\\n" "$*" >> "$LOG"\n' > "$fake_bin/cargo"
   printf '#!/usr/bin/env bash\nprintf "rustup %%s\\n" "$*" >> "$LOG"\n' > "$fake_bin/rustup"
   chmod +x "$fake_bin/cargo" "$fake_bin/rustup"
   LOG="$test_home/install.log" run_install "$test_home" "$fake_bin" </dev/null >/dev/null 2>&1 ||
     fail "install failed"
-  # As agentic_install.sh records a Rust and a devagentics it installed.
+  # As rust_tools.sh records a Rust and a devagentics it installed.
   printf 'devagentics\nrustup\n' >> "$test_home/.devws-state/installed-dependencies"
 
   LOG="$test_home/log" HOME="$test_home" FAKE_BIN="$fake_bin" BREW_LOG="$test_home/brew.log" \
@@ -451,6 +454,7 @@ test_a_preexisting_agentic_is_rebuilt_but_kept_on_uninstall() {
   make_fake_bin "$fake_bin"
   make_command "$fake_bin/fzf"
   make_command "$fake_bin/devagentics"
+  make_command "$fake_bin/devws-ui"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$CARGO_LOG"\n' > "$fake_bin/cargo"
   chmod +x "$fake_bin/cargo"
 

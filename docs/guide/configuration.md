@@ -30,12 +30,13 @@ the agent lines for you.
 | `DEVWS_WEATHER_LOCATION` | your IP's | The header's weather place, e.g. `"Lisbon"` |
 | `DEVWS_HEADER_PET` | `1` | `0` hides the header's ghost (and saves its CPU) |
 
-Two more are read by `./install.sh` and the checks, not by `.env`:
+These are read from the environment only (the installer, the checks and the pickers), not from `.env`:
 
 | Variable | Default | What it does |
 | -------- | ------- | ------------ |
 | `DEVWS_DEVDB_SOURCE` | `~/Projects/devdb` | The devdb checkout the installer installs the database pane from |
 | `DEVWS_CHECK_JOBS` | `4` | How many test suites `scripts/check.sh` runs at once |
+| `DEVWS_UI` | `~/.cargo/bin/devws-ui` | The program that draws the menu and the pickers; when it is not there, fzf asks instead |
 
 ## Where devws keeps things
 

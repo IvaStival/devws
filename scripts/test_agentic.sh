@@ -313,7 +313,7 @@ test_agentic_needs_devagentics() {
   [ "$(status_of devws agentic acme/app)" = 2 ] || fail "devws agentic accepted a repo with no branch"
 }
 
-# Without devagentics, devws agentic offers to install it (agentic_install.sh)
+# Without devagentics, devws agentic offers to install it (rust_tools.sh)
 # and goes on once it is there; a refusal or failure stops it, nothing made.
 test_agentic_offers_to_install_devagentics() {
   local folder="$TEST_ROOT/projects/needs-install" path="" entry code=0
@@ -326,14 +326,14 @@ test_agentic_offers_to_install_devagentics() {
     path="${path:+$path:}$entry"
   done
   mv "$TEST_ROOT/bin/devagentics" "$TEST_ROOT/bin/devagentics.off"
-  rm "$SCRIPTS/agentic_install.sh"
-  cat > "$SCRIPTS/agentic_install.sh" <<EOF
+  rm "$SCRIPTS/rust_tools.sh"
+  cat > "$SCRIPTS/rust_tools.sh" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$TEST_ROOT/installer.log"
 [ -e "$TEST_ROOT/installer.fails" ] && exit 1
 mv "$TEST_ROOT/bin/devagentics.off" "$TEST_ROOT/bin/devagentics"
 EOF
-  chmod +x "$SCRIPTS/agentic_install.sh"
+  chmod +x "$SCRIPTS/rust_tools.sh"
 
   touch "$TEST_ROOT/installer.fails"
   PATH="$path" devws agentic "$folder" </dev/null >"$TEST_ROOT/out" 2>&1 || code=$?
@@ -347,8 +347,8 @@ EOF
   [ "$(tail -n 1 "$TEST_ROOT/installer.log")" = install ] || fail "the installer was not asked: $(cat "$TEST_ROOT/installer.log")"
   wait_until tmux has-session -t =dev-needs-install || fail "the team did not open once devagentics was installed"
 
-  rm "$SCRIPTS/agentic_install.sh"
-  ln -s "$SCRIPTS_SRC/agentic_install.sh" "$SCRIPTS/agentic_install.sh"
+  rm "$SCRIPTS/rust_tools.sh"
+  ln -s "$SCRIPTS_SRC/rust_tools.sh" "$SCRIPTS/rust_tools.sh"
 }
 
 test_agentic_can_add_an_editor() {

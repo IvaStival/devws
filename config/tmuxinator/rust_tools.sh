@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# What agent teams (devws agentic) need, and installing it: Rust at least
-# agentic/Cargo.toml's rust-version, and devagentics built from agentic/.
-# devws agentic offers it when devagentics is missing; install.sh rebuilds.
+# devws's Rust programs, and installing what they need: Rust at least the
+# highest rust-version of their crates, then each program built from its
+# crate in the devws checkout:
+#   devagentics  agentic/   agent teams (devws agentic)
+#   devws-ui     devws-ui/  the menu and pickers, without popup flicker
+# devws agentic offers this when devagentics is missing; install.sh rebuilds.
 #
-#   agentic_install.sh missing     the steps still needed, one per line:
-#                                  rust, rust-update <found> <needed>, build;
-#                                  nothing when agent teams can run
-#   agentic_install.sh install [--yes] [--rebuild]
-#                                  says what it will do, asks (--yes does not),
-#                                  then does it; --rebuild builds devagentics
-#                                  even when it is there, without asking for
-#                                  that alone. Exits 0 once nothing is missing.
+#   rust_tools.sh missing     the steps still needed, one per line: rust,
+#                             rust-update <found> <needed>, build <program>;
+#                             nothing when every program is there
+#   rust_tools.sh install [--yes] [--rebuild]
+#                             says what it will do, asks (--yes does not),
+#                             then does it; --rebuild builds every program
+#                             even when it is there, without asking for that
+#                             alone. Exits 0 once nothing is missing.
 #
 # What devws installs is recorded in ~/.devws-state/installed-dependencies
 # (as install.sh does), so delete.sh removes only that. A Rust devws did not
@@ -21,13 +24,16 @@
 set -u
 
 fail() {
-  printf 'devws agentic: %s\n' "$*" >&2
+  printf 'devws: %s\n' "$*" >&2
   exit 1
 }
 
 # rustup puts cargo here, and does not touch the shell's profile for devws.
 PATH="$HOME/.cargo/bin:$PATH"
 dependency_state="$HOME/.devws-state/installed-dependencies"
+# "<program> <crate folder>", in build order.
+programs='devagentics agentic
+devws-ui devws-ui'
 
 checkout() {
   local self="$0" target
@@ -46,10 +52,20 @@ checkout() {
 }
 
 root="$(checkout)"
-[ -f "$root/agentic/Cargo.toml" ] || fail "no agentic/ in the devws checkout ($root)"
+while read -r program crate; do
+  [ -f "$root/$crate/Cargo.toml" ] || fail "no $crate/ in the devws checkout ($root)"
+done <<<"$programs"
 
+crate_of() {
+  awk -v program="$1" '$1 == program { print $2 }' <<<"$programs"
+}
+
+# The highest rust-version among the crates.
 needed_version() {
-  sed -n 's/^rust-version *= *"\(.*\)"/\1/p' "$root/agentic/Cargo.toml" | head -n 1
+  local program crate
+  while read -r program crate; do
+    sed -n 's/^rust-version *= *"\(.*\)"/\1/p' "$root/$crate/Cargo.toml" | head -n 1
+  done <<<"$programs" | sort -t. -k1,1n -k2,2n | tail -n 1
 }
 
 # cargo's version is its toolchain's; empty when it does not say.
@@ -67,7 +83,7 @@ older() {
 }
 
 missing() {
-  local found needed
+  local found needed program crate
   needed="$(needed_version)"
   if ! command -v cargo >/dev/null 2>&1; then
     printf 'rust\n'
@@ -78,7 +94,9 @@ missing() {
       printf 'rust-update %s %s\n' "$found" "$needed"
     fi
   fi
-  command -v devagentics >/dev/null 2>&1 || printf 'build\n'
+  while read -r program crate; do
+    command -v "$program" >/dev/null 2>&1 || printf 'build %s\n' "$program"
+  done <<<"$programs"
 }
 
 record() {
@@ -88,12 +106,12 @@ record() {
 
 # What the steps will do, in words, for the question.
 describe() {
-  local step found needed
-  while read -r step found needed; do
+  local step first second
+  while read -r step first second; do
     case "$step" in
       rust) printf -- '- install Rust (rustup, from https://rustup.rs, into ~/.cargo)\n' ;;
-      rust-update) printf -- '- Rust %s is too old for agent teams (they need %s): update it with rustup\n' "$found" "$needed" ;;
-      build) printf -- '- build devagentics from agentic/ (a few minutes)\n' ;;
+      rust-update) printf -- '- Rust %s is too old for devws'"'"'s programs (they need %s): update it with rustup\n' "$first" "$second" ;;
+      build) printf -- '- build %s from %s/ (a few minutes)\n' "$first" "$(crate_of "$first")" ;;
     esac
   done <<<"$1"
 }
@@ -101,7 +119,7 @@ describe() {
 # Only what changes the machine asks: install.sh's own rebuild does not.
 confirm() {
   local steps="$1" reply
-  printf 'Agent teams need:\n%s\nContinue? [Y/n] ' "$(describe "$steps")"
+  printf 'devws needs:\n%s\nContinue? [Y/n] ' "$(describe "$steps")"
   if ! IFS= read -r reply; then
     printf '\nNothing was installed.\n'
     return 1
@@ -124,46 +142,48 @@ install_rust() {
 update_rust() {
   local found="$1" needed="$2"
   command -v rustup >/dev/null 2>&1 ||
-    fail "Rust $found is too old for agent teams (they need $needed), and devws did not install it: update it (brew upgrade rust), then try again"
+    fail "Rust $found is too old for devws's programs (they need $needed), and devws did not install it: update it (brew upgrade rust), then try again"
   printf 'Updating Rust %s…\n' "$found"
   rustup update stable || fail "Rust did not update (rustup's output is above)"
   hash -r
 }
 
 build() {
-  local owned=0
-  command -v devagentics >/dev/null 2>&1 || owned=1
-  printf 'Building devagentics…\n'
-  cargo install --path "$root/agentic" --locked ||
-    fail "devagentics did not build (cargo's output is above)"
+  local program="$1" owned=0
+  command -v "$program" >/dev/null 2>&1 || owned=1
+  printf 'Building %s…\n' "$program"
+  cargo install --path "$root/$(crate_of "$program")" --locked ||
+    fail "$program did not build (cargo's output is above)"
   hash -r
-  [ "$owned" = 1 ] && record devagentics
+  [ "$owned" = 1 ] && record "$program"
   return 0
 }
 
 install() {
-  local assume_yes=0 rebuild=0 option steps step found needed
+  local assume_yes=0 rebuild=0 option steps step first second program crate
   for option in "$@"; do
     case "$option" in
       --yes) assume_yes=1 ;;
       --rebuild) rebuild=1 ;;
-      *) fail "usage: agentic_install.sh install [--yes] [--rebuild]" ;;
+      *) fail "usage: rust_tools.sh install [--yes] [--rebuild]" ;;
     esac
   done
   steps="$(missing)"
   if [ "$rebuild" = 1 ]; then
-    grep -qx build <<<"$steps" || steps="${steps:+$steps$'\n'}build"
+    while read -r program crate; do
+      grep -qx "build $program" <<<"$steps" || steps="${steps:+$steps$'\n'}build $program"
+    done <<<"$programs"
   fi
   [ -n "$steps" ] || return 0
   # A rebuild alone is install.sh's own job, not a question.
   if [ "$assume_yes" = 0 ] && { [ "$rebuild" = 0 ] || grep -q '^rust' <<<"$steps"; }; then
     confirm "$steps" || return 1
   fi
-  while read -r step found needed; do
+  while read -r step first second; do
     case "$step" in
       rust) install_rust ;;
-      rust-update) update_rust "$found" "$needed" ;;
-      build) build ;;
+      rust-update) update_rust "$first" "$second" ;;
+      build) build "$first" ;;
     esac
   done <<<"$steps"
   steps="$(missing)"
@@ -175,5 +195,5 @@ command="${1:-}"
 case "$command" in
   missing) missing ;;
   install) install "$@" ;;
-  *) fail "usage: agentic_install.sh <missing|install [--yes] [--rebuild]>" ;;
+  *) fail "usage: rust_tools.sh <missing|install [--yes] [--rebuild]>" ;;
 esac

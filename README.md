@@ -227,8 +227,7 @@ configuration directories are removed.
 
 If devws installed `fzf` after receiving permission or installed Glow through
 `./install.sh --deps`, `delete.sh` removes those owned packages. The same goes
-for `devagentics` and for Rust (rustup) when devws installed them for agent
-teams. Pre-existing
+for `devagentics`, `devws-ui` and Rust (rustup) when devws installed them. Pre-existing
 installations are never removed. Other dependencies installed with `--deps`
 are preserved because Homebrew packages and tmux plugin manager may
 be shared with other tools or may have existed before devws. Remove those

@@ -182,18 +182,19 @@ ensure_jungleforge() {
   "$jungleforge" setup || warn "jungleforge was not set up; devws menu › App › Set up jungleforge tries again"
 }
 
-# The agent team's program (devws agentic) is Rust, in agentic/, rebuilt on
-# every install (agentic_install.sh, which devws agentic also uses). Installing
-# or updating Rust is asked, and only with someone at the terminal; devws
-# works without it. What it installs is recorded for delete.sh, never a
-# devagentics or a Rust the user had.
-ensure_agentic() {
+# devws's Rust programs (devagentics for agent teams, devws-ui for the menu
+# and pickers) are rebuilt on every install (rust_tools.sh, which devws
+# agentic also uses). Installing or updating Rust is asked, and only with
+# someone at the terminal; devws works without them (fzf asks instead of
+# devws-ui). What it installs is recorded for delete.sh, never a program or a
+# Rust the user had.
+ensure_rust_tools() {
   local input=/dev/null
 
   [[ -t 0 ]] && input=/dev/stdin
-  info "Building the agent team program (devagentics)"
-  if DEVWS_ROOT="$ROOT" "$ROOT/config/tmuxinator/agentic_install.sh" install --rebuild <"$input"; then
-    ok "devagentics"
+  info "Building devws's Rust programs (devagentics, devws-ui)"
+  if DEVWS_ROOT="$ROOT" "$ROOT/config/tmuxinator/rust_tools.sh" install --rebuild <"$input"; then
+    ok "devagentics and devws-ui"
   else
     warn "devws agentic will not work until devagentics builds: devws agentic offers it again, or run ./install.sh in a terminal"
   fi
@@ -344,7 +345,7 @@ case ":$PATH:" in
   *) warn "~/.local/bin is not on PATH; add it to run devws (export PATH=\"\$HOME/.local/bin:\$PATH\")" ;;
 esac
 
-ensure_agentic
+ensure_rust_tools
 
 # LazyVim writes lazy-lock.json and lazyvim.json into its config folder, so
 # the whole folder is linked and those files are tracked in the repo.

@@ -8,7 +8,8 @@ reads what they report. devws shows the panels; the team itself is
 asks to make the task and to run the board. It needs Rust 1.85 or newer.
 When `devagentics` is missing, `devws agentic` (and the menu's Open an agent
 team) says what it needs and asks: one Y installs Rust (rustup) or updates it
-(`rustup update stable`) as needed, builds `devagentics`, and opens the team.
+(`rustup update stable`) as needed, builds `devagentics` (and `devws-ui`, the
+menu's program), and opens the team.
 `./install.sh` rebuilds it on every run, and asks before installing or
 updating Rust. A Rust devws did not install without rustup (Homebrew's) is
 left alone: update it yourself (`brew upgrade rust`). How a team
