@@ -437,7 +437,7 @@ pub(crate) mod tests {
                     week: None,
                 },
             );
-        start_task(&home, &devws, repo.path(), "d").unwrap();
+        start_task(&home, &devws, repo.path(), "d", None).unwrap();
         let task = Task::open(&home, "feat-x").unwrap();
         (home, devws, task, repo)
     }

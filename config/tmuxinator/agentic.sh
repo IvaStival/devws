@@ -4,14 +4,17 @@
 # (agent_cli.sh spawn --place team). The repo is the one devws already has: a
 # clone under DEVWS_HOME and a worktree for the task.
 #
-#   agentic.sh [--editor]                         the start screen: choose the
+#   agentic.sh [options]                          the start screen: choose the
 #                                                 repo and the branch
-#   agentic.sh [--editor] <folder>                a folder as it is
-#   agentic.sh [--editor] <repo or folder> <branch>
+#   agentic.sh [options] <folder>                 a folder as it is
+#   agentic.sh [options] <repo or folder> <branch>
 #                                                 the branch's worktree
 #                                                 (devws worktree ensure)
 #
-# --editor adds a Neovim panel under the board. The leader, its arguments and
+# --editor adds a Neovim panel under the board. --leader <agent> names the
+# registered agent that leads; without it, on a terminal, the registered
+# agents are offered, the one leading the folder's team now first
+# (`devagentics task leader`), and elsewhere the task decides. The leader, its arguments and
 # the board's `board` are the agentic program's: `devagentics task start <folder>` prints
 # the task id, the leader's agent and the path of its arguments file
 # (DEVWS_AGENTIC_COMMAND replaces the program, for tests).
@@ -29,18 +32,42 @@ fail() {
 
 usage_fail() {
   code=2 fail "$*
-usage: devws agentic [--editor] [<repo or folder> [<branch>]]"
+usage: devws agentic [--editor] [--leader <agent>] [<repo or folder> [<branch>]]"
 }
 
 with_editor=0
+leader=""
 places=()
-for argument in "$@"; do
-  case "$argument" in
+while [ "$#" -gt 0 ]; do
+  case "$1" in
     --editor) with_editor=1 ;;
-    --*) usage_fail "unknown option: $argument" ;;
-    *) places+=("$argument") ;;
+    --leader)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || usage_fail "--leader needs an agent"
+      leader="$2"
+      shift
+      ;;
+    --leader=*) leader="${1#--leader=}" ;;
+    --*) usage_fail "unknown option: $1" ;;
+    *) places+=("$1") ;;
   esac
+  shift
 done
+
+# shellcheck source=/dev/null
+[ -r "$script_dir/.env" ] && . "$script_dir/.env"
+
+# <folder>: the registered agent the user picks to lead, the one leading now
+# offered first. Fails when the question is left (Esc).
+choose_leader() {
+  local now agent
+  now="$("$agentic_command" task leader "$1")" || fail "$agentic_command task leader failed"
+  {
+    printf '%s\n' "$now"
+    for agent in ${DEVWS_AGENTS:-claude codex}; do
+      [ "$agent" = "$now" ] || printf '%s\n' "$agent"
+    done
+  } | "$script_dir/picker.sh" Leader 'The agent that leads the team'
+}
 
 # Before anything is made: the start screen clones and makes a worktree.
 # Missing, it is offered: rust_tools.sh asks, then installs Rust or
@@ -68,7 +95,14 @@ case "${#places[@]}" in
   *) usage_fail "too many arguments" ;;
 esac
 
-started="$("$agentic_command" task start "$folder")" || fail "$agentic_command task start failed"
+# One agent registered leaves nothing to choose.
+if [ -z "$leader" ] && [ -t 0 ] && [ "$(printf '%s\n' ${DEVWS_AGENTS:-claude codex} | wc -l)" -gt 1 ]; then
+  leader="$(choose_leader "$folder")" || exit 0
+  [ -n "$leader" ] || exit 0
+fi
+
+started="$("$agentic_command" task start "$folder" ${leader:+--leader "$leader"})" ||
+  fail "$agentic_command task start failed"
 task="$(sed -n 1p <<<"$started")"
 leader="$(sed -n 2p <<<"$started")"
 leader_arguments="$(sed -n 3p <<<"$started")"

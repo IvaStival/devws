@@ -29,22 +29,33 @@ cat > "$TEST_ROOT/bin/tmux" <<EOF
 #!/usr/bin/env bash
 exec "$REAL_TMUX" -L "$SOCKET" -f /dev/null "\$@"
 EOF
-for program in claude codex nvim fzf; do
+for program in claude codex nvim; do
   cat > "$TEST_ROOT/bin/$program" <<EOF
 #!/usr/bin/env bash
 printf '%s\0' "\$@" > "$TEST_ROOT/started/$program.\$\$"
 exec sleep 600
 EOF
 done
+# fzf answers the Leader question with the line in fzf.answer, recording what
+# it was offered; anything else (the sidebar) waits, as nobody answers it.
+cat > "$TEST_ROOT/bin/fzf" <<EOF
+#!/usr/bin/env bash
+case " \$* " in *Leader*) ;; *) exec sleep 600 ;; esac
+[ -s "$TEST_ROOT/fzf.answer" ] || exec sleep 600
+cat > "$TEST_ROOT/fzf.input"
+cat "$TEST_ROOT/fzf.answer"
+EOF
 # The devAgentics side, as devws expects it: `task start <folder>` prints the
 # task id, the leader's agent and the path of its arguments file; `board <id>`
-# runs in the board pane. Calls are recorded like the agents' starts.
+# runs in the board pane; `task leader <folder>` names the one leading now (codex).
+# Calls are recorded like the agents' starts.
 printf '%s\0' --model opus > "$TEST_ROOT/leader-args"
 cat > "$TEST_ROOT/bin/devagentics" <<EOF
 #!/usr/bin/env bash
 printf '%s\0' "\$@" > "$TEST_ROOT/started/devagentics-\$1.\$\$"
 case "\$1" in
-  task) printf 'team-1\nclaude\n$TEST_ROOT/leader-args\n' ;;
+  task) [ "\$2" = leader ] && { echo codex; exit 0; }
+    printf 'team-1\nclaude\n$TEST_ROOT/leader-args\n' ;;
   board) exec sleep 600 ;;
 esac
 EOF
@@ -280,6 +291,29 @@ test_agentic_opens_the_leader_and_the_board() {
   tmux display-message -p -t "$log" "$header" | grep -q 'Team' || fail "the board pane has no header: '$(tmux display-message -p -t "$log" "$header")'"
 }
 
+# The leader is the agent named with --leader; asked on a terminal, the list
+# is every registered agent, the one that leads now first.
+test_agentic_starts_the_team_with_the_leader_chosen() {
+  local folder
+  folder="$TEST_ROOT/projects/team-led"
+  mkdir -p "$folder"
+  devws agentic --leader codex "$folder" </dev/null >/dev/null || fail "devws agentic --leader failed"
+  [ "$(started_args devagentics-task)" = "task${RS}start${RS}$folder${RS}--leader${RS}codex$RS" ] ||
+    fail "task start got: $(started_args devagentics-task)"
+  tmux kill-session -t =dev-team-led
+
+  printf 'claude\n' > "$TEST_ROOT/fzf.answer"
+  # A terminal (script), inside a tmux with no client: switching to the
+  # workspace fails, which is not what is tested.
+  TMUX=test script -q /dev/null devws agentic "$folder" >/dev/null 2>&1 </dev/null || true
+  rm -f "$TEST_ROOT/fzf.answer"
+  [ "$(started_args devagentics-task)" = "task${RS}start${RS}$folder${RS}--leader${RS}claude$RS" ] ||
+    fail "task start after asking got: $(started_args devagentics-task)"
+  [ "$(cat "$TEST_ROOT/fzf.input" 2>/dev/null | paste -sd ' ' -)" = "codex claude" ] ||
+    fail "the leader was asked from: $(cat "$TEST_ROOT/fzf.input" 2>/dev/null)"
+  tmux kill-session -t =dev-team-led 2>/dev/null || true
+}
+
 test_agentic_makes_a_worktree_for_a_repo_and_a_branch() {
   local remote seed folder output
   remote="$TEST_ROOT/remotes/acme/app.git"
@@ -368,6 +402,7 @@ test_a_label_names_the_panel_in_its_header
 test_team_panels_fill_the_right_half_in_a_grid
 test_the_first_agent_goes_under_the_board
 test_agentic_opens_the_leader_and_the_board
+test_agentic_starts_the_team_with_the_leader_chosen
 test_agentic_makes_a_worktree_for_a_repo_and_a_branch
 test_agentic_needs_devagentics
 test_agentic_offers_to_install_devagentics

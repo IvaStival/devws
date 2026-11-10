@@ -25,7 +25,15 @@ devws agentic                        # the start screen: choose the repo and the
 devws agentic owner/repo feat/login  # a branch of a GitHub repo
 devws agentic ~/Projects/my-app      # a folder as it is
 devws agentic --editor …             # with a Neovim panel too
+devws agentic --leader claude_work … # the registered agent that leads
 ```
+
+On a terminal, devws then asks which registered agent leads, the one leading
+the folder's team now first. The pick stays with the task: opening it again
+offers it first. An agent of the leader role's own program keeps the role's
+model and effort; one of the other program runs with that program's defaults.
+A picked leader starts even when its account is near its limit; it still
+moves to the role's other program when it runs out.
 
 The repo works as in [Workspaces](workspaces.md): a clone under `~/.devws`
 and a worktree for the task, off the fresh default branch. The team's other

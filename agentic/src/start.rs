@@ -118,10 +118,52 @@ pub fn write_leader_args(
     Ok(args_file)
 }
 
+/// The task already started for a worktree, if one is.
+fn task_for(home: &Home, folder: &Path) -> Result<Option<Task>> {
+    for id in home.task_ids()? {
+        let task = Task::open(home, &id)?;
+        if task
+            .config()?
+            .repos
+            .first()
+            .is_some_and(|first| first.worktree == folder)
+        {
+            return Ok(Some(task));
+        }
+    }
+    Ok(None)
+}
+
+/// The agent that leads a worktree's team: its task's leader now, or, with
+/// no task yet, the leader role's agent. What `devws agentic` offers first.
+pub fn leader_for(home: &Home, folder: &Path) -> Result<String> {
+    let folder = folder
+        .canonicalize()
+        .with_context(|| format!("{} is not a folder", folder.display()))?;
+    if let Some(agent) = task_for(home, &folder)?.and_then(|task| task.state().ok()?.leader_agent) {
+        return Ok(agent);
+    }
+    let roles = Roles::load(home, Some(&folder))?;
+    Ok(roles
+        .get("leader")
+        .context("there is no leader role")?
+        .agent
+        .clone())
+}
+
 /// Starts the task for a worktree, or finds the one already started for it.
 /// The leader's start-up arguments are written next to the task. Opens nothing:
-/// devws opens the workspace.
-pub fn start_task(home: &Home, devws: &dyn Devws, folder: &Path, command: &str) -> Result<Started> {
+/// devws opens the workspace. `leader` is the agent the user picked to lead:
+/// it is kept for the task and starts whatever its account has used; with
+/// none, the task's earlier pick, else the role's program (or its fallback's
+/// when that account has run out).
+pub fn start_task(
+    home: &Home,
+    devws: &dyn Devws,
+    folder: &Path,
+    command: &str,
+    leader: Option<&str>,
+) -> Result<Started> {
     let folder = folder
         .canonicalize()
         .with_context(|| format!("{} is not a folder", folder.display()))?;
@@ -176,11 +218,20 @@ pub fn start_task(home: &Home, devws: &dyn Devws, folder: &Path, command: &str) 
 
     let roles = Roles::load(home, Some(&folder))?;
     let role = roles.get("leader").context("there is no leader role")?;
-    // Its account may have run out: then its fallback leads (leader.rs).
-    let (leader, why) = leader::choose(role, devws)?;
+    let pick = match leader {
+        Some(agent) => Some(agent.to_string()),
+        None => task.state()?.leader_pick,
+    };
+    let (leader, why) = match (&pick, leader) {
+        (Some(agent), Some(_)) => (leader::led_by(role, agent, devws)?, None),
+        // Its account may have run out: then its fallback leads (leader.rs).
+        (Some(agent), None) => leader::choose(&leader::led_by(role, agent, devws)?, devws)?,
+        (None, _) => leader::choose(role, devws)?,
+    };
     let args_file = write_leader_args(&task, devws, &leader, command, LEADER_FIRST)?;
     task.transaction(|tx| {
         tx.state.leader_agent = Some(leader.agent.clone());
+        tx.state.leader_pick = pick.clone();
         if let Some(why) = &why {
             tx.log(Kind::Leader, None, None, why);
         }
@@ -222,7 +273,7 @@ mod tests {
         let repo = branch_repo("feat/login");
         let devws = FakeDevws::new(home_dir.path()).with_kind("claude", Program::Claude);
 
-        let started = start_task(&home, &devws, repo.path(), "/bin/devagentics").unwrap();
+        let started = start_task(&home, &devws, repo.path(), "/bin/devagentics", None).unwrap();
         assert_eq!(started.id, "feat-login");
         assert_eq!(started.leader_agent, "claude");
 
@@ -268,9 +319,9 @@ mod tests {
         let one = branch_repo("feat/login");
         let two = branch_repo("feat/login");
 
-        let first = start_task(&home, &devws, one.path(), "d").unwrap();
-        let again = start_task(&home, &devws, one.path(), "d").unwrap();
-        let other = start_task(&home, &devws, two.path(), "d").unwrap();
+        let first = start_task(&home, &devws, one.path(), "d", None).unwrap();
+        let again = start_task(&home, &devws, one.path(), "d", None).unwrap();
+        let other = start_task(&home, &devws, two.path(), "d", None).unwrap();
         assert_eq!(first.id, again.id);
         assert_eq!(other.id, "feat-login-2");
         assert_eq!(home.task_ids().unwrap(), ["feat-login", "feat-login-2"]);
@@ -282,10 +333,10 @@ mod tests {
         let home = Home::at(home_dir.path().to_path_buf());
         let devws = FakeDevws::new(home_dir.path()).with_kind("claude", Program::Claude);
         let plain = TempDir::new().unwrap();
-        assert!(start_task(&home, &devws, plain.path(), "d").is_err());
+        assert!(start_task(&home, &devws, plain.path(), "d", None).is_err());
         let detached = repo();
         crate::checks::tests::run(detached.path(), &["checkout", "-q", "--detach"]);
-        assert!(start_task(&home, &devws, detached.path(), "d").is_err());
+        assert!(start_task(&home, &devws, detached.path(), "d", None).is_err());
         assert!(home.task_ids().unwrap().is_empty());
     }
 
@@ -295,6 +346,37 @@ mod tests {
         let home = Home::at(home_dir.path().to_path_buf());
         let repo = branch_repo("feat/x");
         let devws = FakeDevws::new(home_dir.path());
-        assert!(start_task(&home, &devws, repo.path(), "d").is_err());
+        assert!(start_task(&home, &devws, repo.path(), "d", None).is_err());
+    }
+
+    #[test]
+    fn a_picked_leader_is_kept_for_the_task_and_named_as_its_leader() {
+        let home_dir = TempDir::new().unwrap();
+        let home = Home::at(home_dir.path().to_path_buf());
+        let repo = branch_repo("feat/x");
+        let devws = FakeDevws::new(home_dir.path())
+            .with_kind("claude", Program::Claude)
+            .with_kind("codex", Program::Codex);
+
+        assert_eq!(
+            leader_for(&home, repo.path()).unwrap(),
+            "claude",
+            "no task: the role's agent"
+        );
+        let started = start_task(&home, &devws, repo.path(), "d", Some("codex")).unwrap();
+        assert_eq!(started.leader_agent, "codex");
+        assert_eq!(leader_for(&home, repo.path()).unwrap(), "codex");
+
+        let again = start_task(&home, &devws, repo.path(), "d", None).unwrap();
+        assert_eq!(again.leader_agent, "codex", "the pick stays with the task");
+    }
+
+    #[test]
+    fn a_picked_leader_devws_does_not_know_stops_the_start() {
+        let home_dir = TempDir::new().unwrap();
+        let home = Home::at(home_dir.path().to_path_buf());
+        let repo = branch_repo("feat/x");
+        let devws = FakeDevws::new(home_dir.path()).with_kind("claude", Program::Claude);
+        assert!(start_task(&home, &devws, repo.path(), "d", Some("ghost")).is_err());
     }
 }

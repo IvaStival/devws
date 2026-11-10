@@ -10,7 +10,7 @@
 use crate::devws::{Devws, PaneState};
 use crate::home::Home;
 use crate::log::Kind;
-use crate::roles::{Role, Roles};
+use crate::roles::{Fallback, Role, Roles};
 use crate::start::write_leader_args;
 use crate::state::State;
 use crate::task::Task;
@@ -72,16 +72,59 @@ fn now_and_other(role: &Role, state: &State) -> Option<(Role, Role)> {
     }
 }
 
-fn leader_role(home: &Home, task: &Task) -> Result<Role> {
+/// The leader's role led by the agent the user picked. Its own agent leaves
+/// it as it is; its fallback's swaps the two, so the role's own program is
+/// the one to move to; any other agent keeps the role's settings when it runs
+/// the same program, and takes its program's defaults when not (a model of
+/// one program means nothing to the other), with the fallback kept.
+pub fn led_by(role: &Role, agent: &str, devws: &dyn Devws) -> Result<Role> {
+    let kind = devws.agent_kind(agent)?;
+    if agent == role.agent {
+        return Ok(role.clone());
+    }
+    if let Some(fallback) = role
+        .on_fallback()
+        .filter(|fallback| fallback.agent == agent)
+    {
+        return Ok(Role {
+            fallback: Some(Fallback {
+                agent: role.agent.clone(),
+                model: role.model.clone(),
+                effort: role.effort.clone(),
+                approvals: role.approvals.clone(),
+            }),
+            ..fallback
+        });
+    }
+    if devws.agent_kind(&role.agent).ok() == Some(kind) {
+        return Ok(Role {
+            agent: agent.to_string(),
+            ..role.clone()
+        });
+    }
+    Ok(Role {
+        agent: agent.to_string(),
+        model: None,
+        effort: None,
+        approvals: None,
+        sandbox: None,
+        ..role.clone()
+    })
+}
+
+/// The leader's role for the task: the role file's, led by the agent the user
+/// picked when there is one.
+fn leader_role(home: &Home, task: &Task, devws: &dyn Devws) -> Result<Role> {
     let config = task.config()?;
     let roles = Roles::load(
         home,
         config.repos.first().map(|repo| repo.worktree.as_path()),
     )?;
-    roles
-        .get("leader")
-        .cloned()
-        .context("there is no leader role")
+    let role = roles.get("leader").context("there is no leader role")?;
+    match task.state()?.leader_pick {
+        Some(agent) => led_by(role, &agent, devws),
+        None => Ok(role.clone()),
+    }
 }
 
 /// What the new leader does first after a handover.
@@ -128,7 +171,7 @@ pub fn request_switch(
     devws: &dyn Devws,
     reason: Option<&str>,
 ) -> Result<String> {
-    let role = leader_role(home, task)?;
+    let role = leader_role(home, task, devws)?;
     let Some((now, other)) = now_and_other(&role, &task.state()?) else {
         bail!("the leader's role has no [fallback]: there is no other program to move to");
     };
@@ -170,7 +213,7 @@ pub fn switch_pending(task: &Task) -> Result<bool> {
 /// and whether it has room, a move asked for. Null without a fallback.
 pub fn status(home: &Home, task: &Task, devws: &dyn Devws) -> Result<Value> {
     let state = task.state()?;
-    let Some((now, other)) = now_and_other(&leader_role(home, task)?, &state) else {
+    let Some((now, other)) = now_and_other(&leader_role(home, task, devws)?, &state) else {
         return Ok(Value::Null);
     };
     let limits = devws.limits(&other.agent)?;
@@ -193,7 +236,7 @@ pub fn hand_over(
     devws: &dyn Devws,
     command: &str,
 ) -> Result<Option<String>> {
-    let role = leader_role(home, task)?;
+    let role = leader_role(home, task, devws)?;
     let state = task.state()?;
     let Some((now, other)) = now_and_other(&role, &state) else {
         return Ok(None);
@@ -267,7 +310,7 @@ mod tests {
             .with_kind("codex", Program::Codex)
             .with_limits("claude", claude)
             .with_limits("codex", codex);
-        start_task(&home, &devws, repo.path(), "/bin/devagentics").unwrap();
+        start_task(&home, &devws, repo.path(), "/bin/devagentics", None).unwrap();
         let task = Task::open(&home, "feat-x").unwrap();
         (home, devws, task, repo)
     }
@@ -544,5 +587,120 @@ mod tests {
             request_switch(&home, &task, &devws, None).err().unwrap()
         );
         assert!(message.contains("no [fallback]"), "{message}");
+    }
+
+    /// The built-in leader role: claude, its fallback codex.
+    fn builtin_leader(home: &Home) -> Role {
+        Roles::load(home, None)
+            .unwrap()
+            .get("leader")
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn a_leader_led_by_its_roles_own_agent_is_the_role() {
+        let dir = TempDir::new().unwrap();
+        let home = Home::at(dir.path().join("home"));
+        let devws = FakeDevws::new(dir.path()).with_kind("claude", Program::Claude);
+        let role = builtin_leader(&home);
+        assert_eq!(led_by(&role, "claude", &devws).unwrap(), role);
+    }
+
+    #[test]
+    fn a_leader_led_by_its_fallback_swaps_the_two_programs() {
+        let dir = TempDir::new().unwrap();
+        let home = Home::at(dir.path().join("home"));
+        let devws = FakeDevws::new(dir.path())
+            .with_kind("claude", Program::Claude)
+            .with_kind("codex", Program::Codex);
+        let role = builtin_leader(&home);
+        let fallback = role.on_fallback().unwrap();
+        let led = led_by(&role, "codex", &devws).unwrap();
+        assert_eq!(led.agent, "codex");
+        assert_eq!(led.model, fallback.model);
+        let back = led.fallback.unwrap();
+        assert_eq!(back.agent, "claude");
+        assert_eq!(back.effort, role.effort);
+    }
+
+    #[test]
+    fn a_leader_led_by_another_account_keeps_the_settings_of_its_own_program_only() {
+        let dir = TempDir::new().unwrap();
+        let home = Home::at(dir.path().join("home"));
+        let devws = FakeDevws::new(dir.path())
+            .with_kind("claude", Program::Claude)
+            .with_kind("claude_work", Program::Claude)
+            .with_kind("codex_work", Program::Codex);
+        let role = builtin_leader(&home);
+
+        let same = led_by(&role, "claude_work", &devws).unwrap();
+        assert_eq!(same.agent, "claude_work");
+        assert_eq!(same.effort.as_deref(), Some("high"));
+        assert_eq!(
+            same.fallback, role.fallback,
+            "it can still move to the fallback"
+        );
+
+        let other = led_by(&role, "codex_work", &devws).unwrap();
+        assert_eq!(other.agent, "codex_work");
+        assert_eq!(
+            (other.model, other.effort),
+            (None, None),
+            "the program's defaults"
+        );
+        assert_eq!(other.fallback, role.fallback);
+
+        assert!(
+            led_by(&role, "ghost", &devws).is_err(),
+            "an agent devws does not know"
+        );
+    }
+
+    /// A task started with the leader the user picked.
+    fn team_led_by(dir: &TempDir, agent: &str, claude: u32) -> (Home, FakeDevws, Task, TempDir) {
+        let home = Home::at(dir.path().join("home"));
+        let repo = crate::checks::tests::repo();
+        crate::checks::tests::run(repo.path(), &["checkout", "-q", "-b", "feat/x"]);
+        let devws = FakeDevws::new(&dir.path().join("w"))
+            .with_kind("claude", Program::Claude)
+            .with_kind("codex", Program::Codex)
+            .with_limits("claude", week(claude))
+            .with_limits("codex", week(10));
+        start_task(&home, &devws, repo.path(), "/bin/devagentics", Some(agent)).unwrap();
+        let task = Task::open(&home, "feat-x").unwrap();
+        (home, devws, task, repo)
+    }
+
+    #[test]
+    fn a_picked_leader_starts_even_when_its_account_has_run_out() {
+        let dir = TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = team_led_by(&dir, "claude", 99);
+        assert_eq!(leader_agent(&task).as_deref(), Some("claude"));
+        assert_eq!(task.state().unwrap().leader_pick.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn a_leader_picked_on_the_fallback_moves_to_the_roles_own_program() {
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, _repo) = team_led_by(&dir, "codex", 10);
+        assert_eq!(leader_agent(&task).as_deref(), Some("codex"));
+        assert!(args(&task).contains("gpt-6.1-sol"), "{}", args(&task));
+        let status = status(&home, &task, &devws).unwrap();
+        assert!(
+            status["program"].as_str().unwrap().starts_with("codex"),
+            "{status}"
+        );
+        assert!(
+            status["other"].as_str().unwrap().starts_with("claude"),
+            "{status}"
+        );
+
+        request_switch(&home, &task, &devws, None).unwrap();
+        idle_leader(&devws, &task);
+        hand_over(&home, &task, &devws, "/bin/devagentics")
+            .unwrap()
+            .unwrap();
+        assert_eq!(leader_agent(&task).as_deref(), Some("claude"));
     }
 }
