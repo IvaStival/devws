@@ -2,19 +2,29 @@
 //! `Board` is plain data built from the task's state, the roles and what devws
 //! says about each pane; `render` draws it.
 
+use crate::board_usage::{LEADER_NAME, TeamUsage};
 use crate::devws::{Devws, PaneState, Usage};
 use crate::roles::{Group, Role, Roles};
 use crate::state::LEADER;
 use crate::state::StepStatus;
 use crate::task::Task;
 use anyhow::Result;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, PartialEq)]
 pub struct Board {
     pub task: String,
     pub branch: String,
     pub summary: String,
+    pub phase: String,
+    pub leader: String,
+    pub leader_pane: Option<String>,
+    /// What the leader's pane is doing; `None` without a pane.
+    pub leader_state: Option<PaneState>,
+    pub leader_usage: Option<Usage>,
+    pub steps: Vec<StepRow>,
+    /// Full context keyed by stable row identity; presentation never truncates this.
+    pub details: BTreeMap<String, String>,
     pub accounts: Vec<Account>,
     /// Every role there is, running or not, by group: the CTO, the seniors,
     /// the factory floor.
@@ -24,7 +34,7 @@ pub struct Board {
     /// Steps the leader has to act on: reported, failed, blocked or sent back.
     pub review: Vec<StepRow>,
     /// Orders waiting to be typed into an agent.
-    pub queue: Vec<String>,
+    pub queue: Vec<QueueRow>,
     pub done: Vec<StepRow>,
     /// The leader and each agent: what they used.
     pub usage: Vec<(String, Usage)>,
@@ -47,7 +57,7 @@ pub struct RoleRow {
     pub agents: Vec<AgentRow>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AgentRow {
     /// The key that shows it (1–9), in the board's order.
     pub number: Option<u8>,
@@ -60,6 +70,12 @@ pub struct AgentRow {
     pub now: Option<String>,
     /// The steps ordered for it that it has not been told yet.
     pub next: Vec<String>,
+    /// What it used, as far as devws knows.
+    pub usage: Option<Usage>,
+    /// Steps it was given that are now accepted.
+    pub accepted: u32,
+    /// Orders it got for a step after its first one there.
+    pub retries: u32,
 }
 
 #[derive(Debug, PartialEq)]
@@ -70,6 +86,12 @@ pub struct StepRow {
     pub attempts: u32,
 }
 
+#[derive(Debug, PartialEq)]
+pub struct QueueRow {
+    pub id: String,
+    pub label: String,
+}
+
 fn program(role: &Role) -> String {
     let mut parts = vec![role.agent.clone()];
     parts.extend(role.model.clone());
@@ -78,12 +100,7 @@ fn program(role: &Role) -> String {
 }
 
 impl Board {
-    pub fn build(
-        task: &Task,
-        devws: &dyn Devws,
-        roles: &Roles,
-        usage: Vec<(String, Usage)>,
-    ) -> Result<Self> {
+    pub fn build(task: &Task, devws: &dyn Devws, roles: &Roles, usage: TeamUsage) -> Result<Self> {
         let config = task.config()?;
         let state = task.state()?;
         let step_title = |id: &str| {
@@ -133,7 +150,26 @@ impl Board {
                 .filter_map(|order_id| state.orders.iter().find(|order| order.id == order_id))
                 .map(|order| step_title(&order.step))
                 .collect();
+            // An agent's orders by step: the steps it got accepted, and every
+            // order after its first on a step a retry.
+            let mut steps_given: BTreeMap<&str, u32> = BTreeMap::new();
+            for order in state.orders.iter().filter(|order| order.agent == agent.id) {
+                *steps_given.entry(order.step.as_str()).or_default() += 1;
+            }
+            let accepted = steps_given
+                .keys()
+                .filter(|step| {
+                    state
+                        .steps
+                        .iter()
+                        .any(|known| known.id == **step && known.status == StepStatus::Accepted)
+                })
+                .count() as u32;
+            let retries = steps_given.values().map(|orders| orders - 1).sum();
             let row = AgentRow {
+                usage: usage.by_agent.get(&agent.id).copied(),
+                accepted,
+                retries,
                 number: None,
                 id: agent.id.clone(),
                 pane: agent.pane.clone(),
@@ -175,6 +211,12 @@ impl Board {
             .iter()
             .filter(|agent| agent.live)
             .map(|agent| agent.agent.clone())
+            .chain(
+                state
+                    .leader_agent
+                    .clone()
+                    .or_else(|| roles.get("leader").map(|role| role.agent.clone())),
+            )
             .collect();
         let mut account_rows = Vec::new();
         for name in accounts {
@@ -222,7 +264,10 @@ impl Board {
                     .orders
                     .iter()
                     .find(|order| Some(&order.id) == message.order.as_ref())?;
-                Some(format!("{}  for {}", step_title(&order.step), message.to))
+                Some(QueueRow {
+                    id: order.id.clone(),
+                    label: format!("{}  for {}", step_title(&order.step), message.to),
+                })
             })
             .collect();
 
@@ -270,7 +315,87 @@ impl Board {
             summary.push("Paused.".to_string());
         }
 
+        let mut details = BTreeMap::new();
+        for agent in state.agents.iter().filter(|agent| agent.live) {
+            let order = state.open_order_of(&agent.id);
+            let mut text = format!(
+                "{}\nRole: {}\nRepository: {}\nLane: {}\nReady: {}",
+                agent.id,
+                agent.role,
+                agent.repo,
+                agent.lane.as_deref().unwrap_or("—"),
+                agent.ready
+            );
+            if let Some(order) = order {
+                text.push_str(&format!(
+                    "\nOrder: {} · {}\nDelivered: {} · Stalled: {}\n\n{}",
+                    order.id,
+                    step_title(&order.step),
+                    order.delivered,
+                    order.stalled,
+                    order.text
+                ));
+            }
+            details.insert(format!("agent:{}", agent.id), text);
+        }
+        for order in &state.orders {
+            details.insert(
+                format!("queue:{}", order.id),
+                format!(
+                    "Order {} → {}\n{}\nDelivered: {} · Stalled: {}\n\n{}",
+                    order.id,
+                    order.agent,
+                    step_title(&order.step),
+                    order.delivered,
+                    order.stalled,
+                    order.text
+                ),
+            );
+        }
+        for step in &state.steps {
+            let mut text = format!(
+                "{} {}\nStatus: {:?} · Attempts: {}",
+                step.id, step.title, step.status, step.attempts
+            );
+            for order in state.orders.iter().filter(|order| order.step == step.id) {
+                text.push_str(&format!(
+                    "\n\nOrder {} → {} · {:?}\nDelivered: {} · Stalled: {}\n{}",
+                    order.id, order.agent, order.status, order.delivered, order.stalled, order.text
+                ));
+            }
+            details.insert(format!("step:{}", step.id), text);
+        }
+        let leader_program = rows
+            .iter()
+            .find(|row| row.group == Group::Cto)
+            .map(|row| row.program.clone())
+            .unwrap_or_else(|| "unknown".into());
+        let leader = match &state.leader_switch {
+            Some(reason) => format!("{leader_program} · handover pending: {reason}"),
+            None => leader_program,
+        };
+        let leader_pane = devws.pane_with_role(&config.workspace, "agent")?;
+        let leader_state = match &leader_pane {
+            Some(pane) => Some(devws.pane_state(pane)?),
+            None => None,
+        };
         Ok(Self {
+            phase: if state.paused {
+                "Paused"
+            } else if state.approved {
+                "Approved"
+            } else if task.dir().join("plan.md").is_file() {
+                "Awaiting approval"
+            } else {
+                "Planning"
+            }
+            .into(),
+            leader,
+            leader_pane,
+            leader_state,
+            leader_usage: usage.by_agent.get(LEADER_NAME).copied(),
+            steps: state.steps.iter().map(step_row).collect(),
+            details,
             task: config.id,
             branch: config.branch,
             summary: summary.join(" "),
@@ -280,7 +405,7 @@ impl Board {
             review,
             queue,
             done,
-            usage,
+            usage: usage.by_role,
         })
     }
 }
@@ -336,7 +461,7 @@ pub(crate) mod tests {
         devws.set_state(&planner.pane, PaneState::Working);
 
         let roles = Roles::load(&home, None).unwrap();
-        let board = Board::build(&task, &devws, &roles, Vec::new()).unwrap();
+        let board = Board::build(&task, &devws, &roles, TeamUsage::default()).unwrap();
         let names: Vec<_> = board.roles.iter().map(|role| role.name.as_str()).collect();
         assert_eq!(
             names,
@@ -365,6 +490,72 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn each_agent_shows_what_it_used_got_accepted_and_retried() {
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, _repo) = started(&dir);
+        let team = Team {
+            task: &task,
+            home: &home,
+            devws: &devws,
+        };
+        team.spawn_agent("planner", None).unwrap();
+        let order = |id: &str, step: &str| crate::state::Order {
+            id: id.into(),
+            step: step.into(),
+            agent: "planner-1".into(),
+            text: String::new(),
+            allowed: vec![],
+            forbidden: vec![],
+            check: None,
+            base: String::new(),
+            status: crate::state::OrderStatus::Closed,
+            delivered: true,
+            stalled: false,
+            plan: None,
+        };
+        task.transaction(|tx| {
+            for (id, status, attempts) in [
+                ("s1", StepStatus::Accepted, 1),
+                ("s2", StepStatus::Accepted, 3),
+                ("s3", StepStatus::Ordered, 1),
+            ] {
+                tx.state.steps.push(crate::state::Step {
+                    id: id.into(),
+                    title: format!("title {id}"),
+                    status,
+                    attempts,
+                });
+            }
+            tx.state.orders.extend([
+                order("o1", "s1"),
+                order("o2", "s2"),
+                order("o3", "s2"),
+                order("o4", "s2"),
+                order("o5", "s3"),
+            ]);
+            Ok(())
+        })
+        .unwrap();
+        let used = |input| Usage {
+            input,
+            output: 1,
+            cache: 0,
+            cost: 0.5,
+            unpriced: false,
+        };
+        let mut usage = TeamUsage::default();
+        usage.by_agent.insert("planner-1".into(), used(700));
+        usage.by_agent.insert(LEADER_NAME.into(), used(9000));
+        let roles = Roles::load(&home, None).unwrap();
+        let board = Board::build(&task, &devws, &roles, usage).unwrap();
+        let planner = &board.roles[1].agents[0];
+        assert_eq!(planner.usage.map(|usage| usage.input), Some(700));
+        assert_eq!(planner.accepted, 2, "s1 and s2 are accepted");
+        assert_eq!(planner.retries, 2, "s2 took three orders");
+        assert_eq!(board.leader_usage.map(|usage| usage.input), Some(9000));
+    }
+
+    #[test]
     fn steps_split_into_done_and_what_needs_the_leader() {
         let dir = TempDir::new().unwrap();
         let (home, devws, task, _repo) = started(&dir);
@@ -388,7 +579,7 @@ pub(crate) mod tests {
         })
         .unwrap();
         let roles = Roles::load(&home, None).unwrap();
-        let board = Board::build(&task, &devws, &roles, Vec::new()).unwrap();
+        let board = Board::build(&task, &devws, &roles, TeamUsage::default()).unwrap();
         let ids = |rows: &[StepRow]| rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
         assert_eq!(ids(&board.done), ["s3", "s1"], "newest first");
         assert_eq!(ids(&board.review), ["s2"]);
@@ -440,10 +631,19 @@ pub(crate) mod tests {
         })
         .unwrap();
         let roles = Roles::load(&home, None).unwrap();
-        let board = Board::build(&task, &devws, &roles, Vec::new()).unwrap();
+        let board = Board::build(&task, &devws, &roles, TeamUsage::default()).unwrap();
         let row = &board.roles[1].agents[0];
         assert_eq!(row.now, None, "not told yet");
         assert_eq!(row.next, ["s1 add a file"]);
-        assert_eq!(board.queue, ["s1 add a file  for planner-1"]);
+        assert_eq!(
+            board.queue,
+            [QueueRow {
+                id: "o1".into(),
+                label: "s1 add a file  for planner-1".into()
+            }]
+        );
+        assert!(board.details["queue:o1"].contains("do it"));
+        assert!(board.details["agent:planner-1"].contains("Delivered: false"));
+        assert!(board.details["step:s1"].contains("Order o1"));
     }
 }

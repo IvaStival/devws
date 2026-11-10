@@ -29,11 +29,11 @@ repos get their own worktrees the same way, as the leader opens them.
 
 ```
 ┌───────┬──────────────────┬──────────────────────────┐
-│ ☰ Menu│ ▾ Leader · claude│ Team board               │
-│       │                  │ Who does what            │
-│ my-app│                  │ Seniors                  │
-│ ▸ team│                  │ ui-designer  1 ● ui-de…  │
-│ my-app│                  │ Factory floor            │
+│ ☰ Menu│ ▾ Leader · claude│ [overview] agents steps  │
+│       │                  │ Attention 1 · Done 12    │
+│ my-app│                  │ Leader: claude           │
+│ ▸ team│                  │ blocked s4 · add tests   │
+│ my-app│                  │ 1 ● ui-designer · idle   │
 │ -floor│                  │ hammer-codex 2 ● hamme…  │
 │  ◦ ha…│                  │                          │
 └───────┴──────────────────┴──────────────────────────┘
@@ -42,20 +42,34 @@ repos get their own worktrees the same way, as the leader opens them.
 - **The leader** is where you work: the team's CTO. It is focused when the
   workspace opens. Its team has **seniors**, who plan and answer questions
   and never write the repo, and the **factory floor** (the hammers), who build
-  only what a senior planned. When its account has used 95% of its week, the
-  leader moves to Codex Sol (medium): at start, or once it has finished its
-  turn; the new leader catches up from the task and tells you.
-- **The board** beside it, in a column of its own, shows where the team stands: the accounts' limits,
-  one line of state, the open questions, **Who does what** (every role there is, by group, running or not,
-  with what each running agent is doing and what comes next), the steps to
-  review, the orders waiting, and the steps done. When the pane is short
-  it shows a compact view; `z` zooms it to the whole board, `j`/`k` or the mouse wheel scroll (`PgUp`/`PgDn` a page, `g`/`G` top and end), `l` for the log of events (scrollable the same way), `Enter` to go back to the leader, `1`–`9` to an agent, `p` and a number to peek one, `q`
-  to close. It also runs the dispatcher that types orders into the agents.
+  only what a senior planned. The leader runs on Claude or Codex
+  Sol (medium) and moves to the other when its account has used 95% of its
+  5-hour window or week, or when you ask: tell it, or pick
+  **⇄ Switch leader model** in the menu's Team tab. It moves once it has
+  finished its turn; the new leader catches up from the task and tells you.
+- **⚙ Team roles** in the menu's Agent tab changes a role's model, effort or
+  approvals (the Floor on Sonnet, a Codex senior that never asks): pick the
+  role, the setting, then a value its program takes, or Default. Agents
+  started after that use it. Codex agents in the team's own lane folders start
+  without asking whether to trust the folder.
+- **The board** beside it opens on **Overview**, under a header with the
+  progress bar and each account's limit bars: what needs you, the team (the
+  leader first) and the steps done, newest first; the wheel scrolls all of it.
+  Tab / Shift-Tab switches to **Agents**, **Steps**, **Activity**, and **Usage**.
+  Completed work stays in Steps (`c` includes it); inactive roles stay in the
+  Agents catalog (`c` shows it). Use `j`/`k`, arrows, or the wheel to select a
+  row; Enter opens full details and Esc returns. `o` goes to a selected agent,
+  `v` peeks it, and `L` returns to the leader. Number keys `1`–`9` and `p` then
+  a number still work. Short panes preserve attention counts and scrolling;
+  `z` zooms, `l` opens Activity, and `?` shows shortcuts. `q` closes details or
+  quits the board. The board also runs the dispatcher while it is open.
+  The popup's **Team** tab offers **Team overview**, **Team agents**, **Team steps**,
+  **Team activity**, **Team usage**, and **Return to leader**.
 - **The agents** open in workspaces of their own, one per group, beside the
   team's: **Seniors** (`my-app-seniors`) and **Floor** (`my-app-floor`), four
   agents to a workspace, tiled beside a sidebar of their own; a fifth floor
   agent opens `my-app-floor-2`. In the sidebar they are a tree under the
-  team's workspace, each group with its agents (`└ Floor ●` while one waits,
+  team's workspace, each group with its agents (`└ ▾ Floor ●1` while one waits,
   then `◦ hammer-codex-1 ● needs you`); a group whose last agent stops
   closes. They are never paused while you are away. The team's workspace
   keeps only the leader and the board. Each
@@ -69,7 +83,12 @@ repos get their own worktrees the same way, as the leader opens them.
 - There is **no editor**: the agents work in the folder and you read the
   leader. `--editor` adds a Neovim panel under the board.
 - The sidebar lists the workspace under its task (`▸ team`), together with the
-  workspaces of the team's other repos.
+  workspaces of the team's other repos. Agent-team entries show the name and
+  status first, then the model in a dim line below when known. Narrow sidebars
+  use status icons and less indentation. Normal workspaces retain their branch,
+  Git/PR, agent, and editor details. The current team opens its tree. Right expands and Left collapses teams or groups,
+  with working/attention counts visible while collapsed. Search finds hidden
+  agents and reveals their parent path. Manual expansion survives refreshes.
 
 Because there is no editor, the actions that arrange the screen around one
 (Toggle layout, Minimize, Switch editor) and the database pane are not

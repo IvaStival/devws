@@ -80,40 +80,69 @@ The leader asks you (`escalate`) for what it cannot decide.
 
 ## The board
 
-The column beside the leader runs `devagentics board <task>`. The agents are
-not on that screen: devws opens each in a workspace of its group
-(`my-app-seniors`, `my-app-floor`, four agents each), listed under the task in
-the sidebar, and the board gives each running agent a
-number to reach it.
+The column beside the leader runs `devagentics board <task>`. Above every
+view, a rounded frame holds the task and branch with how many things need you
+in its top edge (`● 2 need you`, hidden at none), the views, a progress bar of
+accepted steps (braille dots, `⣿` done and `⣀` left, which every terminal
+draws as a texture), the team's cost at API prices with its input, output and
+cache tokens (every agent the task has had), and a row per account with its
+5-hour and week limit bars (green, yellow from 60 %, red from 85 %; narrow
+panes keep the 5-hour bar). A pane too short for the frame keeps its top row.
 
-- **Accounts**: how much of each running agent's 5-hour and weekly limit is
-  used.
-- **Usage**: what the leader and each agent have used: input, output and
-  cache tokens, and what they cost at API prices (a plan is not billed so; it is
-  what the tokens would cost, a `+` when a model has no price), with the team's
-  total. Read from each agent's own log, so it needs devws's `devws agent usage`.
-- **State**: the plan (none, written, approved), agents working, steps
-  accepted, what waits to be told to the leader, paused.
-- **Questions**: what a hammer asked and who has to answer.
-- **Who does what**: every role there is, built in or yours, under its group
-  (CTO, Seniors, Factory floor), whether it runs or not. Each running agent
-  has a number, and a hammer its lane (`hammer-codex-1 [back]`): press the
-  number to go to the agent's workspace; `p` and the number brings
-  its panel under the board for a look, and the same again sends it back. A running agent shows its state and the step it has an order for;
-  `next` lists the orders it has not been told yet. A role that is not running
-  shows its program and its `description`.
-- **Review**, **Queue** and **Done**: the steps the leader must act on, the
-  orders waiting to be typed in, and the accepted steps (a box with nothing
-  in it is left out).
+The default **Overview** is one list of sections, each after a blank line and
+left out when empty: **Needs you** (unanswered questions, steps to review or
+stuck, agents waiting or gone, a dispatcher problem); **CTO**, **Seniors** and
+**Floor**, each with what its running agents cost and their tokens in all, and
+each agent with its program (and lane), state, cost and tokens in columns,
+over a dim line with its current step, the steps it got accepted and its
+retries; the number of queued orders; and **Done** (accepted steps, newest
+first, `×n` when a step took retries). The leader is the CTO's first row. The
+selection skips section titles, second lines and blank lines, and the wheel
+scrolls the whole list, down to the oldest done step. Panes under 60 columns
+drop the cost and token columns.
 
-A short pane starts compact. `z` zooms it to the whole board;
-`j`/`k` (or the arrows, or the mouse wheel) scroll, `PgUp`/`PgDn` (`b`/space)
-a page, `g`/`G` to the top and the end. `l` shows the log of events, newest at
-the bottom, with the lines on screen; scrolled back, it stays on them as new
-ones come in, and `G` returns to the newest; `1`–`9` goes to an agent and
-`p` with a number peeks it; `Enter` goes back to the leader,
-`r` reads the team again, `q` quits. The board also runs the dispatcher while
-it is open; `devagentics board <task> --once` prints it as text, and does not.
+The board reads the team (states, usage, limits) in the background, so slow
+readings never hold up keys or the wheel; every pending wheel turn is applied
+before the board draws again.
+
+Use Tab / Shift-Tab to move between five views:
+
+- **Overview** shows what needs you, the team and the work done.
+- **Agents** lists running and lost agents by group. `c` also shows the inactive
+  role catalog. Each row distinguishes pane activity from its current order.
+- **Steps** shows unfinished work, each row marked (`✓` accepted, `⠋` ordered,
+  `●` to review, `⚠` failed, blocked or sent back). `c` includes completed steps.
+- **Activity** shows events newest first; Enter reveals the complete event text.
+- **Usage** shows account limits and the leader's and agents' token usage,
+  including the team total and estimated API cost (`+` means an unpriced model).
+
+Use `j`/`k`, arrows, or the mouse wheel to select rows, PgUp/PgDn (`b`/space)
+to move a page, and `g`/`G` or Home/End for the first/last row. Enter opens full,
+wrapped details; the same movement keys scroll them, and Esc returns. Selection
+stays on the same item when the team refreshes. Short panes keep attention counts
+and scrolling; `z` zooms the pane and `?` shows all shortcuts.
+
+On an agent row, `o` goes to its workspace and `v` peeks it under the board;
+peek again to send it back. The first nine agents also have direct `1`–`9`
+shortcuts and `p` followed by a number to peek. Selected-row navigation works
+with any number of agents. `L` returns to the leader by pane identity, `l`
+toggles Activity, and `r` refreshes. `q` closes details/help, or quits the board.
+The board runs the dispatcher while open, so quitting the board stops its
+dispatcher.
+
+The popup menu's **Team** tab opens these views or the leader, including from a
+group workspace. It focuses the existing board and never starts another
+dispatcher. Team sidebar entries show name and status on the first line and the model in a
+dim line below when known. Long model identifiers wrap; narrow sidebars use
+compact status icons. Normal workspaces retain branch, Git/PR, agent, and editor
+details, with known models below the agent line. The current team opens
+its tree; Right/Left expands or collapses it. Working and
+attention counts remain visible on collapsed teams. Search includes hidden
+agents and reveals their team path without replacing manual expansion choices.
+
+`devagentics board <task> --once` prints an overview without a dispatcher;
+`--view overview|agents|steps|activity|usage` selects another view, and
+`--width`/`--height` set the printed dimensions.
 
 ## Rules devAgentics keeps
 
@@ -124,15 +153,24 @@ it is open; `devagentics board <task> --once` prints it as text, and does not.
 - At most `max_agents` running (6), the seniors included. Agents stay between
   steps; the leader stops them at the end, near a limit, or to make room.
 - No new agents on an account past 85% of its 5-hour limit.
-- **The leader moves** when its account has used 95% of its week: to its
-  role's `[fallback]` (the built-in leader's is Codex `gpt-6.1-sol`, effort
-  medium), unless that account has too. At start the leader starts there;
-  while it runs, the board hands it over once it has finished its turn: its
-  pane restarts on the fallback, which catches up from `task_status` and the
-  log (the conversation does not go with it) and tells you. The board's
-  leader row then says `· fallback`, and the log says why. It does not move
-  back on its own; the next `devws agentic` chooses again. Only the leader
-  has a fallback; your own `leader.md` sets another, or none:
+- **The leader has two programs**: its role's and its role's `[fallback]`
+  (the built-in leader's are Claude, and Codex `gpt-6.1-sol`, effort medium).
+  It moves from the one it runs on to the other, either way:
+  - **on its own**, when the account it runs on has used 95% of its 5-hour
+    window or of its week, unless the other's has too (then it stays);
+  - **when asked**: tell the leader (it calls `switch_leader`), pick
+    **⇄ Switch leader model** in the devws menu's agent tab, or run
+    `devagentics leader switch <task>`. Refused when the other account has
+    run out.
+
+  At start the leader starts on its role's program, or on the other when
+  that one has run out. While it runs, the board hands it over once it has
+  finished its turn: its pane restarts on the other program, which catches up
+  from `task_status` and the log (the conversation does not go with it) and
+  tells you. The board's leader row says `· fallback` while it runs on the
+  fallback, `task_status`'s `leader` shows both programs, and the log says
+  why each move happened. Only the leader has a fallback; your own
+  `leader.md` sets another, or none (then it never moves):
 
   ```toml
   [fallback]
@@ -155,19 +193,22 @@ it is open; `devagentics board <task> --once` prints it as text, and does not.
 | `devagentics task status <task>` | Where the team stands, as JSON |
 | `devagentics task pause\|resume\|cancel <task>` | Stop new deliveries and agents; start again the agents whose panels went; stop every agent |
 | `devagentics task list` | The tasks |
+| `devagentics leader switch <task> [--reason "<why>"]` | Move the leader to its other program once its turn is over (the devws menu's Switch leader model) |
 | `devagentics role list [--repo <path>]` | The roles and where each comes from |
+| `devagentics role set <role> [--model M] [--effort E] [--approvals A] [--repo <path>]` | Changes those settings in the role's file; an empty value removes one |
+| `devagentics role choices <role> model\|effort\|approvals [--repo <path>]` | The values the role's program takes for a setting |
 | `devagentics plan write` | Store a plan from standard input (a senior runs it): the overall plan until you approve one, then the execution plan of the step it was ordered |
 | `devagentics plan show <step>` | Print a step's execution plan (a hammer runs it) |
 | `devagentics ask "<question>"` | A hammer asks about its order; the senior who planned it is told |
 | `devagentics answer <q…> "<answer>"` | A senior answers; the answer is typed into the hammer |
 | `devagentics report done\|blocked "<text>"` | An agent reports (run by the agent, in its pane) |
-| `devagentics board <task> [--once]` | The team board (and the dispatcher): the workspace's team pane. `--once` prints it as text |
+| `devagentics board <task> [--once] [--view <view>]` | The team board (and the dispatcher): the workspace's team pane. `--once` prints it as text |
 | `devagentics watch <task> [--once]` | The dispatcher alone, with the log as plain lines |
 | `devagentics mcp <task>` | The leader's tools, as an MCP server on stdio |
 
 The leader's tools: `task_status`, `approve_plan`, `spawn_agent`, `add_lane`, `add_repo`,
 `send_order`, `read_plan`, `answer_question`, `accept_step`, `reject_step`, `stop_agent`, `set_check`, `read_log`,
-`escalate`, `open_prs`.
+`escalate`, `switch_leader`, `open_prs`.
 
 ## Roles
 
@@ -193,6 +234,21 @@ You write the tests for the step you are given…
 Only the `leader` is built in. Every other role is a file of yours: put them in
 `~/.devagentics/roles/<name>.md`, or in a repo's `.devws/roles/`; a file with
 a file named `leader` replaces the built-in one, and a repo's beats yours.
+
+To change a role's model, effort or approvals without opening its file, use
+**⚙ Team roles** in the devws menu's Agent tab, or `devagentics role set`. It
+rewrites only those lines of the file the role comes from, and takes only the
+values the role's program knows (Claude: effort `low` to `max`, approvals
+`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`; Codex: effort
+`minimal` to `xhigh`, approvals `untrusted`, `on-request`, `never`, `auto`);
+any model name may be typed. Agents started from then on use it; running ones
+keep theirs. The leader is not changed this way: Switch leader model moves it.
+
+Codex asks "Trust this folder?" in a folder its settings do not trust, and a
+task's lanes are new folders. So when devws starts a Codex agent in a folder
+inside `~/.devagentics/tasks` (`$DEVAGENTICS_HOME/tasks`), it adds that folder
+as trusted to the account's `config.toml`, as answering the question would.
+It never trusts another folder for you.
 `roles/samples/` in this repo has a planner (a senior) and an executor (the
 factory floor) to copy from; the
 leader sees the roles there are in `task_status` and uses only those.

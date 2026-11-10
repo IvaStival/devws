@@ -11,6 +11,14 @@ use std::time::{Duration, Instant};
 /// The leader's name in the board; it is not one of the task's agents.
 pub const LEADER_NAME: &str = "leader";
 
+/// What a team used, by role (the Usage view) and by agent (each row).
+#[derive(Debug, Default)]
+pub struct TeamUsage {
+    pub by_role: Vec<(String, Usage)>,
+    /// By agent id; the leader as `LEADER_NAME`.
+    pub by_agent: HashMap<String, Usage>,
+}
+
 pub struct UsageReader {
     every: Duration,
     seen: HashMap<String, (Instant, Option<Usage>)>,
@@ -35,17 +43,19 @@ impl UsageReader {
         Ok(usage)
     }
 
-    /// The leader first, then a row per role, in the order its first agent
-    /// started: the leader starts agents of a role again and again, and they
-    /// count as one. Agents nothing is known about are left out.
-    pub fn of_team(&mut self, task: &Task, devws: &dyn Devws) -> Result<Vec<(String, Usage)>> {
+    /// What the team used: the leader and each agent on its own, and the
+    /// leader first, then a row per role in the order its first agent
+    /// started (the leader starts agents of a role again and again, and they
+    /// count as one). Agents nothing is known about are left out.
+    pub fn of_team(&mut self, task: &Task, devws: &dyn Devws) -> Result<TeamUsage> {
         let config = task.config()?;
         let state = task.state()?;
-        let mut usages = Vec::new();
+        let mut usages = TeamUsage::default();
         if let Some(pane) = devws.pane_with_role(&config.workspace, "agent")?
             && let Some(usage) = self.read(devws, LEADER_NAME, &pane)?
         {
-            usages.push((LEADER_NAME.to_string(), usage));
+            usages.by_role.push((LEADER_NAME.to_string(), usage));
+            usages.by_agent.insert(LEADER_NAME.to_string(), usage);
         }
         for agent in &state.agents {
             let usage = if agent.live && !agent.lost {
@@ -54,9 +64,14 @@ impl UsageReader {
                 agent.usage
             };
             let Some(usage) = usage else { continue };
-            match usages.iter_mut().find(|(name, _)| *name == agent.role) {
+            usages.by_agent.insert(agent.id.clone(), usage);
+            match usages
+                .by_role
+                .iter_mut()
+                .find(|(name, _)| *name == agent.role)
+            {
                 Some((_, sum)) => *sum = sum.plus(usage),
-                None => usages.push((agent.role.clone(), usage)),
+                None => usages.by_role.push((agent.role.clone(), usage)),
             }
         }
         Ok(usages)
@@ -106,23 +121,38 @@ mod tests {
 
         let mut reader = UsageReader::new(Duration::ZERO);
         let usages = reader.of_team(&task, &devws).unwrap();
-        let names: Vec<_> = usages.iter().map(|(name, _)| name.as_str()).collect();
+        let names: Vec<_> = usages
+            .by_role
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
         assert_eq!(names, ["leader", "planner"], "a row per role");
-        assert_eq!(total(&usages).input, 1200);
+        assert_eq!(total(&usages.by_role).input, 1200);
 
         devws.set_usage(&second.pane, usage(50, 0.5));
         let both = reader.of_team(&task, &devws).unwrap();
-        assert_eq!(both.len(), 2, "the role's agents are one row: {both:?}");
         assert_eq!(
-            (both[1].1.input, both[1].1.cost),
+            both.by_role.len(),
+            2,
+            "the role's agents are one row: {both:?}"
+        );
+        assert_eq!(
+            (both.by_role[1].1.input, both.by_role[1].1.cost),
             (250, 0.75),
             "planner-1 and planner-2 added up"
         );
+        assert_eq!(both.by_agent["planner-1"].input, 200, "each agent's own");
+        assert_eq!(both.by_agent["planner-2"].input, 50);
+        assert_eq!(both.by_agent[LEADER_NAME].input, 1000);
 
         team.stop_agent("planner-1").unwrap();
         devws.set_usage(&first.pane, usage(9999, 9.0));
         let after = reader.of_team(&task, &devws).unwrap();
-        assert_eq!(after[1].1.input, 250, "a stopped agent keeps what it had");
+        assert_eq!(
+            after.by_role[1].1.input, 250,
+            "a stopped agent keeps what it had"
+        );
+        assert_eq!(after.by_agent["planner-1"].input, 200);
     }
 
     #[test]

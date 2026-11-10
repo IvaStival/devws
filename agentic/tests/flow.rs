@@ -519,7 +519,7 @@ fn the_commands_say_what_is_wrong() {
 }
 
 #[test]
-fn the_board_lists_every_role_and_shows_who_works_on_what() {
+fn board_views_prioritize_work_and_keep_usage_separate() {
     let world = World::new();
     world.ok(
         None,
@@ -538,19 +538,39 @@ fn the_board_lists_every_role_and_shows_who_works_on_what() {
 
     let board = world.ok(None, &["board", "feat-x", "--once", "--width", "90"], "");
     for expected in [
-        "feat-x  feat/x",
-        "Who does what",
-        "planner",
-        "● planner-1  working",
-        "│planner  in 1k     out 300    cache 4k     $0.50",
-        "tester",
-        "not running  claude · Runs the tests",
-        "executor",
-        "No plan yet. 1 working.",
+        "feat-x · feat/x",
+        "[overview]",
+        "claude · high",
+        "CTO",
+        "SENIORS · 1",
+        "1  planner-1",
+        "⠋ working",
+        "PROGRESS",
     ] {
         assert!(
             board.contains(expected),
             "missing '{expected}' in:\n{board}"
         );
+    }
+    assert!(
+        !board.contains("cache 4k"),
+        "overview should not list token history"
+    );
+    assert!(
+        !board.contains("tester"),
+        "inactive roles belong in the secondary catalog"
+    );
+    let usage = world.ok(None, &["board", "feat-x", "--once", "--view", "usage"], "");
+    assert!(usage.contains("planner  in 1k"), "{usage}");
+    assert!(usage.contains("cache 4k"), "{usage}");
+    for view in ["agents", "steps", "activity"] {
+        let text = world.ok(
+            None,
+            &[
+                "board", "feat-x", "--once", "--view", view, "--width", "38", "--height", "8",
+            ],
+            "",
+        );
+        assert!(text.contains(&format!("[{view}]")), "{text}");
     }
 }

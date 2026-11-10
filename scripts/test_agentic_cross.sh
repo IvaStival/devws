@@ -188,17 +188,33 @@ awk -F '\t' '$1 == "P" && $2 == "dev-repo" && $4 == "team-log"' "$HOME/.devws-st
 ok "an agent is peeked and sent back, shown in its workspace, and the team still saves"
 
 board="$(devagentics board feat-x --once --width 100 2>&1)" || fail "board --once: $board"
-for expected in "Who does what" "Seniors" "Factory floor" "planner-1" "executor-1" "leader"; do
+for expected in "[overview]" "PROGRESS" "CTO" "L  leader" "SENIORS" "FLOOR" "planner-1" "executor-1"; do
   case "$board" in *"$expected"*) ;; *) fail "the board lacks '$expected': $board" ;; esac
 done
-ok "the board lists the roles and the running planner"
-pane_text="$(tmux capture-pane -p -t "$(tmux list-panes -t =dev-repo -F '#{pane_id} #{@devws_role}' | awk '$2=="team-log"{print $1}')")"
-case "$pane_text" in *"board: "*) fail "the board pane shows an error: $pane_text" ;; esac
+case "$board" in *"need you"*) fail "the board asks for you with nothing waiting: $board" ;; esac
+ok "the overview shows progress, leader identity and active agents"
+board_pane="$(tmux list-panes -t =dev-repo -F '#{pane_id} #{@devws_role}' | awk '$2=="team-log"{print $1}')"
+pane_text="$(tmux capture-pane -p -t "$board_pane")"
+case "$pane_text" in *"Refresh failed:"*) fail "the board pane shows an error: $pane_text" ;; esac
 ok "the live board pane shows no error"
 
+# The Team menu targets the existing board from a group workspace; the board
+# consumes the request and opens complete step details without a new dispatcher.
+board_shows() { tmux capture-pane -p -t "$board_pane" | grep -qF "$1"; }
+TMUX_PANE="$hammer" "$HOME/.tmuxinator/devws_menu.sh" --run team-steps
+wait_until board_shows '[steps]' || fail "the board did not consume the Team steps request"
+[ -z "$(tmux show-options -pqv -t "$board_pane" @devagentics_board_view)" ] || fail "the board left its view request pending"
+tmux send-keys -t "$board_pane" Enter
+wait_until board_shows 'Create a.txt' || fail "the board did not show the full step order"
+tmux send-keys -t "$board_pane" Escape
+TMUX_PANE="$hammer" "$HOME/.tmuxinator/devws_menu.sh" --run team-usage
+wait_until board_shows '[usage]' || fail "the board did not consume the Team usage request"
+if devagentics watch feat-x --once >/dev/null 2>&1; then fail "view navigation released the dispatcher lock"; fi
+ok "Team menu requests reach the live board and full details preserve order text"
+
 # 7. A restart: the sidebar groups the task, restore leaves the team alone.
-rows="$(DEVWS_PICKER_ROWS="$ROOT/rows" "$HOME/.tmuxinator/session_picker.sh" --rows | tr '\0' '\n' | grep -E "^(workspace|task|group|agent):" | cut -f1 | tr '\n' ' ')"
-[ "$rows" = "task:feat-x workspace:dev-repo group:dev-repo-seniors agent:$pane group:dev-repo-floor agent:$hammer " ] ||
+rows="$(DEVWS_PICKER_CURRENT=dev-repo TMUX_PANE="$board_pane" DEVWS_PICKER_ROWS="$ROOT/rows" "$HOME/.tmuxinator/session_picker.sh" --rows | tr '\0' '\n' | grep -E "^(workspace|task|group|agent):" | cut -f1 | tr '\n' ' ')"
+[ "$rows" = "workspace:dev-repo group:dev-repo-seniors agent:$pane group:dev-repo-floor agent:$hammer " ] ||
   fail "sidebar rows: $rows"
 ok "the sidebar lists the team's workspaces and agents under its task"
 
