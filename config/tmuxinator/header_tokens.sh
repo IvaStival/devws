@@ -7,6 +7,7 @@
 #   header_tokens.sh limits <codex agent>   a Codex agent's plan limits, % used:
 #                                           "<5-hour session> <week>"
 #   header_tokens.sh session <transcript>   one conversation: "conv 230k · ctx 41%"
+#   header_tokens.sh model <transcript>     latest observed model identifier
 #   header_tokens.sh usage <transcript>     what one conversation used:
 #                                           "<input> <output> <cache> <US$> <unpriced>"
 #                                           (tokens; cache is read + written)
@@ -53,11 +54,17 @@ recent_logs() {
   [ -d "$1" ] && find "$1" -name '*.jsonl' -mtime "-$2" -print0
 }
 
+# Cache normalized records rather than totals: reset times, pricing and
+# message deduplication still use the current query's rules.
+token_records() {
+  perl "$scripts_dir/token_cache.pl"
+}
+
 # Rates: input, cache write 5 min, cache write 1 h, cache read, output. A
 # message without the 5 min / 1 h split counts its writes as 5 min ones.
 #   claude_cost <since> <folder>
 claude_cost() {
-  recent_logs "$2/projects" 32 | xargs -0 grep -h '"output_tokens"' 2>/dev/null |
+  recent_logs "$2/projects" 32 | token_records |
     jq -nRr --argjson since "$1" --rawfile prices "$prices_file" "$epoch $price $claude_messages
       | map(select(.at >= \$since and .model != \"<synthetic>\") | . as \$message | price(.model) as \$rates
         | if \$rates == null then {cost: 0, unpriced: 1}
@@ -85,7 +92,7 @@ codex_cost() {
     printf '0 0\n'
     return
   fi
-  grep -h '"turn_context"\|"token_usage_record"' "${logs[@]}" 2>/dev/null |
+  printf '%s\0' "${logs[@]}" | token_records |
     jq -nRr --argjson since "$1" --rawfile prices "$prices_file" "$epoch $price
       [inputs | fromjson?] as \$lines
       | (\$lines | map(select(.type == \"turn_context\") | {key: .payload.turn_id, value: .payload.model}) | from_entries) as \$models
@@ -125,7 +132,7 @@ codex_limits() {
     logs+=("$log")
   done < <(recent_logs "$1/sessions" 8)
   [ "${#logs[@]}" -gt 0 ] || return 0
-  grep -h '"rate_limits"' "${logs[@]}" 2>/dev/null |
+  printf '%s\0' "${logs[@]}" | token_records |
     jq -nRr --argjson now "$now" "$epoch [inputs | fromjson? | select(.payload.rate_limits.primary)
       | {at: (.timestamp | epoch), limits: .payload.rate_limits}] | sort_by(.at) | last // empty | .limits
       | [.primary, .secondary] | map(if . == null then \"-\" elif (.resets_at // 1e18) < \$now then 0 else .used_percent | floor end)
@@ -135,15 +142,16 @@ codex_limits() {
 # Codex knows its context window; Claude Code's logs do not, so its context is
 # shown in tokens.
 session() {
-  local transcript="$1"
+  local transcript="$1" records
   [ -r "$transcript" ] || return 0
-  if grep -q '"token_count"' "$transcript"; then
+  records="$(printf '%s\0' "$transcript" | token_records)"
+  if grep -q '"token_count"' <<< "$records"; then
     jq -nRr "$human [inputs | fromjson? | select(.type == \"event_msg\" and .payload.type == \"token_count\" and .payload.info) | .payload.info]
       | last // empty
       | \"conv \(.total_token_usage.total_tokens | human) · ctx \(.last_token_usage.input_tokens * 100 / .model_context_window | floor)%\"" \
-      "$transcript" 2>/dev/null
+      <<< "$records" 2>/dev/null
   else
-    grep -h '"output_tokens"' "$transcript" |
+    printf '%s\n' "$records" |
       jq -nRr "$human $epoch $claude_messages | select(length > 0)
         | \"conv \(map(.total) | add | human) · ctx \(sort_by(.at) | last | .usage
           | (.input_tokens + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)) | human)\"" 2>/dev/null
@@ -154,10 +162,11 @@ session() {
 # What one conversation used, in tokens and at API prices. A Claude Code log
 # has a usage per message; a Codex log the running total of its latest count.
 usage() {
-  local transcript="$1"
+  local transcript="$1" records
   [ -r "$transcript" ] || return 0
-  if grep -q '"token_count"' "$transcript"; then
-    grep -h '"turn_context"\|"token_count"' "$transcript" |
+  records="$(printf '%s\0' "$transcript" | token_records)"
+  if grep -q '"token_count"' <<< "$records"; then
+    printf '%s\n' "$records" |
       jq -nRr --rawfile prices "$prices_file" "$price
         [inputs | fromjson?] as \$lines
         | (\$lines | map(select(.type == \"turn_context\") | .payload.model) | last // \"\") as \$model
@@ -167,7 +176,7 @@ usage() {
         | (\$total.input_tokens - \$cached) as \$input
         | \"\(\$input) \(\$total.output_tokens) \(\$cached) \(if \$rates == null then 0 else ((\$input * \$rates[0] + \$cached * \$rates[3] + \$total.output_tokens * \$rates[4]) / 1000000 * 100 | round / 100) end) \(if \$rates == null then 1 else 0 end)\"" 2>/dev/null
   else
-    grep -h '"output_tokens"' "$transcript" |
+    printf '%s\n' "$records" |
       jq -nRr --rawfile prices "$prices_file" "$epoch $price $claude_messages
         | select(length > 0)
         | map(select(.model != \"<synthetic>\") | . as \$message | price(.model) as \$rates
@@ -186,8 +195,25 @@ usage() {
   return 0
 }
 
+# Reuse the compact transcript cache; no prompts or message bodies are read
+# from it. The final observed record wins when a conversation switches model.
+model() {
+  local transcript="$1" timed="${2:-}"
+  [ -r "$transcript" ] || return 0
+  printf '%s\0' "$transcript" | token_records |
+    jq -nRr --arg timed "$timed" '[inputs | fromjson? | . as $record |
+      (if .type == "assistant" then .message.model
+       elif .type == "turn_context" then .payload.model else null end)
+      | select(type == "string" and length > 0 and . != "<synthetic>")
+      | {model: ., at: (try ($record.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch 0)}]
+      | last // empty
+      | if $timed == "timed" then [(.at // 0), .model] | @tsv else .model end'
+}
+
 case "$mode" in
   costs) costs ;;
+  model) model "${2:-}" ;;
+  model-info) model "${2:-}" timed ;;
   usage) usage "${2:-}" ;;
   session) session "${2:-}" ;;
   limits)
@@ -198,7 +224,7 @@ case "$mode" in
     codex_limits "$(agent_home "$2")"
     ;;
   *)
-    printf 'Usage: header_tokens.sh costs | limits <codex agent> | session <transcript> | usage <transcript>\n' >&2
+    printf 'Usage: header_tokens.sh costs | limits <codex agent> | session <transcript> | usage <transcript> | model <transcript>\n' >&2
     exit 2
     ;;
 esac

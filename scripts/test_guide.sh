@@ -13,12 +13,14 @@ missing=()
 
 # Variables that are not settings: test overrides (their comments say "for
 # tests") and values devws passes between its own scripts (the header's
-# colors come from tmux.conf's @devws_color_* options).
+# colors come from tmux.conf's @devws_color_* options), and development probe
+# overrides documented in docs/architecture/agent-performance.md.
 internal_variables=" DEVWS_TOKENS_NOW DEVWS_NETWORK_NOW DEVWS_CLOCK_TIME DEVWS_ENV_FILE
-  DEVWS_TERMINAL_NOTIFIER DEVWS_PICKER_ROWS DEVWS_AGENT DEVWS_ROOT DEVWS_JOBS_DIR
+  DEVWS_TERMINAL_NOTIFIER DEVWS_PICKER_ROWS DEVWS_PICKER_CURRENT DEVWS_AGENT DEVWS_ROOT DEVWS_JOBS_DIR
   DEVWS_AGENT_ DEVWS_PAGER DEVWS_NOTIFY_COMMAND DEVWS_AI_MEMORY DEVWS_COLOR_OK
   DEVWS_COLOR_WARN DEVWS_COLOR_STRESS DEVWS_COLOR_DIM DEVWS_COLOR_RULE DEVWS_COLOR_GHOST
-  DEVWS_NVIM_SOCKET_PREFIX DEVWS_NVIM_GRACE DEVWS_BIN"
+  DEVWS_NVIM_SOCKET_PREFIX DEVWS_NVIM_GRACE DEVWS_BIN
+  DEVWS_TOKEN_CACHE_DISABLE DEVWS_TOKEN_CACHE_METRICS"
 internal_variables=" $(printf '%s' "$internal_variables" | tr '\n' ' ') "
 
 shopt -s nullglob

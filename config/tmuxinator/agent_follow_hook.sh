@@ -27,6 +27,18 @@ payload="$(cat)"
 scripts="$(dirname "$0")"
 open="$scripts/editor_open.sh"
 
+# Extra agents and workspaces without a linked editor have no consumer for
+# repository snapshots. Check before parsing the payload or scanning Git.
+[ -n "${TMUX_PANE:-}" ] || exit 0
+snapshot="pane-$TMUX_PANE"
+eligibility="$(tmux display-message -p -t "$TMUX_PANE" '#{@devws_editor_socket}|#{@devws_follow}' 2>/dev/null)"
+socket="${eligibility%|*}"
+mode="${eligibility##*|}"
+if [ ! -S "$socket" ] || [ "$mode" = off ]; then
+  "$scripts/agent_changes.sh" discard "" "$snapshot"
+  exit 0
+fi
+
 first_line() {
   awk 'NF { print; exit }'
 }
@@ -39,7 +51,6 @@ json() {
 # workspace's extra agents keep theirs apart.
 project="$(json '.cwd // empty')"
 project="${project:-$PWD}"
-snapshot="pane-${TMUX_PANE:-none}"
 
 case "$phase" in
   pre)

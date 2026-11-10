@@ -27,6 +27,7 @@ fail() {
 mkdir -p "$TEST_ROOT/bin" "$TEST_ROOT/home" "$TEST_ROOT/project" "$TEST_ROOT/agents"
 cat > "$TEST_ROOT/bin/tmux" <<EOF
 #!/usr/bin/env bash
+printf '%s\\n' "\$*" >> "$TEST_ROOT/tmux-calls"
 exec "$REAL_TMUX" -L "$SOCKET" -f /dev/null "\$@"
 EOF
 for agent in claude codex; do
@@ -90,6 +91,40 @@ hook() {
 
 claude_event() {
   hook "{\"session_id\":\"s\",\"cwd\":\"$TEST_ROOT/project\",\"hook_event_name\":\"$1\"${2:+,$2}}"
+}
+
+test_repeated_state_does_not_rewrite_options() {
+  local writes
+  "$SCRIPTS/agent_status.sh" dev-work working "$AGENT_PANE"
+  : > "$TEST_ROOT/tmux-calls"
+  "$SCRIPTS/agent_status.sh" dev-work working "$AGENT_PANE"
+  writes="$(grep -c '^set-option.*@devws_' "$TEST_ROOT/tmux-calls" || true)"
+  [ "$writes" = 0 ] || fail "an unchanged working event rewrote $writes tmux options"
+  "$SCRIPTS/agent_status.sh" dev-work idle "$AGENT_PANE"
+}
+
+test_repeated_hook_does_not_rewrite_transcripts() {
+  local payload writes transcript real_jq probe
+  transcript="$TEST_ROOT/a quoted \"transcript\" \\ file.jsonl"
+  payload="$(jq -nc --arg path "$transcript" '{hook_event_name:"PreToolUse",transcript_path:$path}')"
+  real_jq="$(command -v jq)"
+  probe="$TEST_ROOT/jq-probe"
+  mkdir -p "$probe"
+  cat > "$probe/jq" <<EOF
+#!/usr/bin/env bash
+echo call >> "$TEST_ROOT/jq-calls"
+exec "$real_jq" "\$@"
+EOF
+  chmod +x "$probe/jq"
+  PATH="$probe:$PATH" hook "$payload"
+  : > "$TEST_ROOT/tmux-calls"
+  : > "$TEST_ROOT/jq-calls"
+  PATH="$probe:$PATH" hook "$payload"
+  writes="$(grep -c '^set-option.*@devws_' "$TEST_ROOT/tmux-calls" || true)"
+  [ "$writes" = 0 ] || fail "an unchanged transcript event rewrote $writes tmux options"
+  [ "$(wc -l < "$TEST_ROOT/jq-calls" | tr -d ' ')" = 1 ] || fail "the hook parsed one payload more than once"
+  [ "$(tmux show-options -pqv -t "$AGENT_PANE" @devws_transcript)" = "$transcript" ] || fail "the hook corrupted a quoted transcript path"
+  claude_event SessionEnd '"reason":"exit"'
 }
 
 test_claude_events_set_the_state() {
@@ -511,13 +546,18 @@ working_row() {
 }
 
 test_the_sidebar_shows_each_workspace_state() {
-  local first fzf_before
+  local first fzf_before picker_socket
   new_workspace dev-other
+  tmux set-option -t dev-work @devws_template agentic
+  tmux set-option -p -t "$AGENT_PANE" @devws_model team-live-model
+  tmux set-option -p -t dev-other: @devws_model runtime-live-model
+  tmux set-option -p -t dev-other: @devws_model_configured configured-live-model
   "$SCRIPTS/agent_status.sh" dev-work waiting
   "$SCRIPTS/agent_status.sh" dev-other done
   sidebar_test_pane="$(tmux split-window -t dev-work: -h -l 60 -P -F '#{pane_id}' "$SCRIPTS/session_picker.sh")"
-  shows_both() { sidebar | grep -q "claude ● needs you · nvim" && sidebar | grep -q "claude ✓ done · nvim"; }
+  shows_both() { sidebar | grep -q "dev-work.*●1" && sidebar | grep -q "team-live-model" && sidebar | grep -q "claude ✓ done · nvim" && sidebar | grep -q "runtime-live-model"; }
   wait_until shows_both || fail "the sidebar does not show each state: $(sidebar)"
+  ! sidebar | grep -q 'feat/alerts' || fail "the team sidebar row shows its branch: $(sidebar)"
   sidebar_fzf() {
     pgrep -f -- "--listen=.*devws-picker-$(tmux display-message -p -t "$sidebar_test_pane" '#{pane_pid}').sock"
   }
@@ -525,24 +565,60 @@ test_the_sidebar_shows_each_workspace_state() {
   [ -n "$fzf_before" ] || fail "the sidebar's fzf is not listening"
   listening() { [ -S "$(tmux show-option -pqv -t "$sidebar_test_pane" @devws_picker_socket)" ]; }
   wait_until listening || fail "the sidebar did not publish its socket"
+  picker_socket="$(tmux show-option -pqv -t "$sidebar_test_pane" @devws_picker_socket)"
+  curl -s --max-time 2 --unix-socket "$picker_socket" http://localhost -d 'pos(1)' >/dev/null
+  focused_other() {
+    curl -s --max-time 2 --unix-socket "$picker_socket" http://localhost |
+      jq -e '.current.text | startswith("workspace:dev-other\t")' >/dev/null
+  }
+  wait_until focused_other || fail "could not focus the inactive workspace"
+  curl -s --max-time 2 --unix-socket "$picker_socket" http://localhost |
+    jq -e '.current.text | split("\t") | length == 2' >/dev/null ||
+    fail "the fzf input includes hidden search metadata"
+  curl -s --max-time 2 --unix-socket "$picker_socket" http://localhost -d 'pos(2)' >/dev/null
+  focused_team() {
+    curl -s --max-time 2 --unix-socket "$picker_socket" http://localhost |
+      jq -e '.current.text | startswith("workspace:dev-work\t")' >/dev/null
+  }
+  wait_until focused_team || fail "could not focus the team workspace"
+  tmux send-keys -t "$sidebar_test_pane" Left
+  collapsed_team() {
+    tmux show-option -pqv -t "$sidebar_test_pane" @devws_picker_expansion |
+      grep -q $'dev-work\tclosed' && sidebar | grep -q '▸ dev-work'
+  }
+  wait_until collapsed_team || fail "Left did not collapse the team workspace: $(sidebar)"
+  tmux send-keys -t "$sidebar_test_pane" Right
+  expanded_team() {
+    tmux show-option -pqv -t "$sidebar_test_pane" @devws_picker_expansion |
+      grep -q $'dev-work\topen' && sidebar | grep -q '▾ dev-work'
+  }
+  wait_until expanded_team || fail "Right did not expand the team workspace"
+  wait_until focused_team || fail "expanding moved the selection: $(sidebar)"
+  curl -s --max-time 2 --unix-socket "$picker_socket" http://localhost -d 'pos(1)' >/dev/null
+  wait_until focused_other || fail "could not refocus the normal workspace"
 
-  # The state changes reach it; the spinner leaves its ⠋ still, shown or not:
-  # each turn would make fzf draw the whole list, and the terminal repaint it.
+  # The state changes reach it; a sidebar on screen turns its spinner with the
+  # header's, and one nobody sees holds still, as no one would see it turn.
   "$SCRIPTS/agent_status.sh" dev-other working
   shows_working() { [ -n "$(working_row)" ]; }
   wait_until shows_working || fail "the sidebar did not redraw on a state change: $(sidebar)"
   first="$(working_row)"
+  wait_until focused_other || fail "refresh moved the cursor when the selected row changed"
+  spin 4
+  sleep 0.5
+  [ "$(working_row)" = "$first" ] || fail "a sidebar nobody sees turned its spinner: $(working_row)"
   "$REAL_TMUX" -L "$CLIENT_SOCKET" -f /dev/null new-session -d -s client -x 200 -y 50 \
     "TMUX= $REAL_TMUX -L $SOCKET attach -t dev-work"
   attached() { [ -n "$(tmux list-clients -t dev-work)" ]; }
   wait_until attached || fail "the client did not attach"
   spin 4
-  sleep 0.5
-  [ "$(working_row)" = "$first" ] || fail "the sidebar was redrawn by a spinner turn: $(working_row)"
+  turned() { working_row | grep -q '⠼'; }
+  wait_until turned || fail "the sidebar on screen did not turn its spinner: $(working_row)"
+  wait_until focused_other || fail "a spinner turn moved the cursor"
   "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server
 
   "$SCRIPTS/agent_status.sh" dev-other idle
-  shows_idle() { sidebar | grep -q "claude · nvim"; }
+  shows_idle() { sidebar | grep -q "claude · nvim" && sidebar | grep -q "runtime-live-model"; }
   wait_until shows_idle || fail "the sidebar shows a state while idle: $(sidebar)"
   [ "$(sidebar_fzf)" = "$fzf_before" ] || fail "the sidebar restarted on a state change"
   # Nothing polls while fzf runs: the sidebar starts no sleeps.
@@ -552,6 +628,8 @@ test_the_sidebar_shows_each_workspace_state() {
   [ -z "$sleeps" ] || fail "the sidebar polls: it started sleep $sleeps"
   tmux kill-pane -t "$sidebar_test_pane"
   tmux kill-session -t dev-other
+  tmux set-option -u -t dev-work @devws_template
+  tmux set-option -pu -t "$AGENT_PANE" @devws_model
   "$SCRIPTS/agent_status.sh" dev-work idle
 }
 
@@ -600,6 +678,14 @@ test_agents_start_with_the_state_hooks() {
   tmux kill-pane -t "$pane"
 }
 
+if [ "${1:-}" = --sidebar ]; then
+  test_the_sidebar_shows_each_workspace_state
+  printf 'Live sidebar tests passed.\n'
+  exit 0
+fi
+
+test_repeated_state_does_not_rewrite_options
+test_repeated_hook_does_not_rewrite_transcripts
 test_claude_events_set_the_state
 test_codex_events_set_the_state
 test_the_hook_records_the_conversation

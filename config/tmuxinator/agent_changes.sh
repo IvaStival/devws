@@ -14,6 +14,7 @@
 #                                            line where it was
 #
 # <name> keeps one caller's snapshot apart from another's (an agent pane).
+# `discard` removes an obsolete snapshot without inspecting the repository.
 # It always exits 0: the agents' hooks call it.
 
 set -u
@@ -25,6 +26,12 @@ state_dir="${TMPDIR:-/tmp}"
 state_dir="${state_dir%/}/devws-changes-$(id -u)"
 before="$state_dir/$name.before"
 index="$state_dir/$name.index"
+
+if [ "$action" = discard ]; then
+  rm -f "$before" "$index"
+  exit 0
+fi
+[ "$action" != changes ] || [ -f "$before" ] || exit 0
 
 top="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || exit 0
 git_dir="$(git -C "$top" rev-parse --absolute-git-dir 2>/dev/null)" || exit 0
@@ -44,6 +51,7 @@ tree_now() {
 case "$action" in
   snapshot)
     mkdir -p "$state_dir"
+    rm -f "$before"
     tree="$(tree_now)" && [ -n "$tree" ] && printf '%s %s\n' "$top" "$tree" > "$before"
     ;;
   changes)

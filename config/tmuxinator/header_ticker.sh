@@ -22,10 +22,9 @@
 #                  each attached client, into the session's
 #                  @devws_header_row_<1-3>; the global rows, at the first
 #                  client's width, stand in for a session until then
-#   4 times a s.   the working agents' spinner turns (agent_spinner.sh), in
-#                  the status bar, the agents' headers and the sidebars on
-#                  screen; header or not
-#   10 times a s.  the ghost (header_pet.sh) moves, into each attached
+#   twice a s.    the working agents' spinner turns (agent_spinner.sh), in
+#                  the status bar and the agents' headers; header or not
+#                  The ghost (header_pet.sh) advances into each attached
 #                  workspace's @devws_ghost_<1-3>, in one mood for all the
 #                  agents (overall_mood).
 #                  Its cycles are drawn once at start and played back, so a
@@ -54,7 +53,8 @@ narrow_width=110
 # The job group's widest row (job.sh rows): more than the network's and
 # weather's room ever is, which the layout cuts it to.
 job_width=160
-# Frames a second: the loop's pace, which every other interval counts in.
+# Logical ticks a second. The loop advances ten ticks at a time: every
+# scheduled event is on that beat, so waking between frames does no work.
 fps=20
 # Ticks between the spinner's frames (agent_spinner.sh): two a second. The
 # ghost moves on the same beat; every change costs the terminal a repaint.
@@ -107,12 +107,23 @@ keep() {
 
 update_tokens() {
   local session transcript usage
+  "$scripts_dir/agent_model.sh" refresh
+  # Consume only notifications that preceded this render. A cost result
+  # arriving while it runs must retain its request for another render.
+  rm -f "$state_dir/costs.changed"
   keep agents nice "$scripts_dir/header_agents.sh" "$state_dir/costs"
   while IFS='|' read -r session transcript; do
     [ -n "$transcript" ] || continue
     usage="$(nice "$scripts_dir/header_tokens.sh" session "$transcript")"
     [ -n "$usage" ] && tmux set-option -t "$session" @devws_agent_session_usage "$usage"
   done < <(tmux list-sessions -F '#{session_id}|#{@devws_agent_transcript}')
+}
+
+update_costs() {
+  keep costs nice "$scripts_dir/header_tokens.sh" costs
+  # Costs and limits refresh independently. The first limits render can
+  # precede costs; redraw the account rows once the cost result arrives.
+  : > "$state_dir/costs.changed"
 }
 
 # Slow work runs beside the loop so the ghost keeps moving; work still busy
@@ -287,17 +298,9 @@ draw_ghost() {
   tmux "${frame[@]:0:${#frame[@]}-1}"
 }
 
-# Waits <seconds> without starting a process: a read that times out on a pipe
-# nobody writes to. The loop waits 20 times a second, and a sleep each time
-# would be 20 processes a second. Bash 3.2's read only times out in whole
-# seconds, so there it is sleep.
+# Two waits a second on every supported Bash, matching the display cadence.
 nap() {
-  if [ -n "${nap_fd:-}" ]; then
-    read -r -t "$1" -u "$nap_fd" _ 2>/dev/null
-  else
-    sleep "$1"
-  fi
-  return 0
+  sleep "$1"
 }
 
 # Whether a client's terminal has the focus: with none (iTerm2 behind another
@@ -308,8 +311,6 @@ any_focused() {
 
 run() {
   local tick=0 focused=1
-  # Opened read-write, the pipe never reports its end: reads only time out.
-  [ "${BASH_VERSINFO[0]}" -ge 4 ] && exec 9<> <(:) && nap_fd=9
   mkdir -p "$state_dir"
   tmux set-option -g @devws_header_ticker "$$" || exit 0
   load_settings
@@ -327,6 +328,7 @@ run() {
         read_clients
         in_background layout lay_out
       fi
+      [ ! -e "$state_dir/costs.changed" ] || in_background tokens update_tokens
     fi
     # Every 5 s: still the ticker of a running server?
     if [ $((tick % (5 * fps))) -eq 0 ]; then
@@ -334,7 +336,7 @@ run() {
       in_background system keep system nice "$scripts_dir/header_system.sh" "$state_dir/cpu.history"
       in_background network keep network nice "$scripts_dir/header_network.sh" "$state_dir"
     fi
-    [ $((tick % (600 * fps))) -eq 0 ] && in_background costs keep costs nice "$scripts_dir/header_tokens.sh" costs
+    [ $((tick % (600 * fps))) -eq 0 ] && in_background costs update_costs
     [ $((tick % (60 * fps))) -eq 0 ] && in_background tokens update_tokens
     [ $((tick % (60 * fps))) -eq 0 ] && in_background suspend "$scripts_dir/suspend_workspace.sh" sweep
     [ $((tick % (1800 * fps))) -eq 0 ] && in_background weather keep weather "$scripts_dir/header_weather.sh"
@@ -343,20 +345,15 @@ run() {
     [ "$focused" = 1 ] && [ $((tick % spin_ticks)) -eq 0 ] && spin_agents $((tick / spin_ticks))
     # While the header is hidden (header_toggle.sh) nothing is drawn: a turn
     # each spinner frame keeps the sources current for when it comes back.
-    if [ -n "$header_hidden" ]; then
-      tick=$((tick + spin_ticks))
-      nap 0.5
-      continue
-    fi
     # The ghost moves on the spinner's beat, while a client is focused: iTerm2
     # repaints its whole window for every change, so changes that come
     # together cost one repaint, two a second at most. Its frames still count
     # at 10 a second, so it keeps its pace; the beat shows where it is.
-    if [ "$show_pet" = 1 ] && [ "$focused" = 1 ] && [ $((tick % spin_ticks)) -eq 0 ] && [ ! -e "$popup_flag" ]; then
+    if [ -z "$header_hidden" ] && [ "$show_pet" = 1 ] && [ "$focused" = 1 ] && [ $((tick % spin_ticks)) -eq 0 ] && [ ! -e "$popup_flag" ]; then
       draw_ghost $((tick / 2)) 2>/dev/null || exit 0
     fi
-    tick=$((tick + 1))
-    nap 0.05
+    tick=$((tick + spin_ticks))
+    nap 0.5
   done
 }
 

@@ -145,10 +145,9 @@ agent_panes() {
 # The workspace's state from its agents' own ones: waiting, else working,
 # else done, else idle.
 summary() {
-  local states="" agent
-  for agent in $(agent_panes); do
-    states+=" $(tmux show-options -pqv -t "$agent" @devws_pane_state 2>/dev/null) "
-  done
+  local states
+  states=" $(tmux list-panes -s -t "=$session" -F '#{@devws_role}|#{@devws_pane_state}' 2>/dev/null |
+    awk -F '|' '$1 ~ /^(agent|extra-agent)$/ { print $2 }' | tr '\n' ' ') "
   for candidate in waiting working done; do
     case "$states" in *" $candidate "*) printf '%s' "$candidate"; return ;; esac
   done
@@ -158,25 +157,34 @@ summary() {
 [ -n "$pane" ] || pane="$(tmux list-panes -s -t "=$session" -F '#{pane_id} #{@devws_role}' 2>/dev/null |
   awk '$2 == "agent" { print $1; exit }')"
 if [ -n "$pane" ]; then
-  if [ "$state" = idle ]; then
-    tmux set-option -p -u -t "$pane" @devws_pane_state 2>/dev/null
-  else
-    tmux set-option -p -t "$pane" @devws_pane_state "$state" 2>/dev/null
+  previous_pane="$(tmux show-options -pqv -t "$pane" @devws_pane_state 2>/dev/null)"
+  next_pane="$state"
+  [ "$state" != idle ] || next_pane=""
+  if [ "$previous_pane" != "$next_pane" ]; then
+    if [ "$state" = idle ]; then
+      tmux set-option -p -u -t "$pane" @devws_pane_state 2>/dev/null
+    else
+      tmux set-option -p -t "$pane" @devws_pane_state "$state" 2>/dev/null
+    fi
+    # shellcheck source=workspace_panes.sh
+    . "$(dirname "$script")/workspace_panes.sh"
+    mark_tab_alert "$pane"
   fi
-  # shellcheck source=workspace_panes.sh
-  . "$(dirname "$script")/workspace_panes.sh"
-  mark_tab_alert "$pane"
   state="$(summary)"
 fi
 
 previous="$(tmux show-option -qv -t "=$session:" @devws_agent_state)"
 if [ "$state" = idle ]; then
-  tmux set-option -u -t "=$session:" @devws_agent_state
-  tmux set-option -u -t "=$session:" @devws_agent_state_since
   state=""
-else
-  tmux set-option -t "=$session:" @devws_agent_state "$state"
-  [ "$previous" = "$state" ] || tmux set-option -t "=$session:" @devws_agent_state_since "$(date +%s)"
+fi
+if [ "$previous" != "$state" ]; then
+  if [ -z "$state" ]; then
+    tmux set-option -u -t "=$session:" @devws_agent_state
+    tmux set-option -u -t "=$session:" @devws_agent_state_since
+  else
+    tmux set-option -t "=$session:" @devws_agent_state "$state"
+    tmux set-option -t "=$session:" @devws_agent_state_since "$(date +%s)"
+  fi
 fi
 # The header's ticker draws these states. One that died (nothing left to say
 # why) would leave the header frozen until tmux.conf is loaded again: an agent

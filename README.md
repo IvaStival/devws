@@ -161,6 +161,9 @@ menu's **Help** tab and with `devws help [page]`:
 - [Shortcuts](docs/guide/shortcuts.md) · [Commands](docs/guide/commands.md) ·
   [Configuration](docs/guide/configuration.md)
 
+Runtime internals and profiling commands are documented in
+[Agent performance](docs/architecture/agent-performance.md).
+
 ## Update devws
 
 ```sh

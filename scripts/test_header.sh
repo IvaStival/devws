@@ -737,7 +737,7 @@ test_a_client_shows_the_header() {
   # tmux's own line, then a blank line before the groups.
   header_row_shows 1 'dev-work' || fail "tmux's own line moved: $(client_header)"
   [ -z "$(client_header | sed -n 2p | tr -d ' ')" ] || fail "no blank line under tmux's own line: $(client_header)"
-  header_row_shows 4 '│ *month \$.*│' || fail "the agent group's last row moved: $(client_header)"
+  wait_until header_row_shows 4 '│ *month \$.*│' || fail "the agent group's last row moved: $(client_header)"
   wait_until header_row_shows 1 'conv 351k · ctx 20%' ||
     fail "the client shows no conversation: $(client_header)"
   header_shows '█' || fail "the client shows no ghost: $(client_header)"
@@ -881,9 +881,11 @@ test_animations_rest_while_unfocused() {
   [ "$(option @devws_agent_frame)" = "$frame" ] || fail "the spinner turned with no client focused"
 
   "$REAL_TMUX" -L "$CLIENT_SOCKET" send-keys -t client $'\e[I'
-  sleep 1.5
-  [ "$(redraws ghost)" -gt 0 ] || fail "the ghost did not move again once focused"
-  [ "$(option @devws_agent_frame)" != "$frame" ] || fail "the spinner did not turn again once focused"
+  ghost_resumed() { [ "$(redraws ghost)" -gt 0 ]; }
+  wait_until ghost_resumed || fail "the ghost did not move again once focused"
+  # A sampled glyph can match the old one after a complete spinner cycle.
+  spinner_changed() { [ "$(option @devws_agent_frame)" != "$frame" ]; }
+  wait_until spinner_changed || fail "the spinner did not turn again once focused"
   "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server
   tmux kill-server
 }
