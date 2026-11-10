@@ -5,8 +5,14 @@ to one of them, **the leader**; the leader opens the other agents (a backend
 one, a frontend one, tests…) as it needs them, gives each its orders and
 reads what they report. devws shows the panels; the team itself is
 `devagentics`, the Rust program in this repo's `agentic/` folder, which devws
-asks to make the task and to run the board. `./install.sh` builds it when Rust
-is installed; without it, `devws agentic` says so and opens nothing. How a team
+asks to make the task and to run the board. It needs Rust 1.85 or newer.
+When `devagentics` is missing, `devws agentic` (and the menu's Open an agent
+team) says what it needs and asks: one Y installs Rust (rustup) or updates it
+(`rustup update stable`) as needed, builds `devagentics` (and `devws-ui`, the
+menu's program), and opens the team.
+`./install.sh` rebuilds it on every run, and asks before installing or
+updating Rust. A Rust devws did not install without rustup (Homebrew's) is
+left alone: update it yourself (`brew upgrade rust`). How a team
 works (roles, orders, approval, limits) is in
 [agentic/docs/usage.md](../../agentic/docs/usage.md).
 

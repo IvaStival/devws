@@ -182,29 +182,22 @@ ensure_jungleforge() {
   "$jungleforge" setup || warn "jungleforge was not set up; devws menu › App › Set up jungleforge tries again"
 }
 
-# The agent team's program (devws agentic) is Rust, in agentic/. It is built
-# when cargo is there; devws works without it. Ownership is recorded only when
-# the binary was not there before, so uninstall never removes one the user made.
-ensure_agentic() {
-  local owned=0
+# devws's Rust programs (devagentics for agent teams, devws-ui for the menu
+# and pickers) are rebuilt on every install (rust_tools.sh, which devws
+# agentic also uses). Installing or updating Rust is asked, and only with
+# someone at the terminal; devws works without them (fzf asks instead of
+# devws-ui). What it installs is recorded for delete.sh, never a program or a
+# Rust the user had.
+ensure_rust_tools() {
+  local input=/dev/null
 
-  PATH="$HOME/.cargo/bin:$PATH"
-  if ! command -v cargo >/dev/null 2>&1; then
-    warn "devws agentic needs Rust: install it (https://rustup.rs), then run ./install.sh again"
-    return
+  [[ -t 0 ]] && input=/dev/stdin
+  info "Building devws's Rust programs (devagentics, devws-ui)"
+  if DEVWS_ROOT="$ROOT" "$ROOT/config/tmuxinator/rust_tools.sh" install --rebuild <"$input"; then
+    ok "devagentics and devws-ui"
+  else
+    warn "devws agentic will not work until devagentics builds: devws agentic offers it again, or run ./install.sh in a terminal"
   fi
-  if [[ -f "$dependency_state" ]] && grep -Fqx devagentics "$dependency_state"; then
-    owned=1
-  elif ! command -v devagentics >/dev/null 2>&1; then
-    owned=1
-  fi
-  info "Building the agent team program (devagentics)"
-  if ! cargo install --path "$ROOT/agentic" --locked; then
-    warn "Could not build agentic/; devws agentic will not work until it builds"
-    return
-  fi
-  [[ "$owned" == 1 ]] && record_installed_dependency devagentics
-  ok "devagentics"
 }
 
 upgrade_tmuxinator_if_needed() {
@@ -352,7 +345,7 @@ case ":$PATH:" in
   *) warn "~/.local/bin is not on PATH; add it to run devws (export PATH=\"\$HOME/.local/bin:\$PATH\")" ;;
 esac
 
-ensure_agentic
+ensure_rust_tools
 
 # LazyVim writes lazy-lock.json and lazyvim.json into its config folder, so
 # the whole folder is linked and those files are tracked in the repo.

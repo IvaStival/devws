@@ -313,6 +313,44 @@ test_agentic_needs_devagentics() {
   [ "$(status_of devws agentic acme/app)" = 2 ] || fail "devws agentic accepted a repo with no branch"
 }
 
+# Without devagentics, devws agentic offers to install it (rust_tools.sh)
+# and goes on once it is there; a refusal or failure stops it, nothing made.
+test_agentic_offers_to_install_devagentics() {
+  local folder="$TEST_ROOT/projects/needs-install" path="" entry code=0
+  local -a entries
+  mkdir -p "$folder"
+  # Only the stubs: no devagentics this machine may have on its PATH.
+  IFS=: read -r -a entries <<<"$PATH"
+  for entry in "${entries[@]}"; do
+    [ "$entry" != "$TEST_ROOT/bin" ] && [ -x "$entry/devagentics" ] && continue
+    path="${path:+$path:}$entry"
+  done
+  mv "$TEST_ROOT/bin/devagentics" "$TEST_ROOT/bin/devagentics.off"
+  rm "$SCRIPTS/rust_tools.sh"
+  cat > "$SCRIPTS/rust_tools.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$TEST_ROOT/installer.log"
+[ -e "$TEST_ROOT/installer.fails" ] && exit 1
+mv "$TEST_ROOT/bin/devagentics.off" "$TEST_ROOT/bin/devagentics"
+EOF
+  chmod +x "$SCRIPTS/rust_tools.sh"
+
+  touch "$TEST_ROOT/installer.fails"
+  PATH="$path" devws agentic "$folder" </dev/null >"$TEST_ROOT/out" 2>&1 || code=$?
+  [ "$code" = 1 ] || fail "devws agentic went on after the install failed ($code)"
+  grep -q 'devagentics is not installed' "$TEST_ROOT/out" || fail "no explanation: $(cat "$TEST_ROOT/out")"
+  ! tmux has-session -t =dev-needs-install 2>/dev/null || fail "a workspace opened without devagentics"
+
+  rm "$TEST_ROOT/installer.fails"
+  PATH="$path" devws agentic "$folder" </dev/null >"$TEST_ROOT/out" 2>&1 ||
+    fail "devws agentic failed after installing: $(cat "$TEST_ROOT/out")"
+  [ "$(tail -n 1 "$TEST_ROOT/installer.log")" = install ] || fail "the installer was not asked: $(cat "$TEST_ROOT/installer.log")"
+  wait_until tmux has-session -t =dev-needs-install || fail "the team did not open once devagentics was installed"
+
+  rm "$SCRIPTS/rust_tools.sh"
+  ln -s "$SCRIPTS_SRC/rust_tools.sh" "$SCRIPTS/rust_tools.sh"
+}
+
 test_agentic_can_add_an_editor() {
   local folder session
   folder="$TEST_ROOT/projects/with-editor"
@@ -332,6 +370,7 @@ test_the_first_agent_goes_under_the_board
 test_agentic_opens_the_leader_and_the_board
 test_agentic_makes_a_worktree_for_a_repo_and_a_branch
 test_agentic_needs_devagentics
+test_agentic_offers_to_install_devagentics
 test_agentic_can_add_an_editor
 
 printf 'Agentic tests passed\n'

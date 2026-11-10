@@ -212,12 +212,14 @@ follow() {
     esac
     if read -r -s -n 1 -t 1 key && [ "$key" = q ]; then
       kill "$tailer" 2>/dev/null
+      wait "$tailer" 2>/dev/null
       return 0
     fi
   done
   # The log's last lines reach the screen before it says how it ended.
   sleep 0.3
   kill "$tailer" 2>/dev/null
+  wait "$tailer" 2>/dev/null
   if [ "$state" = ok ]; then
     title_panel "✓ $(field "$id" title) · done"
     read -r -s -n 1 -t "${DEVWS_JOB_PANEL_LINGER:-5}" key

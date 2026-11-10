@@ -409,6 +409,8 @@ EOF2
   CARGO_LOG="$test_home/cargo.log" run_install "$test_home" "$fake_bin" >"$output" 2>&1
   grep -qx "install --path $ROOT/agentic --locked" "$test_home/cargo.log" ||
     fail "install did not build agentic/: $(cat "$test_home/cargo.log" 2>/dev/null)"
+  grep -qx "install --path $ROOT/devws-ui --locked" "$test_home/cargo.log" ||
+    fail "install did not build devws-ui/: $(cat "$test_home/cargo.log" 2>/dev/null)"
   grep -qx devagentics "$test_home/.devws-state/installed-dependencies" ||
     fail "install did not record that it installed devagentics"
 
@@ -419,6 +421,32 @@ EOF2
   [[ ! -e "$fake_bin/devagentics" ]] || fail "devagentics is still there after uninstall"
 }
 
+# A Rust devws installed (rust_tools.sh records rustup) goes on
+# uninstall, after devagentics.
+test_owned_rustup_is_removed_after_devagentics() {
+  local test_home="$TEST_ROOT/rustup-owned"
+  local fake_bin="$test_home/bin"
+  mkdir -p "$test_home"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+  make_command "$fake_bin/devagentics"
+  make_command "$fake_bin/devws-ui"
+  printf '#!/usr/bin/env bash\nprintf "cargo %%s\\n" "$*" >> "$LOG"\n' > "$fake_bin/cargo"
+  printf '#!/usr/bin/env bash\nprintf "rustup %%s\\n" "$*" >> "$LOG"\n' > "$fake_bin/rustup"
+  chmod +x "$fake_bin/cargo" "$fake_bin/rustup"
+  LOG="$test_home/install.log" run_install "$test_home" "$fake_bin" </dev/null >/dev/null 2>&1 ||
+    fail "install failed"
+  # As rust_tools.sh records a Rust and a devagentics it installed.
+  printf 'devagentics\nrustup\n' >> "$test_home/.devws-state/installed-dependencies"
+
+  LOG="$test_home/log" HOME="$test_home" FAKE_BIN="$fake_bin" BREW_LOG="$test_home/brew.log" \
+    PATH="$fake_bin:/usr/bin:/bin" "$ROOT/delete.sh" >/dev/null 2>&1 || fail "uninstall failed"
+  [[ "$(cat "$test_home/log")" == "cargo uninstall devagentics"$'\n'"rustup self uninstall -y" ]] ||
+    fail "uninstall did not remove devagentics, then Rust: $(cat "$test_home/log")"
+  ! grep -qx rustup "$test_home/.devws-state/installed-dependencies" 2>/dev/null ||
+    fail "rustup is still recorded after uninstall"
+}
+
 test_a_preexisting_agentic_is_rebuilt_but_kept_on_uninstall() {
   local test_home="$TEST_ROOT/agentic-preexisting"
   local fake_bin="$test_home/bin"
@@ -426,6 +454,7 @@ test_a_preexisting_agentic_is_rebuilt_but_kept_on_uninstall() {
   make_fake_bin "$fake_bin"
   make_command "$fake_bin/fzf"
   make_command "$fake_bin/devagentics"
+  make_command "$fake_bin/devws-ui"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "$CARGO_LOG"\n' > "$fake_bin/cargo"
   chmod +x "$fake_bin/cargo"
 
@@ -448,11 +477,39 @@ test_install_without_cargo_says_what_agentic_needs() {
   make_fake_bin "$fake_bin"
   make_command "$fake_bin/fzf"
 
-  run_install "$test_home" "$fake_bin" >"$output" 2>&1 || fail "install failed without cargo"
-  grep -q "devws agentic needs Rust" "$output" ||
+  # No one at the terminal: Rust is offered, not installed.
+  run_install "$test_home" "$fake_bin" </dev/null >"$output" 2>&1 || fail "install failed without cargo"
+  grep -q "install Rust" "$output" ||
     fail "install did not say agentic needs Rust: $(cat "$output")"
+  grep -q "devws agentic offers it again" "$output" ||
+    fail "install did not say how to get agentic later: $(cat "$output")"
   [[ ! -e "$test_home/.devws-state/installed-dependencies" ]] ||
     fail "install recorded something without cargo"
+}
+
+# A Rust too old for agentic/ is not updated unasked, and nothing is built
+# with it.
+test_install_with_an_old_rust_does_not_build() {
+  local test_home="$TEST_ROOT/agentic-old-rust"
+  local fake_bin="$test_home/bin"
+  local output="$test_home/install-output"
+  mkdir -p "$test_home"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+  cat > "$fake_bin/cargo" <<'EOF2'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CARGO_LOG"
+[[ "$1" == --version ]] && printf 'cargo 1.83.0 (stub)\n'
+exit 0
+EOF2
+  printf '#!/usr/bin/env bash\nprintf "rustup %%s\\n" "$*" >> "$CARGO_LOG"\n' > "$fake_bin/rustup"
+  chmod +x "$fake_bin/cargo" "$fake_bin/rustup"
+
+  CARGO_LOG="$test_home/cargo.log" run_install "$test_home" "$fake_bin" </dev/null >"$output" 2>&1 ||
+    fail "install failed with an old Rust"
+  grep -q "Rust 1.83.0 is too old" "$output" || fail "install did not say Rust is too old: $(cat "$output")"
+  ! grep -q '^install\|^rustup update' "$test_home/cargo.log" ||
+    fail "install built or updated without asking: $(cat "$test_home/cargo.log")"
 }
 
 # Install reloads the open workspaces when a tmux server answers, and leaves
@@ -515,8 +572,10 @@ test_devws_command_is_linked_and_removed
 test_lunarvim_links_are_retired
 test_deps_install_devdb_from_its_checkout
 test_agentic_is_built_and_removed_when_owned
+test_owned_rustup_is_removed_after_devagentics
 test_a_preexisting_agentic_is_rebuilt_but_kept_on_uninstall
 test_install_without_cargo_says_what_agentic_needs
+test_install_with_an_old_rust_does_not_build
 test_install_reloads_open_workspaces
 test_picker_fails_once_without_fzf
 

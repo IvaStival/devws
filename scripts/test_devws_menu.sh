@@ -418,6 +418,48 @@ test_the_menu_marks_itself_open() {
   [ ! -e "$TEST_ROOT/devws-popup-$(id -u)" ] || fail "New panel left the popup flag"
 }
 
+# With devws-ui installed (rust_tools.sh), it draws the menu: every shown
+# action of every tab goes in at once, the tab it returns is remembered and
+# its action runs; Esc runs nothing but keeps the tab.
+test_devws_ui_draws_the_menu() {
+  local expected
+  mkdir -p "$HOME/.cargo/bin"
+  cat > "$HOME/.cargo/bin/devws-ui" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "$TEST_ROOT/calls/ui.args"
+cat > "$TEST_ROOT/calls/ui.input"
+[ -e "$TEST_ROOT/devws-popup-$(id -u)" ] && echo open > "$TEST_ROOT/calls/popup"
+answer="\$(cat "$TEST_ROOT/ui.answer")"
+case "\$answer" in esc:*) printf '%s\n' "\${answer#esc:}"; exit 130 ;; esac
+printf '%s\n' "\$answer"
+EOF
+  chmod +x "$HOME/.cargo/bin/devws-ui"
+  tmux set-option -t dev-menu @devws_menu_tab layout
+  printf 'git\tcommit-manual\n' > "$TEST_ROOT/ui.answer"
+  rm -f "$TEST_ROOT/calls/git_actions.sh" "$TEST_ROOT/calls/popup"
+  TMUX_PANE="$PANE" TMUX="fake,1,0" "$MENU" || fail "the menu failed with devws-ui"
+
+  [ "$(cat "$TEST_ROOT/calls/ui.args")" = "$(printf '%s\n' menu --tab layout)" ] ||
+    fail "devws-ui was given: $(cat "$TEST_ROOT/calls/ui.args")"
+  expected="$(for tab in workspace layout agent git app help; do
+    menu --items "$tab" | cut -f1 | sed "s/^/$tab\t/"
+  done)"
+  [ "$(cut -f1,2 "$TEST_ROOT/calls/ui.input")" = "$expected" ] ||
+    fail "the rows are not every shown action, tab by tab: $(cut -f1,2 "$TEST_ROOT/calls/ui.input")"
+  grep -qx $'git\tpush\t↑ Push / PR\tC-b G' "$TEST_ROOT/calls/ui.input" ||
+    fail "a row does not carry its label and shortcut: $(grep push "$TEST_ROOT/calls/ui.input")"
+  [ "$(cat "$TEST_ROOT/calls/popup" 2>/dev/null)" = open ] || fail "the menu did not mark itself open"
+  [ "$(cat "$TEST_ROOT/calls/git_actions.sh" 2>/dev/null)" = "commit --manual" ] || fail "the chosen action did not run"
+  [ "$(menu --tab)" = git ] || fail "the tab devws-ui ended on was not kept: $(menu --tab)"
+
+  printf 'esc:help\n' > "$TEST_ROOT/ui.answer"
+  rm -f "$TEST_ROOT/calls/git_actions.sh"
+  TMUX_PANE="$PANE" TMUX="fake,1,0" "$MENU" || fail "Esc in devws-ui failed the menu"
+  [ "$(menu --tab)" = help ] || fail "Esc did not keep the tab"
+  [ ! -e "$TEST_ROOT/calls/git_actions.sh" ] || fail "Esc ran an action"
+  rm -rf "$HOME/.cargo"
+}
+
 test_script_actions_run_for_the_session() {
   local action script expected
   for action in toggle-layout:toggle_layout.sh:dev-menu minimize:minimize_panes.sh:"dev-menu toggle agents" \
@@ -807,6 +849,7 @@ test_the_app_tab_follows_jungleforge
 test_the_frequent_actions_have_keys
 test_switching_tabs
 test_header_marks_the_current_tab
+test_devws_ui_draws_the_menu
 test_script_actions_run_for_the_session
 test_new_panel_asks_what_to_open
 test_move_panel_asks_which_way

@@ -19,7 +19,7 @@ parallel="${DEVWS_CHECK_JOBS:-4}"
 
 # The suites --quick runs: no tmux server, no waiting on real time.
 quick_suites="test_picker test_recent test_shared_files test_worktree test_github_repo
-  test_jungleforge test_link_scripts test_tidy test_memory test_guide"
+  test_jungleforge test_link_scripts test_tidy test_memory test_guide test_rust_tools"
 
 shell_scripts=(
   "$ROOT/install.sh" "$ROOT/delete.sh"
@@ -85,20 +85,23 @@ if command -v luac >/dev/null 2>&1; then
   done < <(find "$ROOT/config/nvim" -name '*.lua' -print0)
 fi
 
-# The agent team's program (agentic/), when cargo is there.
+# devws's Rust programs: agent teams (agentic/), the menu and pickers
+# (devws-ui/), when cargo is there.
 if [ -z "$quick" ]; then
   PATH="$HOME/.cargo/bin:$PATH"
-  if command -v cargo >/dev/null 2>&1; then
-    (
-      cd "$ROOT/agentic"
-      cargo fmt --check
-      cargo clippy --all-targets --quiet -- -D warnings
-      cargo test --quiet
-    )
-    printf '✓ agentic (fmt, clippy, tests)\n'
-  else
-    printf '– agentic skipped: cargo not found\n'
-  fi
+  for crate in agentic devws-ui; do
+    if command -v cargo >/dev/null 2>&1; then
+      (
+        cd "$ROOT/$crate"
+        cargo fmt --check
+        cargo clippy --all-targets --quiet -- -D warnings
+        cargo test --quiet
+      )
+      printf '✓ %s (fmt, clippy, tests)\n' "$crate"
+    else
+      printf -- '– %s skipped: cargo not found\n' "$crate"
+    fi
+  done
 fi
 
 suites=()

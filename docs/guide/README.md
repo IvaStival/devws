@@ -41,6 +41,12 @@ tab: `push` finds **Push / PR** wherever you are. The menu reopens on the
 tab you used last. Every question devws asks from a list looks the same:
 `Enter` chooses, `Tab` unticks in a ticked list, `Esc` goes back a step.
 
+The menu and those questions are drawn by `devws-ui`, devws's own Rust
+program (in `devws-ui/`, built by `./install.sh` with the agent team's
+program). It keeps the terminal's cursor hidden and draws its own, so a
+popup no longer flickers while agents work. Without it (no Rust), fzf asks
+instead, as before.
+
 ## The first workspace
 
 ```sh

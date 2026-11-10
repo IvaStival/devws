@@ -271,10 +271,38 @@ popup_run() {
   tmux display-popup ${client:+-c "$client"} -E -w 70 -h 18 -T ' devws ' "$script --run $action"
 }
 
-# The menu in the shared picker look (picker.sh), which also keeps it
-# redrawn while a pane scrolls under it. Typing searches every tab.
+# The menu in the shared picker look (picker.sh). Typing searches every tab.
+# "tab<TAB>action<TAB>label<TAB>shortcut" for every action shown, tab by tab:
+# all devws-ui's menu needs, at once (it calls nothing back while open).
+menu_rows() {
+  local tab row_tab action label shortcut function when
+  for tab in "${tabs[@]}"; do
+    while IFS='|' read -r row_tab action label shortcut function when; do
+      [ "$row_tab" = "$tab" ] || continue
+      shown "$when" || continue
+      printf '%s\t%s\t%s\t%s\n' "$tab" "$action" "$label" "$shortcut"
+    done <<<"$actions"
+  done
+}
+
+# devws-ui draws the menu when rust_tools.sh installed it (DEVWS_UI names
+# another): its hidden cursor keeps the popup from flickering as tmux redraws
+# it. It answers "tab<TAB>action", or the tab alone on Esc (130); the tab is
+# where the next menu opens.
+show_ui_menu() {
+  local ui="$1" answer status=0
+  answer="$(menu_rows | "$ui" menu --tab "$(current_tab)")" || status=$?
+  [ -n "$answer" ] && tmux set-option -t "$(session)" @devws_menu_tab "${answer%%$'\t'*}"
+  [ "$status" -eq 0 ] && [[ "$answer" == *$'\t'* ]] || return 0
+  run_action "${answer#*$'\t'}"
+}
+
 show_menu() {
-  local selected
+  local selected ui="${DEVWS_UI:-$HOME/.cargo/bin/devws-ui}"
+  if [ -x "$ui" ]; then
+    show_ui_menu "$ui"
+    return
+  fi
   selected="$(
     items "$(current_tab)" |
       "$HOME/.tmuxinator/picker.sh" Search "$(header)" \

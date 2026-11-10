@@ -9,10 +9,10 @@
 # The caller's options come last, so they win over the shared ones (a
 # --height, a --footer of its own).
 #
-# A pane that scrolls under a popup (an agent writing) drags the popup's cells
-# along with it, and fzf only redraws what it changed: what the pane scrolled
-# in would stay. So the picker is redrawn whole every second (fzf's
-# clear-screen, through its socket), which touches only its own lines.
+# devws-ui asks when rust_tools.sh installed it (~/.cargo/bin; DEVWS_UI names
+# another): it keeps the terminal cursor hidden, so a popup does not flicker
+# each time tmux redraws it. The callers' fzf options are translated; one it
+# does not have leaves that question to fzf, as without devws-ui.
 
 set -u
 
@@ -24,28 +24,49 @@ footer='Esc back · Enter choose'
 for option in "$@"; do
   [ "$option" = --multi ] && footer='Tab untick · Esc back · Enter choose'
 done
+footer="$(printf '\033[2m%s\033[0m' "$footer")"
 
-# Short and in TMPDIR: a Unix socket path is limited to about 100 bytes.
-socket="${TMPDIR:-/tmp}"
-socket="${socket%/}/devws-picker-$$.sock"
-
-keep_redrawn() {
-  while sleep 1; do
-    [ -S "$socket" ] || continue
-    curl -s --max-time 1 --unix-socket "$socket" http://localhost -d 'clear-screen' >/dev/null 2>&1
+# devws-ui's options for the callers' fzf ones, or failure for one it lacks.
+# Layout-only options (height, borders…) mean nothing to it and are dropped.
+ui_options() {
+  local option
+  while [ "$#" -gt 0 ]; do
+    option="$1"
+    shift
+    case "$option" in
+      --multi | --print-query) printf '%s\n' "$option" ;;
+      --delimiter | --with-nth | --footer)
+        [ "$#" -gt 0 ] || return 1
+        printf '%s=%s\n' "$option" "$1"
+        shift
+        ;;
+      --delimiter=* | --with-nth=* | --footer=*) printf '%s\n' "$option" ;;
+      --bind)
+        [ "${1:-}" = load:select-all ] || return 1
+        printf -- '--select-all\n'
+        shift
+        ;;
+      --bind=load:select-all) printf -- '--select-all\n' ;;
+      --height | --info | --margin | --padding | --gutter | --layout) shift ;;
+      --height=* | --info=* | --border=* | --margin=* | --padding=* | --gutter=* | --layout=* | \
+        --border | --no-sort | --ansi | --no-separator) ;;
+      *) return 1 ;;
+    esac
   done
 }
-keep_redrawn &
-redrawer=$!
 
-fzf --ansi --layout=reverse --height=~60% \
+ui="${DEVWS_UI:-$HOME/.cargo/bin/devws-ui}"
+if [ -x "$ui" ] && translated="$(ui_options "$@")"; then
+  options=("--prompt=$prompt › " "--header=$header" "--footer=$footer")
+  while IFS= read -r option; do
+    # A caller's own footer replaces the shared one.
+    case "$option" in --footer=*) options[2]="$option" ;; '') ;; *) options+=("$option") ;; esac
+  done <<<"$translated"
+  exec "$ui" pick "${options[@]}"
+fi
+
+exec fzf --ansi --layout=reverse --height=~60% \
   "--prompt=$prompt › " "--header=$header" \
-  "--footer=$(printf '\033[2m%s\033[0m' "$footer")" \
+  "--footer=$footer" \
   --info=inline-right --no-separator \
-  "--listen=$socket" \
   "$@"
-status=$?
-
-kill "$redrawer" 2>/dev/null
-rm -f "$socket"
-exit "$status"
