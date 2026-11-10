@@ -14,14 +14,20 @@ DEVWS_AGENTS="claude codex work"
 DEVWS_AGENT_work="claude ~/.claude-work"
 ```
 
-Plain `claude` and `codex` need no line: they run in `~/.claude` and
-`~/.codex`, with their own login.
+Plain `claude` and `codex` need no line: they run as the bare command does,
+with no folder set. Claude Code keeps a separate login for each folder set
+and one for none, so `CLAUDE_CONFIG_DIR=~/.claude claude` can be signed into
+another account than plain `claude`. A name with a line always runs with its
+folder set, even `DEVWS_AGENT_claude="claude ~/.claude"`.
 
 - **＋ Register agent** asks for the program, offers the `~/.claude*` or
   `~/.codex*` folders not registered yet (or a path you type) and suggests a
   name (`work` for `~/.claude-work`). It edits `.env` and the header shows
   it at once. Log the account in once in its folder first, e.g.
   `CLAUDE_CONFIG_DIR=~/.claude-work claude`.
+- **⌂ Change agent folder** picks a registered agent, then one of its
+  program's folders (or a path you type), and writes its line in `.env`.
+  Its running agents keep the old folder until restarted.
 - **− Remove agent** takes one off the list; its folder is kept.
 - Start a workspace with one by name (`devws ~/Projects/my-app work`), or
   change with **⇄ Switch agent**.

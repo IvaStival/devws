@@ -58,10 +58,10 @@ if [ -n "$args_file" ]; then
   done < "$args_file"
 fi
 
-# The account: the agent's own folder, or none for its kind's default folder,
+# The account: the folder registered for the agent, or none for a bare name,
 # whatever folder the environment came with.
 unset CLAUDE_CONFIG_DIR CODEX_HOME
-if ! agent_is_default_home "$agent"; then
+if agent_has_folder "$agent"; then
   case "$kind" in
     claude) export CLAUDE_CONFIG_DIR="$(agent_home "$agent")" ;;
     codex) export CODEX_HOME="$(agent_home "$agent")" ;;

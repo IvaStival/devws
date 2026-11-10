@@ -235,6 +235,26 @@ register_agent() {
   read -r -p 'Press Enter to return…'
 }
 
+# Asks for a registered agent, then one of its kind's folders (or a typed
+# path), and writes it to .env: the agent runs with that folder set from its
+# next start (register_agent.sh folder).
+change_agent_folder() {
+  local agent kind folder candidate
+  agent="$(printf '%s\n' ${DEVWS_AGENTS:-claude codex} |
+    pick Agent 'Change the config folder of an agent')" || return
+  [ -n "$agent" ] || return
+  kind="$(agent_kind "$agent")" || return
+
+  folder="$(for candidate in "$HOME/.$kind" "$HOME/.$kind"-*; do
+      [ -d "$candidate" ] && printf '~/%s\n' "${candidate#"$HOME"/}"
+    done | pick Folder "$agent runs in $(agent_home "$agent") (pick one, or type a path)" --print-query |
+    tail -n 1)"
+  [ -n "$folder" ] || return
+
+  "$HOME/.tmuxinator/register_agent.sh" folder "$agent" "$folder"
+  read -r -p 'Press Enter to return…'
+}
+
 remove_agent() {
   local agent
   agent="$(printf '%s\n' ${DEVWS_AGENTS:-claude codex} |

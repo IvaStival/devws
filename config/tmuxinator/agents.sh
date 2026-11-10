@@ -57,12 +57,14 @@ agent_home() {
   printf '%s' "${home%/}"
 }
 
-# <name>: whether it runs in its kind's default folder, where the program needs
-# no folder set (and setting one would change where Claude Code keeps its login).
-agent_is_default_home() {
-  local kind
-  kind="$(agent_kind "$1")" || return 1
-  [ "$(agent_home "$1")" = "$(agent_default_home "$kind")" ]
+# <name>: whether it runs with a config folder set: one is registered for it,
+# even its kind's default. Claude Code keeps a login per folder set, and one
+# for none, so `CLAUDE_CONFIG_DIR=~/.claude claude` is not plain `claude`; a
+# bare name runs as the plain command does.
+agent_has_folder() {
+  local entry
+  entry="$(agent_entry "$1")" || return 1
+  [ "$entry" != "${entry#* }" ]
 }
 
 # <name>: the plan limits the agent has used, in per cent: "<5-hour session>

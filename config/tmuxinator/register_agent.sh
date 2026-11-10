@@ -4,11 +4,14 @@
 #
 #   register_agent.sh add <name> <claude|codex> <folder>
 #   register_agent.sh remove <name>
+#   register_agent.sh folder <name> <folder>
 #
 # add lists the name in DEVWS_AGENTS and writes DEVWS_AGENT_<name>="<kind>
 # <folder>", the folder under ~ when it is in the home folder. remove drops
 # both, keeps at least one agent, and moves DEVWS_DEFAULT_AGENT off a removed
-# default. The header is restarted so its rows follow at once.
+# default. folder writes a registered name's entry with another folder (a bare
+# name too, so it runs with that folder set, agents.sh). The header is
+# restarted so its rows follow at once.
 # DEVWS_ENV_FILE replaces ~/.tmuxinator/.env, for tests.
 
 set -u
@@ -71,13 +74,9 @@ restart_header() {
   "$scripts_dir/header_ticker.sh" --start >/dev/null 2>&1 || true
 }
 
-# The new list replaces DEVWS_AGENTS (added at the end if missing); the entry
-# goes after the last agent setting.
-add() {
-  local name="$1" kind="$2" folder="$3" home written list
-  agent_valid_name "$name" || die "an agent name uses only letters, digits and _: $name"
-  listed "$name" && die "$name is already registered"
-  agent_default_home "$kind" >/dev/null || die "unknown agent kind: $kind (claude or codex)"
+# <folder>: the existing folder, absolute; written under ~ when in the home folder.
+written_folder() {
+  local folder="$1" home
   case "$folder" in
     "~") home="$HOME" ;;
     "~/"*) home="$HOME/${folder#\~/}" ;;
@@ -85,14 +84,18 @@ add() {
   esac
   [ -d "$home" ] || die "folder does not exist: $folder"
   home="$(cd "$home" && pwd)"
-  written="$home"
   case "$home" in
-    "$HOME") written="~" ;;
-    "$HOME"/*) written="~/${home#"$HOME"/}" ;;
+    "$HOME") printf '~' ;;
+    "$HOME"/*) printf '~/%s' "${home#"$HOME"/}" ;;
+    *) printf '%s' "$home" ;;
   esac
-  list="$(printf '%s' "$agents $name" | xargs)"
+}
 
-  rewrite -v name="$name" -v list="$list" -v entry="DEVWS_AGENT_$name=\"$kind $written\"" '
+# <name> <list> <entry>: the list replaces DEVWS_AGENTS (added at the end if
+# missing); the entry replaces the name's own and goes after the last agent
+# setting.
+write_entry() {
+  rewrite -v name="$1" -v list="$2" -v entry="$3" '
     { lines[NR] = $0 }
     /^DEVWS_(AGENTS|DEFAULT_AGENT|AGENT_[A-Za-z0-9_]+)=/ { last = NR }
     /^DEVWS_AGENTS=/ { lines[NR] = "DEVWS_AGENTS=\"" list "\""; listed = 1 }
@@ -105,15 +108,41 @@ add() {
       if (!listed) print "DEVWS_AGENTS=\"" list "\""
       if (!last) print entry
     }'
+}
+
+# With ai-memory installed, the account in its folder gets memory too (memory.sh).
+wire_memory() {
+  local name="$1" memory="$scripts_dir/memory.sh"
+  [ -x "$memory" ] && "$memory" available || return 0
+  if "$memory" wire "$name" >/dev/null 2>&1; then
+    printf 'Wired %s to ai-memory\n' "$name"
+  else
+    printf 'Could not wire %s to ai-memory; run devws memory wire\n' "$name"
+  fi
+}
+
+add() {
+  local name="$1" kind="$2" folder="$3" written
+  agent_valid_name "$name" || die "an agent name uses only letters, digits and _: $name"
+  listed "$name" && die "$name is already registered"
+  agent_default_home "$kind" >/dev/null || die "unknown agent kind: $kind (claude or codex)"
+  written="$(written_folder "$folder")" || exit
+  write_entry "$name" "$(printf '%s' "$agents $name" | xargs)" "DEVWS_AGENT_$name=\"$kind $written\""
   restart_header
   printf 'Registered %s (%s, %s)\n' "$name" "$kind" "$written"
-  # With ai-memory installed, the new account gets memory too (memory.sh).
-  local memory="$(dirname "$0")/memory.sh"
-  if [ -x "$memory" ] && "$memory" available; then
-    "$memory" wire "$name" >/dev/null 2>&1 &&
-      printf 'Wired %s to ai-memory\n' "$name" ||
-      printf 'Could not wire %s to ai-memory; run devws memory wire\n' "$name"
-  fi
+  wire_memory "$name"
+}
+
+# The agents already running keep their folder until restarted.
+folder() {
+  local name="$1" kind written
+  listed "$name" || die "$name is not registered"
+  kind="$(agent_kind "$name")" || die "$name is not registered"
+  written="$(written_folder "$2")" || exit
+  write_entry "$name" "$(printf '%s' "$agents" | xargs)" "DEVWS_AGENT_$name=\"$kind $written\""
+  restart_header
+  printf '%s now runs in %s (restart its agents to use it)\n' "$name" "$written"
+  wire_memory "$name"
 }
 
 remove() {
@@ -142,5 +171,9 @@ case "${1:-}" in
     [ "$#" -eq 2 ] || die "usage: register_agent.sh remove <name>"
     remove "$2"
     ;;
-  *) die "usage: register_agent.sh add <name> <claude|codex> <folder> | remove <name>" ;;
+  folder)
+    [ "$#" -eq 3 ] || die "usage: register_agent.sh folder <name> <folder>"
+    folder "$2" "$3"
+    ;;
+  *) die "usage: register_agent.sh add <name> <claude|codex> <folder> | remove <name> | folder <name> <folder>" ;;
 esac
