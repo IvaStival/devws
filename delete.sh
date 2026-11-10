@@ -68,6 +68,26 @@ remove_owned_agentic() {
   remove_dependency_record devagentics
 }
 
+# Rust itself, only when devws installed it (agentic_install.sh), and after
+# devagentics, which cargo removes.
+remove_owned_rustup() {
+  [[ -f "$dependency_state" ]] || return 0
+  grep -Fqx rustup "$dependency_state" || return 0
+
+  PATH="$HOME/.cargo/bin:$PATH"
+  if ! command -v rustup >/dev/null 2>&1; then
+    remove_dependency_record rustup
+    return
+  fi
+  info "Removing Rust (rustup) installed by devws"
+  if ! rustup self uninstall -y; then
+    warn "Could not remove Rust; keeping its ownership state for retry"
+    return
+  fi
+  ok "Removed Rust"
+  remove_dependency_record rustup
+}
+
 remove_iterm_keys() {
   local domain="com.googlecode.iterm2"
   local live_prefs="$HOME/Library/Preferences/com.googlecode.iterm2.plist"
@@ -238,6 +258,7 @@ remove_zshrc_block
 remove_owned_homebrew_dependency "fzf"
 remove_owned_homebrew_dependency "glow"
 remove_owned_agentic
+remove_owned_rustup
 remove_iterm_keys
 
 rm -f "$state_root/sessions.tsv" "$state_root/database-folders"

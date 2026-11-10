@@ -2,6 +2,8 @@
 name = "devagentics"
 version = "0.1.0"
 edition = "2024"
+# edition 2024 needs 1.85; devws checks this before building (agentic_install.sh).
+rust-version = "1.85"
 
 [dependencies]
 anyhow = "1.0.104"

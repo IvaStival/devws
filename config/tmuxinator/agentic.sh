@@ -43,8 +43,17 @@ for argument in "$@"; do
 done
 
 # Before anything is made: the start screen clones and makes a worktree.
-command -v "$agentic_command" >/dev/null 2>&1 ||
-  fail "$agentic_command is not installed: an agent team needs it built from agentic/ (needs Rust: run ./install.sh in your devws checkout)"
+# Missing, it is offered: agentic_install.sh asks, then installs Rust or
+# updates it as needed and builds it (rustup's cargo is in ~/.cargo/bin).
+# A program the tests name instead is never installed.
+PATH="$HOME/.cargo/bin:$PATH"
+if ! command -v "$agentic_command" >/dev/null 2>&1; then
+  if [ -n "${DEVWS_AGENTIC_COMMAND:-}" ] || ! "$script_dir/agentic_install.sh" install; then
+    fail "$agentic_command is not installed: an agent team needs it built from agentic/ (devws agentic offers to install it, or run ./install.sh in your devws checkout)"
+  fi
+  hash -r
+  command -v "$agentic_command" >/dev/null 2>&1 || fail "$agentic_command is still not on PATH after installing it"
+fi
 
 case "${#places[@]}" in
   0)

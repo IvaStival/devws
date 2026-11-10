@@ -182,29 +182,21 @@ ensure_jungleforge() {
   "$jungleforge" setup || warn "jungleforge was not set up; devws menu › App › Set up jungleforge tries again"
 }
 
-# The agent team's program (devws agentic) is Rust, in agentic/. It is built
-# when cargo is there; devws works without it. Ownership is recorded only when
-# the binary was not there before, so uninstall never removes one the user made.
+# The agent team's program (devws agentic) is Rust, in agentic/, rebuilt on
+# every install (agentic_install.sh, which devws agentic also uses). Installing
+# or updating Rust is asked, and only with someone at the terminal; devws
+# works without it. What it installs is recorded for delete.sh, never a
+# devagentics or a Rust the user had.
 ensure_agentic() {
-  local owned=0
+  local input=/dev/null
 
-  PATH="$HOME/.cargo/bin:$PATH"
-  if ! command -v cargo >/dev/null 2>&1; then
-    warn "devws agentic needs Rust: install it (https://rustup.rs), then run ./install.sh again"
-    return
-  fi
-  if [[ -f "$dependency_state" ]] && grep -Fqx devagentics "$dependency_state"; then
-    owned=1
-  elif ! command -v devagentics >/dev/null 2>&1; then
-    owned=1
-  fi
+  [[ -t 0 ]] && input=/dev/stdin
   info "Building the agent team program (devagentics)"
-  if ! cargo install --path "$ROOT/agentic" --locked; then
-    warn "Could not build agentic/; devws agentic will not work until it builds"
-    return
+  if DEVWS_ROOT="$ROOT" "$ROOT/config/tmuxinator/agentic_install.sh" install --rebuild <"$input"; then
+    ok "devagentics"
+  else
+    warn "devws agentic will not work until devagentics builds: devws agentic offers it again, or run ./install.sh in a terminal"
   fi
-  [[ "$owned" == 1 ]] && record_installed_dependency devagentics
-  ok "devagentics"
 }
 
 upgrade_tmuxinator_if_needed() {
