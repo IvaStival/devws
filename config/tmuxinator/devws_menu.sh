@@ -271,8 +271,7 @@ popup_run() {
   tmux display-popup ${client:+-c "$client"} -E -w 70 -h 18 -T ' devws ' "$script --run $action"
 }
 
-# The menu in the shared picker look (picker.sh), which also keeps it
-# redrawn while a pane scrolls under it. Typing searches every tab.
+# The menu in the shared picker look (picker.sh). Typing searches every tab.
 show_menu() {
   local selected
   selected="$(
