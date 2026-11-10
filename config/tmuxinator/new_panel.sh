@@ -147,11 +147,14 @@ elif [ -n "$beside" ]; then
     fail "$beside is not a pane of $session"
   focused="$beside"
 # From the sidebar's menu the sidebar has the focus: the panel goes by the
-# terminal rather than splitting the narrow sidebar.
+# terminal rather than splitting the narrow sidebar. An agent team's
+# workspaces have no terminal: then any pane but the sidebar.
 elif [ "$(tmux display-message -p -t "$focused" '#{pane_title}' 2>/dev/null)" = devws-picker ]; then
-  focused="$(tmux list-panes -t "=$session:" -F '#{pane_id} #{@devws_role}' 2>/dev/null |
-    awk '$2 == "terminal" { print $1; exit }')"
-  [ -n "$focused" ] || fail "no terminal pane to open it by"
+  focused="$(tmux list-panes -t "=$session:" -F '#{pane_id}	#{@devws_role}	#{pane_title}' 2>/dev/null |
+    awk -F '\t' '$2 == "terminal" { print $1; exit }
+      $3 != "devws-picker" && other == "" { other = $1 }
+      END { if (other != "") print other }' | head -n 1)"
+  [ -n "$focused" ] || fail "no pane but the sidebar to open it by"
 fi
 root="$(tmux show-options -qv -t "=$session:" @devws_root 2>/dev/null)"
 if [ -n "$folder" ]; then

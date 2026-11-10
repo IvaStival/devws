@@ -174,6 +174,19 @@ test_not_beside_the_sidebar() {
   beside "$pane" "$(pane_id "$SESSION" terminal)" || fail "a panel opened from the sidebar is not by the terminal"
 }
 
+# An agent team's workspaces have no terminal (the leader and the board, or a
+# group's agents): from the sidebar the panel goes by another of its panes.
+test_from_the_sidebar_without_a_terminal() {
+  local session=dev-no-terminal pane agent
+  tmux new-session -d -s "$session" -x 200 -y 50 -c "$TEST_ROOT/project" 'sleep 600'
+  tmux set-option -t "$session" @devws_root "$TEST_ROOT/project"
+  tmux select-pane -t "$session:" -T devws-picker
+  agent="$(tmux split-window -d -h -t "$session:" -P -F '#{pane_id}' 'sleep 600')"
+  tmux set-option -p -t "$agent" @devws_role agent
+  pane="$("$NEW_PANEL" "$session" below terminal)" || fail "adding from the sidebar of a workspace with no terminal failed"
+  below "$pane" "$agent" || fail "a panel opened from the sidebar with no terminal is not by the agent"
+}
+
 # Minimizing moves the focus to the editor; a new panel expands the group
 # first, so nothing stays hidden, and splits the focused pane.
 test_a_minimized_group_is_expanded_first() {
@@ -293,6 +306,7 @@ test_an_extra_agent
 test_a_terminal_and_a_neovim
 test_left_and_above
 test_not_beside_the_sidebar
+test_from_the_sidebar_without_a_terminal
 test_a_minimized_group_is_expanded_first
 test_new_panels_are_saved
 

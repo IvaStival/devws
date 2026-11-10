@@ -40,6 +40,29 @@ go to it.
 | `Tab` | In a list of ticked choices (apps, files): untick one |
 | `Esc` | Go back one question, or close |
 
+## In the sidebar
+
+| Keys | Action |
+| ---- | ------ |
+| `←` / `→` | Collapse / expand the selected workspace or team group |
+| Typing | Find workspaces and agents, including collapsed descendants |
+| `Enter` | Go to the workspace or agent |
+
+## In the team board
+
+| Keys | Action |
+| ---- | ------ |
+| `Tab` / `Shift+Tab` | Next / previous view |
+| `j` / `k`, arrows, wheel | Select a row or scroll details |
+| `Enter` / `Esc` | Open / close full details |
+| `o` / `v` | Go to / peek the selected agent |
+| `1`–`9` / `p` then a number | Go to / peek a numbered agent |
+| `L` / `l` | Return to leader / toggle Activity |
+| `c` | Show completed steps or inactive role catalog |
+| `PgUp` / `PgDn`, `g` / `G` | Page, first / last |
+| `z` / `r` / `?` | Zoom / refresh / help |
+| `q` | Close details/help, or quit the board and its dispatcher |
+
 ## In the job log panel
 
 | Keys | Action |
