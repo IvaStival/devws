@@ -55,6 +55,11 @@ enum Command {
         #[command(subcommand)]
         action: RoleAction,
     },
+    /// The leader's program
+    Leader {
+        #[command(subcommand)]
+        action: LeaderAction,
+    },
     /// The plan of a task
     Plan {
         #[command(subcommand)]
@@ -85,6 +90,9 @@ enum Command {
         /// Rows of the printed board; 0 is as many as it takes
         #[arg(long, default_value_t = 0)]
         height: u16,
+        /// Initial board view
+        #[arg(long, value_enum, default_value_t = board_view::View::Overview)]
+        view: board_view::View,
     },
     /// The dispatcher and the log of a task, as plain lines
     Watch {
@@ -122,6 +130,59 @@ enum RoleAction {
         #[arg(long)]
         repo: Option<PathBuf>,
     },
+    /// Change a role's model, effort or approvals in its file; an empty
+    /// value removes it, for the program's default. Agents started from now
+    /// on use it; running ones keep theirs.
+    Set {
+        role: String,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        effort: Option<String>,
+        #[arg(long)]
+        approvals: Option<String>,
+        /// A repo whose own `.devws/roles` count
+        #[arg(long)]
+        repo: Option<PathBuf>,
+    },
+    /// The values a role's program takes for a setting, one a line (for a
+    /// model, the known ones: any other may be typed)
+    Choices {
+        role: String,
+        setting: SettingArg,
+        /// A repo whose own `.devws/roles` count
+        #[arg(long)]
+        repo: Option<PathBuf>,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum SettingArg {
+    Model,
+    Effort,
+    Approvals,
+}
+
+impl From<SettingArg> for roles::Setting {
+    fn from(setting: SettingArg) -> Self {
+        match setting {
+            SettingArg::Model => roles::Setting::Model,
+            SettingArg::Effort => roles::Setting::Effort,
+            SettingArg::Approvals => roles::Setting::Approvals,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum LeaderAction {
+    /// Move the leader to its other program (its role's or its fallback's)
+    /// once its turn is over; the board does it
+    Switch {
+        task: String,
+        /// Why, for the log and the new leader
+        #[arg(long)]
+        reason: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -151,6 +212,21 @@ enum ReportOutcome {
 
 fn this_pane() -> Result<String> {
     std::env::var("TMUX_PANE").context("this is run by a team agent, in its pane (no TMUX_PANE)")
+}
+
+/// Claude or Codex: the program of the role's agent (`claude_work` is a
+/// Claude account), which decides the values its settings take.
+fn role_kind(
+    home: &Home,
+    repo: Option<&std::path::Path>,
+    name: &str,
+    devws: &dyn devws::Devws,
+) -> Result<agent_args::Kind> {
+    let roles = roles::Roles::load(home, repo)?;
+    let role = roles
+        .get(name)
+        .with_context(|| format!("no role is named {name}"))?;
+    devws.agent_kind(&role.agent)
 }
 
 /// The task whose agent runs in this pane.
@@ -269,16 +345,65 @@ fn run() -> Result<()> {
         } => {
             for role in roles::Roles::load(&home, repo.as_deref())?.all() {
                 println!(
-                    "{:<14} {:<7} {:<12} {:<18} {:<7} {}",
+                    "{:<14} {:<7} {:<12} {:<18} {:<7} {:<11} {:<7} {}",
                     role.name,
                     role.group.name(),
                     role.agent,
                     role.model.as_deref().unwrap_or("-"),
+                    role.effort.as_deref().unwrap_or("-"),
+                    role.approvals.as_deref().unwrap_or("-"),
                     if role.writes { "writes" } else { "reads" },
                     role.source.label()
                 );
             }
         }
+        Command::Role {
+            action:
+                RoleAction::Set {
+                    role,
+                    model,
+                    effort,
+                    approvals,
+                    repo,
+                },
+        } => {
+            let changes: Vec<_> = [
+                (roles::Setting::Model, model),
+                (roles::Setting::Effort, effort),
+                (roles::Setting::Approvals, approvals),
+            ]
+            .into_iter()
+            .filter_map(|(setting, value)| value.map(|value| (setting, value)))
+            .collect();
+            if changes.is_empty() {
+                bail!("say what to change: --model, --effort or --approvals");
+            }
+            let kind = role_kind(&home, repo.as_deref(), &role, &devws)?;
+            let path = roles::set(&home, repo.as_deref(), &role, kind, &changes)?;
+            println!(
+                "{role} changed in {}. Agents started from now on use it; running ones keep theirs.",
+                path.display()
+            );
+        }
+        Command::Role {
+            action:
+                RoleAction::Choices {
+                    role,
+                    setting,
+                    repo,
+                },
+        } => {
+            let kind = role_kind(&home, repo.as_deref(), &role, &devws)?;
+            for choice in roles::Setting::from(setting).choices(kind) {
+                println!("{choice}");
+            }
+        }
+        Command::Leader {
+            action: LeaderAction::Switch { task, reason },
+        } => println!(
+            "{}",
+            leader::request_switch(&home, &open(&task)?, &devws, reason.as_deref())?
+        ),
         Command::Plan {
             action: PlanAction::Write { task },
         } => {
@@ -367,12 +492,16 @@ fn run() -> Result<()> {
             once,
             width,
             height,
+            view,
         } => {
             let task = open(&task)?;
             if once {
-                println!("{}", board_tui::once(&task, &devws, &home, width, height)?);
+                println!(
+                    "{}",
+                    board_tui::once(&task, &devws, &home, width, height, view)?
+                );
             } else {
-                board_tui::run(&task, &devws, &home)?;
+                board_tui::run(&task, &devws, &home, view)?;
             }
         }
         Command::Watch { task, once } => {

@@ -70,12 +70,53 @@ fi
 # The status line records this agent's limits under its name.
 export DEVWS_AGENT="$agent"
 
+# Codex stops at "Trust this folder?" in a folder its config does not trust,
+# and every task gets new lane folders: trust the folders devAgentics made for
+# its tasks, as answering the question would, and no others. Trusting the
+# tasks folder itself is not enough: Codex looks for the exact folder.
+trust_task_folder() {
+  local folder tasks config
+  folder="$(pwd -P)"
+  tasks="$(cd "${DEVAGENTICS_HOME:-$HOME/.devagentics}/tasks" 2>/dev/null && pwd -P)" || return 0
+  case "$folder/" in "$tasks"/*) ;; *) return 0 ;; esac
+  config="${CODEX_HOME:-$HOME/.codex}/config.toml"
+  grep -qxF "[projects.\"$folder\"]" "$config" 2>/dev/null && return 0
+  if ! { mkdir -p "$(dirname "$config")" && printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$folder" >> "$config"; }; then
+    printf 'Could not trust %s for Codex in %s: it will ask.\n' "$folder" "$config" >&2
+  fi
+}
+[ "$kind" != codex ] || trust_task_folder
+
 if [ "$extra" = --extra ]; then
   tmux set-option -p -t "$TMUX_PANE" @devws_role extra-agent
   tmux set-option -p -t "$TMUX_PANE" @devws_agent "$agent"
 else
   tmux set-option -p -t "$TMUX_PANE" @devws_role agent
 fi
+
+# A respawn can reuse its pane. Never attribute the previous runtime's
+# observed model or transcript to the replacement agent.
+for option in @devws_model @devws_model_source @devws_model_seen @devws_model_transcript @devws_transcript @devws_model_configured; do
+  tmux set-option -p -u -t "$TMUX_PANE" "$option" 2>/dev/null
+done
+if [ "$extra" != --extra ]; then
+  tmux set-option -u -t "$(tmux display-message -p -t "$TMUX_PANE" '#{session_id}')" @devws_agent_transcript 2>/dev/null
+fi
+configured_model=""
+expects_model=""
+for argument in ${extra_args[@]+"${extra_args[@]}"}; do
+  if [ -n "$expects_model" ]; then
+    configured_model="$argument"
+    expects_model=""
+    continue
+  fi
+  case "$argument" in
+    --) break ;;
+    --model|-m) expects_model=1 ;;
+    --model=*) configured_model="${argument#--model=}" ;;
+  esac
+done
+[ -z "$configured_model" ] || tmux set-option -p -t "$TMUX_PANE" @devws_model_configured "$configured_model"
 
 # Link the agent with the editor: an edit hook shows its changes there, and
 # the prompt tells it how to open files in it. Passed on the command line, so

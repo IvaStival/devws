@@ -5,6 +5,7 @@
 
 use crate::devws::Devws;
 use crate::home::Home;
+use crate::leader;
 use crate::log::Kind;
 use crate::orders::{self, OrderRequest};
 use crate::prs;
@@ -144,6 +145,12 @@ fn tools() -> Vec<Value> {
             "Put a decision to the user that you cannot make yourself. Logs it and marks you as needing them; then ask the question in your reply and stop.",
             json!({ "question": text("What you need decided, with the options") }),
             &["question"],
+        ),
+        tool(
+            "switch_leader",
+            "Move yourself, the leader, to your other program (Claude or Codex, your role's and its fallback). Use it when the user asks you to change model or program. devAgentics restarts your panel on the other program once this turn is over; the new leader catches up from task_status and the log. Refused when the other program's account has run out. After calling it, tell the user in one line and end your turn.",
+            json!({ "reason": text("Why, for the log and the new leader (the user asked for Claude)") }),
+            &[],
         ),
         tool(
             "open_prs",
@@ -341,6 +348,17 @@ impl Server<'_> {
             }
             "read_log" => self.read_log(arguments),
             "escalate" => self.escalate(&string(arguments, "question")?),
+            "switch_leader" => {
+                let said = leader::request_switch(
+                    self.home,
+                    self.task,
+                    self.devws,
+                    optional_string(arguments, "reason").as_deref(),
+                )?;
+                Ok(format!(
+                    "{said} Tell the user in one line and end your turn."
+                ))
+            }
             "open_prs" => {
                 let opened = prs::open_prs(self.task, &self.gh)?;
                 Ok(opened
@@ -507,6 +525,7 @@ mod tests {
                 "set_check",
                 "read_log",
                 "escalate",
+                "switch_leader",
                 "open_prs"
             ]
         );
@@ -522,6 +541,24 @@ mod tests {
             .unwrap()
             .len();
         assert_eq!(required, 4);
+    }
+
+    #[test]
+    fn the_leader_asks_to_move_to_its_other_program() {
+        let f = fixture();
+        let (failed, text) = f.call(
+            "switch_leader",
+            json!({ "reason": "the user asked for Codex" }),
+        );
+        assert!(!failed, "{text}");
+        assert!(
+            text.starts_with("The leader moves to codex (gpt-6.1-sol) once its turn is over."),
+            "{text}"
+        );
+        assert_eq!(
+            f.task.state().unwrap().leader_switch.as_deref(),
+            Some("the user asked for Codex")
+        );
     }
 
     #[test]

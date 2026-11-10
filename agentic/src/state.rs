@@ -27,6 +27,9 @@ pub struct State {
     /// The devws agent the leader runs on now: its role's, or its fallback's
     /// (leader.rs). Tasks from before have none: the role's.
     pub leader_agent: Option<String>,
+    /// A move of the leader to its other program that was asked for, with
+    /// why: the board makes it once the leader's turn is over (leader.rs).
+    pub leader_switch: Option<String>,
 }
 
 /// A senior's plan for the floor, kept as `plans/<step>.md`. The CTO approves

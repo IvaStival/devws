@@ -23,7 +23,7 @@ set -u
 
 script="$HOME/.tmuxinator/devws_menu.sh"
 # One concern per tab: which workspaces there are, how the screen is
-# arranged, the agent, git, the app the branch runs (jungleforge, its
+# arranged, the agent and its team, git, the app the branch runs (jungleforge, its
 # database, the background jobs), and the guide (docs/guide/).
 tabs=(workspace layout agent git app help)
 
@@ -50,10 +50,18 @@ agent|follow-mode|◎ Agent follow|C-b F|choose_follow_mode
 agent|initialize-agent|◇ Initialize agent||initialize_agent
 agent|register-agent|＋ Register agent||register_agent
 agent|remove-agent|− Remove agent||remove_agent
+agent|team-roles|⚙ Team roles||team_roles
 agent|memory-search|⁘ Search memory||search_memory|memory
 agent|memory-recent|◷ Recent memory||recent_memory|memory
 agent|memory-web|↗ Open memory web UI||open_memory_web|memory
 agent|memory-doctor|✚ Memory doctor||memory_doctor|memory
+team|team-overview|◈ Team overview||open_team_view overview|agentic
+team|team-agents|◇ Team agents||open_team_view agents|agentic
+team|team-steps|✓ Team steps||open_team_view steps|agentic
+team|team-activity|≡ Team activity||open_team_view activity|agentic
+team|team-usage|◷ Team usage||open_team_view usage|agentic
+team|team-leader|↩ Return to leader||open_team_leader|agentic
+team|switch-leader|⇄ Switch leader model||switch_leader_model|agentic
 git|commit|✓ Commit (agent)|C-b g|commit_with_agent
 git|commit-manual|✎ Commit manually||commit_by_hand
 git|push|↑ Push / PR|C-b G|push_branch
@@ -90,6 +98,15 @@ session() {
   fi
 }
 
+# Group workspaces belong to their team's task, even without a task option
+# of their own. Cache the context for this menu invocation.
+team_workspace="$(tmux show-options -qv -t "=$(session):" @devws_team_of 2>/dev/null)"
+team_workspace="${team_workspace:-$(session)}"
+team_task="$(tmux show-options -qv -t "=$team_workspace:" @devws_task 2>/dev/null)"
+if [ -n "$team_task" ]; then
+  tabs=(workspace layout agent team git app help)
+fi
+
 title() {
   printf '%s%s' "$(printf '%s' "${1:0:1}" | tr '[:lower:]' '[:upper:]')" "${1:1}"
 }
@@ -116,7 +133,8 @@ items() {
 # An action's "when": empty is always; memory is with ai-memory installed;
 # jungleforge / no-jungleforge with or without jungleforge set up (asked once
 # per listing); editor is in a workspace with an editor panel (an agent team,
-# `devws agentic`, has none).
+# `devws agentic`, has none); agentic is in an agent team's workspace (it has
+# a task), including its group workspaces.
 shown() {
   case "$1" in
     '') return 0 ;;
@@ -124,6 +142,7 @@ shown() {
     jungleforge) jungleforge_available ;;
     no-jungleforge) ! jungleforge_available ;;
     editor) workspace_has_editor ;;
+    agentic) [ -n "$team_task" ] ;;
     *) return 1 ;;
   esac
 }

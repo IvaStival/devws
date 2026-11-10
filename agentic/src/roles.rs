@@ -1,8 +1,9 @@
+use crate::agent_args::{AUTO, Kind};
 use crate::home::Home;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Only the leader is built in: every other role is the user's own file.
 /// `roles/samples/` holds examples to copy.
@@ -260,6 +261,128 @@ impl Roles {
     }
 }
 
+/// A setting of a role that `devagentics role set` (the devws menu's Team
+/// roles) changes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Setting {
+    Model,
+    Effort,
+    Approvals,
+}
+
+impl Setting {
+    pub fn key(self) -> &'static str {
+        match self {
+            Setting::Model => "model",
+            Setting::Effort => "effort",
+            Setting::Approvals => "approvals",
+        }
+    }
+
+    /// The values the role's program takes; for a model, the known ones, as
+    /// any other may be typed (new models come out faster than this list).
+    pub fn choices(self, kind: Kind) -> &'static [&'static str] {
+        match (self, kind) {
+            (Setting::Model, Kind::Claude) => &[
+                "claude-opus-5-5",
+                "claude-sonnet-5-5",
+                "claude-haiku-5-5",
+                "claude-fable-5-1",
+            ],
+            (Setting::Model, Kind::Codex) => &["gpt-6.1-sol", "gpt-5.6-luna"],
+            (Setting::Effort, Kind::Claude) => &["low", "medium", "high", "xhigh", "max"],
+            (Setting::Effort, Kind::Codex) => &["minimal", "low", "medium", "high", "xhigh"],
+            // Claude's permission modes; Codex's -a, and devws's auto review.
+            (Setting::Approvals, Kind::Claude) => {
+                &["default", "acceptEdits", "plan", AUTO, "bypassPermissions"]
+            }
+            (Setting::Approvals, Kind::Codex) => &["untrusted", "on-request", "never", AUTO],
+        }
+    }
+}
+
+/// Changes settings of the role `name` in the file it comes from (the user's
+/// roles, or the repo's): each named key's line is rewritten, added at the end
+/// of the settings, or, for an empty value, removed, so the program's default
+/// applies. Everything else in the file stays as it was. `kind` is the role's
+/// program. Returns the file it changed.
+pub fn set(
+    home: &Home,
+    repo: Option<&Path>,
+    name: &str,
+    kind: Kind,
+    changes: &[(Setting, String)],
+) -> Result<PathBuf> {
+    if name == "leader" {
+        bail!("the leader's program changes with Switch leader model, not here");
+    }
+    let roles = Roles::load(home, repo)?;
+    let role = roles
+        .get(name)
+        .with_context(|| format!("no role is named {name}"))?;
+    let path = match (role.source, repo) {
+        (Source::Repo, Some(repo)) => repo.join(".devws").join("roles"),
+        _ => home.roles_dir(),
+    }
+    .join(format!("{name}.md"));
+    let mut text =
+        fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    for (setting, value) in changes {
+        if *setting != Setting::Model && !value.is_empty() {
+            let choices = setting.choices(kind);
+            if !choices.contains(&value.as_str()) {
+                bail!(
+                    "{name}'s program takes {} {}, not {value}",
+                    setting.key(),
+                    choices.join(", ")
+                );
+            }
+        }
+        text = with_setting(&text, setting.key(), value);
+    }
+    parse(name, &text, role.source, &path.display().to_string())?;
+    fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
+}
+
+/// `text`, a role file, with `key = "value"` in its settings: in place of the
+/// key's line, else after the last top-level setting; none for an empty value.
+fn with_setting(text: &str, key: &str, value: &str) -> String {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let end = lines
+        .iter()
+        .skip(1)
+        .position(|line| line == FENCE)
+        .map_or(lines.len(), |index| index + 1);
+    // A [table] (the leader's [fallback]) ends the top-level settings.
+    let top_end = lines[1..end]
+        .iter()
+        .position(|line| line.trim_start().starts_with('['))
+        .map_or(end, |index| index + 1);
+    let is_key = |line: &String| {
+        line.split_once('=')
+            .is_some_and(|(name, _)| name.trim() == key)
+    };
+    let replacement = format!("{key} = {}", toml::Value::String(value.to_string()));
+    match lines[1..top_end]
+        .iter()
+        .position(is_key)
+        .map(|index| index + 1)
+    {
+        Some(index) if value.is_empty() => {
+            lines.remove(index);
+        }
+        Some(index) => lines[index] = replacement,
+        None if value.is_empty() => {}
+        None => lines.insert(top_end, replacement),
+    }
+    let mut changed = lines.join("\n");
+    if text.ends_with('\n') {
+        changed.push('\n');
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,6 +589,142 @@ mod tests {
         assert_eq!(
             without_repo.get("executor").unwrap().model.as_deref(),
             Some("gpt")
+        );
+    }
+
+    const HAMMER: &str = "+++\n# The floor's first tier.\nagent = \"claude\"\nmodel = \"claude-haiku-5-5\"\nwrites = true\n+++\nBuild one step.\n";
+
+    fn change(setting: Setting, value: &str) -> (Setting, String) {
+        (setting, value.to_string())
+    }
+
+    #[test]
+    fn set_rewrites_adds_and_removes_only_the_named_settings() {
+        let (_dir, home) = home_with(&[("hammer.md", HAMMER)]);
+        let path = set(
+            &home,
+            None,
+            "hammer",
+            Kind::Claude,
+            &[
+                change(Setting::Model, "claude-sonnet-5-5"),
+                change(Setting::Effort, "low"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(path, home.roles_dir().join("hammer.md"));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "+++\n# The floor's first tier.\nagent = \"claude\"\nmodel = \"claude-sonnet-5-5\"\nwrites = true\neffort = \"low\"\n+++\nBuild one step.\n"
+        );
+        let roles = Roles::load(&home, None).unwrap();
+        let hammer = roles.get("hammer").unwrap();
+        assert_eq!(
+            (hammer.model.as_deref(), hammer.effort.as_deref()),
+            (Some("claude-sonnet-5-5"), Some("low"))
+        );
+
+        set(
+            &home,
+            None,
+            "hammer",
+            Kind::Claude,
+            &[change(Setting::Effort, "")],
+        )
+        .unwrap();
+        set(
+            &home,
+            None,
+            "hammer",
+            Kind::Claude,
+            &[change(Setting::Model, "")],
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "+++\n# The floor's first tier.\nagent = \"claude\"\nwrites = true\n+++\nBuild one step.\n",
+            "an empty value leaves the program's default"
+        );
+    }
+
+    #[test]
+    fn set_takes_only_values_the_roles_program_knows() {
+        let (_dir, home) = home_with(&[("hammer.md", HAMMER)]);
+        for (kind, setting, value) in [
+            (Kind::Claude, Setting::Approvals, "never"),
+            (Kind::Codex, Setting::Approvals, "acceptEdits"),
+            (Kind::Claude, Setting::Effort, "minimal"),
+        ] {
+            let message = format!(
+                "{:#}",
+                set(&home, None, "hammer", kind, &[change(setting, value)])
+                    .err()
+                    .unwrap()
+            );
+            assert!(message.contains(value), "{message}");
+            assert!(
+                message.contains(setting.choices(kind)[0]),
+                "{message} should name the allowed values"
+            );
+        }
+        set(
+            &home,
+            None,
+            "hammer",
+            Kind::Codex,
+            &[change(Setting::Approvals, "never")],
+        )
+        .unwrap();
+        set(
+            &home,
+            None,
+            "hammer",
+            Kind::Claude,
+            &[change(Setting::Model, "a-model-from-next-week")],
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(home.roles_dir().join("hammer.md")).unwrap(),
+            "+++\n# The floor's first tier.\nagent = \"claude\"\nmodel = \"a-model-from-next-week\"\nwrites = true\napprovals = \"never\"\n+++\nBuild one step.\n"
+        );
+    }
+
+    #[test]
+    fn set_refuses_the_leader_and_unknown_roles_and_writes_a_repos_own() {
+        let (_dir, home) = home_with(&[("hammer.md", HAMMER)]);
+        let refusal = |name: &str| {
+            format!(
+                "{:#}",
+                set(
+                    &home,
+                    None,
+                    name,
+                    Kind::Claude,
+                    &[change(Setting::Model, "x")]
+                )
+                .err()
+                .unwrap()
+            )
+        };
+        assert!(refusal("leader").contains("Switch leader model"));
+        assert!(refusal("nobody").contains("no role is named nobody"));
+
+        let repo = TempDir::new().unwrap();
+        fs::create_dir_all(repo.path().join(".devws/roles")).unwrap();
+        fs::write(repo.path().join(".devws/roles/hammer.md"), HAMMER).unwrap();
+        let path = set(
+            &home,
+            Some(repo.path()),
+            "hammer",
+            Kind::Claude,
+            &[change(Setting::Effort, "high")],
+        )
+        .unwrap();
+        assert_eq!(path, repo.path().join(".devws/roles/hammer.md"));
+        assert_eq!(
+            fs::read_to_string(home.roles_dir().join("hammer.md")).unwrap(),
+            HAMMER,
+            "the user's own role is not the one the repo uses"
         );
     }
 

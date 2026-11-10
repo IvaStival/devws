@@ -62,6 +62,7 @@ agent_pane() {
 
   # Compatibility for sessions created before agent_runner.sh was introduced.
   while IFS='|' read -r pane role command; do
+    [ -z "$role" ] || continue
     case "$command" in
       claude|codex|node)
         printf '%s\n' "$pane"
@@ -104,21 +105,38 @@ expand_minimized_panes() {
   "$HOME/.tmuxinator/minimize_panes.sh" "$1" restore
 }
 
+start_workspace_agent() {
+  local session="$1" agent="$2" pane root command target
+  pane="$(agent_pane "$session")" || pane=""
+  root="$(tmux show-options -qv -t "=$session:" @devws_root)"
+  command="$(printf '%q %q' "$HOME/.tmuxinator/agent_runner.sh" "$agent")"
+  if [ -n "$pane" ]; then
+    tmux respawn-pane -k -t "$pane" -c "${root:-$PWD}" "$command" || return
+  else
+    load_workspace_panes "$session"
+    target="$(pane_with_role terminal)"
+    [ -n "$target" ] || target="$(pane_with_role editor)"
+    [ -n "$target" ] || target="$(printf '%s\n' "$workspace_panes" |
+      awk -F '\t' '$3 != "devws-picker" { print $1; exit }')"
+    [ -n "$target" ] || target="$(main_window "$session")"
+    pane="$(tmux split-window -v -b -t "$target" -c "${root:-$PWD}" -P -F '#{pane_id}' "$command")" || return
+    tmux set-option -p -t "$pane" @devws_role agent
+  fi
+  "$HOME/.tmuxinator/agent_status.sh" "$session" idle
+}
+
 switch_agent() {
-  local session pane agent root
+  local session agent root
   session="$(tmux display-message -p '#S')"
   expand_minimized_panes "$session" || return
-  pane="$(agent_pane "$session")" || return
   agent="$(choose_agent)" || return
   [ -n "$agent" ] || return
   root="$(tmux show-options -t "$session" -v @devws_root 2>/dev/null)"
 
+  start_workspace_agent "$session" "$agent" || return
   tmux set-option -t "$session" @devws_agent "$agent"
   [ -z "$root" ] || remember_opening "$root" "$agent" \
     "$(tmux show-options -t "$session" -v @devws_editor 2>/dev/null)"
-  tmux respawn-pane -k -t "$pane" -c "${root:-$PWD}" \
-    "$HOME/.tmuxinator/agent_runner.sh $agent"
-  "$HOME/.tmuxinator/agent_status.sh" "$session" idle
   save_state
   refresh_pickers
 }
@@ -141,17 +159,15 @@ switch_editor() {
 }
 
 restart_agent() {
-  local session pane agent root
+  local session agent
   session="$(tmux display-message -p '#S')"
   expand_minimized_panes "$session" || return
-  pane="$(agent_pane "$session")" || return
   agent="$(tmux show-options -t "$session" -v @devws_agent 2>/dev/null)"
-  root="$(tmux show-options -t "$session" -v @devws_root 2>/dev/null)"
   [ -n "$agent" ] || agent="${DEVWS_DEFAULT_AGENT:-claude}"
 
-  tmux respawn-pane -k -t "$pane" -c "${root:-$PWD}" \
-    "$HOME/.tmuxinator/agent_runner.sh $agent"
-  "$HOME/.tmuxinator/agent_status.sh" "$session" idle
+  start_workspace_agent "$session" "$agent" || return
+  save_state
+  refresh_pickers
 }
 
 initialize_agent() {
@@ -438,6 +454,98 @@ new_github_workspace() {
 open_agentic_team() {
   printf '\033c'
   "$HOME/.tmuxinator/agentic.sh" || pause
+}
+
+# Resolve group workspaces through their team before looking up panes or
+# the task. Never start a board here: it would start another dispatcher.
+team_session() {
+  local current parent
+  current="$(tmux display-message -p ${TMUX_PANE:+-t "$TMUX_PANE"} '#S')"
+  parent="$(tmux show-options -qv -t "=$current:" @devws_team_of 2>/dev/null)"
+  printf '%s\n' "${parent:-$current}"
+}
+
+focus_team_role() {
+  local role="$1" view="${2:-}" owner pane client
+  owner="$(team_session)"
+  pane="$(tmux list-panes -s -t "=$owner" -F '#{pane_id}|#{@devws_role}' 2>/dev/null |
+    awk -F '|' -v role="$role" '$2 == role { print $1; exit }')"
+  if [ -z "$pane" ]; then
+    printf 'The team %s is not open.\n' "$([ "$role" = team-log ] && printf board || printf leader)" >&2
+    return 1
+  fi
+  if [ -n "$view" ]; then
+    tmux set-option -p -t "$pane" @devagentics_board_view "$view" || return
+  fi
+  tmux select-window -t "$pane" || return
+  tmux select-pane -t "$pane" || return
+  client="$(tmux display-message -p '#{client_name}')"
+  [ -z "$client" ] || tmux switch-client -c "$client" -t "$pane" || return
+}
+
+open_team_view() {
+  case "${1:-}" in
+    overview|agents|steps|activity|usage) focus_team_role team-log "$1" ;;
+    *) printf 'Unknown team view: %s\n' "${1:-}" >&2; return 2 ;;
+  esac
+}
+
+open_team_leader() {
+  focus_team_role agent
+}
+
+# Moves the agent team's leader to its other program (Claude or Codex):
+# devAgentics makes the move once the leader's turn is over.
+switch_leader_model() {
+  local task
+  task="$(tmux show-options -qv -t "=$(team_session):" @devws_task 2>/dev/null)"
+  printf '\033c'
+  if [ -z "$task" ]; then
+    printf 'This workspace is not an agent team.\n'
+  else
+    "${DEVWS_AGENTIC_COMMAND:-devagentics}" leader switch "$task"
+  fi
+  pause
+}
+
+# Changes an agent team role's model, effort or approvals (devagentics role
+# set): the role, the setting, then a value its program takes, Default for
+# the program's own, or, for a model, one typed. The workspace's repo roles
+# count. The leader is left out: Switch leader model moves it.
+team_roles() {
+  local agentic="${DEVWS_AGENTIC_COMMAND:-devagentics}" root listing role setting value
+  local -a repo=()
+  root="$(tmux show-options -t "$(tmux display-message -p '#S')" -v @devws_root 2>/dev/null)"
+  [ -z "$root" ] || repo=(--repo "$root")
+  printf '\033c'
+  if ! listing="$("$agentic" role list "${repo[@]}" 2>&1)"; then
+    printf '%s\n' "$listing"
+    pause
+    return
+  fi
+  role="$(awk '$1 != "leader"' <<<"$listing" |
+    pick Role 'The role to change: name, group, program, model, effort, approvals, source')"
+  role="${role%% *}"
+  [ -n "$role" ] || return
+  setting="$(printf '%s\n' model effort approvals | pick Setting "What to change in $role")"
+  [ -n "$setting" ] || return
+  value="$(
+    {
+      "$agentic" role choices "$role" "$setting" "${repo[@]}"
+      printf '%s\n' Default
+      [ "$setting" != model ] || printf '%s\n' 'Other…'
+    } | pick Value "The $setting for $role (Default: its program's own)"
+  )"
+  case "$value" in
+    '') return ;;
+    Default) value="" ;;
+    'Other…')
+      read -e -r -p 'Model: ' value
+      [ -n "$value" ] || return
+      ;;
+  esac
+  "$agentic" role set "$role" "--$setting" "$value" "${repo[@]}"
+  pause
 }
 
 # Opens a workspace on a git worktree of the current workspace's repo: an

@@ -92,6 +92,7 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
         "open_questions": state.questions.iter().filter(|question| question.answer.is_none()).map(|question| json!({ "id": question.id, "from": question.from, "to": question.to, "text": question.text })).collect::<Vec<_>>(),
         "waiting_for_you": state.queue.iter().filter(|message| message.to == LEADER).count(),
         "limits": limits,
+        "leader": crate::leader::status(home, task, devws)?,
         "recent_log": recent,
     }))
 }
@@ -149,6 +150,14 @@ mod tests {
         assert_eq!(summary["waiting_for_you"], 1);
         assert_eq!(summary["limits"]["claude"]["five_hour_percent"], 40);
         assert_eq!(summary["repos"][0]["check"], Value::Null);
+        assert_eq!(
+            summary["leader"],
+            json!({
+                "program": "claude", "other": "codex (gpt-6.1-sol)",
+                "other_limits": { "five_hour_percent": null, "week_percent": null },
+                "other_run_out": false, "switch_pending": null,
+            })
+        );
         let kinds: Vec<_> = summary["recent_log"]
             .as_array()
             .unwrap()
