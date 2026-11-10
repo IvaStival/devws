@@ -23,25 +23,26 @@ set -u
 
 script="$HOME/.tmuxinator/devws_menu.sh"
 # One concern per tab: which workspaces there are, how the screen is
-# arranged, the agent, git, the app the branch runs (jungleforge, its
+# arranged, the agent and its team, git, the app the branch runs (jungleforge, its
 # database, the background jobs), and the guide (docs/guide/).
 tabs=(workspace layout agent git app help)
 
 # tab|action|label|shortcut|function in workspace_actions.sh, with its
 # arguments[|when: see shown]
 actions='workspace|github|⎇ Open or start a workspace||new_github_workspace
+workspace|agentic|◈ Open an agent team||open_agentic_team
 workspace|new|+ New folder workspace||new_workspace
 workspace|worktree|⑂ New worktree workspace||new_worktree_workspace
 workspace|open-folder|⌂ Open folder in…||open_folder
 workspace|close|× Close workspace||close_workspace
 workspace|tidy|⌫ Tidy up merged branches||tidy_up
 workspace|detach|⏏ Detach (workspaces keep running)|C-b d|detach_client
-layout|toggle-layout|▥ Toggle layout|C-b \|toggle_layout
-layout|minimize|▁ Minimize agent and terminal|C-b _|minimize_agents
+layout|toggle-layout|▥ Toggle layout|C-b \|toggle_layout|editor
+layout|minimize|▁ Minimize agent and terminal|C-b _|minimize_agents|editor
 layout|header|▔ Hide or show the header|C-b C-s|toggle_header
 layout|new-panel|▣ New panel|C-b N|new_panel
 layout|move-panel|⇆ Move panel|C-b S-←→↑↓|move_panel
-layout|switch-editor|⇄ Switch editor||switch_editor
+layout|switch-editor|⇄ Switch editor||switch_editor|editor
 agent|jump|! Go to waiting agent|C-b a|jump_agent
 agent|switch-agent|⇄ Switch agent||switch_agent
 agent|restart-agent|↻ Restart agent||restart_agent
@@ -49,10 +50,18 @@ agent|follow-mode|◎ Agent follow|C-b F|choose_follow_mode
 agent|initialize-agent|◇ Initialize agent||initialize_agent
 agent|register-agent|＋ Register agent||register_agent
 agent|remove-agent|− Remove agent||remove_agent
+agent|team-roles|⚙ Team roles||team_roles
 agent|memory-search|⁘ Search memory||search_memory|memory
 agent|memory-recent|◷ Recent memory||recent_memory|memory
 agent|memory-web|↗ Open memory web UI||open_memory_web|memory
 agent|memory-doctor|✚ Memory doctor||memory_doctor|memory
+team|team-overview|◈ Team overview||open_team_view overview|agentic
+team|team-agents|◇ Team agents||open_team_view agents|agentic
+team|team-steps|✓ Team steps||open_team_view steps|agentic
+team|team-activity|≡ Team activity||open_team_view activity|agentic
+team|team-usage|◷ Team usage||open_team_view usage|agentic
+team|team-leader|↩ Return to leader||open_team_leader|agentic
+team|switch-leader|⇄ Switch leader model||switch_leader_model|agentic
 git|commit|✓ Commit (agent)|C-b g|commit_with_agent
 git|commit-manual|✎ Commit manually||commit_by_hand
 git|push|↑ Push / PR|C-b G|push_branch
@@ -64,15 +73,18 @@ app|services|⛃ Services||start_services|jungleforge
 app|migrate|⇡ Migrate||migrate_running_app|jungleforge
 app|shell|⌘ Shell||open_app_shell|jungleforge
 app|logs|≡ Logs||open_app_logs|jungleforge
+app|info|ⓘ Info||show_app_info|jungleforge
+app|settings|⚙ Settings||change_app_setting|jungleforge
 app|register-jungleforge|＋ Register in jungleforge||register_in_jungleforge|jungleforge
-app|open-database|⛁ Database|C-b B|open_database
-app|database-folder|⛁ Database folder||choose_database_folder
+app|open-database|⛁ Database|C-b B|open_database|editor
+app|database-folder|⛁ Database folder||choose_database_folder|editor
 app|job-log|◷ Job log|C-b j|show_job_log
 help|guide|? Start here||open_guide README
 help|guide-shortcuts|⌨ Shortcuts||open_guide shortcuts
 help|guide-workspaces|⎇ Workspaces||open_guide workspaces
 help|guide-layout|▥ Layout||open_guide layout
 help|guide-agents|◇ Agents||open_guide agents
+help|guide-agentic|◈ Agent teams||open_guide agentic
 help|guide-git|✓ Git||open_guide git
 help|guide-app|▶ App, jobs and database||open_guide app
 help|guide-commands|$ Commands||open_guide commands
@@ -85,6 +97,15 @@ session() {
     tmux display-message -p '#{session_name}'
   fi
 }
+
+# Group workspaces belong to their team's task, even without a task option
+# of their own. Cache the context for this menu invocation.
+team_workspace="$(tmux show-options -qv -t "=$(session):" @devws_team_of 2>/dev/null)"
+team_workspace="${team_workspace:-$(session)}"
+team_task="$(tmux show-options -qv -t "=$team_workspace:" @devws_task 2>/dev/null)"
+if [ -n "$team_task" ]; then
+  tabs=(workspace layout agent team git app help)
+fi
 
 title() {
   printf '%s%s' "$(printf '%s' "${1:0:1}" | tr '[:lower:]' '[:upper:]')" "${1:1}"
@@ -111,15 +132,31 @@ items() {
 
 # An action's "when": empty is always; memory is with ai-memory installed;
 # jungleforge / no-jungleforge with or without jungleforge set up (asked once
-# per listing).
+# per listing); editor is in a workspace with an editor panel (an agent team,
+# `devws agentic`, has none); agentic is in an agent team's workspace (it has
+# a task), including its group workspaces.
 shown() {
   case "$1" in
     '') return 0 ;;
     memory) command -v "${DEVWS_AI_MEMORY:-ai-memory}" >/dev/null 2>&1 ;;
     jungleforge) jungleforge_available ;;
     no-jungleforge) ! jungleforge_available ;;
+    editor) workspace_has_editor ;;
+    agentic) [ -n "$team_task" ] ;;
     *) return 1 ;;
   esac
+}
+
+editor_state=""
+workspace_has_editor() {
+  if [ -z "$editor_state" ]; then
+    if tmux list-panes -s -t "=$(session)" -F '#{@devws_role}' 2>/dev/null | grep -qx editor; then
+      editor_state=yes
+    else
+      editor_state=no
+    fi
+  fi
+  [ "$editor_state" = yes ]
 }
 
 jungleforge_state=""

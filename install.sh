@@ -182,6 +182,31 @@ ensure_jungleforge() {
   "$jungleforge" setup || warn "jungleforge was not set up; devws menu › App › Set up jungleforge tries again"
 }
 
+# The agent team's program (devws agentic) is Rust, in agentic/. It is built
+# when cargo is there; devws works without it. Ownership is recorded only when
+# the binary was not there before, so uninstall never removes one the user made.
+ensure_agentic() {
+  local owned=0
+
+  PATH="$HOME/.cargo/bin:$PATH"
+  if ! command -v cargo >/dev/null 2>&1; then
+    warn "devws agentic needs Rust: install it (https://rustup.rs), then run ./install.sh again"
+    return
+  fi
+  if [[ -f "$dependency_state" ]] && grep -Fqx devagentics "$dependency_state"; then
+    owned=1
+  elif ! command -v devagentics >/dev/null 2>&1; then
+    owned=1
+  fi
+  info "Building the agent team program (devagentics)"
+  if ! cargo install --path "$ROOT/agentic" --locked; then
+    warn "Could not build agentic/; devws agentic will not work until it builds"
+    return
+  fi
+  [[ "$owned" == 1 ]] && record_installed_dependency devagentics
+  ok "devagentics"
+}
+
 upgrade_tmuxinator_if_needed() {
   if ! command -v brew >/dev/null 2>&1; then
     command -v tmuxinator >/dev/null 2>&1 &&
@@ -326,6 +351,8 @@ case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;
   *) warn "~/.local/bin is not on PATH; add it to run devws (export PATH=\"\$HOME/.local/bin:\$PATH\")" ;;
 esac
+
+ensure_agentic
 
 # LazyVim writes lazy-lock.json and lazyvim.json into its config folder, so
 # the whole folder is linked and those files are tracked in the repo.

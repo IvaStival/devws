@@ -9,6 +9,8 @@
 
 # The checkout, through the ~/.local/bin link.
 devws_checkout="${0:A:h:h}"
+# For the scripts that call devws back (agentic.sh).
+export DEVWS_BIN="$devws_checkout/bin/devws"
 "$devws_checkout/config/tmuxinator/link_scripts.sh" >/dev/null 2>&1
 
 devws() {
@@ -41,6 +43,28 @@ devws() {
 
   if [[ "${1:-}" == "reload" ]]; then
     "$HOME/.tmuxinator/reload_devws.sh"
+    return
+  fi
+
+  # For a program driving devws (devAgentics): a workspace without the start
+  # screen or any question, and the agents in the workspaces.
+  if [[ "${1:-}" == "open" ]]; then
+    devws-workspace --folder-required "${@:2}"
+    return
+  fi
+
+  if [[ "${1:-}" == "agentic" ]]; then
+    "$HOME/.tmuxinator/agentic.sh" "${@:2}"
+    return
+  fi
+
+  if [[ "${1:-}" == "agent" ]]; then
+    "$HOME/.tmuxinator/agent_cli.sh" "${@:2}"
+    return
+  fi
+
+  if [[ "${1:-}" == "worktree" && "${2:-}" == "ensure" ]]; then
+    devws-worktree-ensure "${@:3}"
     return
   fi
 
@@ -117,6 +141,67 @@ devws() {
     return
   fi
 
+  devws-workspace "$@"
+}
+
+# The prompts, the folder and the saved state of one workspace. Options, for a
+# program driving devws (devAgentics):
+#   --no-attach          starts it detached and never asks for the agent or the
+#                        editor (the defaults apply); prints the session's name
+#   --task <id>          groups it under a task in the sidebar, and keeps it
+#                        out of the start screen's recent folders
+#   --agent-args <file>  more arguments for the agent (agent_runner.sh)
+#   --folder-required    `devws open`: no folder is an error, not this one
+#   --template <name>    start ~/.tmuxinator/<name>.yml instead of dev.yml (an
+#                        agent team: agentic.yml); the editor is not asked for
+#   --set <key=value>    one more setting for that template (repeatable)
+devws-workspace() {
+  local attach=1 task="" agent_args="" folder_required=0 template=dev
+  local -a extra_settings=()
+  while [[ "${1:-}" == --* ]]; do
+    case "$1" in
+      --no-attach) attach=0 ;;
+      --folder-required) folder_required=1 ;;
+      --task | --agent-args | --template | --set)
+        if [[ -z "${2:-}" ]]; then
+          print -u2 "devws: $1 needs a value"
+          return 2
+        fi
+        case "$1" in
+          --task) task="$2" ;;
+          --agent-args) agent_args="$2" ;;
+          --template) template="$2" ;;
+          --set) extra_settings+=("$2") ;;
+        esac
+        shift
+        ;;
+      *)
+        print -u2 "devws: unknown option: $1"
+        return 2
+        ;;
+    esac
+    shift
+  done
+  if (( folder_required )) && [[ -z "${1:-}" ]]; then
+    print -u2 "usage: devws open [--no-attach] [--task <id>] [--agent-args <file>] <folder> [agent] [editor]"
+    return 2
+  fi
+  if [[ ! "$template" =~ ^[a-z][a-z0-9_-]*$ || ! -r "$HOME/.tmuxinator/$template.yml" ]]; then
+    print -u2 "devws: no such template: $template"
+    return 2
+  fi
+  if [[ -n "$task" && ! "$task" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    print -u2 "devws: a task id uses letters, digits, . _ and -: $task"
+    return 2
+  fi
+  if [[ -n "$agent_args" ]]; then
+    if [[ ! -r "$agent_args" ]]; then
+      print -u2 "devws: cannot read the agent arguments: $agent_args"
+      return 1
+    fi
+    agent_args="${agent_args:A}"
+  fi
+
   local project_root
   # Resolve to an absolute, symlink-free path before handing it to
   # tmuxinator. A relative value (e.g. "." from `devws .`) would otherwise
@@ -137,7 +222,7 @@ devws() {
   local -a available_agents
   available_agents=(${=DEVWS_AGENTS:-claude codex})
 
-  if [[ -z "$agent" && -t 0 && -t 1 && -x "$(command -v fzf)" ]]; then
+  if [[ -z "$agent" ]] && (( attach )) && [[ -t 0 && -t 1 && -x "$(command -v fzf)" ]]; then
     agent="$(printf '%s\n' "${available_agents[@]}" | fzf \
       --height=~10 --layout=reverse --prompt='Agent > ')"
     [[ -n "$agent" ]] || return 0
@@ -152,14 +237,16 @@ devws() {
   local -a available_editors
   available_editors=(${=DEVWS_EDITORS:-nvim vim code zed})
 
-  if [[ -z "$editor" && -t 0 && -t 1 && -x "$(command -v fzf)" ]]; then
+  if [[ "$template" != dev ]]; then
+    editor="-"
+  elif [[ -z "$editor" ]] && (( attach )) && [[ -t 0 && -t 1 && -x "$(command -v fzf)" ]]; then
     editor="$(printf '%s\n' "${available_editors[@]}" | fzf \
       --height=~10 --layout=reverse --prompt='Editor > ')"
     [[ -n "$editor" ]] || return 0
   fi
   editor="${editor:-${DEVWS_DEFAULT_EDITOR:-${available_editors[1]}}}"
 
-  if (( ${available_editors[(Ie)$editor]} == 0 )); then
+  if [[ "$template" == dev ]] && (( ${available_editors[(Ie)$editor]} == 0 )); then
     print -u2 "devws: unknown editor '$editor' (choose: ${available_editors[*]})"
     return 2
   fi
@@ -173,10 +260,60 @@ devws() {
     "$HOME/.tmuxinator/restore_state.sh" >/dev/null
   fi
 
-  "$HOME/.tmuxinator/recent.sh" add "$project_root" "$agent" "$editor"
-  tmuxinator start dev project_root="$project_root" agent="$agent" editor="$editor"
+  # A task's folders are the program's to reopen: with its agent's arguments
+  # lost, a reopened one would start a plain agent.
+  [[ -n "$task" ]] || "$HOME/.tmuxinator/recent.sh" add "$project_root" "$agent" "$editor"
+  local -a start_options=() start_settings=(project_root="$project_root" agent="$agent" editor="$editor")
+  (( attach )) || start_options=(--no-attach)
+  [[ -z "$agent_args" ]] || start_settings+=(agent_args="$agent_args")
+  [[ -z "$task" ]] || start_settings+=(task="$task")
+  start_settings+=("${extra_settings[@]}")
+  tmuxinator start ${start_options[@]} "$template" "${start_settings[@]}"
+
+  # tmux writes . and : of the folder's name as _.
+  local session="dev-${project_root:t}"
+  session="${session//[.:]/_}"
+  if (( ! attach )) && ! tmux has-session -t "=$session" 2>/dev/null; then
+    print -u2 "devws: the workspace $session did not start"
+    return 1
+  fi
+  [[ -z "$task" ]] || tmux set-option -t "=$session:" @devws_task "$task"
+  if (( ! attach )); then
+    # tmuxinator creates the panes at once but their commands run later: the
+    # workspace is ready, and can be saved, once it has said where it is and
+    # its terminal pane has marked itself (as restore_state.sh waits).
+    local attempt
+    for attempt in {1..300}; do
+      [[ -n "$(tmux show-option -qv -t "=$session:" @devws_root)" ]] &&
+        tmux list-panes -s -t "=$session" -F '#{@devws_role}' | grep -qxE 'terminal|team-log' && break
+      sleep 0.1
+    done
+  fi
   "$HOME/.tmuxinator/save_state.sh"
-  [[ -n "$TMUX" ]] && "$HOME/.tmuxinator/refresh_devws_pickers.sh"
+  [[ -n "$TMUX" || -n "$task" ]] && "$HOME/.tmuxinator/refresh_devws_pickers.sh"
+  (( attach )) || print -r -- "$session"
+  return 0
+}
+
+# Prints the folder of <branch>'s worktree of <repo>, and opens nothing. A
+# GitHub repo (owner/repo or a URL) is cloned when needed; the branch starts
+# from the freshly fetched default branch and gets the repo's untracked files
+# (.shared). A folder gets its worktree beside it (worktree.sh).
+devws-worktree-ensure() {
+  local repo="${1:-}" branch="${2:-}" bare folder base
+  if [[ -z "$repo" || -z "$branch" || $# -gt 2 ]]; then
+    print -u2 "usage: devws worktree ensure <repo or folder> <branch>"
+    return 2
+  fi
+  if [[ -d "$repo" ]]; then
+    "$HOME/.tmuxinator/worktree.sh" ensure "$repo" "$branch"
+    return
+  fi
+  bare="$("$HOME/.tmuxinator/github_repo.sh" ensure "$repo")" || return
+  base="origin/$("$HOME/.tmuxinator/github_repo.sh" default-branch "$bare")"
+  folder="$("$HOME/.tmuxinator/worktree.sh" ensure "$bare" "$branch" "$base")" || return
+  "$HOME/.tmuxinator/shared_files.sh" link "${bare:h}" "$folder" || return
+  print -r -- "$folder"
 }
 
 devws-restore() {

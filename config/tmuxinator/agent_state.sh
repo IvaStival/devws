@@ -14,15 +14,25 @@ set -u
 
 payload="$(cat)"
 
-json() {
-  printf '%s' "$payload" | jq -r "$1" 2>/dev/null
-}
-
 [ -n "${TMUX_PANE:-}" ] || exit 0
-session="$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null)" || exit 0
+event="" notification="" transcript="" model=""
+# Parse once, preserving spaces, quotes and backslashes in transcript paths.
+# NUL separators distinguish empty fields without evaluating payload text.
+if ! {
+  IFS= read -r -d '' event
+  IFS= read -r -d '' notification
+  IFS= read -r -d '' transcript
+  IFS= read -r -d '' model
+} < <(printf '%s' "$payload" | jq -j \
+  '[.hook_event_name // "", .notification_type // "", .transcript_path // "", (if (.model | type) == "string" then .model else "" end)][]
+   | if type == "string" then . else "" end | ., "\u0000"' 2>/dev/null); then
+  exit 0
+fi
+metadata="$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}|#{@devws_role}' 2>/dev/null)" || exit 0
+session="${metadata%|*}"
+role="${metadata##*|}"
 [ -n "$session" ] || exit 0
 
-event="$(json '.hook_event_name // empty')"
 state=""
 case "$event" in
   UserPromptSubmit|PreToolUse|PostToolUse) state=working ;;
@@ -30,7 +40,7 @@ case "$event" in
   PermissionRequest) state=waiting ;;
   # Claude Code only notifies; an idle reminder changes nothing.
   Notification)
-    case "$(json '.notification_type // empty')" in
+    case "$notification" in
       permission_prompt|elicitation_dialog) state=waiting ;;
     esac
     ;;
@@ -42,8 +52,16 @@ esac
 [ -z "$state" ] || "$(dirname "$0")/agent_status.sh" "$session" "$state" "$TMUX_PANE" >/dev/null 2>&1
 # The conversation's log, whose tokens tmux's own line shows
 # (header_tokens.sh): the main agent's, not an extra one's.
-transcript="$(json '.transcript_path // empty')"
-role="$(tmux show-options -pqv -t "$TMUX_PANE" @devws_role 2>/dev/null)"
-[ -z "$transcript" ] || [ "$role" = extra-agent ] ||
-  tmux set-option -t "=$session:" @devws_agent_transcript "$transcript" 2>/dev/null
+if [ -n "$transcript" ]; then
+  if [ "$role" != extra-agent ] &&
+      [ "$(tmux show-option -qv -t "=$session:" @devws_agent_transcript 2>/dev/null)" != "$transcript" ]; then
+    tmux set-option -t "=$session:" @devws_agent_transcript "$transcript" 2>/dev/null
+  fi
+  # Every agent's own, for what it used (devws agent usage <pane>).
+  if [ "$(tmux show-options -pqv -t "$TMUX_PANE" @devws_transcript 2>/dev/null)" != "$transcript" ]; then
+    tmux set-option -p -t "$TMUX_PANE" @devws_transcript "$transcript" 2>/dev/null
+  fi
+fi
+# Hook models are runtime evidence; recording them never scans transcripts.
+[ -z "$model" ] || "$(dirname "$0")/agent_model.sh" record "$TMUX_PANE" "$model" >/dev/null 2>&1
 exit 0

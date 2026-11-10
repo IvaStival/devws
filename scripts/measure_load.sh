@@ -11,6 +11,19 @@
 
 set -euo pipefail
 
+# Named modes add isolated hook probes and live latency/rendering comparisons.
+# Numeric arguments retain the original per-workspace CPU report.
+case "${1:-}" in
+  live|hooks|rendering|tokens|state)
+    command -v python3 >/dev/null || { echo 'measure_load: python3 is required for named modes' >&2; exit 1; }
+    exec python3 "$(dirname "$0")/measure_load.py" "$@"
+    ;;
+  --help)
+    printf 'Usage: %s [seconds] | live | hooks | rendering | tokens | state [options]\n' "$0"
+    exit 0
+    ;;
+esac
+
 seconds="${1:-20}"
 case "$seconds" in '' | *[!0-9]* | 0) printf 'Usage: %s [seconds]\n' "$0" >&2; exit 2 ;; esac
 tmux list-sessions >/dev/null 2>&1 || { printf 'No tmux server is running.\n' >&2; exit 1; }

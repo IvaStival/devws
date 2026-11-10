@@ -46,13 +46,6 @@ limit() {
   printf '%s %s %3s%%' "$label" "$("$scripts_dir/header_bar.sh" "$used")" "$used"
 }
 
-limits_of() {
-  case "$(agent_kind "$1")" in
-    claude) tmux show-option -gqv "@devws_limits_$1" 2>/dev/null ;;
-    codex) "$scripts_dir/header_tokens.sh" limits "$1" ;;
-  esac
-}
-
 cost_of() {
   [ -r "$costs_file" ] && awk -v agent="$1" '$1 == agent { print $2, $3 }' "$costs_file"
 }
@@ -76,7 +69,7 @@ lines=()
 total=0
 total_unpriced=0
 for agent in ${agents[@]+"${agents[@]}"}; do
-  read -r session_used week_used <<< "$(limits_of "$agent")"
+  read -r session_used week_used <<< "$(agent_limits "$agent")"
   row="$(printf '#[bold]%-*s#[nobold] %s %s' "$width" "$agent" "$(limit 5h "${session_used:-}")" "$(limit wk "${week_used:-}")")"
   read -r cost unpriced <<< "$(cost_of "$agent")"
   if [ -n "${cost:-}" ]; then

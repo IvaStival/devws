@@ -29,7 +29,7 @@ menu.
 
 | Tab | What is there |
 | --- | ------------- |
-| Workspace | Open, start, close and tidy workspaces; detach |
+| Workspace | Open, start, close and tidy workspaces; open an agent team; detach |
 | Layout | Layouts, minimize, the header, panels, the editor |
 | Agent | The agent: go to the waiting one, switch, restart, follow, accounts, memory |
 | Git | Commit and push |
@@ -63,6 +63,7 @@ The menu's **Help** tab opens each one, as does `devws help <page>`.
 | [Workspaces](workspaces.md) | The start screen, GitHub branches, worktrees, closing, detaching, tidy, restore, pausing |
 | [Layout](layout.md) | Layouts, panels, minimize, the header, the editor, following the agent |
 | [Agents](agents.md) | Agents and accounts, status, switch and restart, ai-memory |
+| [Agent teams](agentic.md) | A leader that opens and drives other agents (`devagentics`) |
 | [Git](git.md) | Commit, push and pull requests |
 | [App](app.md) | Running branches in jungleforge, the database pane, background jobs |
 | [Shortcuts](shortcuts.md) | Every key |

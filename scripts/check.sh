@@ -64,10 +64,41 @@ ruby -rerb -ryaml -e '
   abort "dev.yml: a restored workspace does not resume its agent" unless agent_pane.call(restored).end_with?("codex --resume")
 ' "$ROOT/config/tmuxinator/dev.yml"
 
+# The agent team's template, the same way: a leader that takes the arguments
+# file (quotes in its path kept whole) and the log's command.
+ruby -rerb -ryaml -e '
+  context = Object.new
+  context.instance_variable_set(:@settings, {
+    "agent" => "codex", "project_root" => Dir.pwd, "task" => "team-1",
+    "agent_args" => "/tmp/it'"'"'s/args", "agentic_command" => "devagentics"
+  })
+  config = YAML.safe_load(ERB.new(File.read(ARGV[0])).result(context.instance_eval { binding }), aliases: true)
+  abort "agentic.yml: pre_window was cut short" unless config["pre_window"].end_with?("; clear")
+  panes = config["windows"][0]["workspace"]["panes"].map { |pane| pane.values.first }
+  abort "agentic.yml: the leader lost its arguments file" unless panes.find { |pane| pane.include?("agent_runner.sh") }.end_with?("codex --args-file \x27/tmp/it\x27\\\x27\x27s/args\x27")
+  abort "agentic.yml: the board pane does not run the board of the task" unless panes.last.end_with?("devagentics board team-1")
+' "$ROOT/config/tmuxinator/agentic.yml"
+
 if command -v luac >/dev/null 2>&1; then
   while IFS= read -r -d '' lua_file; do
     luac -p "$lua_file"
   done < <(find "$ROOT/config/nvim" -name '*.lua' -print0)
+fi
+
+# The agent team's program (agentic/), when cargo is there.
+if [ -z "$quick" ]; then
+  PATH="$HOME/.cargo/bin:$PATH"
+  if command -v cargo >/dev/null 2>&1; then
+    (
+      cd "$ROOT/agentic"
+      cargo fmt --check
+      cargo clippy --all-targets --quiet -- -D warnings
+      cargo test --quiet
+    )
+    printf '✓ agentic (fmt, clippy, tests)\n'
+  else
+    printf '– agentic skipped: cargo not found\n'
+  fi
 fi
 
 suites=()

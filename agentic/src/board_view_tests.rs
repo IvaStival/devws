@@ -1,0 +1,639 @@
+use super::*;
+use crate::board::{Account, AgentRow, QueueRow, RoleRow};
+use crate::roles::Group;
+fn board() -> Board {
+    Board {
+        task: "feat-x".into(),
+        branch: "feat/x".into(),
+        leader: "claude · high".into(),
+        leader_pane: Some("%2".into()),
+        leader_state: Some(PaneState::Working),
+        leader_usage: None,
+        steps: vec![],
+        details: Default::default(),
+        phase: "Approved".into(),
+        summary: "Plan approved. 1 working.".into(),
+        accounts: vec![Account {
+            name: "claude".into(),
+            five_hour: Some(40),
+            week: None,
+        }],
+        roles: vec![
+            RoleRow {
+                name: "executor".into(),
+                group: Group::Floor,
+                program: "claude".into(),
+                description: Some("Does one order".into()),
+                agents: vec![AgentRow {
+                    number: Some(1),
+                    id: "executor-1".into(),
+                    pane: "%8".into(),
+                    lane: None,
+                    state: PaneState::Working,
+                    now: Some("s1 add a file".into()),
+                    next: vec!["s2 add a test".into()],
+                    usage: None,
+                    accepted: 0,
+                    retries: 0,
+                }],
+            },
+            RoleRow {
+                name: "tester".into(),
+                group: Group::Senior,
+                program: "codex · high".into(),
+                description: Some("Runs the tests".into()),
+                agents: vec![],
+            },
+        ],
+        review: vec![StepRow {
+            id: "s0".into(),
+            title: "set up".into(),
+            status: StepStatus::Failed,
+            attempts: 2,
+        }],
+        queue: vec![QueueRow {
+            id: "o2".into(),
+            label: "s2 add a test  for executor-1".into(),
+        }],
+        questions: vec!["q9 executor-1 → tester: which file?".into()],
+        done: vec![],
+        usage: vec![
+            (
+                "leader".into(),
+                Usage {
+                    input: 1200,
+                    output: 3400,
+                    cache: 2_500_000,
+                    cost: 1.234,
+                    unpriced: false,
+                },
+            ),
+            (
+                "executor-1".into(),
+                Usage {
+                    input: 800,
+                    output: 900,
+                    cache: 90_000,
+                    cost: 12.0,
+                    unpriced: true,
+                },
+            ),
+        ],
+    }
+}
+
+#[test]
+fn overview_prioritizes_attention_and_keeps_it_visible_in_short_panes() {
+    let board = board();
+    let mut nav = Navigation::new(View::Overview);
+    let entries = entries(&board, nav.view, false, &[], Some("cannot deliver"));
+    nav.reconcile(&entries);
+    let text = plain(&screen(
+        &board,
+        &nav,
+        &entries,
+        85,
+        12,
+        Some("cannot deliver"),
+    ));
+    assert!(text.contains("● 3 need you"), "{text}");
+    assert!(text.contains("cannot deliver"), "{text}");
+    assert!(!text.contains("cache 2.5M"), "{text}");
+    let taller = plain(&screen(
+        &board,
+        &nav,
+        &entries,
+        85,
+        20,
+        Some("cannot deliver"),
+    ));
+    assert!(
+        taller.contains("L  leader") && taller.contains("claude · high"),
+        "the leader is the team's first row: {taller}"
+    );
+    assert!(
+        entries
+            .iter()
+            .position(|entry| entry.id == "step:s0")
+            .unwrap()
+            < entries
+                .iter()
+                .position(|entry| entry.id == "agent:executor-1")
+                .unwrap()
+    );
+}
+
+#[test]
+fn selection_survives_insertions_and_falls_back_when_removed() {
+    let board = board();
+    let mut rows = entries(&board, View::Agents, false, &[], None);
+    let mut nav = Navigation::new(View::Agents);
+    nav.reconcile(&rows);
+    let selected = nav.selected.clone();
+    let mut extra = rows[0].clone();
+    extra.id = "agent:earlier".into();
+    rows.insert(0, extra);
+    nav.reconcile(&rows);
+    assert_eq!(nav.selected, selected);
+    assert_eq!(nav.index, 1);
+    rows.remove(1);
+    nav.reconcile(&rows);
+    assert_eq!(nav.index, 0);
+    assert_eq!(nav.selected.as_deref(), Some("agent:earlier"));
+}
+
+#[test]
+fn every_agent_is_reachable_and_small_panes_scroll_to_selection() {
+    let mut board = board();
+    for number in 2..=15 {
+        let mut agent = board.roles[0].agents[0].clone();
+        agent.id = format!("executor-{number}");
+        agent.number = None;
+        board.roles[0].agents.push(agent);
+    }
+    let rows = entries(&board, View::Agents, false, &[], None);
+    let mut nav = Navigation::new(View::Agents);
+    nav.reconcile(&rows);
+    nav.move_by(&rows, 14);
+    assert_eq!(nav.selected.as_deref(), Some("agent:executor-15"));
+    let text = plain(&screen(&board, &nav, &rows, 38, 8, None));
+    assert!(text.contains("executor-15"), "{text}");
+    assert!(!text.contains("executor-1 ·"), "{text}");
+}
+
+/// The test board with a long history: 99 of 101 steps accepted, the 99th
+/// after a retry.
+fn board_with_history() -> Board {
+    let mut board = board();
+    board.steps = (1..=101)
+        .map(|number| StepRow {
+            id: format!("p{number}"),
+            title: format!("step number {number}"),
+            status: if number <= 99 {
+                StepStatus::Accepted
+            } else {
+                StepStatus::Ordered
+            },
+            attempts: if number == 99 { 2 } else { 1 },
+        })
+        .collect();
+    board.done = board
+        .steps
+        .iter()
+        .rev()
+        .filter(|step| step.status == StepStatus::Accepted)
+        .map(|step| StepRow {
+            id: step.id.clone(),
+            title: step.title.clone(),
+            status: step.status,
+            attempts: step.attempts,
+        })
+        .collect();
+    board
+}
+
+/// `input`/`output` tokens at `cost`.
+fn used(input: u64, output: u64, cost: f64) -> Usage {
+    Usage {
+        input,
+        output,
+        cache: 0,
+        cost,
+        unpriced: false,
+    }
+}
+
+#[test]
+fn the_overview_groups_the_team_with_what_each_agent_costs() {
+    let mut board = board_with_history();
+    board.leader_usage = Some(used(1_500_000, 600_000, 12.1));
+    let first = &mut board.roles[0].agents[0];
+    first.usage = Some(used(600_000, 300_000, 6.2));
+    first.accepted = 31;
+    first.retries = 4;
+    let mut second = first.clone();
+    second.id = "executor-2".into();
+    second.number = Some(2);
+    second.state = PaneState::Done;
+    second.now = None;
+    second.usage = Some(used(400_000, 100_000, 4.8));
+    second.accepted = 0;
+    second.retries = 0;
+    board.roles[0].agents.push(second);
+    let rows = entries(&board, View::Overview, false, &[], None);
+
+    let headings: Vec<_> = rows
+        .iter()
+        .filter(|entry| entry.kind == Kind::Heading)
+        .map(|entry| entry.label.as_str())
+        .collect();
+    assert_eq!(headings, ["NEEDS YOU · 2", "CTO", "FLOOR · 2", "DONE · 99"]);
+    let ids: Vec<_> = rows.iter().map(|entry| entry.id.as_str()).collect();
+    let place = |id: &str| {
+        ids.iter()
+            .position(|row| *row == id)
+            .unwrap_or_else(|| panic!("no {id} in {ids:?}"))
+    };
+    for section in ["CTO", "FLOOR", "DONE"] {
+        assert_eq!(
+            rows[place(&format!("heading:{section}")) - 1].kind,
+            Kind::Gap,
+            "a blank line before {section}"
+        );
+    }
+    assert!(place("question:q9") < place("heading:CTO"));
+    assert_eq!(ids[place("heading:CTO") + 1], "leader");
+    assert!(place("heading:FLOOR") < place("agent:executor-1"));
+    assert!(place("agent:executor-2") < place("queue"));
+    assert!(place("queue") < place("heading:DONE"));
+    assert_eq!(ids[place("heading:DONE") + 1], "step:p99", "newest first");
+    assert_eq!(*ids.last().unwrap(), "step:p1");
+
+    // Group totals are their agents' sums: $6.20 + $4.80, 900k + 500k tokens.
+    assert_eq!(rows[place("heading:FLOOR")].tail, "$11 · 1.4M tok");
+    assert_eq!(rows[place("heading:CTO")].tail, "$12 · 2.1M tok");
+
+    let leader = &rows[place("leader")];
+    assert!(leader.label.starts_with("L  leader"), "{}", leader.label);
+    assert!(leader.label.contains("claude · high"), "{}", leader.label);
+    assert_eq!(leader.tail, "⠋ working");
+    assert_eq!(leader.figures.trim_start(), "$12   2.1M");
+    assert_eq!(leader.pane.as_deref(), Some("%2"));
+    let agent = &rows[place("agent:executor-1")];
+    assert!(agent.label.starts_with("1  executor-1"), "{}", agent.label);
+    assert!(agent.label.contains("claude"), "{}", agent.label);
+    assert_eq!(agent.tail, "⠋ working");
+    let note = &rows[place("note:agent:executor-1")];
+    assert_eq!(note.label, "└ now s1 add a file");
+    assert_eq!(note.tail, "31 accepted · 4 retries");
+    assert!(
+        !ids.contains(&"note:agent:executor-2"),
+        "nothing to say, no second line"
+    );
+    assert!(rows[place("queue")].label.contains("1 order queued"));
+    assert!(rows[place("step:p99")].label.contains("×2"));
+    assert!(rows[place("step:p99")].label.starts_with("✓ p99"));
+
+    // The wheel reaches the oldest done step, and its row shows.
+    let mut nav = Navigation::new(View::Overview);
+    nav.reconcile(&rows);
+    nav.move_by(&rows, isize::MAX);
+    assert_eq!(nav.selected.as_deref(), Some("step:p1"));
+    let text = plain(&screen(&board, &nav, &rows, 84, 60, None));
+    assert!(text.contains("p1 "), "{text}");
+    // State, cost and tokens in columns at the right edge.
+    nav.move_by(&rows, isize::MIN);
+    let text = plain(&screen(&board, &nav, &rows, 84, 60, None));
+    let line = |id: &str| {
+        text.lines()
+            .find(|line| line.contains(id))
+            .unwrap_or_else(|| panic!("no {id}: {text}"))
+            .to_string()
+    };
+    let first = line("1  executor-1");
+    let second = line("2  executor-2");
+    assert!(first.trim_end().ends_with("$6.20   900k"), "{first:?}");
+    assert!(second.trim_end().ends_with("$4.80   500k"), "{second:?}");
+    assert_eq!(
+        first.find("⠋ working"),
+        second.find("✓ done"),
+        "states line up"
+    );
+    assert_eq!(first.chars().count(), 84);
+    let narrow = plain(&screen(&board, &nav, &rows, 50, 60, None));
+    let first = narrow
+        .lines()
+        .find(|line| line.contains("1  executor-1"))
+        .unwrap();
+    assert!(
+        first.trim_end().ends_with("⠋ working"),
+        "narrow keeps the state: {first:?}"
+    );
+    assert!(first.chars().count() <= 50);
+}
+
+#[test]
+fn the_header_has_the_count_the_tabs_the_progress_and_limit_bars() {
+    let mut board = board_with_history();
+    board.accounts.push(crate::board::Account {
+        name: "codex".into(),
+        five_hour: Some(9),
+        week: Some(87),
+    });
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let mut nav = Navigation::new(View::Overview);
+    nav.reconcile(&rows);
+    board.usage = vec![
+        ("leader".into(), used(3_500_000, 1_100_000, 20.0)),
+        ("executor".into(), used(1_000_000, 0, 11.4)),
+    ];
+    board.usage[1].1.cache = 474_000_000;
+    let buffer = screen(&board, &nav, &rows, 84, 40, None);
+    let text = plain(&buffer);
+    let lines: Vec<&str> = text.lines().collect();
+    // A rounded frame: the task and what needs you in its top edge.
+    assert!(
+        lines[0].starts_with("╭─ feat-x · feat/x "),
+        "{:?}",
+        lines[0]
+    );
+    assert!(lines[0].ends_with("● 2 need you ─╮"), "{:?}", lines[0]);
+    let inside = lines
+        .iter()
+        .skip(1)
+        .take_while(|line| line.starts_with('│'))
+        .copied()
+        .collect::<Vec<_>>();
+    assert!(inside.iter().all(|line| line.ends_with('│')), "{inside:?}");
+    let bottom = lines[inside.len() + 1];
+    assert!(
+        bottom.starts_with('╰') && bottom.ends_with('╯'),
+        "{bottom:?}"
+    );
+    let row = |word: &str| {
+        inside
+            .iter()
+            .find(|line| line.contains(word))
+            .unwrap_or_else(|| panic!("no {word}: {inside:?}"))
+            .to_string()
+    };
+    assert!(row("[overview]").contains("usage"));
+    let progress = row("PROGRESS");
+    assert!(progress.contains("99/101 · 98%"), "{progress:?}");
+    assert!(
+        progress.contains('⣿') && progress.contains('⣀'),
+        "dots: {progress:?}"
+    );
+    let team = row("COST");
+    assert!(team.contains("$31"), "{team:?}");
+    assert!(
+        team.contains("TOKENS  4.5M in · 1.1M out · 474.0M cache"),
+        "{team:?}"
+    );
+    let claude = row("claude ");
+    assert!(claude.contains("5h ▓▓▓▓░░░░░░  40%"), "{claude:?}");
+    assert!(claude.contains("wk ░░░░░░░░░░    —"), "{claude:?}");
+    let codex_row = lines
+        .iter()
+        .position(|line| line.contains("codex "))
+        .unwrap();
+    let codex = lines[codex_row];
+    assert!(codex.contains("5h ▓░░░░░░░░░   9%"), "{codex:?}");
+    assert!(codex.contains("wk ▓▓▓▓▓▓▓▓▓░  87%"), "{codex:?}");
+    // 87 % used is red, 9 % green, as the devws header colors them.
+    let column = |at: usize| codex[..at].chars().count() as u16;
+    let week_bar = column(codex.find("wk ▓").unwrap() + 3);
+    let five_hour_bar = column(codex.find("5h ▓").unwrap() + 3);
+    let color = |x: u16| buffer[(x, codex_row as u16)].fg;
+    assert_eq!(color(week_bar), Color::Red);
+    assert_eq!(color(five_hour_bar), Color::Green);
+    assert!(!text.contains("Leader:"), "{text}");
+    assert!(!text.contains("Plan approved"), "{text}");
+
+    let narrow = plain(&screen(&board, &nav, &rows, 40, 40, None));
+    for line in narrow.lines() {
+        assert!(line.chars().count() <= 40, "{line:?}");
+    }
+    assert!(
+        narrow.lines().next().unwrap().contains("2 need you"),
+        "{narrow}"
+    );
+    // Too short for the frame: the task and what needs you still show.
+    let short = plain(&screen(&board, &nav, &rows, 84, 4, None));
+    assert!(
+        short.lines().next().unwrap().contains("2 need you"),
+        "{short}"
+    );
+    assert!(!narrow.contains("wk "), "the week bar goes first: {narrow}");
+
+    board.questions.clear();
+    board.review.clear();
+    let calm = plain(&screen(&board, &nav, &rows, 84, 40, None));
+    assert!(!calm.lines().next().unwrap().contains("need you"), "{calm}");
+}
+
+#[test]
+fn every_step_row_starts_with_its_mark_and_ends_with_its_state() {
+    let mut board = board();
+    let step = |id: &str, status| StepRow {
+        id: id.into(),
+        title: format!("title of {id}"),
+        status,
+        attempts: 1,
+    };
+    board.steps = vec![
+        step("a", StepStatus::Accepted),
+        step("o", StepStatus::Ordered),
+        step("r", StepStatus::Reported),
+        step("f", StepStatus::Failed),
+        step("b", StepStatus::Blocked),
+        step("x", StepStatus::Rejected),
+    ];
+    let rows = entries(&board, View::Steps, true, &[], None);
+    let shown: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|entry| (entry.label.as_str(), entry.tail.as_str()))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("✓ a  title of a", "accepted"),
+            ("⠋ o  title of o", "ordered"),
+            ("● r  title of r", "to review"),
+            ("⚠ f  title of f", "failed"),
+            ("⚠ b  title of b", "blocked"),
+            ("⚠ x  title of x", "sent back"),
+        ]
+    );
+    assert_eq!(
+        entries(&board, View::Steps, false, &[], None).len(),
+        5,
+        "c still hides the accepted ones"
+    );
+}
+
+#[test]
+fn quiet_sections_are_left_out() {
+    let mut board = board();
+    board.questions.clear();
+    board.review.clear();
+    board.queue.clear();
+    let rows = entries(&board, View::Overview, false, &[], None);
+    assert!(!rows.iter().any(|entry| entry.id == "heading:NEEDS YOU"));
+    assert!(!rows.iter().any(|entry| entry.id == "queue"));
+    assert!(!rows.iter().any(|entry| entry.id == "heading:DONE"));
+    assert!(
+        !rows.iter().any(|entry| entry.id == "heading:SENIORS"),
+        "no agents, no section"
+    );
+    assert!(rows.iter().any(|entry| entry.id == "heading:CTO"));
+}
+
+#[test]
+fn the_selection_steps_over_section_headings() {
+    let row = |id: &str| Entry::text(id.into(), id.into(), String::new(), false);
+    let rows = vec![
+        Entry::section("NEEDS YOU", None),
+        row("a"),
+        Entry::section("TEAM", None),
+        Entry::section("QUEUED", None),
+        row("b"),
+        row("c"),
+        Entry::section("DONE", None),
+    ];
+    let mut nav = Navigation::new(View::Overview);
+    nav.reconcile(&rows);
+    assert_eq!(
+        nav.selected.as_deref(),
+        Some("a"),
+        "the first row, not a heading"
+    );
+    nav.move_by(&rows, 1);
+    assert_eq!(
+        nav.selected.as_deref(),
+        Some("b"),
+        "down skips both headings"
+    );
+    nav.move_by(&rows, -1);
+    assert_eq!(nav.selected.as_deref(), Some("a"), "up skips them too");
+    nav.move_by(&rows, -1);
+    assert_eq!(
+        nav.selected.as_deref(),
+        Some("a"),
+        "nothing above the first row"
+    );
+    nav.move_by(&rows, isize::MAX);
+    assert_eq!(
+        nav.selected.as_deref(),
+        Some("c"),
+        "the end is the last row, not DONE"
+    );
+    nav.move_by(&rows, isize::MIN);
+    assert_eq!(nav.selected.as_deref(), Some("a"));
+    nav.move_by(&rows, 2);
+    assert_eq!(
+        nav.selected.as_deref(),
+        Some("c"),
+        "a page counts rows, not headings"
+    );
+
+    let only_headings = vec![Entry::section("TEAM", None)];
+    let mut nav = Navigation::new(View::Overview);
+    nav.reconcile(&only_headings);
+    assert_eq!(nav.selected, None);
+    nav.move_by(&only_headings, 1);
+    assert_eq!(nav.selected, None);
+}
+
+#[test]
+fn an_agents_second_line_and_the_gaps_are_never_selected() {
+    let row = |id: &str| Entry::text(id.into(), id.into(), String::new(), false);
+    let rows = vec![
+        Entry::gap("top"),
+        Entry::section("FLOOR", None),
+        row("agent:a"),
+        Entry::note("agent:a", "└ now s1"),
+        Entry::gap("floor"),
+        row("agent:b"),
+        Entry::note("agent:b", "└ 3 accepted"),
+    ];
+    let mut nav = Navigation::new(View::Overview);
+    nav.reconcile(&rows);
+    assert_eq!(nav.selected.as_deref(), Some("agent:a"));
+    nav.move_by(&rows, 1);
+    assert_eq!(
+        nav.selected.as_deref(),
+        Some("agent:b"),
+        "its note and the gap are skipped"
+    );
+    nav.move_by(&rows, isize::MAX);
+    assert_eq!(
+        nav.selected.as_deref(),
+        Some("agent:b"),
+        "the last note is not the end"
+    );
+    assert!(
+        rows.iter()
+            .map(|entry| &entry.id)
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            == rows.len(),
+        "ids stay unique"
+    );
+}
+
+#[test]
+fn details_wrap_without_losing_text_and_tiny_sizes_do_not_panic() {
+    let mut board = board();
+    board
+        .details
+        .insert("agent:executor-1".into(), "full context ".repeat(80));
+    let rows = entries(&board, View::Agents, false, &[], None);
+    let mut nav = Navigation::new(View::Agents);
+    nav.reconcile(&rows);
+    nav.detail = true;
+    for width in [0, 1, 12, 38, 85] {
+        for height in [0, 1, 3, 8, 59] {
+            let rendered = screen(&board, &nav, &rows, width, height, None);
+            assert_eq!(rendered.area.width, width);
+            assert_eq!(rendered.area.height, height);
+        }
+    }
+    assert!(rows[0].detail.contains(&"full context ".repeat(80)));
+}
+
+#[test]
+fn steps_filter_history_and_role_catalog_is_secondary() {
+    let mut board = board();
+    board.steps = vec![StepRow {
+        id: "done".into(),
+        title: "finished".into(),
+        status: StepStatus::Accepted,
+        attempts: 1,
+    }];
+    assert!(entries(&board, View::Steps, false, &[], None).is_empty());
+    assert_eq!(entries(&board, View::Steps, true, &[], None).len(), 1);
+    let active = entries(&board, View::Agents, false, &[], None);
+    assert!(!active.iter().any(|entry| entry.id == "role:tester"));
+    assert!(
+        entries(&board, View::Agents, true, &[], None)
+            .iter()
+            .any(|entry| entry.id == "role:tester")
+    );
+}
+
+#[test]
+fn the_shortest_layout_prioritizes_attention_counts() {
+    let board = board();
+    let nav = Navigation::new(View::Overview);
+    let entries = entries(&board, nav.view, false, &[], None);
+    for height in [1, 2, 3, 4, 7] {
+        let text = plain(&screen(&board, &nav, &entries, 38, height, None));
+        assert!(text.contains("2 need you"), "height {height}: {text}");
+    }
+}
+
+#[test]
+fn activity_details_preserve_multiline_event_text() {
+    let full = format!("{}\nsecond line of the report", "x".repeat(300));
+    let log = vec![serde_json::json!({"kind":"report", "at":1, "text":full}).to_string()];
+    let entries = entries(&board(), View::Activity, false, &log, None);
+    assert!(entries[0].detail.contains(&full));
+    assert!(!entries[0].label.contains("second line"));
+}
+
+#[test]
+fn shortcut_hints_fit_the_available_width() {
+    let board = board();
+    let nav = Navigation::new(View::Agents);
+    let entries = entries(&board, nav.view, false, &[], None);
+    for width in [6, 12, 38, 65, 85, 100, 130] {
+        let text = plain(&screen(&board, &nav, &entries, width, 8, None));
+        let footer = text.lines().last().unwrap();
+        assert!(footer.contains('?'), "width {width}: {footer}");
+        assert!(
+            footer.chars().count() <= width as usize,
+            "width {width}: {footer}"
+        );
+    }
+}

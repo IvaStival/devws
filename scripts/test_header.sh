@@ -737,7 +737,7 @@ test_a_client_shows_the_header() {
   # tmux's own line, then a blank line before the groups.
   header_row_shows 1 'dev-work' || fail "tmux's own line moved: $(client_header)"
   [ -z "$(client_header | sed -n 2p | tr -d ' ')" ] || fail "no blank line under tmux's own line: $(client_header)"
-  header_row_shows 4 '│ *month \$.*│' || fail "the agent group's last row moved: $(client_header)"
+  wait_until header_row_shows 4 '│ *month \$.*│' || fail "the agent group's last row moved: $(client_header)"
   wait_until header_row_shows 1 'conv 351k · ctx 20%' ||
     fail "the client shows no conversation: $(client_header)"
   header_shows '█' || fail "the client shows no ghost: $(client_header)"
@@ -851,7 +851,8 @@ test_the_header_holds_still_under_a_popup() {
 
 # While no client's terminal is focused (iTerm2 behind another app), nothing
 # animates: no ghost frames, no spinner turns, so tmux and the terminal rest.
-# Focused, the ghost moves at most 10 times a second.
+# Focused, the ghost moves with the spinner, at most twice a second: iTerm2
+# repaints its window for each change, however small.
 test_animations_rest_while_unfocused() {
   local frame
   tmux new-session -d -s dev-work -x 200 -y 50 'sleep 600'
@@ -866,7 +867,7 @@ test_animations_rest_while_unfocused() {
   : > "$TEST_ROOT/redraws.log"
   sleep 2
   [ "$(redraws ghost)" -gt 0 ] || fail "the working ghost does not move while focused"
-  [ "$(redraws ghost)" -le 22 ] || fail "the ghost was redrawn $(redraws ghost) times in 2 s, over 10 a second"
+  [ "$(redraws ghost)" -le 5 ] || fail "the ghost was redrawn $(redraws ghost) times in 2 s, over twice a second"
 
   # The terminal reports it lost the focus.
   "$REAL_TMUX" -L "$CLIENT_SOCKET" send-keys -t client $'\e[O'
@@ -880,9 +881,11 @@ test_animations_rest_while_unfocused() {
   [ "$(option @devws_agent_frame)" = "$frame" ] || fail "the spinner turned with no client focused"
 
   "$REAL_TMUX" -L "$CLIENT_SOCKET" send-keys -t client $'\e[I'
-  sleep 1.5
-  [ "$(redraws ghost)" -gt 0 ] || fail "the ghost did not move again once focused"
-  [ "$(option @devws_agent_frame)" != "$frame" ] || fail "the spinner did not turn again once focused"
+  ghost_resumed() { [ "$(redraws ghost)" -gt 0 ]; }
+  wait_until ghost_resumed || fail "the ghost did not move again once focused"
+  # A sampled glyph can match the old one after a complete spinner cycle.
+  spinner_changed() { [ "$(option @devws_agent_frame)" != "$frame" ]; }
+  wait_until spinner_changed || fail "the spinner did not turn again once focused"
   "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server
   tmux kill-server
 }

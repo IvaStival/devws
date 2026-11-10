@@ -3,7 +3,7 @@ root: <%= @settings["project_root"] || Dir.pwd %>
 
 # Single-quoted: unquoted, YAML reads the " #{E:..." inside status-left as the
 # start of a comment and cuts the command short.
-pre_window: 'tmux set-option status-position top; tmux set-option status-left-length 40; tmux set-option status-left "[#{s/^dev-//:session_name}]#{?#{@devws_agent_state}, #{E:@devws_agent_icon},}"; tmux set-option @devws_agent "<%= @settings["agent"] || "claude" %>"; tmux set-option @devws_editor "<%= @settings["editor"] || "nvim" %>"; tmux set-option @devws_root "$PWD"; tmux set-option @devws_follow follow; tmux set-option -w pane-border-indicators off; tmux set-option -w pane-border-status top; clear'
+pre_window: 'tmux set-option status-position top; tmux set-option status-left-length 40; tmux set-option status-left "[#{s/^dev-//:session_name}]#{?#{@devws_agent_state}, #{E:@devws_agent_icon},}"; tmux set-option @devws_agent "<%= @settings["agent"] || "claude" %>"; tmux set-option @devws_editor "<%= @settings["editor"] || "nvim" %>"; tmux set-option @devws_root "$PWD"; tmux set-option @devws_follow follow; tmux set-option -w pane-border-indicators off; tmux set-option -w pane-border-status top; tmux set-option -w @devws_main 1; clear'
 
 windows:
   - workspace:
@@ -18,7 +18,7 @@ windows:
         - editor: ~/.tmuxinator/editor_runner.sh <%= @settings["editor"] || "nvim" %>
         # A restored workspace (restore_state.sh, resume=1) continues the
         # agent's last conversation in the folder.
-        - agent: ~/.tmuxinator/agent_runner.sh <%= @settings["agent"] || "claude" %><%= " --resume" if @settings["resume"] == "1" %>
+        - agent: ~/.tmuxinator/agent_runner.sh <%= @settings["agent"] || "claude" %><%= " --resume" if @settings["resume"] == "1" %><%= " --args-file '" + @settings["agent_args"].gsub("'") { "'\\''" } + "'" if @settings["agent_args"] %>
         # The shell replaces this pane's title as soon as it draws a prompt, so
         # the role is recorded as a pane option instead.
         - terminal: tmux set-option -p -t "$TMUX_PANE" @devws_role terminal; clear

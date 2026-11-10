@@ -50,6 +50,24 @@ remove_owned_homebrew_dependency() {
   remove_dependency_record "$dependency"
 }
 
+remove_owned_agentic() {
+  [[ -f "$dependency_state" ]] || return 0
+  grep -Fqx devagentics "$dependency_state" || return 0
+
+  PATH="$HOME/.cargo/bin:$PATH"
+  if ! command -v cargo >/dev/null 2>&1; then
+    warn "Kept devws-installed devagentics because cargo is unavailable"
+    return
+  fi
+  info "Removing devagentics installed by devws"
+  if ! cargo uninstall devagentics; then
+    warn "Could not remove devagentics; keeping its ownership state for retry"
+    return
+  fi
+  ok "Removed devagentics"
+  remove_dependency_record devagentics
+}
+
 remove_iterm_keys() {
   local domain="com.googlecode.iterm2"
   local live_prefs="$HOME/Library/Preferences/com.googlecode.iterm2.plist"
@@ -219,6 +237,7 @@ restore_link "$ROOT/config/lvim/queries/markdown/highlights.scm" \
 remove_zshrc_block
 remove_owned_homebrew_dependency "fzf"
 remove_owned_homebrew_dependency "glow"
+remove_owned_agentic
 remove_iterm_keys
 
 rm -f "$state_root/sessions.tsv" "$state_root/database-folders"

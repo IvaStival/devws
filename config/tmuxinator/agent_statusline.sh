@@ -24,6 +24,11 @@ if [ -n "${TMUX:-}" ] && [ -n "$session_used$week_used" ]; then
   tmux set-option -g "@devws_limits_${DEVWS_AGENT:-claude}" "${session_used:--} ${week_used:--}" 2>/dev/null
 fi
 
+model="$(json '.model.id // empty | select(type == "string")')"
+if [ -n "${TMUX_PANE:-}" ] && [ -n "$model" ]; then
+  "$(dirname "$0")/agent_model.sh" record "$TMUX_PANE" "$model" >/dev/null 2>&1
+fi
+
 user_command="$(jq -r '.statusLine.command // empty' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" 2>/dev/null)"
 [ -n "$user_command" ] || exit 0
 printf '%s' "$payload" | bash -c "$user_command"

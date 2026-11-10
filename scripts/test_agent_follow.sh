@@ -529,6 +529,44 @@ test_agents_start_with_the_link() {
   tmux kill-pane -t "$pane"
 }
 
+test_follow_skips_repository_work_without_a_consumer() {
+  local repo real_git state_dir snapshot_file probe
+  repo="$(new_repo)"
+  start_editor
+  real_git="$(command -v git)"
+  probe="$TEST_ROOT/git-probe"
+  mkdir -p "$probe"
+  cat > "$probe/git" <<EOF
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> "$TEST_ROOT/git-calls"
+exec "$real_git" "\$@"
+EOF
+  chmod +x "$probe/git"
+  state_dir="$TMPDIR/devws-changes-$(id -u)"
+  snapshot_file="$state_dir/$(printf '%s' "pane-$AGENT_PANE" | tr -c 'A-Za-z0-9_.-' '_').before"
+  tmux set-option -t work @devws_follow follow
+  PATH="$probe:$PATH" tool_call codex pre exec "$repo"
+  [ -f "$snapshot_file" ] || fail "eligible follow did not snapshot"
+
+  tmux set-option -t work @devws_follow off
+  : > "$TEST_ROOT/git-calls"
+  PATH="$probe:$PATH" tool_call codex "" exec "$repo"
+  PATH="$probe:$PATH" tool_call codex pre exec "$repo"
+  [ ! -s "$TEST_ROOT/git-calls" ] || fail "disabled follow still inspected Git"
+  [ ! -f "$snapshot_file" ] || fail "disabled follow kept an obsolete snapshot"
+
+  tmux set-option -t work @devws_follow follow
+  : > "$TEST_ROOT/git-calls"
+  PATH="$probe:$PATH" tool_call codex "" exec "$repo"
+  ! grep -q ' add -A' "$TEST_ROOT/git-calls" || fail "reenabling follow reused a skipped snapshot"
+  PATH="$probe:$PATH" tool_call codex pre exec "$repo"
+  tmux set-option -t work @devws_editor_socket "$TEST_ROOT/missing.sock"
+  : > "$TEST_ROOT/git-calls"
+  PATH="$probe:$PATH" tool_call codex "" exec "$repo"
+  [ ! -s "$TEST_ROOT/git-calls" ] || fail "a missing editor still inspected Git"
+  tmux set-option -t work @devws_editor_socket "$NVIM_SOCKET"
+}
+
 test_editor_runner_links_neovim
 test_registered_agents_start_with_their_folder
 test_open_file_at_line
@@ -554,5 +592,6 @@ test_workspaces_from_before_the_modes_still_follow
 test_hooks_never_fail_without_an_editor
 test_agent_header_shows_the_mode
 test_agents_start_with_the_link
+test_follow_skips_repository_work_without_a_consumer
 
 printf 'Agent follow tests passed.\n'

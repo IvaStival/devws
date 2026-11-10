@@ -64,3 +64,13 @@ agent_is_default_home() {
   kind="$(agent_kind "$1")" || return 1
   [ "$(agent_home "$1")" = "$(agent_default_home "$kind")" ]
 }
+
+# <name>: the plan limits the agent has used, in per cent: "<5-hour session>
+# <week>", a "-" for what is not known. A Claude agent's come from its status
+# line (agent_statusline.sh), a Codex agent's from its logs (header_tokens.sh).
+agent_limits() {
+  case "$(agent_kind "$1")" in
+    claude) tmux show-option -gqv "@devws_limits_$1" 2>/dev/null ;;
+    codex) "$(dirname "${BASH_SOURCE[0]}")/header_tokens.sh" limits "$1" ;;
+  esac
+}

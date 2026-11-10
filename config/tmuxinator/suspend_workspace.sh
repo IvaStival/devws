@@ -18,6 +18,8 @@
 # (an extra Neovim, or an agent started before the runners stopped replacing
 # themselves). Running work is never frozen: a workspace whose agent works or
 # waits, runs a job in a shell, or keeps a core busy (busy_cpu) stays awake.
+# An agent team's workspaces (a task's: @devws_task) are never frozen: their
+# agents look idle between orders, which come at any time.
 # Each tmux server keeps its own records. A workspace counts as seen while a client shows
 # it (@devws_seen, stamped by the sweep) and from when its agent last changed
 # state (@devws_agent_state_since).
@@ -172,8 +174,7 @@ reopen_pane() {
   # respawn-pane would start the pane's old program again.
   shell="$(tmux show-option -gqv default-shell 2>/dev/null)"
   tmux respawn-pane -k -t "$1" -c "$2" "exec $(printf '%q' "${shell:-${SHELL:-/bin/zsh}}") -l" &&
-    tmux send-keys -t "$1" -l "$3" &&
-    tmux send-keys -t "$1" Enter
+    "$script_dir/agent_cli.sh" send --force "$1" "$3"
 }
 
 # <session>: its agent and editor panes that run their program with no runner
@@ -305,8 +306,9 @@ sweep() {
   [ "$after" -gt 0 ] || return 0
   let_go_of_orphans
   now="$(date +%s)"
-  while IFS='|' read -r id name attached seen state since frozen; do
+  while IFS='|' read -r id name attached seen state since frozen task; do
     case "$name" in dev-*) ;; *) continue ;; esac
+    [ -z "$task" ] || continue
     if [ "$attached" != 0 ]; then
       tmux set-option -t "$id" @devws_seen "$now"
       continue
@@ -328,7 +330,7 @@ sweep() {
     [ "${since:-0}" -gt "$last" ] && last="$since"
     [ $((now - last)) -ge $((after * 60)) ] && suspend_session "$id"
   done < <(tmux list-sessions \
-    -F '#{session_id}|#{session_name}|#{session_attached}|#{?@devws_seen,#{@devws_seen},#{session_created}}|#{@devws_agent_state}|#{@devws_agent_state_since}|#{@devws_frozen}' 2>/dev/null)
+    -F '#{session_id}|#{session_name}|#{session_attached}|#{?@devws_seen,#{@devws_seen},#{session_created}}|#{@devws_agent_state}|#{@devws_agent_state_since}|#{@devws_frozen}|#{@devws_task}' 2>/dev/null)
 }
 
 # A session name, or an id as the hooks give it.

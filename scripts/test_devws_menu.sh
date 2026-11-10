@@ -53,7 +53,7 @@ for script in devws_menu.sh workspace_actions.sh workspace_panes.sh session_pick
   ln -s "$SCRIPTS/$script" "$TEST_ROOT/home/.tmuxinator/$script"
 done
 for script in toggle_layout.sh minimize_panes.sh header_toggle.sh open_database.sh follow_mode.sh register_agent.sh \
-  new_panel.sh move_panel.sh save_state.sh refresh_devws_pickers.sh git_actions.sh jungleforge.sh job.sh; do
+  new_panel.sh move_panel.sh save_state.sh refresh_devws_pickers.sh git_actions.sh jungleforge.sh job.sh agentic.sh; do
   cat > "$TEST_ROOT/home/.tmuxinator/$script" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" > "$TEST_ROOT/calls/$script"
@@ -68,7 +68,10 @@ case "\$1" in
   available) [ ! -e "$TEST_ROOT/jf.missing" ] ;;
   apps) cat "$TEST_ROOT/jf.apps" 2>/dev/null ||
     { echo "devws jungleforge: Not a jungleforge project: register it in /jf/.env" >&2; exit 2; } ;;
-  targets | running) cat "$TEST_ROOT/jf.\$1" 2>/dev/null ;;
+  targets | running | settings) cat "$TEST_ROOT/jf.\$1" 2>/dev/null ;;
+  # A value "taken" is refused, as a port another app has.
+  set) printf '%s\n' "\$*" >> "$TEST_ROOT/calls/jungleforge.sh"
+    [ "\${@: -1}" != taken ] || { echo "devws jungleforge: 8092 is already phi-planner's APP_HTTP_PORT" >&2; exit 2; } ;;
   *) printf '%s\n' "\$*" >> "$TEST_ROOT/calls/jungleforge.sh" ;;
 esac
 EOF
@@ -90,6 +93,8 @@ unset TMUX
 MENU="$HOME/.tmuxinator/devws_menu.sh"
 tmux new-session -d -s dev-menu -x 120 -y 30 'sleep 600'
 PANE="$(tmux display-message -p -t dev-menu: '#{pane_id}')"
+# A normal workspace has an editor panel; the items that arrange around it show.
+tmux set-option -p -t "$PANE" @devws_role editor
 
 # Runs the menu the way the popup does: inside the workspace's tmux session.
 menu() {
@@ -101,17 +106,140 @@ actions_of() {
 }
 
 test_tabs_list_their_actions() {
-  [ "$(actions_of workspace)" = "github new worktree open-folder close tidy detach" ] ||
+  [ "$(actions_of workspace)" = "github agentic new worktree open-folder close tidy detach" ] ||
     fail "Workspace tab: $(actions_of workspace)"
   [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor" ] ||
     fail "Layout tab: $(actions_of layout)"
-  [ "$(actions_of agent)" = "jump switch-agent restart-agent follow-mode initialize-agent register-agent remove-agent" ] ||
+  [ "$(actions_of agent)" = "jump switch-agent restart-agent follow-mode initialize-agent register-agent remove-agent team-roles" ] ||
     fail "Agent tab: $(actions_of agent)"
   [ "$(actions_of git)" = "commit commit-manual push" ] || fail "Git tab: $(actions_of git)"
-  [ "$(actions_of app)" = "run-here switch-run stop-run services migrate shell logs register-jungleforge open-database database-folder job-log" ] ||
+  [ "$(actions_of app)" = "run-here switch-run stop-run services migrate shell logs info settings register-jungleforge open-database database-folder job-log" ] ||
     fail "App tab: $(actions_of app)"
-  [ "$(actions_of help)" = "guide guide-shortcuts guide-workspaces guide-layout guide-agents guide-git guide-app guide-commands guide-configuration" ] ||
+  [ "$(actions_of help)" = "guide guide-shortcuts guide-workspaces guide-layout guide-agents guide-agentic guide-git guide-app guide-commands guide-configuration" ] ||
     fail "Help tab: $(actions_of help)"
+}
+
+# An agent team (devws agentic) has no editor: the items that arrange the
+# screen around one, and the database that sits beside it, are not offered.
+test_an_agent_team_has_no_editor_items() {
+  tmux set-option -p -t "$PANE" @devws_role agent
+  [ "$(actions_of layout)" = "header new-panel move-panel" ] || fail "Layout tab of an agent team: $(actions_of layout)"
+  ! grep -qE 'open-database|database-folder' <<<"$(actions_of app)" || fail "an agent team is offered the database: $(actions_of app)"
+  grep -q 'job-log' <<<"$(actions_of app)" || fail "an agent team lost the job log"
+  tmux set-option -p -t "$PANE" @devws_role editor
+  [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor" ] ||
+    fail "Layout tab of a normal workspace: $(actions_of layout)"
+}
+
+test_open_an_agent_team_runs_devws_agentic() {
+  rm -f "$TEST_ROOT/calls/agentic.sh"
+  menu --run agentic </dev/null >/dev/null 2>&1 || true
+  [ -e "$TEST_ROOT/calls/agentic.sh" ] || fail "Open an agent team did not run agentic.sh"
+}
+
+# An agent team's workspace (@devws_task) offers moving its leader to the
+# leader's other program; devAgentics makes the move once its turn is over.
+test_an_agent_team_switches_its_leaders_model() {
+  ! grep -q switch-leader <<<"$(actions_of team)" || fail "a workspace without a task offers Switch leader model"
+  cat > "$TEST_ROOT/bin/devagentics-stub" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" > "$TEST_ROOT/calls/devagentics"
+echo "The leader moves to claude once its turn is over."
+EOF
+  chmod +x "$TEST_ROOT/bin/devagentics-stub"
+  tmux set-option -t dev-menu @devws_task feat-x
+  [ "$(actions_of team)" = "team-overview team-agents team-steps team-activity team-usage team-leader switch-leader" ] ||
+    fail "Team tab: $(actions_of team)"
+  grep -q 'Team' <<<"$(menu --header)" || fail "team header missing"
+  menu --switch Team >/dev/null
+  [ "$(menu --tab)" = team ] || fail "Team tab cannot be selected"
+  menu --switch next >/dev/null
+  [ "$(menu --tab)" = git ] || fail "Team tab does not cycle to Git"
+  menu --switch prev >/dev/null
+  [ "$(menu --tab)" = team ] || fail "Git tab does not cycle back to Team"
+  local output
+  output="$(DEVWS_AGENTIC_COMMAND=devagentics-stub menu --run switch-leader <<<'' 2>&1)"
+  tmux set-option -u -t dev-menu @devws_task
+  [ "$(cat "$TEST_ROOT/calls/devagentics" 2>/dev/null)" = "leader switch feat-x" ] ||
+    fail "Switch leader model ran '$(cat "$TEST_ROOT/calls/devagentics" 2>/dev/null)'"
+  grep -q "moves to claude" <<<"$output" || fail "Switch leader model did not say where: $output"
+  ! grep -q 'Team' <<<"$(menu --header)" || fail "normal workspace has a Team tab"
+  [ "$(menu --tab)" = workspace ] || fail "stale Team selection was not reset"
+}
+
+test_team_navigation_reuses_the_board_from_group_workspaces() {
+  local original_pane="$PANE" board leader view count output
+  tmux new-session -d -s dev-team -x 120 -y 30 'sleep 600'
+  leader="$(tmux display-message -p -t dev-team: '#{pane_id}')"
+  tmux set-option -p -t "$leader" @devws_role agent
+  tmux set-option -t dev-team @devws_task feat-team
+  board="$(tmux split-window -t "$leader" -P -F '#{pane_id}' 'sleep 600')"
+  tmux set-option -p -t "$board" @devws_role team-log
+  tmux set-option -t dev-menu @devws_team_of dev-team
+  count="$(tmux list-panes -a | wc -l | tr -d ' ')"
+  [ "$(actions_of team)" = "team-overview team-agents team-steps team-activity team-usage team-leader switch-leader" ] ||
+    fail "group workspace has no team navigation"
+  grep -q $'^team-steps\tTeam · ' <<<"$(menu --items-for steps)" || fail "global search lost Team actions"
+  for view in overview agents steps activity usage; do
+    menu --run "team-$view" || fail "could not open $view"
+    [ "$(tmux show-options -pqv -t "$board" @devagentics_board_view)" = "$view" ] || fail "$view did not target the existing board"
+    [ "$(tmux display-message -p -t "$board" '#{pane_active}')" = 1 ] || fail "board not focused"
+  done
+  menu --run team-leader || fail "could not return to leader"
+  [ "$(tmux display-message -p -t "$leader" '#{pane_active}')" = 1 ] || fail "leader not focused"
+  [ "$(tmux list-panes -a | wc -l | tr -d ' ')" = "$count" ] || fail "navigation created another pane"
+  output="$(DEVWS_AGENTIC_COMMAND=devagentics-stub menu --run switch-leader <<<'' 2>&1)"
+  [ "$(cat "$TEST_ROOT/calls/devagentics")" = "leader switch feat-team" ] || fail "group leader switch used the wrong task"
+  tmux kill-pane -t "$board"
+  if output="$(menu --run team-overview 2>&1)"; then
+    fail "missing board was accepted"
+  fi
+  grep -q 'not open' <<<"$output" || fail "missing board was not explained"
+  tmux set-option -u -t dev-menu @devws_team_of
+  tmux kill-session -t dev-team
+  PANE="$original_pane"
+}
+
+# Team roles: a role, then a setting, then a value of its program's (from
+# devAgentics), Default or a typed model; devAgentics changes the role's file.
+test_team_roles_change_a_roles_setting() {
+  local output role='hammer-claude  floor   claude  claude-haiku-5-5  low  auto  writes  ~/.devagentics/roles'
+  cat > "$TEST_ROOT/bin/devagentics-stub" <<EOF
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  'role list') printf '%s\n' '$role' 'leader         cto     claude  -                 high -     reads   built in' ;;
+  'role choices') printf '%s\n' claude-opus-5-5 claude-sonnet-5-5 ;;
+  'role set') printf '%s\n' "\$*" >> "$TEST_ROOT/calls/role-set"; echo 'hammer-claude changed.' ;;
+esac
+EOF
+  chmod +x "$TEST_ROOT/bin/devagentics-stub"
+  tmux set-option -t dev-menu @devws_root "$TEST_ROOT/projects/app"
+  grep -qw team-roles <<<"$(actions_of agent)" || fail "the Agent tab has no Team roles"
+  change_role() {
+    rm -f "$TEST_ROOT/calls/role-set"
+    printf '%s\n' "$@" > "$TEST_ROOT/fzf.answers"
+    # Esc ends an action unsuccessfully, as the menu's others.
+    output="$(DEVWS_AGENTIC_COMMAND=devagentics-stub menu --run team-roles <<<"${typed:-}" 2>&1)" || true
+  }
+  role_set() { cat "$TEST_ROOT/calls/role-set" 2>/dev/null; }
+
+  change_role "$role" model claude-sonnet-5-5
+  [ "$(role_set)" = "role set hammer-claude --model claude-sonnet-5-5 --repo $TEST_ROOT/projects/app" ] ||
+    fail "Team roles ran '$(role_set)'"
+  grep -q 'hammer-claude changed' <<<"$output" || fail "Team roles did not show what changed: $output"
+  change_role "$role" effort Default
+  [ "$(role_set)" = "role set hammer-claude --effort  --repo $TEST_ROOT/projects/app" ] ||
+    fail "Default did not clear the setting: '$(role_set)'"
+  typed=a-model-from-next-week change_role "$role" model 'Other…'
+  [ "$(role_set)" = "role set hammer-claude --model a-model-from-next-week --repo $TEST_ROOT/projects/app" ] ||
+    fail "Other… did not take the typed model: '$(role_set)'"
+  change_role "$role" ''
+  [ -z "$(role_set)" ] || fail "Esc still changed a role: $(role_set)"
+  # The leader's program changes with Switch leader model: it is not listed.
+  change_role ''
+  ! grep -q '^leader ' "$TEST_ROOT/calls/fzf.input" || fail "Team roles offers the leader"
+  unset -f change_role role_set
+  tmux set-option -u -t dev-menu @devws_root
 }
 
 test_items_show_labels_and_shortcuts() {
@@ -189,7 +317,7 @@ test_typing_searches_every_tab() {
   grep -q $'^open-database\tApp · ⛁ Database' <<<"$all" || fail "typing does not reach the App tab: $all"
   grep -q $'^jump\tAgent · ! Go to waiting agent' <<<"$all" || fail "not every tab is searched: $all"
   # Every action shown in a tab, once.
-  [ "$(grep -c . <<<"$all")" -eq "$(for tab in workspace layout agent git app help; do menu --items "$tab"; done | grep -c .)" ] ||
+  [ "$(grep -c . <<<"$all")" -eq "$(for tab in workspace layout agent team git app help; do menu --items "$tab"; done | grep -c .)" ] ||
     fail "a search does not list every action once"
 }
 
@@ -500,6 +628,34 @@ test_run_this_branch_moves_the_ticked_apps() {
     fail "run-here started '$(job_call)'"
 }
 
+# Settings: whose (an app of the repo, or the shared services), which one,
+# the new value, asked again while refused; an app running from this folder
+# is restarted on yes.
+test_settings_change_a_value_and_offer_a_restart() {
+  local root="$TEST_ROOT/devws/app-feat-x"
+  tmux set-option -t dev-menu @devws_root "$root"
+  printf 'phi-planner\tbackend\nphi-planner-web\tweb\n' > "$TEST_ROOT/jf.apps"
+  printf 'APP_HTTP_PORT\t8092\tnginx\nPHP_CONTAINER\tphi-php\t\n' > "$TEST_ROOT/jf.settings"
+  printf 'phi-planner\t%s\n' "$root" > "$TEST_ROOT/jf.running"
+  printf 'phi-planner · backend/deploy/.docker-env\tphi-planner\nAPP_HTTP_PORT = 8092   # nginx\tAPP_HTTP_PORT\n' > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/job.sh" "$TEST_ROOT/calls/jungleforge.sh"
+  printf 'taken\n8093\n\n' | menu --run settings >/dev/null 2>&1
+  grep -qF 'PHP_CONTAINER = phi-php' "$TEST_ROOT/calls/fzf.input" || fail "the settings list: $(cat "$TEST_ROOT/calls/fzf.input")"
+  [ "$(cat "$TEST_ROOT/calls/jungleforge.sh")" = "set $root phi-planner APP_HTTP_PORT taken"$'\n'"set $root phi-planner APP_HTTP_PORT 8093" ] ||
+    fail "settings set: $(cat "$TEST_ROOT/calls/jungleforge.sh")"
+  [ "$(job_call)" = "start phi-planner → restart --lock phi-planner -- $HOME/.tmuxinator/jungleforge.sh run $root phi-planner" ] ||
+    fail "the app was not restarted: '$(job_call)'"
+
+  # The shared services: their own restart.
+  printf 'shared services · jungleforge .env\tshared\nAPP_HTTP_PORT = 8092   # nginx\tAPP_HTTP_PORT\n' > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/job.sh" "$TEST_ROOT/calls/jungleforge.sh"
+  printf '5433\n\n' | menu --run settings >/dev/null 2>&1
+  grep -qx "set shared APP_HTTP_PORT 5433" "$TEST_ROOT/calls/jungleforge.sh" || fail "shared set: $(cat "$TEST_ROOT/calls/jungleforge.sh")"
+  [ "$(job_call)" = "start Services --lock services -- $HOME/.tmuxinator/jungleforge.sh services" ] ||
+    fail "the services were not restarted: '$(job_call)'"
+  rm -f "$TEST_ROOT/jf.running" "$TEST_ROOT/jf.settings" "$TEST_ROOT/jf.apps"
+}
+
 # Esc on the apps goes back to the branch list (the stub's empty answer is
 # Esc: nothing chosen).
 test_esc_on_the_apps_goes_back_to_the_branches() {
@@ -555,7 +711,7 @@ test_closing_the_running_branch_switches_back_to_main() {
 
 test_every_action_has_a_function() {
   local tab action function
-  for tab in workspace layout agent git app help; do
+  for tab in workspace layout agent team git app help; do
     for action in $(actions_of "$tab"); do
       function="$(menu --function "$action")" || fail "no function for $action"
       function="${function%% *}"
@@ -599,7 +755,51 @@ test_space_opens_the_menu() {
     "$ROOT/config/tmux/tmux.conf" || fail "C-b Space does not open the menu"
 }
 
+# Restart and Switch must recreate a closed main agent without replacing
+# the editor or terminal that survived it.
+test_agent_actions_reopen_a_closed_panel() {
+  local action pane terminal
+  cat > "$HOME/.tmuxinator/agent_runner.sh" <<'EOF'
+#!/usr/bin/env bash
+tmux set-option -p -t "$TMUX_PANE" @devws_role agent
+tmux set-option -p -t "$TMUX_PANE" @devws_agent "$1"
+exec sleep 600
+EOF
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$HOME/.tmuxinator/agent_status.sh"
+  chmod +x "$HOME/.tmuxinator/agent_runner.sh" "$HOME/.tmuxinator/agent_status.sh"
+  tmux set-option -t dev-menu @devws_root "$TEST_ROOT"
+  tmux set-option -t dev-menu @devws_agent claude
+  terminal="$(tmux split-window -t "$PANE" -P -F '#{pane_id}' 'sleep 600')"
+  tmux set-option -p -t "$terminal" @devws_role terminal
+  pane="$(tmux split-window -t "$terminal" -P -F '#{pane_id}' 'sleep 600')"
+  tmux set-option -p -t "$pane" @devws_role agent
+
+  for action in restart-agent switch-agent; do
+    tmux kill-pane -t "$pane"
+    printf 'codex\n' > "$TEST_ROOT/fzf.answers"
+    menu --run "$action" || fail "$action could not reopen the closed agent panel"
+    reopened_agent() {
+      pane="$(tmux list-panes -t dev-menu: -F '#{pane_id} #{@devws_role}' | awk '$2 == "agent" { print $1; exit }')"
+      [ -n "$pane" ]
+    }
+    wait_until reopened_agent || fail "$action did not create a main agent panel"
+    [ "$(tmux show-options -pqv -t "$PANE" @devws_role)" = editor ] || fail "$action replaced the editor"
+    [ "$(tmux show-options -pqv -t "$terminal" @devws_role)" = terminal ] || fail "$action replaced the terminal"
+    [ "$(tmux display-message -p -t "$pane" '#{pane_current_path}')" = "$(cd "$TEST_ROOT" && pwd -P)" ] || fail "$action opened outside the project"
+  done
+  [ "$(tmux show-options -pqv -t "$pane" @devws_agent)" = codex ] || fail "Switch did not start the chosen agent"
+  tmux kill-pane -t "$pane"
+  tmux kill-pane -t "$terminal"
+  tmux set-option -u -t dev-menu @devws_root
+}
+
+test_agent_actions_reopen_a_closed_panel
 test_tabs_list_their_actions
+test_an_agent_team_has_no_editor_items
+test_open_an_agent_team_runs_devws_agentic
+test_an_agent_team_switches_its_leaders_model
+test_team_navigation_reuses_the_board_from_group_workspaces
+test_team_roles_change_a_roles_setting
 test_items_show_labels_and_shortcuts
 test_typing_searches_every_tab
 test_memory_items_need_ai_memory
@@ -620,6 +820,7 @@ test_a_worktree_workspace_on_a_new_branch
 test_a_github_workspace_opens_the_chosen_folder
 test_push_asks_then_runs_as_a_job
 test_run_this_branch_moves_the_ticked_apps
+test_settings_change_a_value_and_offer_a_restart
 test_register_scaffolds_and_registers_an_app
 test_running_an_unregistered_repo_offers_registering
 test_esc_on_the_apps_goes_back_to_the_branches
