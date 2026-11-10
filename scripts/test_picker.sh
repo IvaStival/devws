@@ -41,7 +41,7 @@ test_the_shared_look_and_the_callers_options() {
   args_have '--prompt=Repo › ' || fail "no shared prompt: $(cat "$TEST_ROOT/fzf.args")"
   args_have '--header=Pick a repo' || fail "no header"
   grep -q -- '^--footer=.*Esc back · Enter choose' "$TEST_ROOT/fzf.args" || fail "no shared footer"
-  grep -q -- '^--listen=' "$TEST_ROOT/fzf.args" || fail "no socket for the repaint"
+  ! grep -q -- '^--listen=' "$TEST_ROOT/fzf.args" || fail "the picker still repaints itself (it flickers)"
   args_have $'--delimiter=\t' || fail "the caller's own option was dropped"
 }
 
