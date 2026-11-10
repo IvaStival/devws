@@ -206,7 +206,9 @@ running_folder() {
 running() {
   local targets_list app subfolder registry_folder top
   targets_list="$(targets "$1")"
-  app_rows "$1" | while IFS=$'\t' read -r app subfolder registry_folder top; do
+  # Unit separator, not tab: IFS whitespace (tab) collapses the empty
+  # <subfolder> of an app at the repo root, shifting the later fields.
+  app_rows "$1" | tr '\t' '\037' | while IFS=$'\037' read -r app subfolder registry_folder top; do
     printf '%s\t%s\n' "$app" "$(running_folder "$registry_folder" "$subfolder" "$targets_list")"
   done
 }
@@ -248,20 +250,47 @@ lock_fingerprint() {
   cat "$1/composer.lock" "$1/package-lock.json" 2>/dev/null | shasum | cut -d ' ' -f1
 }
 
+# Composer in the container has no GitHub login, so private packages locked to a
+# GitHub dist URL (e.g. hephaestusphp/libs) 404. Lend it the host's `gh` token for
+# this job only: exported to `make deps`, never written anywhere. A COMPOSER_AUTH
+# already in the environment wins; without gh, deps run as before.
+export_composer_auth() {
+  local token
+  [ -z "${COMPOSER_AUTH:-}" ] || return 0
+  command -v gh >/dev/null 2>&1 || return 0
+  token="$(gh auth token 2>/dev/null)" || return 0
+  [ -n "$token" ] || return 0
+  export COMPOSER_AUTH="{\"github-oauth\":{\"github.com\":\"$token\"}}"
+}
+
+# A branch folder's untracked files (.env, deploy/.docker-env…) are symlinks into
+# the repo's .shared, beside its worktrees. Echo SHARED_PATH=<it> for jungleforge,
+# which then mounts it at the same path so the links resolve in the container;
+# nothing for a folder without one (the registry's own checkout).
+shared_path_arg() {
+  local shared
+  shared="$(dirname "$1")/.shared"
+  [ -d "$shared" ] && printf 'SHARED_PATH=%s' "$shared"
+  return 0
+}
+
 run() {
   local folder="$1" rows app subfolder registry_folder top app_folder fingerprint
+  local shared
   shift
   rows="$(chosen_apps "$folder" "$@")" || exit 2
+  export_composer_auth
+  shared="$(shared_path_arg "$folder")"
   jungleforge_make services-start || die "the shared services did not start"
-  while IFS=$'\t' read -r app subfolder registry_folder top; do
+  while IFS=$'\037' read -r app subfolder registry_folder top; do
     app_folder="$folder${subfolder:+/$subfolder}"
     [ -d "$app_folder" ] || die "$app_folder does not exist on this branch"
-    jungleforge_make start "$app" "$(path_variable "$app")=$app_folder" || die "$app did not start"
+    jungleforge_make start "$app" "$(path_variable "$app")=$app_folder" ${shared:+"$shared"} || die "$app did not start"
     fingerprint="$(lock_fingerprint "$app_folder")"
     [ "$(cat "$(deps_file "$folder" "$app")" 2>/dev/null)" = "$fingerprint" ] && continue
-    jungleforge_make deps "$app" "$(path_variable "$app")=$app_folder" || die "$app's packages did not install"
+    jungleforge_make deps "$app" "$(path_variable "$app")=$app_folder" ${shared:+"$shared"} || die "$app's packages did not install"
     printf '%s\n' "$fingerprint" > "$(deps_file "$folder" "$app")"
-  done <<<"$rows"
+  done <<<"$(tr '\t' '\037' <<<"$rows")"
 }
 
 stop() {
@@ -278,10 +307,12 @@ stop() {
 on_running_app() {
   local target="$1" folder="$2" app="$3" row subfolder registry_folder running_root
   row="$(chosen_apps "$folder" "$app")" || exit 2
-  IFS=$'\t' read -r app subfolder registry_folder _ <<<"$row"
+  IFS=$'\037' read -r app subfolder registry_folder _ <<<"$(tr '\t' '\037' <<<"$row")"
   running_root="$(running_folder "$registry_folder" "$subfolder" "$(targets "$folder")")"
   [ -n "$running_root" ] || die "$app is not running; run a branch first"
-  jungleforge_make "$target" "$app" "$(path_variable "$app")=$running_root${subfolder:+/$subfolder}"
+  local shared
+  shared="$(shared_path_arg "$running_root")"
+  jungleforge_make "$target" "$app" "$(path_variable "$app")=$running_root${subfolder:+/$subfolder}" ${shared:+"$shared"}
 }
 
 check_docker() {
