@@ -67,8 +67,11 @@ repos get their own worktrees the same way, as the leader opens them.
   started after that use it. Codex agents in the team's own lane folders start
   without asking whether to trust the folder.
 - **The board** beside it opens on **Overview**, under a header with the
-  progress bar and each account's limit bars: what needs you, the team (the
-  leader first) and the steps done, newest first; the wheel scrolls all of it.
+  progress bar and each account's limit bars. Each part is a card: what needs
+  you, the CTO (the leader first), the seniors, the floor, the queue, the usage
+  (each agent's tokens and cost, then the team's total) and the steps done,
+  newest first. Only the Done card scrolls, with its own scrollbar; the others
+  stay put. A pane too short for the cards shows them as one scrolling list.
   Tab / Shift-Tab switches to **Agents**, **Steps**, **Activity**, and **Usage**.
   Completed work stays in Steps (`c` includes it); inactive roles stay in the
   Agents catalog (`c` shows it). Use `j`/`k`, arrows, or the wheel to select a
