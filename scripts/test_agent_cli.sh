@@ -453,6 +453,11 @@ workspace:dev-t2-x"
     fail "the team does not lead its task with the project and task: $(grep -A1 '^workspace:dev-t1-api' <<<"$rows")"
   grep -q "^group:dev-t1-api-seniors.*├ ▾ Seniors" <<<"$rows" || fail "the Seniors row: $rows"
   grep -q "^agent:$senior.*│  ◦ ui-designer-1" <<<"$rows" || fail "the senior's row: $rows"
+  # A group with another below it keeps its │ down its agents' model lines.
+  grep -A1 "^agent:$senior" <<<"$rows" | tail -1 | grep -q '^    │    senior-configured-model' ||
+    fail "the senior's model line breaks the tree: $(grep -A1 "^agent:$senior" <<<"$rows")"
+  grep -A1 "^agent:$agent" <<<"$rows" | tail -1 | grep -q '^         floor-runtime-model' ||
+    fail "the last group's model line: $(grep -A1 "^agent:$agent" <<<"$rows")"
   grep -q "^group:dev-t1-api-floor.*└ ▾ Floor.*●" <<<"$rows" || fail "the last group's row, with its alert: $rows"
   grep "^agent:$agent" <<<"$rows" | grep -q "   ◦ hammer-1.*● needs you" || fail "the floor agent's row: $rows"
   ! grep "^agent:$agent" <<<"$rows" | cut -f2 | grep -q 'Floor' || fail "an agent under its group repeats the group's name"

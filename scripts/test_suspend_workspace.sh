@@ -153,11 +153,14 @@ picker() {
   tmux list-panes -t "$1:" -F '#{pane_id} #{pane_title}' | awk '$2 == "devws-picker" { print $1 }'
 }
 
-# The sidebar's fzf (the stub), in the subshell that reads its choice.
+# The sidebar's fzf (the stub): a child of the sidebar's script, or of a
+# subshell of it.
 sidebar_fzf() {
-  local subshell
-  for subshell in $(pgrep -P "$(pane_pid "$(picker "$1")")"); do
-    pgrep -f -P "$subshell" '^sleep 600$'
+  local script child
+  script="$(pane_pid "$(picker "$1")")"
+  pgrep -f -P "$script" '^sleep 600$'
+  for child in $(pgrep -P "$script"); do
+    pgrep -f -P "$child" '^sleep 600$'
   done
 }
 

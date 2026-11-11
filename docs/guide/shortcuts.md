@@ -26,8 +26,9 @@ is only needed to look a key up.
 
 The mouse works too: click a pane group's header (`▾ Agent`, `▾ Database`)
 to minimize or restore it, click the header's rows to hide them, click a
-job in the header to open its log, and click a workspace in the sidebar to
-go to it.
+job in the header to open its log, and click a workspace, a team's group or
+an agent in the sidebar to go to it: one click. In the menu and the pickers
+one click runs or picks a row too (a multi-select ticks it).
 
 ## In the menu and the pickers
 

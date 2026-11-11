@@ -604,6 +604,38 @@ test_the_sidebar_shows_each_workspace_state() {
   wait_until shows_working || fail "the sidebar did not redraw on a state change: $(sidebar)"
   first="$(working_row)"
   wait_until focused_other || fail "refresh moved the cursor when the selected row changed"
+
+  # One click enters a workspace, from inside fzf and in the background: fzf
+  # stops tracking the mouse at the next key after a command it waited on for
+  # a while (the menu's popup), and the sidebar no longer answered clicks.
+  ps -o command= -p "$(sidebar_fzf)" | grep -q 'left-click:execute-silent(.* --go {1} >/dev/null 2>&1 &)' || fail "a click does not enter the workspace from inside fzf, in the background"
+  ps -o command= -p "$(sidebar_fzf)" | grep -q -- "--go menu >/dev/null 2>&1 &)" || fail "the menu does not open in the background"
+  # Entering a workspace leaves the sidebar's fzf running: closing it to act
+  # and starting it again flickered.
+  fzf_before="$(sidebar_fzf)"
+  tmux send-keys -t "$sidebar_test_pane" Enter
+  sleep 1
+  [ "$(sidebar_fzf)" = "$fzf_before" ] || fail "Enter restarted the sidebar (it flickers): $fzf_before -> $(sidebar_fzf)"
+  # Refreshing for new or closed workspaces redraws it in place too.
+  "$SCRIPTS/refresh_devws_pickers.sh"
+  sleep 1
+  [ "$(sidebar_fzf)" = "$fzf_before" ] || fail "a refresh restarted the sidebar (it flickers)"
+  # A redraw draws the rows beside fzf, which only reads them; a lock left by
+  # a redraw that was killed does not stop the next, and redraws asked at once
+  # fold together, leaving no lock or drafts behind.
+  local rows_file
+  rows_file="$(tmux show-option -pqv -t "$sidebar_test_pane" @devws_picker_rows)"
+  mkdir "$rows_file.lock" && printf '999999\n' > "$rows_file.lock/pid"
+  "$SCRIPTS/agent_status.sh" dev-other done
+  shows_done() { sidebar | grep -q "claude ✓ done · nvim"; }
+  wait_until shows_done || fail "a lock left behind stopped the redraws: $(sidebar)"
+  for _ in 1 2 3 4 5; do "$SCRIPTS/refresh_devws_pickers.sh" --reload; done
+  "$SCRIPTS/agent_status.sh" dev-other working
+  wait_until shows_working || fail "the sidebar missed the last of many redraws: $(sidebar)"
+  settled() { [ ! -e "$rows_file.lock" ] && [ -z "$(ls "$rows_file".*.* 2>/dev/null)" ]; }
+  wait_until settled || fail "redraws left a lock or drafts: $(ls -d "$rows_file".* 2>/dev/null)"
+  first="$(working_row)"
+  wait_until focused_other || fail "a redraw moved the cursor"
   spin 4
   sleep 0.5
   [ "$(working_row)" = "$first" ] || fail "a sidebar nobody sees turned its spinner: $(working_row)"
@@ -615,6 +647,17 @@ test_the_sidebar_shows_each_workspace_state() {
   turned() { working_row | grep -q '⠼'; }
   wait_until turned || fail "the sidebar on screen did not turn its spinner: $(working_row)"
   wait_until focused_other || fail "a spinner turn moved the cursor"
+  # Enter on another workspace's row takes the client there, the sidebar
+  # still running.
+  fzf_before="$(sidebar_fzf)"
+  tmux send-keys -t "$sidebar_test_pane" Enter
+  on_other() { [ "$(tmux list-clients -F '#{client_session}' | head -1)" = dev-other ]; }
+  wait_until on_other || fail "Enter did not enter the workspace: $(tmux list-clients -F '#{client_session}')"
+  # Still answering clicks after a key: fzf did not wait on the switch.
+  tmux send-keys -t "$sidebar_test_pane" Down
+  sleep 0.5
+  [ "$(tmux display-message -p -t "$sidebar_test_pane" '#{mouse_any_flag}')" = 1 ] || fail "the sidebar stopped tracking the mouse after entering a workspace"
+  [ "$(sidebar_fzf)" = "$fzf_before" ] || fail "entering a workspace restarted the sidebar"
   "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server
 
   "$SCRIPTS/agent_status.sh" dev-other idle

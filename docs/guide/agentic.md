@@ -100,7 +100,7 @@ repos get their own worktrees the same way, as the leader opens them.
   it to go to its workspace, focused on it; Enter on the team's workspace in
   the sidebar brings you back. `p` and the number **peeks** it: its panel
   comes under the board for a look; `p` and the number again send it back.
-  Enter on an agent's row in the sidebar takes you to it too.
+  A click (or Enter) on an agent's row in the sidebar takes you to it too.
 - There is **no editor**: the agents work in the folder and you read the
   leader. `--editor` adds a Neovim panel under the board.
 - The sidebar lists the workspace under its task (`▸ team`), together with the
