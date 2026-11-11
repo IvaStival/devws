@@ -9,7 +9,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget, Wrap};
 
 const TITLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 const DIM: Style = Style::new().fg(Color::DarkGray);
@@ -17,8 +17,10 @@ const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 const HEADING: Style = Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD);
 /// Every Overview card is drawn in one color, so the sections read as one
 /// board rather than competing for attention.
-const CARD: Style = Style::new().fg(Color::Green);
-const CARD_TITLE: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
+const CARD: Style = Style::new().fg(Color::Indexed(110));
+const CARD_TITLE: Style = Style::new()
+    .fg(Color::Indexed(110))
+    .add_modifier(Modifier::BOLD);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum View {
@@ -202,6 +204,16 @@ impl Navigation {
     }
 
     pub fn reconcile(&mut self, entries: &[Entry]) {
+        if self.detail
+            && self
+                .selected
+                .as_ref()
+                .is_some_and(|selected| !entries.iter().any(|entry| &entry.id == selected))
+        {
+            // A removed row must not turn an open dialog into another item's details.
+            self.detail = false;
+            self.detail_scroll = 0;
+        }
         let wanted = self
             .selected
             .as_ref()
@@ -1292,18 +1304,7 @@ pub fn screen(
         return buffer;
     }
     let body = height.saturating_sub(header_rows + 1);
-    if nav.detail {
-        if let Some(entry) = entries.get(nav.index) {
-            let paragraph = Paragraph::new(entry.detail.clone()).wrap(Wrap { trim: false });
-            let max = paragraph
-                .line_count(width)
-                .saturating_sub(body as usize)
-                .min(u16::MAX as usize) as u16;
-            paragraph
-                .scroll((nav.detail_scroll.min(max), 0))
-                .render(Rect::new(0, header_rows, width, body), &mut buffer);
-        }
-    } else if entries.is_empty() {
+    if entries.is_empty() {
         if body > 0 {
             text_line("Nothing here yet.", DIM, header_rows, width, &mut buffer);
         }
@@ -1323,29 +1324,102 @@ pub fn screen(
             }
         }
     }
-    let hints: &[&str] = if nav.detail {
-        &[
-            "Esc back · ↑↓ scroll · o go · v peek · ? help",
-            "Esc back · ↑↓ scroll · ? help",
-            "Esc back · ? help",
-            "Esc",
-        ]
-    } else {
-        &[
-            "↑↓ select · Enter details · o go · v peek · Tab views · ? help",
-            "↑↓ select · Enter details · Tab views · ? help",
-            "Enter details · ? help",
-            "? help",
-            "?",
-        ]
-    };
+    let hints = [
+        "↑↓ select · Enter details · o go · v peek · Tab views · ? help",
+        "↑↓ select · Enter details · Tab views · ? help",
+        "Enter details · ? help",
+        "? help",
+        "?",
+    ];
     let footer = hints
         .iter()
         .find(|hint| Line::raw(**hint).width() <= width as usize)
         .copied()
         .unwrap_or("");
     text_line(footer, DIM, height - 1, width, &mut buffer);
+    if nav.detail {
+        if let Some(entry) = entries.get(nav.index) {
+            draw_dialog(&mut buffer, &entry.label, &entry.detail, nav.detail_scroll);
+        }
+    }
     buffer
+}
+
+fn dialog_area(width: u16, height: u16) -> Rect {
+    let horizontal_margin = if width >= 12 { 2 } else { 0 };
+    let vertical_margin = if height >= 8 { 1 } else { 0 };
+    Rect::new(
+        horizontal_margin,
+        vertical_margin,
+        width.saturating_sub(horizontal_margin * 2),
+        height.saturating_sub(vertical_margin * 2),
+    )
+}
+
+/// Shared by rendering and input so wrapping, page movement and End agree,
+/// including after a resize. Leave a hint row when there is room for text too.
+pub fn dialog_body(width: u16, height: u16) -> Rect {
+    let inner = Block::bordered().inner(dialog_area(width, height));
+    let padding = u16::from(inner.width >= 6);
+    Rect::new(
+        inner.x + padding,
+        inner.y,
+        inner.width.saturating_sub(padding * 2),
+        inner.height.saturating_sub(u16::from(inner.height >= 2)),
+    )
+}
+
+pub fn dialog_scroll_max(content: &str, width: u16, height: u16) -> u16 {
+    let body = dialog_body(width, height);
+    if body.width == 0 || body.height == 0 {
+        return 0;
+    }
+    Paragraph::new(content)
+        .wrap(Wrap { trim: false })
+        .line_count(body.width)
+        .saturating_sub(body.height as usize)
+        .min(u16::MAX as usize) as u16
+}
+
+/// Draw into the board's buffer: tmux popups would cover neighboring panes.
+pub fn draw_dialog(buffer: &mut Buffer, title: &str, content: &str, scroll: u16) {
+    let width = buffer.area.width;
+    let height = buffer.area.height;
+    let area = dialog_area(width, height);
+    if area.is_empty() {
+        return;
+    }
+    Clear.render(area, buffer);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(CARD)
+        .style(Style::new().bg(Color::Indexed(234)))
+        .title(Line::styled(format!(" {title} "), TITLE));
+    let inner = block.inner(area);
+    block.render(area, buffer);
+    let body = dialog_body(width, height);
+    if !body.is_empty() {
+        Paragraph::new(content)
+            .wrap(Wrap { trim: false })
+            .scroll((scroll.min(dialog_scroll_max(content, width, height)), 0))
+            .render(body, buffer);
+    }
+    if inner.height >= 2 {
+        let hints = [
+            "Esc/q close · ↑↓ scroll · PgUp/PgDn page · Home/End",
+            "Esc/q close · ↑↓ scroll · PgUp/PgDn",
+            "Esc/q close · ↑↓ scroll",
+            "Esc/q close",
+            "Esc/q",
+        ];
+        let hint = hints
+            .iter()
+            .find(|hint| Line::raw(**hint).width() <= body.width as usize)
+            .copied()
+            .unwrap_or("");
+        Line::styled(hint, DIM)
+            .render(Rect::new(body.x, inner.bottom() - 1, body.width, 1), buffer);
+    }
 }
 
 pub fn plain(buffer: &Buffer) -> String {

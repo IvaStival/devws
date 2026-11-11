@@ -15,6 +15,7 @@ use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind,
 };
 use ratatui::crossterm::execute;
+use ratatui::layout::Rect;
 use std::process::Command;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -192,9 +193,18 @@ impl Interaction {
         event: Event,
         board: &Board,
         entries: &[board_view::Entry],
-        page: u16,
+        size: Rect,
     ) -> Action {
-        match event {
+        self.clamp_scroll(entries, size);
+        let page = if self.help || self.nav.detail {
+            board_view::dialog_body(size.width, size.height).height
+        } else {
+            size.height.saturating_sub(
+                board_view::header_rows(board, &self.nav, size.width, size.height) + 1,
+            )
+        }
+        .max(1);
+        let action = match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 self.key(key.code, board, entries, page)
             }
@@ -210,7 +220,43 @@ impl Interaction {
                 Action::None
             }
             _ => Action::None,
+        };
+        self.clamp_scroll(entries, size);
+        action
+    }
+
+    fn clamp_scroll(&mut self, entries: &[board_view::Entry], size: Rect) {
+        let content = if self.help {
+            Some(HELP)
+        } else if self.nav.detail {
+            entries
+                .get(self.nav.index)
+                .map(|entry| entry.detail.as_str())
+        } else {
+            None
+        };
+        if let Some(content) = content {
+            self.nav.detail_scroll = self.nav.detail_scroll.min(board_view::dialog_scroll_max(
+                content,
+                size.width,
+                size.height,
+            ));
         }
+    }
+
+    fn screen(
+        &self,
+        board: &Board,
+        entries: &[board_view::Entry],
+        width: u16,
+        height: u16,
+        notice: Option<&str>,
+    ) -> ratatui::buffer::Buffer {
+        let mut screen = board_view::screen(board, &self.nav, entries, width, height, notice);
+        if self.help {
+            board_view::draw_dialog(&mut screen, "Help", HELP, self.nav.detail_scroll);
+        }
+        screen
     }
 
     fn new(view: View) -> Self {
@@ -229,16 +275,17 @@ impl Interaction {
         page: u16,
     ) -> Action {
         match code {
-            KeyCode::Esc if self.peeking => self.peeking = false,
             KeyCode::Esc | KeyCode::Char('q') if self.help || self.nav.detail => {
                 self.help = false;
                 self.nav.detail = false;
                 self.nav.detail_scroll = 0;
             }
+            KeyCode::Esc if self.peeking => self.peeking = false,
             KeyCode::Char('q') => return Action::Quit,
             KeyCode::Esc => {}
             KeyCode::Char('?') => {
                 self.help = !self.help;
+                self.nav.detail = false;
                 self.nav.detail_scroll = 0;
             }
             KeyCode::Tab | KeyCode::BackTab => {
@@ -259,7 +306,7 @@ impl Interaction {
                 self.nav.expanded = !self.nav.expanded;
                 self.nav.detail = false;
             }
-            KeyCode::Enter if !self.help && !entries.is_empty() => {
+            KeyCode::Enter if !self.help && self.nav.selected.is_some() => {
                 self.nav.detail = true;
                 self.nav.detail_scroll = 0;
             }
@@ -437,16 +484,6 @@ fn screen_loop(
     let mut entries = Vec::new();
     let mut entries_dirty = true;
     let mut entries_key = None;
-    let help_entries = vec![board_view::Entry {
-        id: "help".into(),
-        label: "Help".into(),
-        detail: HELP.into(),
-        pane: None,
-        attention: false,
-        kind: board_view::Kind::Row,
-        parts: Vec::new(),
-        tail: String::new(),
-    }];
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
         execute!(std::io::stdout(), EnableMouseCapture)?;
@@ -502,40 +539,10 @@ fn screen_loop(
             }
             ui.nav.reconcile(&entries);
             let size = terminal.size()?;
-            let detail = if ui.help {
-                Some(HELP)
-            } else if ui.nav.detail {
-                entries.get(ui.nav.index).map(|entry| entry.detail.as_str())
-            } else {
-                None
-            };
-            if let Some(detail) = detail {
-                let header = board_view::header_rows(&board, &ui.nav, size.width, size.height);
-                let rows = ratatui::widgets::Paragraph::new(detail)
-                    .wrap(ratatui::widgets::Wrap { trim: false })
-                    .line_count(size.width.max(1));
-                ui.nav.detail_scroll = ui.nav.detail_scroll.min(
-                    rows.saturating_sub(size.height.saturating_sub(header + 1) as usize)
-                        .min(u16::MAX as usize) as u16,
-                );
-            }
+            ui.clamp_scroll(&entries, Rect::new(0, 0, size.width, size.height));
             terminal.draw(|frame| {
                 let area = frame.area();
-                let screen = if ui.help {
-                    let mut help_nav = Navigation::new(ui.nav.view);
-                    help_nav.detail = true;
-                    help_nav.detail_scroll = ui.nav.detail_scroll;
-                    board_view::screen(
-                        &board,
-                        &help_nav,
-                        &help_entries,
-                        area.width,
-                        area.height,
-                        notice,
-                    )
-                } else {
-                    board_view::screen(&board, &ui.nav, &entries, area.width, area.height, notice)
-                };
+                let screen = ui.screen(&board, &entries, area.width, area.height, notice);
                 *frame.buffer_mut() = screen;
                 if ui.peeking && area.height > 0 {
                     use ratatui::widgets::Widget;
@@ -548,12 +555,16 @@ fn screen_loop(
             if !event::poll(KEY_WAIT)? {
                 continue;
             }
-            let page = size.height.saturating_sub(6).max(1);
             // Every event already waiting, then one draw: a fast wheel turn
             // sends many, and drawing between each made it lag behind.
             let mut actions = Vec::new();
             loop {
-                let action = ui.apply(event::read()?, &board, &entries, page);
+                let action = ui.apply(
+                    event::read()?,
+                    &board,
+                    &entries,
+                    Rect::new(0, 0, size.width, size.height),
+                );
                 if action != Action::None {
                     actions.push(action);
                 }
@@ -610,6 +621,86 @@ fn pane_of(board: &Board, digit: char) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn help_is_a_dialog_over_the_real_board_and_closes_without_moving_selection() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (home, devws, task, _repo) = crate::board::tests::started(&dir);
+        let board = load(&task, &devws, &home, &mut UsageReader::new(Duration::ZERO)).unwrap();
+        let entries = board_view::entries(&board, View::Overview, false, &[], None);
+        let mut ui = Interaction::new(View::Overview);
+        ui.nav.reconcile(&entries);
+        let selected = ui.nav.selected.clone();
+        let background = ui.screen(&board, &entries, 84, 30, None);
+        ui.key(KeyCode::Char('?'), &board, &entries, 10);
+        let rendered = ui.screen(&board, &entries, 84, 30, None);
+        let text = board_view::plain(&rendered);
+        assert!(text.contains("Help"), "{text}");
+        assert!(text.contains("Board navigation"), "{text}");
+        assert!(text.contains("Esc/q close"), "{text}");
+        for row in 0..30 {
+            assert_eq!(rendered[(0, row)], background[(0, row)]);
+        }
+        assert_eq!(
+            ui.key(KeyCode::Char('q'), &board, &entries, 10),
+            Action::None
+        );
+        assert!(!ui.help);
+        assert_eq!(ui.nav.selected, selected);
+        assert_eq!(ui.nav.view, View::Overview);
+    }
+
+    #[test]
+    fn dialog_input_uses_its_body_and_clamps_each_event_including_the_wheel() {
+        use ratatui::crossterm::event::{KeyEvent, KeyModifiers, MouseEvent};
+        use ratatui::layout::Rect;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (home, devws, task, _repo) = crate::board::tests::started(&dir);
+        let board = load(&task, &devws, &home, &mut UsageReader::new(Duration::ZERO)).unwrap();
+        let entries = vec![board_view::Entry::text(
+            "long".into(),
+            "Long details".into(),
+            "content wraps ".repeat(300),
+            false,
+        )];
+        let mut ui = Interaction::new(View::Activity);
+        ui.nav.reconcile(&entries);
+        let size = Rect::new(0, 0, 30, 16);
+        let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        ui.apply(key(KeyCode::Enter), &board, &entries, size);
+        ui.apply(key(KeyCode::PageDown), &board, &entries, size);
+        assert_eq!(ui.nav.detail_scroll, board_view::dialog_body(30, 16).height);
+        ui.apply(key(KeyCode::End), &board, &entries, size);
+        let maximum = board_view::dialog_scroll_max(&entries[0].detail, 30, 16);
+        assert_eq!(ui.nav.detail_scroll, maximum);
+        ui.apply(key(KeyCode::Up), &board, &entries, size);
+        assert_eq!(
+            ui.nav.detail_scroll,
+            maximum - 1,
+            "Up works immediately after End"
+        );
+        ui.apply(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 5,
+                row: 5,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &board,
+            &entries,
+            size,
+        );
+        assert_eq!(ui.nav.detail_scroll, maximum - 1 - WHEEL);
+        ui.apply(key(KeyCode::Home), &board, &entries, size);
+        assert_eq!(ui.nav.detail_scroll, 0);
+        ui.apply(key(KeyCode::Char('j')), &board, &entries, size);
+        assert_eq!(ui.nav.detail_scroll, 1);
+        ui.apply(key(KeyCode::Char('k')), &board, &entries, size);
+        assert_eq!(ui.nav.detail_scroll, 0);
+        ui.apply(key(KeyCode::Esc), &board, &entries, size);
+        assert!(!ui.nav.detail);
+        assert_eq!(ui.nav.selected.as_deref(), Some("long"));
+    }
 
     #[test]
     fn keys_open_details_and_navigate_without_a_nine_agent_limit() {
@@ -680,10 +771,20 @@ mod tests {
             })
         };
         for _ in 0..6 {
-            ui.apply(notch(MouseEventKind::ScrollDown), &board, &entries, 10);
+            ui.apply(
+                notch(MouseEventKind::ScrollDown),
+                &board,
+                &entries,
+                Rect::new(0, 0, 84, 16),
+            );
         }
         assert_eq!(ui.nav.index, 6 * WHEEL as usize);
-        ui.apply(notch(MouseEventKind::ScrollUp), &board, &entries, 10);
+        ui.apply(
+            notch(MouseEventKind::ScrollUp),
+            &board,
+            &entries,
+            Rect::new(0, 0, 84, 16),
+        );
         assert_eq!(ui.nav.index, 5 * WHEEL as usize);
     }
 
