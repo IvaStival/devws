@@ -15,7 +15,7 @@ use crate::task::{Repo, Task, TaskConfig};
 use anyhow::{Context, Result, bail};
 use std::time::Duration;
 
-/// An account this far into its 5-hour limit gets no new agents.
+/// An account this far into its week or its 5-hour limit gets no new agents.
 const LIMIT_PERCENT: u32 = 85;
 
 pub struct Team<'a> {
@@ -150,16 +150,15 @@ impl Team<'_> {
             }
         }
         self.devws.agent_kind(&role.agent)?;
-        if let Some(used) = self
-            .devws
-            .limits(&role.agent)?
-            .five_hour
-            .filter(|used| *used >= LIMIT_PERCENT)
-        {
-            bail!(
-                "{} has used {used}% of its 5-hour limit: no new agents on it until it resets",
-                role.agent
-            );
+        // The week first: it takes days to come back, the 5-hour limit hours.
+        let limits = self.devws.limits(&role.agent)?;
+        for (window, used) in [("week", limits.week), ("5-hour limit", limits.five_hour)] {
+            if let Some(used) = used.filter(|used| *used >= LIMIT_PERCENT) {
+                bail!(
+                    "{} has used {used}% of its {window}: no new agents on it until it resets",
+                    role.agent
+                );
+            }
         }
 
         // The agent is reserved before it starts, so two spawns cannot both
@@ -665,6 +664,29 @@ mod tests {
         assert!(
             f.task.state().unwrap().agents.is_empty(),
             "a refused spawn leaves no agent behind"
+        );
+
+        // The week first: it says so even when the 5-hour window is full too.
+        let week = FakeDevws::new(&f.home_dir.path().join("w"))
+            .with_kind("claude", Program::Claude)
+            .with_limits(
+                "claude",
+                Limits {
+                    five_hour: Some(90),
+                    week: Some(85),
+                },
+            );
+        let error = Team {
+            task: &f.task,
+            home: &f.home,
+            devws: &week,
+        }
+        .spawn_agent("executor", None)
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            error,
+            "claude has used 85% of its week: no new agents on it until it resets"
         );
 
         let below = FakeDevws::new(&f.home_dir.path().join("w"))

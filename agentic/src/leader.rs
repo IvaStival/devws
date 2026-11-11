@@ -1,13 +1,14 @@
 //! The leader's program. The leader keeps the team going, so it has two
 //! programs: its role's and its role's fallback (`[fallback]` in leader.md).
-//! When the account it runs on has used most of its 5-hour window or of its
-//! week, it moves to the other program, if that one's has not: at start, or,
-//! while it runs, by a handover once it has finished its turn. It also moves
+//! When the account it runs on has used most of its week, it moves to the
+//! other program if that one's week has room; when only its 5-hour window is
+//! used up, it moves only if the other has room in both (`reason_to_move`):
+//! at start, or, while it runs, by a handover once it has finished its turn. It also moves
 //! when asked (the leader's `switch_leader`, `devagentics leader switch`).
 //! Its conversation does not go with it: the new leader catches up from
 //! task_status and the log.
 
-use crate::devws::{Devws, PaneState};
+use crate::devws::{Devws, Limits, PaneState};
 use crate::home::Home;
 use crate::log::Kind;
 use crate::roles::{Fallback, Role, Roles};
@@ -43,11 +44,32 @@ fn run_out(devws: &dyn Devws, agent: &str) -> Result<Option<RunOut>> {
     let limits = devws.limits(agent)?;
     Ok([("5-hour window", limits.five_hour), ("week", limits.week)]
         .into_iter()
-        .filter_map(|(window, used)| {
-            used.filter(|used| *used >= LIMIT_PERCENT)
-                .map(|used| RunOut { window, used })
-        })
+        .filter_map(|(window, used)| past_limit(used).map(|used| RunOut { window, used }))
         .max_by_key(|out| out.used))
+}
+
+fn past_limit(used: Option<u32>) -> Option<u32> {
+    used.filter(|used| *used >= LIMIT_PERCENT)
+}
+
+/// Why the leader leaves the account it runs on (`now`) for the other one,
+/// if it does. The week comes first: it takes days to come back, the 5-hour
+/// window hours. A week used up moves the leader to any account whose week is
+/// not, even one waiting out its 5-hour window. A 5-hour window used up moves
+/// it only to an account with room in both. So the leader never moves back
+/// and forth: an account it left for its week never qualifies again.
+fn reason_to_move(now: Limits, other: Limits) -> Option<RunOut> {
+    if let Some(used) = past_limit(now.week) {
+        return past_limit(other.week).is_none().then_some(RunOut {
+            window: "week",
+            used,
+        });
+    }
+    let used = past_limit(now.five_hour)?;
+    (past_limit(other.week).is_none() && past_limit(other.five_hour).is_none()).then_some(RunOut {
+        window: "5-hour window",
+        used,
+    })
 }
 
 fn program(role: &Role) -> String {
@@ -136,24 +158,29 @@ fn take_over(before: &Role, why: &str) -> String {
 }
 
 /// The program the leader starts on: its role's, or its fallback's when the
-/// role's account has run out and the fallback's has not. With a reason for
-/// the log when the account has run out.
+/// role's account has run out and the fallback's may take over
+/// (`reason_to_move`). With a reason for the log when the account has run out.
 pub fn choose(role: &Role, devws: &dyn Devws) -> Result<(Role, Option<String>)> {
     let Some(fallback) = role.on_fallback() else {
         return Ok((role.clone(), None));
     };
-    let Some(out) = run_out(devws, &role.agent)? else {
+    let Some(out) = reason_to_move(devws.limits(&role.agent)?, devws.limits(&fallback.agent)?)
+    else {
+        // Run out, but the fallback cannot take over: the log says why.
+        if let (Some(out), Some(other)) = (
+            run_out(devws, &role.agent)?,
+            run_out(devws, &fallback.agent)?,
+        ) {
+            return Ok((
+                role.clone(),
+                Some(format!(
+                    "{} has used {out} and {} {other}: the leader stays on {}",
+                    role.agent, fallback.agent, role.agent
+                )),
+            ));
+        }
         return Ok((role.clone(), None));
     };
-    if let Some(other) = run_out(devws, &fallback.agent)? {
-        return Ok((
-            role.clone(),
-            Some(format!(
-                "{} has used {out} and {} {other}: the leader stays on {}",
-                role.agent, fallback.agent, role.agent
-            )),
-        ));
-    }
     let why = format!(
         "the leader runs on {}: {} has used {out}",
         program(&fallback),
@@ -244,14 +271,10 @@ pub fn hand_over(
     let why = match &state.leader_switch {
         Some(asked) => asked.clone(),
         None => {
-            let Some(out) = run_out(devws, &now.agent)? else {
+            let Some(out) = reason_to_move(devws.limits(&now.agent)?, devws.limits(&other.agent)?)
+            else {
                 return Ok(None);
             };
-            // Both out: it stays. The other not out also means the new
-            // leader never qualifies to move straight back.
-            if run_out(devws, &other.agent)?.is_some() {
-                return Ok(None);
-            }
             format!("{} has used {out}", now.agent)
         }
     };
@@ -467,6 +490,89 @@ mod tests {
         let board = crate::board::Board::build(&task, &devws, &roles, Default::default()).unwrap();
         let leader = board.roles.iter().find(|row| row.name == "leader").unwrap();
         assert_eq!(leader.program, "codex · gpt-6.1-sol · medium · fallback");
+    }
+
+    fn limits(five_hour: u32, week: u32) -> Limits {
+        Limits {
+            five_hour: Some(five_hour),
+            week: Some(week),
+        }
+    }
+
+    #[test]
+    fn the_week_comes_before_the_5_hour_window() {
+        let moves =
+            |now: Limits, other: Limits| reason_to_move(now, other).map(|out| out.to_string());
+        // A week used up moves the leader even to a full 5-hour window: that
+        // one comes back in hours, the week in days.
+        assert_eq!(
+            moves(limits(10, 96), limits(97, 20)).as_deref(),
+            Some("96% of its week")
+        );
+        assert_eq!(
+            moves(limits(97, 96), limits(10, 20)).as_deref(),
+            Some("96% of its week")
+        );
+        assert_eq!(
+            moves(limits(10, 96), limits(10, 95)),
+            None,
+            "both weeks used up"
+        );
+        // A 5-hour window used up moves it only to an account with room in both.
+        assert_eq!(
+            moves(limits(95, 20), limits(10, 20)).as_deref(),
+            Some("95% of its 5-hour window")
+        );
+        assert_eq!(
+            moves(limits(95, 20), limits(10, 95)),
+            None,
+            "the other's week is used up"
+        );
+        assert_eq!(
+            moves(limits(95, 20), limits(96, 20)),
+            None,
+            "the other's 5h too"
+        );
+        assert_eq!(
+            moves(limits(94, 94), limits(10, 10)),
+            None,
+            "nothing used up"
+        );
+        assert_eq!(
+            moves(Limits::default(), limits(10, 10)),
+            None,
+            "nothing known"
+        );
+    }
+
+    #[test]
+    fn a_leader_whose_week_is_used_up_moves_to_a_full_5_hour_window_and_does_not_come_back() {
+        let dir = TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = team_with(&dir, limits(10, 96), limits(97, 20));
+        assert_eq!(
+            leader_agent(&task).as_deref(),
+            Some("codex"),
+            "it starts on codex"
+        );
+
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, _repo) = team(&dir, 40, 20);
+        idle_leader(&devws, &task);
+        devws.set_limits("claude", limits(10, 96));
+        devws.set_limits("codex", limits(97, 20));
+        let what = hand_over(&home, &task, &devws, "d")
+            .unwrap()
+            .expect("handed over");
+        assert_eq!(
+            what,
+            "the leader moved to codex (gpt-6.1-sol): claude has used 96% of its week"
+        );
+        devws.set_state("%1", PaneState::Done);
+        assert_eq!(
+            hand_over(&home, &task, &devws, "d").unwrap(),
+            None,
+            "codex's 5-hour window is full, but claude's week is used up: it stays"
+        );
     }
 
     #[test]
