@@ -354,6 +354,14 @@ toggle_header() {
   "$HOME/.tmuxinator/header_toggle.sh" toggle
 }
 
+# Ghostty's look from devws (config/ghostty): linked, so it is applied once
+# per machine and follows the repo after that. What it did stays on screen.
+apply_ghostty_theme() {
+  printf '\033c'
+  "$HOME/.tmuxinator/ghostty_theme.sh" apply
+  pause
+}
+
 choose_follow_mode() {
   "$HOME/.tmuxinator/follow_mode.sh" "$(tmux display-message -p '#S')"
 }
@@ -399,8 +407,10 @@ open_folder() {
   esac
 }
 
+# Waits for Enter. With nothing to read (no terminal, or it closed) there is no
+# one to wait for: that is not the action failing.
 pause() {
-  read -r -p 'Press Enter to return…'
+  read -r -p 'Press Enter to return…' || :
 }
 
 # The folder opened, with its agent and editor: `devws` with no folder lists

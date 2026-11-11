@@ -139,3 +139,13 @@ The agent and Neovim are linked. **◎ Agent follow** (`C-b F`) chooses how:
   `editor_open.sh`, which you can run too.
 - Codex asks once to review devws's hooks ("Hooks need review"): approve it.
   Only Neovim is linked.
+
+## Ghostty's look
+
+**◐ Apply Ghostty theme** gives Ghostty devws's look (`config/ghostty`: the
+light and dark colours, font and cursor of iTerm2's "glofi" profile). It links
+the config where Ghostty reads it (on macOS,
+`~/Library/Application Support/com.mitchellh.ghostty/config.ghostty`) and the
+themes into `~/.config/ghostty/themes`, so later changes in the repo apply by
+themselves. A different file already there is backed up first, and
+`./delete.sh` puts it back. Reload Ghostty's config (`Cmd+Shift+,`) to see it.

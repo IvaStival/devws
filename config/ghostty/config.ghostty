@@ -1,0 +1,10 @@
+# Matches the iTerm2 profile "glofi": its colours follow macOS light/dark
+# mode (themes in ~/.config/ghostty/themes), its font and its steady block cursor.
+theme = light:glofi-light,dark:glofi-dark
+font-family = "JetBrainsMono Nerd Font Mono"
+font-size = 12
+cursor-style = block
+cursor-style-blink = false
+# iTerm's 4% transparency with blur.
+background-opacity = 0.96
+background-blur = 42

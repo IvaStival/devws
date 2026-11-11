@@ -53,7 +53,8 @@ for script in devws_menu.sh workspace_actions.sh workspace_panes.sh session_pick
   ln -s "$SCRIPTS/$script" "$TEST_ROOT/home/.tmuxinator/$script"
 done
 for script in toggle_layout.sh minimize_panes.sh header_toggle.sh open_database.sh follow_mode.sh register_agent.sh \
-  new_panel.sh move_panel.sh save_state.sh refresh_devws_pickers.sh git_actions.sh jungleforge.sh job.sh agentic.sh; do
+  new_panel.sh move_panel.sh save_state.sh refresh_devws_pickers.sh git_actions.sh jungleforge.sh job.sh agentic.sh \
+  ghostty_theme.sh; do
   cat > "$TEST_ROOT/home/.tmuxinator/$script" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" > "$TEST_ROOT/calls/$script"
@@ -108,7 +109,7 @@ actions_of() {
 test_tabs_list_their_actions() {
   [ "$(actions_of workspace)" = "github agentic new worktree open-folder close tidy detach" ] ||
     fail "Workspace tab: $(actions_of workspace)"
-  [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor" ] ||
+  [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor ghostty-theme" ] ||
     fail "Layout tab: $(actions_of layout)"
   [ "$(actions_of agent)" = "jump switch-agent restart-agent follow-mode initialize-agent register-agent agent-folder remove-agent team-roles" ] ||
     fail "Agent tab: $(actions_of agent)"
@@ -123,11 +124,11 @@ test_tabs_list_their_actions() {
 # screen around one, and the database that sits beside it, are not offered.
 test_an_agent_team_has_no_editor_items() {
   tmux set-option -p -t "$PANE" @devws_role agent
-  [ "$(actions_of layout)" = "header new-panel move-panel" ] || fail "Layout tab of an agent team: $(actions_of layout)"
+  [ "$(actions_of layout)" = "header new-panel move-panel ghostty-theme" ] || fail "Layout tab of an agent team: $(actions_of layout)"
   ! grep -qE 'open-database|database-folder' <<<"$(actions_of app)" || fail "an agent team is offered the database: $(actions_of app)"
   grep -q 'job-log' <<<"$(actions_of app)" || fail "an agent team lost the job log"
   tmux set-option -p -t "$PANE" @devws_role editor
-  [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor" ] ||
+  [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor ghostty-theme" ] ||
     fail "Layout tab of a normal workspace: $(actions_of layout)"
 }
 
@@ -465,7 +466,8 @@ test_script_actions_run_for_the_session() {
   for action in toggle-layout:toggle_layout.sh:dev-menu minimize:minimize_panes.sh:"dev-menu toggle agents" \
     header:header_toggle.sh:toggle \
     open-database:open_database.sh:dev-menu follow-mode:follow_mode.sh:dev-menu \
-    commit:git_actions.sh:commit commit-manual:git_actions.sh:"commit --manual"; do
+    commit:git_actions.sh:commit commit-manual:git_actions.sh:"commit --manual" \
+    ghostty-theme:ghostty_theme.sh:apply; do
     IFS=: read -r action script expected <<<"$action"
     rm -f "$TEST_ROOT/calls/$script"
     menu --run "$action"

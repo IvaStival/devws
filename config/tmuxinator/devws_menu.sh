@@ -43,6 +43,7 @@ layout|header|▔ Hide or show the header|C-b C-s|toggle_header
 layout|new-panel|▣ New panel|C-b N|new_panel
 layout|move-panel|⇆ Move panel|C-b S-←→↑↓|move_panel
 layout|switch-editor|⇄ Switch editor||switch_editor|editor
+layout|ghostty-theme|◐ Apply Ghostty theme||apply_ghostty_theme
 agent|jump|! Go to waiting agent|C-b a|jump_agent
 agent|switch-agent|⇄ Switch agent||switch_agent
 agent|restart-agent|↻ Restart agent||restart_agent
