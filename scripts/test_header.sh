@@ -112,9 +112,10 @@ distinct_frames() {
   done | LC_ALL=C sort -u | wc -l | tr -d ' '
 }
 
-# The eyes: white (colour255), the pupil (colour232) a quarter of them.
-looking_right='#\[fg=colour232,bg=colour255\]▗'
-looking_left='#\[fg=colour232,bg=colour255\]▖'
+# Row <row> of a frame, without its styles.
+ghost_row() {
+  "$SCRIPTS/header_pet.sh" "$1" "$2" | plain | sed -n "${3}p"
+}
 
 test_the_ghost_shows_its_mood() {
   local idle working waiting done
@@ -125,13 +126,19 @@ test_the_ghost_shows_its_mood() {
   shows "$idle" 'z' || fail "the idle ghost does not snore"
   ! shows "$idle" 'colour255' || fail "the idle ghost opens its eyes"
   shows "$idle" 'fg=colour245' || fail "the idle ghost is not grey"
-  shows "$working" 'fg=colour173' || fail "the working ghost is not orange"
-  shows "$working" "$looking_right" || fail "the working ghost does not look where it goes"
-  shows "$("$SCRIPTS/header_pet.sh" working 20)" "$looking_left" || fail "the ghost does not look back on its way back"
+  shows "$working" 'fg=colour214' || fail "the working ghost is not amber"
+  shows "$working" 'fg=colour172' || fail "the working ghost has no darker edge"
+  # Ticks 3 and 21 find it at the same place, on its way out and back: the
+  # same body and tail (its last row), the face turned the other way.
+  [ "$(ghost_row working 3 3)" = "$(ghost_row working 21 3)" ] &&
+    [ "$(ghost_row working 3 2)" != "$(ghost_row working 21 2)" ] ||
+    fail "the working ghost does not look where it goes"
   shows "$waiting" '!' || fail "the waiting ghost does not call you"
-  shows "$(plain <<< "$waiting")" '▝▘' || fail "the waiting ghost does not gasp"
+  # At rest in the same place: the waiting ghost's mouth is open, the done
+  # one smiles; the done one's eyes are open, the idle one's shut.
+  [ "$(ghost_row waiting 0 3)" != "$(ghost_row done 100 3)" ] || fail "the waiting ghost does not gasp"
   shows "$done" '♥' || fail "the done ghost has no heart"
-  ! shows "$done" "$looking_right\|$looking_left" || fail "the done ghost is not smiling"
+  [ "$(ghost_row done 100 2)" != "$(ghost_row idle 0 2)" ] || fail "the done ghost's eyes are shut"
   [ "$(distinct_frames working)" -ge 6 ] || fail "the working ghost barely moves"
   [ "$(distinct_frames idle)" -ge 2 ] || fail "the idle ghost does not move"
   ! "$SCRIPTS/header_pet.sh" sideways 0 2>/dev/null || fail "an unknown mood was accepted"
@@ -749,7 +756,7 @@ test_a_client_shows_the_header() {
     [ "$(session_option dev-work @devws_ghost_2)$(session_option dev-work @devws_ghost_3)" != "$before" ]
   }
   wait_until ghost_moved || fail "the ghost does not move"
-  shows "$(session_option dev-work @devws_ghost_2)" 'colour173' || fail "the working ghost is not orange"
+  shows "$(session_option dev-work @devws_ghost_2)" 'colour214' || fail "the working ghost is not amber"
 
   # One ghost for all the agents: another workspace's agent needs you, so every
   # ghost waits; once it is done the working one wins; with every agent idle it sleeps.
@@ -761,7 +768,7 @@ test_a_client_shows_the_header() {
   wait_until ghost_colored "$(option @devws_color_warn)" ||
     fail "another agent waiting does not make the ghost wait: $(session_option dev-work @devws_ghost_2)"
   tmux set-option -t dev-other @devws_agent_state done
-  wait_until ghost_colored 'colour173' || fail "a working agent does not outrank a done one"
+  wait_until ghost_colored 'colour214' || fail "a working agent does not outrank a done one"
   tmux set-option -t dev-work -u @devws_agent_state
   wait_until ghost_colored "$(option @devws_color_ok)" || fail "a done agent does not show when none works"
   tmux set-option -t dev-other -u @devws_agent_state

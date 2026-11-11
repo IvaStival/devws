@@ -82,8 +82,10 @@ three rows under tmux's own line; a `▸` on that line brings them back.
   green while its service answers, red when not.
 - **Network:** speed, Wi-Fi signal, local address, ping.
 - **Weather** from wttr.in (`DEVWS_WEATHER_LOCATION`).
-- **The ghost** shows every workspace's agents together: yellow with `!`
-  when one needs you, orange and drifting while one works, green with a
+- **The ghost**, devws's icon (round head, tall eyes, arms out, a curling
+  tail), shows every workspace's agents together: yellow and open-mouthed
+  with `!` when one needs you, amber and drifting while one works, looking
+  where it goes, green with a
   heart when one is done, grey and asleep otherwise. `DEVWS_HEADER_PET=0`
   hides it.
 - **Background jobs** take the network and weather's place while they run
