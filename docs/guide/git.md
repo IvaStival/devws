@@ -36,7 +36,8 @@ and says to install gh for the PR.
 ## Done with a branch
 
 - **× Close workspace** offers to remove the branch folder (kept unless you
-  type `y`, never with changes).
+  type `y`; with only untracked files, it offers to delete them with it;
+  never with a changed tracked file).
 - **⌫ Tidy up merged branches** (`devws tidy`) removes, after asking, every
   branch folder whose PR is merged or closed and that is clean and not open.
 

@@ -1026,7 +1026,7 @@ ask_about_running_apps() {
   # The folder goes once the apps run elsewhere ($0 is the folder, "$@" the
   # command).
   [ -z "$removing" ] ||
-    command=(sh -c '"$@" && exec "$HOME/.tmuxinator/worktree.sh" remove "$0"' "$root" "${command[@]}")
+    command=(sh -c '"$@" && exec "$HOME/.tmuxinator/worktree.sh" remove "$0" '"${remove_untracked:-}" "$root" "${command[@]}")
   job=("$HOME/.tmuxinator/job.sh" start "$apps → $answer")
   # shellcheck disable=SC2086
   while IFS= read -r line; do
@@ -1037,8 +1037,10 @@ ask_about_running_apps() {
 }
 
 # Closing a workspace on a worktree of its own asks whether to remove the
-# worktree's folder too, "keep" being the answer unless "y" is typed. One with
-# uncommitted changes is always kept, and the branch is never deleted.
+# worktree's folder too, "keep" being the answer unless "y" is typed. One
+# whose only changes are untracked files is offered for deletion with them
+# (then remove_untracked, of close_workspace, is --untracked); one with a
+# changed tracked file is always kept. The branch is never deleted.
 ask_to_remove_worktree() {
   local root="$1" branch changes answer
   "$HOME/.tmuxinator/worktree.sh" linked "$root" || return 1
@@ -1050,10 +1052,20 @@ ask_to_remove_worktree() {
     # of a small popup.
     printf '%s\n' "$changes" | head -n 10
     [ "$(grep -c . <<<"$changes")" -le 10 ] || printf '… and %s more\n' "$(($(grep -c . <<<"$changes") - 10))"
-    printf '\nKeeping the worktree %s and its branch: it has uncommitted changes (above).\n' "$root"
-    printf 'Press Enter to close the workspace…'
-    read -r
-    return 1
+    if grep -qv '^?? ' <<<"$changes"; then
+      printf '\nKeeping the worktree %s and its branch: it has uncommitted changes (above).\n' "$root"
+      printf 'Press Enter to close the workspace…'
+      read -r
+      return 1
+    fi
+    printf '\nThe worktree %s has only untracked files (above).\n' "$root"
+    printf 'Delete the worktree %s with these untracked files? The branch %s is kept. [y/N] ' \
+      "$root" "${branch:-(detached)}"
+    read -r answer
+    case "$answer" in
+      y|Y|yes|Yes) remove_untracked=--untracked; return 0 ;;
+      *) return 1 ;;
+    esac
   fi
   printf 'The workspace is on the worktree %s.\n' "$root"
   printf 'Remove that folder too? The branch %s is kept. [y/N] ' "${branch:-(detached)}"
@@ -1097,6 +1109,8 @@ detach_client() {
 
 close_workspace() {
   local current selected target quoted_target root quoted_root remove_worktree="" move_apps="" move_clients
+  # Set by ask_to_remove_worktree when the untracked files go too.
+  local remove_untracked=""
   current="$(tmux display-message -p '#S' 2>/dev/null)"
   selected="$(
     dev_sessions |
@@ -1113,7 +1127,7 @@ close_workspace() {
   root="$(tmux show-options -t "=$target:" -v @devws_root 2>/dev/null)"
   if [ -d "$root" ] && ask_to_remove_worktree "$root"; then
     printf -v quoted_root '%q' "$root"
-    remove_worktree="'$HOME/.tmuxinator/worktree.sh' remove $quoted_root 2>/dev/null || tmux display-message 'Kept the worktree '$quoted_root': git would not remove it';"
+    remove_worktree="'$HOME/.tmuxinator/worktree.sh' remove $quoted_root $remove_untracked 2>/dev/null || tmux display-message 'Kept the worktree '$quoted_root': git would not remove it';"
   fi
   # Apps running from the folder move (or stop) first, as a job that then
   # removes the folder itself: it cannot go while they run from it.

@@ -569,21 +569,49 @@ test_closing_a_worktree_workspace_asks_before_removing_it() {
   git -C "$REPO" show-ref --verify --quiet refs/heads/gone || fail "removing the worktree deleted its branch"
 }
 
+# A changed tracked file may be work: the worktree is kept, not even asked.
 test_a_worktree_with_changes_is_kept_without_asking() {
   local output folder
   make_repo_with_worktree dirty
   folder="$TEST_ROOT/projects/app-dirty"
+  printf 'changed\n' >> "$folder/file.txt"
   printf 'draft\n' > "$folder/notes.txt"
   workspace_on dev-dirty "$folder"
   printf '  dev-dirty\n' > "$TEST_ROOT/fzf.answers"
   # A "y" typed anyway must not remove it.
   output="$(printf 'y\n' | menu --run close 2>&1)"
   grep -q "Keeping the worktree .*uncommitted changes" <<< "$output" || fail "the kept worktree was not explained: $output"
-  grep -q '?? notes.txt' <<< "$output" || fail "the changes were not listed: $output"
-  ! grep -q "Remove that folder" <<< "$output" || fail "a worktree with changes was offered for removal"
+  grep -q ' M file.txt' <<< "$output" || fail "the changes were not listed: $output"
+  ! grep -q "Remove that folder\|Delete the worktree" <<< "$output" || fail "a worktree with changes was offered for removal"
   wait_until closed dev-dirty || fail "the workspace was not closed"
   sleep 0.3
-  [ -f "$folder/notes.txt" ] || fail "the worktree with changes was removed"
+  grep -q changed "$folder/file.txt" || fail "the worktree with changes was removed"
+}
+
+# Only untracked files: listed, and deleted with the worktree on "y"; kept on
+# Enter.
+test_a_worktree_with_only_untracked_files_is_deleted_when_asked() {
+  local output folder
+  make_repo_with_worktree scratch
+  folder="$TEST_ROOT/projects/app-scratch"
+  printf 'draft\n' > "$folder/notes.txt"
+  workspace_on dev-scratch "$folder"
+  printf '  dev-scratch\n' > "$TEST_ROOT/fzf.answers"
+  output="$(printf '\n' | menu --run close 2>&1)"
+  grep -q '?? notes.txt' <<< "$output" || fail "the untracked files were not listed: $output"
+  grep -q "Delete the worktree .* with these untracked files? The branch scratch is kept. \[y/N\]" <<< "$output" ||
+    fail "deleting with untracked files was not offered: $output"
+  wait_until closed dev-scratch || fail "the workspace was not closed"
+  sleep 0.3
+  [ -f "$folder/notes.txt" ] || fail "Enter deleted the untracked files"
+
+  workspace_on dev-scratch "$folder"
+  printf '  dev-scratch\n' > "$TEST_ROOT/fzf.answers"
+  printf 'y\n' | menu --run close >/dev/null 2>&1
+  wait_until closed dev-scratch || fail "the workspace was not closed"
+  removed() { [ ! -e "$folder" ]; }
+  wait_until removed || fail "y did not delete the worktree with its untracked files"
+  git -C "$REPO" show-ref --verify --quiet refs/heads/scratch || fail "deleting the worktree deleted its branch"
 }
 
 test_closing_the_main_folder_never_asks() {
@@ -867,6 +895,7 @@ test_the_menu_marks_itself_open
 test_register_and_remove_agents
 test_closing_a_worktree_workspace_asks_before_removing_it
 test_a_worktree_with_changes_is_kept_without_asking
+test_a_worktree_with_only_untracked_files_is_deleted_when_asked
 test_closing_the_main_folder_never_asks
 test_closing_your_workspace_moves_you_to_another
 test_a_worktree_workspace_on_a_new_branch

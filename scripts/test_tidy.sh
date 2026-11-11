@@ -64,6 +64,11 @@ printf 'merged\n' > "$TEST_ROOT/gh/pr-feat-changed"
 printf 'merged\n' > "$TEST_ROOT/gh/pr-feat-opened"
 printf 'open\n' > "$TEST_ROOT/gh/pr-feat-open"
 printf 'draft\n' > "$DEVWS_HOME/acme/app/app-feat-changed/notes.txt"
+# A shared file (.shared, shared_files.sh) linked in is devws's, not a
+# change: the merged folder still goes.
+mkdir -p "$DEVWS_HOME/acme/app/.shared"
+printf '#!/bin/sh\n' > "$DEVWS_HOME/acme/app/.shared/sync-deploy.sh"
+"$ROOT/config/tmuxinator/shared_files.sh" link "$DEVWS_HOME/acme/app" "$DEVWS_HOME/acme/app/app-feat-merged" >/dev/null
 printf '%s\n' "$DEVWS_HOME/acme/app/app-feat-opened" > "$TEST_ROOT/open.roots"
 
 test_candidates_are_merged_or_closed_clean_and_not_open() {

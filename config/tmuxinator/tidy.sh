@@ -27,7 +27,7 @@ candidates() {
     while IFS=$'\t' read -r branch folder; do
       [ -n "$folder" ] || continue
       grep -qxF "$folder" <<<"$open" && continue
-      [ -z "$(git --no-optional-locks -C "$folder" status --porcelain 2>/dev/null)" ] || continue
+      [ "$("$script_dir/worktree.sh" status "$folder" 2>/dev/null)" = clean ] || continue
       state="$("$script_dir/github_repo.sh" pr-query "$folder" 2>/dev/null)" || continue
       case "$state" in
         merged | closed)
