@@ -63,6 +63,11 @@ devws() {
     return
   fi
 
+  if [[ "${1:-}" == "network" ]]; then
+    "$HOME/.tmuxinator/network.sh" "${@:2}"
+    return
+  fi
+
   if [[ "${1:-}" == "worktree" && "${2:-}" == "ensure" ]]; then
     devws-worktree-ensure "${@:3}"
     return

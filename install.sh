@@ -151,7 +151,7 @@ ensure_ai_memory() {
 }
 
 # jungleforge (github.com/IvaStival/jungleForge) runs a branch's apps in
-# Docker from the App tab. Offered like ai-memory: yes clones it and writes
+# Docker from the JungleForge tab. Offered like ai-memory: yes clones it and writes
 # its .env (jungleforge.sh setup); a "no" is kept, and --jungleforge offers it
 # again. Already there, only a stopped or missing Docker is reported.
 ensure_jungleforge() {
@@ -160,7 +160,7 @@ ensure_jungleforge() {
 
   if "$jungleforge" available; then
     command -v docker >/dev/null 2>&1 ||
-      warn "Docker is missing, so the App tab cannot run branches; install Docker Desktop"
+      warn "Install Docker Desktop to run branches from the JungleForge tab"
     return
   fi
   [[ "$WITH_JUNGLEFORGE" == 1 ]] && rm -f "$declined"
@@ -179,7 +179,7 @@ ensure_jungleforge() {
       return
       ;;
   esac
-  "$jungleforge" setup || warn "jungleforge was not set up; devws menu › App › Set up jungleforge tries again"
+  "$jungleforge" setup || warn "JungleForge setup failed. Choose JungleForge › Set up JungleForge in the devws menu to retry."
 }
 
 # devws's Rust programs (devagentics for agent teams, devws-ui for the menu

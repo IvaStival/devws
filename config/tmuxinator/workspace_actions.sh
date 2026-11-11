@@ -895,6 +895,21 @@ show_job_log() {
   "$HOME/.tmuxinator/job.sh" open || pause
 }
 
+list_network_devices() {
+  local devws="${DEVWS_BIN:-$HOME/.local/bin/devws}" output status
+  output="$(mktemp "${TMPDIR:-/tmp}/devws-network.XXXXXX")" || return
+  # Let sudo own the terminal while discovery runs, then page the results.
+  "$devws" network devices | tee "$output"
+  status="${PIPESTATUS[0]}"
+  if [ "$status" -eq 0 ] && [ -t 1 ] && command -v less >/dev/null 2>&1; then
+    less -+F "$output"
+  else
+    pause || true
+  fi
+  rm -f "$output"
+  return "$status"
+}
+
 # open_guide <page>: the guide's page in a popup large enough to read it.
 # Opened from the tmux server once the menu's popup has closed: a client
 # shows one popup at a time.
@@ -1142,5 +1157,5 @@ close_workspace() {
   # Run through the tmux server so closing the workspace containing this
   # sidebar does not terminate the refresh command along with the pane.
   tmux run-shell -b \
-    "$move_clients tmux kill-session -t $quoted_target; $move_apps $remove_worktree '$HOME/.tmuxinator/save_state.sh'; '$HOME/.tmuxinator/refresh_devws_pickers.sh'"
+    "$move_clients '$HOME/.tmuxinator/save_state.sh' --closing $quoted_target; tmux kill-session -t $quoted_target; $move_apps $remove_worktree '$HOME/.tmuxinator/save_state.sh'; '$HOME/.tmuxinator/refresh_devws_pickers.sh'"
 }

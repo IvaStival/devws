@@ -9,7 +9,7 @@ is only needed to look a key up.
 | Keys | Action |
 | ---- | ------ |
 | `C-b Space` | Open the devws menu (every action, in tabs) |
-| `C-b e` | Run this branch in jungleforge ([App](app.md)) |
+| `C-b e` | Run this branch in JungleForge ([JungleForge](app.md)) |
 | `C-b E` | Switch the running branch |
 | `C-b j` | Open the latest background job's log, a failure first |
 | `C-b g` | Commit, by the workspace's agent ([Git](git.md)) |

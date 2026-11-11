@@ -156,7 +156,7 @@ menu's **Help** tab and with `devws help [page]`:
 - [Agent teams](docs/guide/agentic.md): a leader that opens and drives other
   agents (`devagentics`, in `agentic/`)
 - [Git](docs/guide/git.md): commit, push and pull requests
-- [App](docs/guide/app.md): running branches in jungleforge, the database
+- [JungleForge, jobs and database](docs/guide/app.md): running branches in JungleForge, the database
   pane, background jobs
 - [Shortcuts](docs/guide/shortcuts.md) · [Commands](docs/guide/commands.md) ·
   [Configuration](docs/guide/configuration.md)
