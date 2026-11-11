@@ -15,6 +15,10 @@ const TITLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 const DIM: Style = Style::new().fg(Color::DarkGray);
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 const HEADING: Style = Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD);
+/// Every Overview card is drawn in one color, so the sections read as one
+/// board rather than competing for attention.
+const CARD: Style = Style::new().fg(Color::Green);
+const CARD_TITLE: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum View {
@@ -67,8 +71,22 @@ pub struct Entry {
     pub kind: Kind,
     /// What the row ends with, at the right edge: its state (`✓ done`).
     pub tail: String,
-    /// Columns after the tail in a wide pane: an agent's cost and tokens.
-    pub figures: String,
+    /// How the label is colored: consecutive runs of its characters, each in
+    /// a tone. Empty means the whole label in the row's style.
+    pub parts: Vec<(usize, Tone)>,
+}
+
+/// The color of a run of a row's label, laid over the row's own style so a
+/// selected row keeps its background.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Tone {
+    Plain,
+    /// A name: the agent, the leader.
+    Strong,
+    /// What qualifies the name: a number, an id, a program.
+    Muted,
+    /// A state mark (`✓`, `⠋`, `⚠`), in the color of what it says.
+    Mark,
 }
 
 impl Entry {
@@ -81,7 +99,7 @@ impl Entry {
             attention,
             kind: Kind::Row,
             tail: String::new(),
-            figures: String::new(),
+            parts: Vec::new(),
         }
     }
 
@@ -94,8 +112,18 @@ impl Entry {
             attention: false,
             kind,
             tail: String::new(),
-            figures: String::new(),
+            parts: Vec::new(),
         }
+    }
+
+    /// Sets the label from runs of text, each in its tone.
+    fn toned(mut self, runs: Vec<(String, Tone)>) -> Self {
+        self.label = runs.iter().map(|(text, _)| text.as_str()).collect();
+        self.parts = runs
+            .iter()
+            .map(|(text, tone)| (text.chars().count(), *tone))
+            .collect();
+        self
     }
 
     /// A section's title, `NAME · count`; its id keeps the name alone, so it
@@ -245,7 +273,6 @@ fn step_mark(status: StepStatus) -> char {
 
 fn step_entry(board: &Board, step: &StepRow) -> Entry {
     let id = format!("step:{}", step.id);
-    let label = format!("{} {}  {}", step_mark(step.status), step.id, step.title);
     let detail = board.details.get(&id).cloned().unwrap_or_else(|| {
         format!(
             "{} {}: {}\nAttempts: {}",
@@ -257,11 +284,26 @@ fn step_entry(board: &Board, step: &StepRow) -> Entry {
     });
     Entry::text(
         id,
-        label,
+        String::new(),
         detail,
         step.status != StepStatus::Ordered && step.status != StepStatus::Accepted,
     )
+    .toned(vec![
+        (format!("{} ", step_mark(step.status)), Tone::Mark),
+        (format!("{}  ", step.id), Tone::Muted),
+        (step.title.clone(), Tone::Plain),
+    ])
     .with_tail(step_word(step.status))
+}
+
+/// A team row: `1  executor-1       claude`, the name standing out from its
+/// number and program.
+fn member_label(mark: &str, name: &str, program: &str) -> Vec<(String, Tone)> {
+    vec![
+        (format!("{mark}  "), Tone::Muted),
+        (format!("{name:<16} "), Tone::Strong),
+        (program.to_string(), Tone::Muted),
+    ]
 }
 
 /// An agent's row, with its full details for Enter and its pane for `o`/`v`.
@@ -288,7 +330,7 @@ fn agent_entry(board: &Board, role: &RoleRow, agent: &AgentRow, label: String) -
         attention: matches!(agent.state, PaneState::Waiting | PaneState::Gone),
         kind: Kind::Row,
         tail: String::new(),
-        figures: String::new(),
+        parts: Vec::new(),
     }
 }
 
@@ -306,33 +348,58 @@ fn state_mark(state: PaneState) -> &'static str {
 /// `×3` for a step that took three attempts; nothing for one.
 fn attempts(step: &StepRow) -> String {
     if step.attempts > 1 {
-        format!("  ×{}", step.attempts)
+        format!("×{}", step.attempts)
     } else {
         String::new()
     }
 }
 
-/// `$11 · 1.4M tok`: what some agents used in all (input and output tokens;
-/// the cache, far larger, is in the header). Nothing when none is known.
-fn total_used(used: &[Usage]) -> String {
-    if used.is_empty() {
-        return String::new();
+/// The USAGE card: a row per agent with its tokens in and out and its cost,
+/// then the team's total. The cache, far larger and rarely acted on, stays in
+/// each row's details and in the Usage view.
+fn usage_card(board: &Board, entries: &mut Vec<Entry>) {
+    if board.usage.is_empty() {
+        return;
     }
-    let sum = used
+    let name_width = board
+        .usage
         .iter()
-        .fold(Usage::default(), |sum, usage| sum.plus(*usage));
-    format!("{} · {} tok", dollars(&sum), human(sum.input + sum.output))
-}
-
-/// An agent's cost and tokens, right-aligned for the row's columns.
-fn figures(usage: Option<Usage>) -> String {
-    usage.map_or_else(String::new, |usage| {
-        format!(
-            "{:>7} {:>6}",
-            dollars(&usage),
-            human(usage.input + usage.output)
-        )
-    })
+        .map(|(name, _)| name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max("team".len())
+        + 2;
+    let row = |id: String, name: &str, usage: &Usage, tone: Tone| {
+        let detail = format!(
+            "{name}\nInput: {}\nOutput: {}\nCache: {}\nCost: {} at API prices",
+            human(usage.input),
+            human(usage.output),
+            human(usage.cache),
+            dollars(usage)
+        );
+        Entry::text(id, String::new(), detail, false)
+            .toned(vec![
+                (format!("{name:<name_width$}"), tone),
+                (
+                    format!(
+                        "{:>6} in  {:>6} out",
+                        human(usage.input),
+                        human(usage.output)
+                    ),
+                    tone,
+                ),
+            ])
+            .with_tail(dollars(usage))
+    };
+    entries.push(Entry::gap("usage"));
+    entries.push(Entry::section("USAGE", None).with_tail("cost at API prices"));
+    for (name, usage) in &board.usage {
+        entries.push(row(format!("usage:{name}"), name, usage, Tone::Plain));
+    }
+    if board.usage.len() > 1 {
+        let total = crate::board_usage::total(&board.usage);
+        entries.push(row("usage:team".into(), "team", &total, Tone::Strong));
+    }
 }
 
 /// An agent's second line: its current step, the steps it got accepted and
@@ -372,12 +439,18 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
     }
     for question in &board.questions {
         let id = question.split_whitespace().next().unwrap_or(question);
-        needs_you.push(Entry::text(
-            format!("question:{id}"),
-            format!("? {question}"),
-            question.clone(),
-            true,
-        ));
+        needs_you.push(
+            Entry::text(
+                format!("question:{id}"),
+                String::new(),
+                question.clone(),
+                true,
+            )
+            .toned(vec![
+                ("? ".into(), Tone::Mark),
+                (question.clone(), Tone::Plain),
+            ]),
+        );
     }
     for step in &board.review {
         needs_you.push(step_entry(board, step));
@@ -401,7 +474,7 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
     }
 
     // The CTO (the leader, and any agent of its group), then the seniors and
-    // the floor: each a section with what its agents used in all.
+    // the floor, each a card of its own. What they cost is in the USAGE card.
     for group in [Group::Cto, Group::Senior, Group::Floor] {
         let members: Vec<_> = agents
             .clone()
@@ -410,26 +483,19 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
         if group != Group::Cto && members.is_empty() {
             continue;
         }
-        let mut used: Vec<Usage> = members
-            .iter()
-            .filter_map(|(_, agent)| agent.usage)
-            .collect();
-        if group == Group::Cto {
-            used.extend(board.leader_usage);
-        }
         entries.push(Entry::gap(group.name()));
         let name = group.workspace().to_uppercase();
         let count = (group != Group::Cto).then_some(members.len());
-        entries.push(Entry::section(&name, count).with_tail(total_used(&used)));
+        entries.push(Entry::section(&name, count));
         if group == Group::Cto {
             let mut leader = Entry::text(
                 "leader".into(),
-                format!("L  {:<16} {}", "leader", board.leader),
+                String::new(),
                 format!("The leader: {}\nYou talk to it in its pane.", board.leader),
                 false,
-            );
+            )
+            .toned(member_label("L", "leader", &board.leader));
             leader.pane = board.leader_pane.clone();
-            leader.figures = figures(board.leader_usage);
             entries.push(leader.with_tail(board.leader_state.map_or("", state_mark)));
         }
         for (role, agent) in members {
@@ -440,13 +506,8 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
                 Some(lane) => format!("{} · {lane}", role.program),
                 None => role.program.clone(),
             };
-            let mut row = agent_entry(
-                board,
-                role,
-                agent,
-                format!("{number}  {:<16} {program}", agent.id),
-            );
-            row.figures = figures(agent.usage);
+            let row = agent_entry(board, role, agent, String::new())
+                .toned(member_label(&number, &agent.id, &program));
             entries.push(row.with_tail(state_mark(agent.state)));
             if let Some(note) = agent_note(agent) {
                 entries.push(note);
@@ -454,36 +515,38 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
         }
     }
     if !board.queue.is_empty() {
-        let count = board.queue.len();
-        entries.push(Entry::text(
-            "queue".into(),
-            format!(
-                "⋯ {count} order{} queued",
-                if count == 1 { "" } else { "s" }
-            ),
-            board
-                .queue
-                .iter()
-                .map(|order| order.label.as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
-            false,
-        ));
+        entries.push(Entry::gap("queue"));
+        entries.push(Entry::section("QUEUE", Some(board.queue.len())));
+        for order in &board.queue {
+            entries.push(
+                Entry::text(
+                    format!("queue:{}", order.id),
+                    String::new(),
+                    order.label.clone(),
+                    false,
+                )
+                .toned(vec![
+                    ("⋯ ".into(), Tone::Muted),
+                    (order.label.clone(), Tone::Plain),
+                ]),
+            );
+        }
     }
+    usage_card(board, &mut entries);
     if !board.done.is_empty() {
         entries.push(Entry::gap("done"));
-        entries.push(
-            Entry::section("DONE", Some(board.done.len())).with_tail("newest first · ×n retries"),
-        );
+        entries.push(Entry::section(DONE, Some(board.done.len())).with_tail("newest first"));
         for step in &board.done {
-            // Done rows need no "accepted" at the edge: the section says it.
-            let mut entry = step_entry(board, step).with_tail("");
-            entry.label.push_str(&attempts(step));
-            entries.push(entry);
+            // Done rows need no "accepted" at the edge: the card says it. They
+            // end with their retries instead.
+            entries.push(step_entry(board, step).with_tail(attempts(step)));
         }
     }
     entries
 }
+
+/// The one Overview card that scrolls: it takes the room the others leave.
+const DONE: &str = "DONE";
 
 pub fn entries(
     board: &Board,
@@ -670,60 +733,308 @@ fn text_line(text: impl Into<String>, style: Style, y: u16, width: u16, buffer: 
     Line::styled(text.into(), style).render(Rect::new(0, y, width, 1), buffer);
 }
 
-/// A row: its label, cut with `…` where it would reach what is at the right
-/// edge: the tail (a state, in its color unless `tail_style` says otherwise)
-/// and, when the pane is wide enough, the figures after it in columns.
-#[allow(clippy::too_many_arguments)]
+/// The color a state mark says: at work, waiting on you, done, broken.
+fn mark_color(mark: Option<char>) -> Option<Color> {
+    match mark? {
+        '⠋' => Some(Color::Cyan),
+        '●' | '?' | '×' => Some(Color::Yellow),
+        '✓' => Some(Color::Green),
+        '✕' | '⚠' => Some(Color::Red),
+        'L' => Some(Color::Magenta),
+        _ => None,
+    }
+}
+
+fn tone_style(tone: Tone, text: &str) -> Style {
+    match tone {
+        Tone::Plain => Style::new(),
+        Tone::Strong => BOLD,
+        Tone::Muted => DIM,
+        Tone::Mark => {
+            mark_color(text.chars().next()).map_or(Style::new(), |color| Style::new().fg(color))
+        }
+    }
+}
+
+/// `text` split into the runs `parts` names, each in its tone over `style`;
+/// what is past the runs keeps `style`.
+fn toned_spans(text: &str, parts: &[(usize, Tone)], style: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut rest = text.chars();
+    for &(length, tone) in parts {
+        let run: String = rest.by_ref().take(length).collect();
+        if run.is_empty() {
+            break;
+        }
+        let toned = style.patch(tone_style(tone, &run));
+        spans.push(Span::styled(run, toned));
+    }
+    let left: String = rest.collect();
+    if !left.is_empty() {
+        spans.push(Span::styled(left, style));
+    }
+    spans
+}
+
+/// A row: `prefix` and its label, the label in its tones and cut with `…`
+/// where it would reach the tail at the right edge (a state, in its mark's
+/// color unless `tail_style` says otherwise).
 fn row_line(
-    label: &str,
-    tail: &str,
-    figures: &str,
+    prefix: &str,
+    entry: &Entry,
     style: Style,
     tail_style: Option<Style>,
-    y: u16,
-    width: u16,
+    area: Rect,
     buffer: &mut Buffer,
 ) {
-    let width = width as usize;
-    let mut right = vec![];
-    if !tail.is_empty() {
-        let tail_style = tail_style.unwrap_or(match tail.chars().next() {
-            Some('⠋') => style.fg(Color::Cyan),
-            Some('●') => style.fg(Color::Yellow),
-            Some('✓') => style.fg(Color::Green),
-            Some('✕') => style.fg(Color::Red),
-            _ => style.add_modifier(Modifier::DIM),
-        });
-        right.push(Span::styled(tail.to_string(), tail_style));
-    }
-    // Wide panes add the figures, the tail padded so the columns line up.
-    if width >= WIDE && !figures.is_empty() {
-        let pad = STATE_WIDTH.saturating_sub(Line::raw(tail).width());
-        right.push(Span::styled(format!("{}{figures}", " ".repeat(pad)), style));
-    }
-    let right_width: usize = right.iter().map(Span::width).sum();
+    let width = area.width as usize;
+    let tail = entry.tail.as_str();
+    let right_width = Line::raw(tail).width();
     let room = if right_width == 0 {
         width
     } else {
         width.saturating_sub(right_width + 1)
     };
+    let label = format!("{prefix}{}", entry.label);
     let mut text: String = label.chars().take(room).collect();
     if text.chars().count() < label.chars().count() && room > 0 {
         text = text.chars().take(room - 1).collect::<String>() + "…";
     }
+    let mut parts = vec![(prefix.chars().count(), Tone::Plain)];
+    parts.extend_from_slice(&entry.parts);
     let padding = width.saturating_sub(Line::raw(text.as_str()).width() + right_width);
+    let mut spans = toned_spans(&text, &parts, style);
+    spans.push(Span::styled(" ".repeat(padding), style));
+    if !tail.is_empty() {
+        let tail_style = tail_style.unwrap_or_else(|| {
+            mark_color(tail.chars().next())
+                .map_or(style.add_modifier(Modifier::DIM), |color| style.fg(color))
+        });
+        spans.push(Span::styled(tail.to_string(), tail_style));
+    }
+    Line::from(spans).render(area, buffer);
+}
+
+/// A selectable row, or the dim line under one, as the list and the cards
+/// both draw them.
+fn entry_line(entry: &Entry, selected: bool, area: Rect, buffer: &mut Buffer) {
+    if entry.kind == Kind::Note {
+        row_line("     ", entry, DIM, Some(DIM), area, buffer);
+        return;
+    }
+    let style = if selected {
+        Style::new()
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD)
+    } else if entry.attention {
+        Style::new().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+    let prefix = if selected { "▸ " } else { "  " };
+    row_line(prefix, entry, style, None, area, buffer);
+}
+
+/// A card of the Overview: a section's heading and the rows under it, until
+/// the next heading.
+struct Card<'a> {
+    heading: &'a Entry,
+    rows: Vec<usize>,
+}
+
+impl Card<'_> {
+    fn scrolls(&self) -> bool {
+        self.heading.id == format!("heading:{DONE}")
+    }
+}
+
+/// The Overview's cards; none for a list that is not made of sections (the
+/// other views), or has a row before its first heading.
+fn cards(entries: &[Entry]) -> Option<Vec<Card<'_>>> {
+    let mut cards: Vec<Card> = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        match entry.kind {
+            Kind::Gap => {}
+            Kind::Heading => cards.push(Card {
+                heading: entry,
+                rows: Vec::new(),
+            }),
+            Kind::Row | Kind::Note => cards.last_mut()?.rows.push(index),
+        }
+    }
+    (!cards.is_empty()).then_some(cards)
+}
+
+/// The fewest rows the scrolling card shows before the board falls back to
+/// a plain list: fewer would hide more than they show.
+const MIN_SCROLL_ROWS: usize = 3;
+
+/// How many rows each card shows inside its frame in `body` rows: every card
+/// all of its rows, but the scrolling one, which takes what is left. None
+/// when they do not fit.
+fn card_heights(cards: &[Card], body: usize) -> Option<Vec<usize>> {
+    let fixed: usize = cards
+        .iter()
+        .filter(|card| !card.scrolls())
+        .map(|card| card.rows.len() + 2)
+        .sum();
+    let mut room = body.checked_sub(fixed)?;
+    let mut heights = Vec::new();
+    for card in cards {
+        if !card.scrolls() {
+            heights.push(card.rows.len());
+            continue;
+        }
+        let inside = room.saturating_sub(2).min(card.rows.len());
+        if inside < card.rows.len().min(MIN_SCROLL_ROWS) {
+            return None;
+        }
+        room -= inside + 2;
+        heights.push(inside);
+    }
+    Some(heights)
+}
+
+/// How many rows the list takes to show every row: the Overview's cards with
+/// their frames, else one a row.
+pub fn list_rows(entries: &[Entry]) -> usize {
+    cards(entries).map_or(entries.len(), |cards| {
+        cards.iter().map(|card| card.rows.len() + 2).sum()
+    })
+}
+
+/// A card's top edge: `╭─ TITLE · 3 ─────── tail ─╮`, the tail left out when
+/// the pane is too narrow for it.
+fn card_top(heading: &Entry, y: u16, width: u16, buffer: &mut Buffer) {
+    let width = width as usize;
+    let title: String = format!(" {} ", heading.label)
+        .chars()
+        .take(width.saturating_sub(4))
+        .collect();
+    let title_width = title.chars().count();
+    let tail = format!(" {} ", heading.tail);
+    let tail_width = tail.chars().count();
+    let show_tail = !heading.tail.is_empty() && title_width + tail_width + 5 <= width;
+    let fill = width.saturating_sub(4 + title_width + if show_tail { tail_width } else { 0 });
     let mut spans = vec![
-        Span::styled(text, style),
-        Span::styled(" ".repeat(padding), style),
+        Span::styled("╭─", CARD),
+        Span::styled(title, CARD_TITLE),
+        Span::styled("─".repeat(fill), CARD),
     ];
-    spans.extend(right);
+    if show_tail {
+        spans.push(Span::styled(tail, DIM));
+    }
+    spans.push(Span::styled("─╮", CARD));
     Line::from(spans).render(Rect::new(0, y, width as u16, 1), buffer);
 }
 
-/// Panes this wide show an agent's cost and tokens beside its state.
-const WIDE: usize = 60;
-/// The widest state (`● needs you`) and a space, so the figures line up.
-const STATE_WIDTH: usize = 12;
+/// A card's bottom edge, with `1–20 of 99` when it shows only some rows.
+fn card_bottom(position: Option<String>, y: u16, width: u16, buffer: &mut Buffer) {
+    let width = width as usize;
+    let position = position
+        .map(|text| format!(" {text} "))
+        .filter(|text| text.chars().count() + 6 <= width)
+        .unwrap_or_default();
+    let fill = width.saturating_sub(3 + position.chars().count());
+    Line::from(vec![
+        Span::styled(format!("╰{}", "─".repeat(fill)), CARD),
+        Span::styled(position, DIM),
+        Span::styled("─╯", CARD),
+    ])
+    .render(Rect::new(0, y, width as u16, 1), buffer);
+}
+
+/// Where the thumb of a scrollbar sits, and how long it is, for a card that
+/// shows `height` of its `total` rows from `top`.
+fn thumb(height: usize, total: usize, top: usize) -> (usize, usize) {
+    let length = (height * height)
+        .checked_div(total)
+        .unwrap_or(height)
+        .clamp(1, height.max(1));
+    let travel = height.saturating_sub(length);
+    let start = (top * travel)
+        .checked_div(total.saturating_sub(height))
+        .unwrap_or(0)
+        .min(travel);
+    (start, length)
+}
+
+/// One card at `y`, `inside` rows tall; the scrolling one keeps the selection
+/// in view and has a scrollbar when it shows only some of its rows. Returns
+/// the row below it.
+fn draw_card(
+    card: &Card,
+    entries: &[Entry],
+    nav: &Navigation,
+    inside: usize,
+    y: u16,
+    width: u16,
+    buffer: &mut Buffer,
+) -> u16 {
+    card_top(card.heading, y, width, buffer);
+    let total = card.rows.len();
+    let overflows = inside < total;
+    let place = card
+        .rows
+        .iter()
+        .position(|&row| row == nav.index && nav.selected.is_some());
+    let top = place.map_or(0, |place| place.saturating_sub(inside.saturating_sub(1)));
+    // A scrollbar takes the column before the right edge, a space apart from
+    // the rows' tails.
+    let content = width.saturating_sub(if overflows { 6 } else { 4 });
+    let (thumb_start, thumb_length) = thumb(inside, total, top);
+    for offset in 0..inside {
+        let row_y = y + 1 + offset as u16;
+        let index = card.rows[top + offset];
+        Span::styled("│ ", CARD).render(Rect::new(0, row_y, 2, 1), buffer);
+        entry_line(
+            &entries[index],
+            index == nav.index && nav.selected.is_some(),
+            Rect::new(2, row_y, content, 1),
+            buffer,
+        );
+        if overflows {
+            let on_thumb = (thumb_start..thumb_start + thumb_length).contains(&offset);
+            let (symbol, style) = if on_thumb {
+                ("█", CARD)
+            } else {
+                ("│", DIM)
+            };
+            Span::styled(symbol, style).render(Rect::new(width - 3, row_y, 1, 1), buffer);
+        }
+        Span::styled(" │", CARD).render(Rect::new(width - 2, row_y, 2, 1), buffer);
+    }
+    let bottom = y + 1 + inside as u16;
+    let position = overflows.then(|| format!("{}–{} of {total}", top + 1, top + inside));
+    card_bottom(position, bottom, width, buffer);
+    bottom + 1
+}
+
+/// The Overview as cards in `body` rows from `y`; false when they do not fit
+/// and the board falls back to a plain list.
+fn draw_cards(
+    entries: &[Entry],
+    nav: &Navigation,
+    y: u16,
+    body: u16,
+    width: u16,
+    buffer: &mut Buffer,
+) -> bool {
+    if width < FRAME_WIDTH {
+        return false;
+    }
+    let Some(cards) = cards(entries) else {
+        return false;
+    };
+    let Some(heights) = card_heights(&cards, body as usize) else {
+        return false;
+    };
+    let mut y = y;
+    for (card, inside) in cards.iter().zip(heights) {
+        y = draw_card(card, entries, nav, inside, y, width, buffer);
+    }
+    true
+}
 
 /// Cells of a limit bar, as in the devws header.
 const LIMIT_CELLS: usize = 10;
@@ -843,21 +1154,6 @@ fn header(
         ),
         Span::raw(summary),
     ]));
-
-    if !board.usage.is_empty() {
-        let used = crate::board_usage::total(&board.usage);
-        rows.push(Line::from(vec![
-            Span::styled(" COST  ", DIM),
-            Span::styled(dollars(&used), BOLD),
-            Span::styled("      TOKENS  ", DIM),
-            Span::raw(format!(
-                "{} in · {} out · {} cache",
-                human(used.input),
-                human(used.output),
-                human(used.cache)
-            )),
-        ]));
-    }
 
     let name_width = board
         .accounts
@@ -1011,46 +1307,20 @@ pub fn screen(
         if body > 0 {
             text_line("Nothing here yet.", DIM, header_rows, width, &mut buffer);
         }
-    } else {
+    } else if !draw_cards(entries, nav, header_rows, body, width, &mut buffer) {
         let top = nav.index.saturating_sub(body.saturating_sub(1) as usize);
         for (offset, entry) in entries.iter().skip(top).take(body as usize).enumerate() {
-            let y = header_rows + offset as u16;
+            let area = Rect::new(0, header_rows + offset as u16, width, 1);
             match entry.kind {
                 Kind::Heading => {
-                    let label = format!(" ▌{}", entry.label);
-                    let tail = &entry.tail;
-                    row_line(&label, tail, "", HEADING, Some(DIM), y, width, &mut buffer);
-                    continue;
+                    row_line(" ▌", entry, HEADING, Some(DIM), area, &mut buffer);
                 }
-                Kind::Note => {
-                    let label = format!("     {}", entry.label);
-                    let tail = &entry.tail;
-                    row_line(&label, tail, "", DIM, Some(DIM), y, width, &mut buffer);
-                    continue;
+                Kind::Gap => {}
+                Kind::Row | Kind::Note => {
+                    let selected = top + offset == nav.index && nav.selected.is_some();
+                    entry_line(entry, selected, area, &mut buffer);
                 }
-                Kind::Gap => continue,
-                Kind::Row => {}
             }
-            let selected = top + offset == nav.index && nav.selected.is_some();
-            let style = if selected {
-                Style::new()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD)
-            } else if entry.attention {
-                Style::new().fg(Color::Yellow)
-            } else {
-                Style::default()
-            };
-            row_line(
-                &format!("{} {}", if selected { "▸" } else { " " }, entry.label),
-                &entry.tail,
-                &entry.figures,
-                style,
-                None,
-                y,
-                width,
-                &mut buffer,
-            );
         }
     }
     let hints: &[&str] = if nav.detail {

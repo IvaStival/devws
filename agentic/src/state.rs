@@ -30,6 +30,9 @@ pub struct State {
     /// A move of the leader to its other program that was asked for, with
     /// why: the board makes it once the leader's turn is over (leader.rs).
     pub leader_switch: Option<String>,
+    /// The devws agent the user picked to lead when the team was opened; the
+    /// leader's role then runs on it (leader.rs `led_by`). None: the role's.
+    pub leader_pick: Option<String>,
 }
 
 /// A senior's plan for the floor, kept as `plans/<step>.md`. The CTO approves

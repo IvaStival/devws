@@ -12,7 +12,7 @@ folder.
 | ------- | ------------ |
 | `devws` | The start screen: reopen a recent folder, start a new branch from GitHub, or clone another repo ([Workspaces](workspaces.md)) |
 | `devws <folder> [agent] [editor]` | A workspace on a folder (`devws .` for this one). Without an agent or editor, asks |
-| `devws agentic [--editor] [<repo or folder> [<branch>]]` | A workspace for an agent team: the leader, a log and room for the agents it opens ([Agent teams](agentic.md)). Without arguments, the start screen |
+| `devws agentic [--editor] [--leader <agent>] [<repo or folder> [<branch>]]` | A workspace for an agent team: the leader, a log and room for the agents it opens ([Agent teams](agentic.md)). Without arguments, the start screen. `--leader` names the registered agent that leads; without it, a terminal is asked |
 | `devws worktree <branch> [agent] [editor]` | A workspace on a git worktree of this repo's branch, in `../<repo>-<branch>`; a new branch off HEAD when it does not exist |
 | `devws tidy` | Remove the branch folders whose PR is merged or closed, clean and not open (asks, all ticked) |
 | `devws detach` | Leave devws; every workspace keeps running. `devws` brings you back |

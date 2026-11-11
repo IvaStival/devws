@@ -188,7 +188,8 @@ agents and reveals their team path without replacing manual expansion choices.
 
 | Command | What it does |
 | ------- | ------------ |
-| `devagentics task start <folder>` | Make the task for a worktree, or find it; prints its id, the leader's agent and its arguments file (what `devws agentic` calls) |
+| `devagentics task start <folder> [--leader <agent>]` | Make the task for a worktree, or find it; prints its id, the leader's agent and its arguments file (what `devws agentic` calls). `--leader` names the devws agent that leads, kept for the task |
+| `devagentics task leader <folder>` | The devws agent that leads the worktree's team now, or the leader role's with no task yet |
 | `devagentics task approve <task>` | Approve the plan (the leader does it when you say yes) |
 | `devagentics task status <task>` | Where the team stands, as JSON |
 | `devagentics task pause\|resume\|cancel <task>` | Stop new deliveries and agents; start again the agents whose panels went; stop every agent |

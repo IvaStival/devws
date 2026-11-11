@@ -123,7 +123,7 @@ mod tests {
                     week: Some(7),
                 },
             );
-        start_task(&home, &devws, repo.path(), "d").unwrap();
+        start_task(&home, &devws, repo.path(), "d", None).unwrap();
         let task = Task::open(&home, "feat-x").unwrap();
         let team = Team {
             task: &task,

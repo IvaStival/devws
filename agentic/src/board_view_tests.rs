@@ -227,14 +227,24 @@ fn the_overview_groups_the_team_with_what_each_agent_costs() {
         .filter(|entry| entry.kind == Kind::Heading)
         .map(|entry| entry.label.as_str())
         .collect();
-    assert_eq!(headings, ["NEEDS YOU · 2", "CTO", "FLOOR · 2", "DONE · 99"]);
+    assert_eq!(
+        headings,
+        [
+            "NEEDS YOU · 2",
+            "CTO",
+            "FLOOR · 2",
+            "QUEUE · 1",
+            "USAGE",
+            "DONE · 99"
+        ]
+    );
     let ids: Vec<_> = rows.iter().map(|entry| entry.id.as_str()).collect();
     let place = |id: &str| {
         ids.iter()
             .position(|row| *row == id)
             .unwrap_or_else(|| panic!("no {id} in {ids:?}"))
     };
-    for section in ["CTO", "FLOOR", "DONE"] {
+    for section in ["CTO", "FLOOR", "QUEUE", "USAGE", "DONE"] {
         assert_eq!(
             rows[place(&format!("heading:{section}")) - 1].kind,
             Kind::Gap,
@@ -244,20 +254,16 @@ fn the_overview_groups_the_team_with_what_each_agent_costs() {
     assert!(place("question:q9") < place("heading:CTO"));
     assert_eq!(ids[place("heading:CTO") + 1], "leader");
     assert!(place("heading:FLOOR") < place("agent:executor-1"));
-    assert!(place("agent:executor-2") < place("queue"));
-    assert!(place("queue") < place("heading:DONE"));
+    assert!(place("agent:executor-2") < place("queue:o2"));
+    assert!(place("queue:o2") < place("heading:USAGE"));
+    assert!(place("heading:USAGE") < place("heading:DONE"));
     assert_eq!(ids[place("heading:DONE") + 1], "step:p99", "newest first");
     assert_eq!(*ids.last().unwrap(), "step:p1");
-
-    // Group totals are their agents' sums: $6.20 + $4.80, 900k + 500k tokens.
-    assert_eq!(rows[place("heading:FLOOR")].tail, "$11 · 1.4M tok");
-    assert_eq!(rows[place("heading:CTO")].tail, "$12 · 2.1M tok");
 
     let leader = &rows[place("leader")];
     assert!(leader.label.starts_with("L  leader"), "{}", leader.label);
     assert!(leader.label.contains("claude · high"), "{}", leader.label);
     assert_eq!(leader.tail, "⠋ working");
-    assert_eq!(leader.figures.trim_start(), "$12   2.1M");
     assert_eq!(leader.pane.as_deref(), Some("%2"));
     let agent = &rows[place("agent:executor-1")];
     assert!(agent.label.starts_with("1  executor-1"), "{}", agent.label);
@@ -270,46 +276,117 @@ fn the_overview_groups_the_team_with_what_each_agent_costs() {
         !ids.contains(&"note:agent:executor-2"),
         "nothing to say, no second line"
     );
-    assert!(rows[place("queue")].label.contains("1 order queued"));
-    assert!(rows[place("step:p99")].label.contains("×2"));
+    assert!(rows[place("queue:o2")].label.contains("s2 add a test"));
+    assert_eq!(rows[place("step:p99")].tail, "×2", "retries end the row");
     assert!(rows[place("step:p99")].label.starts_with("✓ p99"));
+    assert_eq!(rows[place("step:p98")].tail, "");
 
-    // The wheel reaches the oldest done step, and its row shows.
+    // The USAGE card: each agent's tokens and cost, then the team's total.
+    assert!(place("heading:USAGE") < place("usage:leader"));
+    assert_eq!(ids[place("heading:DONE") - 2], "usage:team");
+    let team = &rows[place("usage:team")];
+    assert!(team.label.starts_with("team"), "{}", team.label);
+    assert_eq!(team.tail, "$13+");
+    assert!(
+        rows[place("usage:leader")].detail.contains("Cache: 2.5M"),
+        "the cache is in the details"
+    );
+
     let mut nav = Navigation::new(View::Overview);
     nav.reconcile(&rows);
-    nav.move_by(&rows, isize::MAX);
-    assert_eq!(nav.selected.as_deref(), Some("step:p1"));
     let text = plain(&screen(&board, &nav, &rows, 84, 60, None));
-    assert!(text.contains("p1 "), "{text}");
-    // State, cost and tokens in columns at the right edge.
-    nav.move_by(&rows, isize::MIN);
-    let text = plain(&screen(&board, &nav, &rows, 84, 60, None));
-    let line = |id: &str| {
+    let line = |text: &str, id: &str| {
         text.lines()
             .find(|line| line.contains(id))
             .unwrap_or_else(|| panic!("no {id}: {text}"))
             .to_string()
     };
-    let first = line("1  executor-1");
-    let second = line("2  executor-2");
-    assert!(first.trim_end().ends_with("$6.20   900k"), "{first:?}");
-    assert!(second.trim_end().ends_with("$4.80   500k"), "{second:?}");
+    // Every section is a card, its count in the top edge.
+    for top in [
+        "╭─ NEEDS YOU · 2 ─",
+        "╭─ CTO ─",
+        "╭─ FLOOR · 2 ─",
+        "╭─ USAGE ─",
+    ] {
+        assert!(text.contains(top), "no {top}: {text}");
+    }
+    let first = line(&text, "1  executor-1");
+    let second = line(&text, "2  executor-2");
+    assert!(
+        first.starts_with("│ ") && first.ends_with(" │"),
+        "{first:?}"
+    );
+    assert!(
+        first.trim_end_matches(" │").ends_with("⠋ working"),
+        "{first:?}"
+    );
     assert_eq!(
-        first.find("⠋ working"),
-        second.find("✓ done"),
-        "states line up"
+        first.find("⠋ working").map(|at| at + "⠋ working".len()),
+        second.find("✓ done").map(|at| at + "✓ done".len()),
+        "states end at the same edge"
     );
     assert_eq!(first.chars().count(), 84);
+    assert!(line(&text, "╭─ DONE · 99 ─").ends_with("newest first ─╮"));
+
+    // Only DONE scrolls: the wheel reaches the oldest step and the cards
+    // above it stay where they were.
+    nav.move_by(&rows, isize::MAX);
+    assert_eq!(nav.selected.as_deref(), Some("step:p1"));
+    let scrolled = plain(&screen(&board, &nav, &rows, 84, 60, None));
+    assert!(scrolled.contains("p1  step number 1"), "{scrolled}");
+    assert!(!scrolled.contains("p99  "), "{scrolled}");
+    // The same lines, but for the selection marker, which moved to DONE.
+    let above = |text: &str| {
+        text.lines()
+            .take_while(|line| !line.contains("DONE"))
+            .map(|line| line.replace('▸', " "))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(above(&text), above(&scrolled), "the fixed cards stay");
+    assert!(scrolled.contains(" of 99 ─╯"), "{scrolled}");
     let narrow = plain(&screen(&board, &nav, &rows, 50, 60, None));
-    let first = narrow
-        .lines()
-        .find(|line| line.contains("1  executor-1"))
-        .unwrap();
+    let first = line(&narrow, "1  executor-1");
     assert!(
-        first.trim_end().ends_with("⠋ working"),
+        first.trim_end_matches(" │").ends_with("⠋ working"),
         "narrow keeps the state: {first:?}"
     );
     assert!(first.chars().count() <= 50);
+}
+
+#[test]
+fn the_done_card_scrolls_with_a_bar_and_too_short_a_pane_is_a_plain_list() {
+    let board = board_with_history();
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let mut nav = Navigation::new(View::Overview);
+    nav.reconcile(&rows);
+    let text = plain(&screen(&board, &nav, &rows, 70, 40, None));
+    let done: Vec<_> = text
+        .lines()
+        .skip_while(|line| !line.contains("DONE"))
+        .collect();
+    let bottom = done.iter().find(|line| line.starts_with('╰')).unwrap();
+    let shown = done.iter().filter(|line| line.contains("✓ p")).count();
+    assert!(shown >= MIN_SCROLL_ROWS, "{text}");
+    assert!(bottom.contains(&format!(" 1–{shown} of 99 ")), "{bottom:?}");
+    assert_eq!(
+        done.iter().filter(|line| line.ends_with("█ │")).count(),
+        1.max(shown * shown / 99),
+        "the thumb is as long as the part shown: {text}"
+    );
+    assert!(
+        done[1].ends_with("█ │"),
+        "the thumb starts at the top: {text}"
+    );
+
+    // Not enough room for the fixed cards and a few done steps: the board is
+    // the plain list, scrolled to the selection.
+    let short = plain(&screen(&board, &nav, &rows, 70, 16, None));
+    assert!(!short.contains("╭─ CTO"), "{short}");
+    assert!(short.contains("▌NEEDS YOU · 2"), "{short}");
+    assert_eq!(
+        list_rows(&rows),
+        rows.iter().filter(|row| row.kind != Kind::Gap).count() + 6
+    );
 }
 
 #[test]
@@ -364,12 +441,15 @@ fn the_header_has_the_count_the_tabs_the_progress_and_limit_bars() {
         progress.contains('⣿') && progress.contains('⣀'),
         "dots: {progress:?}"
     );
-    let team = row("COST");
-    assert!(team.contains("$31"), "{team:?}");
+    // What the team used is the USAGE card's, not the header's.
     assert!(
-        team.contains("TOKENS  4.5M in · 1.1M out · 474.0M cache"),
-        "{team:?}"
+        !inside.iter().any(|line| line.contains("COST")),
+        "{inside:?}"
     );
+    let usage = entries(&board, View::Overview, false, &[], None);
+    let team = usage.iter().find(|entry| entry.id == "usage:team").unwrap();
+    assert_eq!(team.tail, "$31");
+    assert!(team.label.contains("4.5M in    1.1M out"), "{}", team.label);
     let claude = row("claude ");
     assert!(claude.contains("5h ▓▓▓▓░░░░░░  40%"), "{claude:?}");
     assert!(claude.contains("wk ░░░░░░░░░░    —"), "{claude:?}");

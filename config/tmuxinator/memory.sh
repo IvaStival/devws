@@ -53,12 +53,12 @@ up() {
   curl -fsS --max-time 1 "$server/healthz" >/dev/null 2>&1
 }
 
-# The agent's account, as agent_runner.sh starts it: none for a default folder.
+# The agent's account, as agent_runner.sh starts it: none for a bare name.
 with_account() {
   local agent="$1" kind
   shift
   kind="$(agent_kind "$agent")" || die "not a registered agent: $agent"
-  if agent_is_default_home "$agent"; then
+  if ! agent_has_folder "$agent"; then
     env -u CLAUDE_CONFIG_DIR -u CODEX_HOME "$@"
   elif [ "$kind" = claude ]; then
     env -u CODEX_HOME CLAUDE_CONFIG_DIR="$(agent_home "$agent")" "$@"

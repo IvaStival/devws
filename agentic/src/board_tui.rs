@@ -63,10 +63,11 @@ pub fn once(
     let entries = board_view::entries(&board, view, false, &log, None);
     let mut nav = Navigation::new(view);
     nav.reconcile(&entries);
-    // As tall as the whole list takes: the header, every row and the keys.
+    // As tall as the whole list takes: the header, every row (in its card on
+    // the Overview) and the keys.
     let height = if height == 0 {
         let header = board_view::header_rows(&board, &nav, width, u16::MAX) as usize;
-        (header + entries.len() + 1).clamp(8, u16::MAX as usize) as u16
+        (header + board_view::list_rows(&entries) + 1).clamp(8, u16::MAX as usize) as u16
     } else {
         height
     };
@@ -443,7 +444,7 @@ fn screen_loop(
         pane: None,
         attention: false,
         kind: board_view::Kind::Row,
-        figures: String::new(),
+        parts: Vec::new(),
         tail: String::new(),
     }];
     let mut terminal = ratatui::init();
@@ -623,7 +624,7 @@ mod tests {
                 pane: Some(format!("%{index}")),
                 attention: false,
                 kind: board_view::Kind::Row,
-                figures: String::new(),
+                parts: Vec::new(),
                 tail: String::new(),
             })
             .collect();
@@ -664,7 +665,7 @@ mod tests {
                 pane: None,
                 attention: false,
                 kind: board_view::Kind::Row,
-                figures: String::new(),
+                parts: Vec::new(),
                 tail: String::new(),
             })
             .collect();

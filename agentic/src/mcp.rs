@@ -448,7 +448,7 @@ mod tests {
         let repo = crate::checks::tests::repo();
         crate::checks::tests::run(repo.path(), &["checkout", "-q", "-b", "feat/x"]);
         let devws = FakeDevws::new(&dir.path().join("w")).with_kind("claude", Program::Claude);
-        start_task(&home, &devws, repo.path(), "d").unwrap();
+        start_task(&home, &devws, repo.path(), "d", None).unwrap();
         let task = Task::open(&home, "feat-x").unwrap();
         Fixture {
             _dir: dir,

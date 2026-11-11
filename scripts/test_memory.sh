@@ -71,6 +71,9 @@ test_wire_uses_each_accounts_folder() {
     fail "claude_work was not wired in its folder: $(calls)"
   memory wire codex
   grep -qx 'install-mcp --client codex --apply|claude=|codex=' <<<"$(calls)" || fail "codex was not wired"
+  DEVWS_AGENT_claude="claude ~/.claude" memory wire claude
+  grep -qx "install-mcp --client claude-code --apply|claude=$HOME/.claude|codex=" <<<"$(calls)" ||
+    fail "claude registered in the default folder was wired without it: $(calls)"
 }
 
 test_wire_all_wires_each_agent_once() {

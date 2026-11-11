@@ -107,7 +107,16 @@ enum Command {
 enum TaskAction {
     /// Make the task for a worktree, or find it; prints its id, the leader's
     /// agent and the leader's arguments file (what `devws agentic` calls)
-    Start { folder: PathBuf },
+    Start {
+        folder: PathBuf,
+        /// The devws agent that leads, instead of the leader role's; kept
+        /// for the task
+        #[arg(long)]
+        leader: Option<String>,
+    },
+    /// The devws agent that leads a worktree's team: its task's leader, or
+    /// the leader role's when there is no task yet
+    Leader { folder: PathBuf },
     /// You approve the plan: agents that write may start
     Approve { task: String },
     /// Where the team stands
@@ -281,9 +290,10 @@ fn run() -> Result<()> {
 
     match cli.command {
         Command::Task { action } => match action {
-            TaskAction::Start { folder } => {
+            TaskAction::Start { folder, leader } => {
                 let command = std::env::current_exe()?.display().to_string();
-                let started = start::start_task(&home, &devws, &folder, &command)?;
+                let started =
+                    start::start_task(&home, &devws, &folder, &command, leader.as_deref())?;
                 println!(
                     "{}\n{}\n{}",
                     started.id,
@@ -291,6 +301,7 @@ fn run() -> Result<()> {
                     started.args_file.display()
                 );
             }
+            TaskAction::Leader { folder } => println!("{}", start::leader_for(&home, &folder)?),
             TaskAction::Approve { task } => {
                 Team {
                     task: &open(&task)?,

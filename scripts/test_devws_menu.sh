@@ -110,7 +110,7 @@ test_tabs_list_their_actions() {
     fail "Workspace tab: $(actions_of workspace)"
   [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor" ] ||
     fail "Layout tab: $(actions_of layout)"
-  [ "$(actions_of agent)" = "jump switch-agent restart-agent follow-mode initialize-agent register-agent remove-agent team-roles" ] ||
+  [ "$(actions_of agent)" = "jump switch-agent restart-agent follow-mode initialize-agent register-agent agent-folder remove-agent team-roles" ] ||
     fail "Agent tab: $(actions_of agent)"
   [ "$(actions_of git)" = "commit commit-manual push" ] || fail "Git tab: $(actions_of git)"
   [ "$(actions_of app)" = "run-here switch-run stop-run services migrate shell logs info settings register-jungleforge open-database database-folder job-log" ] ||
@@ -493,6 +493,14 @@ test_register_and_remove_agents() {
     fail "register ran '$(cat "$TEST_ROOT/calls/register_agent.sh" 2>/dev/null)' after bad names"
   grep -q "letters, digits and _" <<< "$output" || fail "a bad name was not explained: $output"
   grep -q "codex is already registered" <<< "$output" || fail "a taken name was not explained: $output"
+
+  # Change folder asks for the agent, then one of its kind's folders.
+  printf 'claude\n~/.claude\n' > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/register_agent.sh"
+  printf '\n' | DEVWS_AGENTS="claude codex" menu --run agent-folder >/dev/null
+  [ "$(cat "$TEST_ROOT/calls/register_agent.sh" 2>/dev/null)" = "folder claude ~/.claude" ] ||
+    fail "change folder ran '$(cat "$TEST_ROOT/calls/register_agent.sh" 2>/dev/null)'"
+  grep -qx '~/.claude-work' "$TEST_ROOT/calls/fzf.input" || fail "change folder did not offer the kind's folders"
 
   printf 'codex\n' > "$TEST_ROOT/fzf.answers"
   rm -f "$TEST_ROOT/calls/register_agent.sh"

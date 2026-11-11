@@ -97,6 +97,23 @@ test_add_rejects_bad_input() {
     fail "a rejected add changed the registry: $(registry)"
 }
 
+# folder moves a registered agent to another config folder: a bare name gets
+# its entry, even for its kind's default folder, so it runs with that folder set.
+test_folder_changes_an_agents_folder() {
+  reset_env
+  register folder claude "~/.claude" >/dev/null || fail "folder failed"
+  grep -qx 'DEVWS_AGENT_claude="claude ~/.claude"' "$ENV_FILE" || fail "no entry for claude: $(cat "$ENV_FILE")"
+  register add work claude "$HOME/.claude-work" >/dev/null
+  register folder work "$HOME/.claude" >/dev/null || fail "moving work failed"
+  [ "$(grep -c '^DEVWS_AGENT_work=' "$ENV_FILE")" = 1 ] || fail "work has more than one entry: $(cat "$ENV_FILE")"
+  [ "$(registry)" = "claude codex work|claude|claude=claude:$HOME/.claude|codex=codex:$HOME/.codex|work=claude:$HOME/.claude" ] ||
+    fail "unexpected registry after folder: $(registry)"
+  ! register folder ghost "$HOME/.claude" 2>/dev/null || fail "an unregistered agent got a folder"
+  ! register folder work "$HOME/.missing" 2>/dev/null || fail "a missing folder was set"
+  grep -qx 'DEVWS_EDITORS="nvim vim"' "$ENV_FILE" || fail "folder changed other settings"
+  [ -L "$DEVWS_ENV_FILE" ] || fail "folder replaced the .env symlink"
+}
+
 test_remove_drops_a_name() {
   reset_env
   register add work claude "~/.claude-work" >/dev/null
@@ -118,5 +135,6 @@ test_add_registers_a_name_with_its_folder
 test_add_wires_the_account_to_ai_memory
 test_add_rejects_bad_input
 test_remove_drops_a_name
+test_folder_changes_an_agents_folder
 
 printf 'Register agent tests passed.\n'

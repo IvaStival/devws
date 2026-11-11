@@ -49,6 +49,7 @@ agent|restart-agent|↻ Restart agent||restart_agent
 agent|follow-mode|◎ Agent follow|C-b F|choose_follow_mode
 agent|initialize-agent|◇ Initialize agent||initialize_agent
 agent|register-agent|＋ Register agent||register_agent
+agent|agent-folder|⌂ Change agent folder||change_agent_folder
 agent|remove-agent|− Remove agent||remove_agent
 agent|team-roles|⚙ Team roles||team_roles
 agent|memory-search|⁘ Search memory||search_memory|memory

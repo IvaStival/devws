@@ -500,7 +500,7 @@ mod tests {
         let devws = FakeDevws::new(&home_dir.path().join("worktrees"))
             .with_kind("claude", Program::Claude)
             .with_kind("codex", Program::Codex);
-        start_task(&home, &devws, repo.path(), "/bin/devagentics").unwrap();
+        start_task(&home, &devws, repo.path(), "/bin/devagentics", None).unwrap();
         let task = Task::open(&home, "feat-x").unwrap();
         Fixture {
             home_dir,
