@@ -75,14 +75,17 @@ repos get their own worktrees the same way, as the leader opens them.
   you, the CTO (the leader first), the seniors, the floor, the queue, the usage
   (each agent's tokens and cost, then the team's total) and the steps done,
   newest first. Only the Done card scrolls, with its own scrollbar; the others
-  stay put. A pane too short for the cards shows them as one scrolling list.
+  stay put. Muted blue frames match the devws menu; green marks successful
+  states. A pane too short for the cards shows them as one scrolling list.
   Tab / Shift-Tab switches to **Agents**, **Steps**, **Activity**, and **Usage**.
   Completed work stays in Steps (`c` includes it); inactive roles stay in the
   Agents catalog (`c` shows it). Use `j`/`k`, arrows, or the wheel to select a
-  row; Enter opens full details and Esc returns. `o` goes to a selected agent,
+  row; Enter opens full details in a dialog inside the info panel, with the
+  board behind it. Arrows, `j`/`k`, the wheel, PgUp/PgDn and Home/End scroll
+  the dialog; Esc or `q` closes it and keeps the selection. `o` goes to a selected agent,
   `v` peeks it, and `L` returns to the leader. Number keys `1`–`9` and `p` then
   a number still work. Short panes preserve attention counts and scrolling;
-  `z` zooms, `l` opens Activity, and `?` shows shortcuts. `q` closes details or
+  `z` zooms, `l` opens Activity, and `?` shows shortcuts in the same dialog. `q` closes details or
   quits the board. The board also runs the dispatcher while it is open.
   The popup's **Team** tab offers **Team overview**, **Team agents**, **Team steps**,
   **Team activity**, **Team usage**, and **Return to leader**.

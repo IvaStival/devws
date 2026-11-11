@@ -97,7 +97,8 @@ each agent with its program (and lane), state, cost and tokens in columns,
 over a dim line with its current step, the steps it got accepted and its
 retries; the number of queued orders; and **Done** (accepted steps, newest
 first, `×n` when a step took retries). The leader is the CTO's first row. The
-selection skips section titles, second lines and blank lines, and the wheel
+frames use the devws menu's muted blue accent, while green marks successful
+states. Selection skips section titles, second lines and blank lines, and the wheel
 scrolls the whole list, down to the oldest done step. Panes under 60 columns
 drop the cost and token columns.
 
@@ -118,9 +119,12 @@ Use Tab / Shift-Tab to move between five views:
 
 Use `j`/`k`, arrows, or the mouse wheel to select rows, PgUp/PgDn (`b`/space)
 to move a page, and `g`/`G` or Home/End for the first/last row. Enter opens full,
-wrapped details; the same movement keys scroll them, and Esc returns. Selection
-stays on the same item when the team refreshes. Short panes keep attention counts
-and scrolling; `z` zooms the pane and `?` shows all shortcuts.
+wrapped details in a titled dialog inside the info panel, with the board
+visible behind it. The same movement keys scroll within the dialog; Esc or
+`q` closes it and returns to the selected row. Selection and dialog scrolling
+stay on the same item when the team refreshes; if that item disappears, its
+dialog closes. Short panes keep attention counts and scrolling; `z` zooms the
+pane and `?` shows all shortcuts in the same kind of dialog.
 
 On an agent row, `o` goes to its workspace and `v` peeks it under the board;
 peek again to send it back. The first nine agents also have direct `1`–`9`

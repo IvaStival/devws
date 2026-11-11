@@ -643,6 +643,117 @@ fn an_agents_second_line_and_the_gaps_are_never_selected() {
 }
 
 #[test]
+fn card_frames_use_the_menu_accent_and_success_marks_stay_green() {
+    let board = board_with_history();
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let mut nav = Navigation::new(View::Overview);
+    nav.reconcile(&rows);
+    let rendered = screen(&board, &nav, &rows, 84, 60, None);
+    assert!(
+        rendered
+            .content
+            .iter()
+            .any(|cell| { cell.symbol() == "╭" && cell.fg == Color::Indexed(110) }),
+        "card frames must match the menu accent"
+    );
+    assert!(
+        !rendered.content.iter().any(|cell| {
+            matches!(cell.symbol(), "╭" | "╰" | "─" | "│") && cell.fg == Color::Green
+        }),
+        "green is reserved for status"
+    );
+    assert!(
+        rendered
+            .content
+            .iter()
+            .any(|cell| { cell.symbol() == "✓" && cell.fg == Color::Green }),
+        "successful steps keep their status color"
+    );
+}
+
+#[test]
+fn details_open_in_a_titled_dialog_over_the_existing_board() {
+    let board = board();
+    let mut rows = entries(&board, View::Overview, false, &[], None);
+    let mut nav = Navigation::new(View::Overview);
+    nav.reconcile(&rows);
+    rows[nav.index].label = "Selected question".into();
+    rows[nav.index].detail = "Complete question context".into();
+    let background = screen(&board, &nav, &rows, 84, 40, None);
+    nav.detail = true;
+    let rendered = screen(&board, &nav, &rows, 84, 40, None);
+    let text = plain(&rendered);
+    assert!(text.contains("Selected question"), "{text}");
+    assert!(text.contains("Complete question context"), "{text}");
+    assert!(text.contains("Esc/q close"), "{text}");
+    for row in 0..40 {
+        assert_eq!(
+            rendered[(0, row)],
+            background[(0, row)],
+            "board behind the dialog"
+        );
+        assert_eq!(
+            rendered[(83, row)],
+            background[(83, row)],
+            "board behind the dialog"
+        );
+    }
+}
+
+#[test]
+fn a_refresh_keeps_the_detail_target_or_closes_it_if_removed() {
+    let mut rows = vec![
+        Entry::text("first".into(), "First".into(), "One".into(), false),
+        Entry::text("second".into(), "Second".into(), "Two".into(), false),
+    ];
+    let mut nav = Navigation::new(View::Activity);
+    nav.reconcile(&rows);
+    nav.detail = true;
+    nav.detail_scroll = 12;
+    rows.swap(0, 1);
+    nav.reconcile(&rows);
+    assert_eq!(nav.selected.as_deref(), Some("first"));
+    assert_eq!(nav.index, 1);
+    assert!(nav.detail);
+    assert_eq!(nav.detail_scroll, 12, "refresh preserves scrolling");
+    rows.pop();
+    nav.reconcile(&rows);
+    assert!(
+        !nav.detail,
+        "never show a different entry in the open dialog"
+    );
+    assert_eq!(nav.detail_scroll, 0);
+}
+
+#[test]
+fn dialog_wrapping_and_end_scrolling_reach_the_last_line_after_resize() {
+    let board = board();
+    let mut rows = entries(&board, View::Agents, false, &[], None);
+    let mut nav = Navigation::new(View::Agents);
+    nav.reconcile(&rows);
+    nav.detail = true;
+    rows[nav.index].detail = format!("{}\nFINAL LINE", "wide context ".repeat(80));
+    for (width, height) in [(84, 30), (24, 12), (12, 8), (5, 5), (84, 30)] {
+        nav.detail_scroll = dialog_scroll_max(&rows[nav.index].detail, width, height);
+        let rendered = screen(&board, &nav, &rows, width, height, None);
+        let body = dialog_body(width, height);
+        let text = (body.y..body.bottom())
+            .map(|row| {
+                (body.x..body.right())
+                    .map(|column| rendered[(column, row)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        // The narrowest panes split words over multiple lines.
+        assert!(
+            text.ends_with("FINAL LINE") || text.trim_end().ends_with("LINE"),
+            "{width}x{height}: {text}"
+        );
+    }
+}
+
+#[test]
 fn details_wrap_without_losing_text_and_tiny_sizes_do_not_panic() {
     let mut board = board();
     board
