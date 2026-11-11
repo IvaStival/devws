@@ -137,27 +137,28 @@ hidden_window() {
 }
 
 # Creates the placeholder in the hidden window and swaps it with the real
-# pane. The hidden window itself is made by splitting a placeholder off the
-# real pane and breaking it out, which keeps the window in this session.
+# pane. The hidden window starts with the first placeholder; it is not split
+# off the real pane, since breaking that split out gives the freed space to a
+# neighbour (tmux 3.8), which would change the sizes restore brings back.
 hide_pane() {
   local real_pane="$1"
-  local role placeholder window
+  local role placeholder window folder
   role="$(role_of "$real_pane")"
   # A pane with no devws role (a shell split off by hand) goes as an extra
   # terminal, so restore finds its placeholder.
   role="${role:-extra}"
   window="$(hidden_window)"
+  folder="$(tmux display-message -p -t "$real_pane" '#{pane_current_path}')"
 
   if [ -z "$window" ]; then
-    placeholder="$(tmux split-window -d -t "$real_pane" -c "#{pane_current_path}" \
-      -P -F '#{pane_id}' "$(placeholder_command "$(placeholder_label "$role" "$real_pane")")")" || return 1
     # -a -t places the window in this session; without a target tmux uses
     # the most recently active session, which may be another workspace.
-    window="$(tmux break-pane -d -a -s "$placeholder" -t "$session:" \
-      -n "$hidden_window_name" -P -F '#{window_id}')" || return 1
+    window="$(tmux new-window -d -a -t "$session:" -n "$hidden_window_name" -c "$folder" \
+      -P -F '#{window_id}' "$(placeholder_command "$(placeholder_label "$role" "$real_pane")")")" || return 1
     tmux set-option -w -t "$session:" @devws_hidden_window "$window"
+    placeholder="$(tmux display-message -p -t "$window" '#{pane_id}')"
   else
-    placeholder="$(tmux split-window -d -t "$window" -c "#{pane_current_path}" \
+    placeholder="$(tmux split-window -d -t "$window" -c "$folder" \
       -P -F '#{pane_id}' "$(placeholder_command "$(placeholder_label "$role" "$real_pane")")")" || return 1
   fi
   tmux set-option -p -t "$placeholder" @devws_role "minimized-$role"

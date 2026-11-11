@@ -112,6 +112,36 @@ leader_arguments="$(sed -n 3p <<<"$started")"
 session="$("$devws" open --no-attach --template agentic --task "$task" \
   --agent-args "$leader_arguments" --set "agentic_command=$agentic_command" "$folder" "$leader")" || exit 1
 
+# The size of the terminal the workspace will show in: the tmux client's, the
+# terminal's, or COLUMNS and LINES; nothing when there is none (a script).
+terminal_size() {
+  if [ -n "${TMUX:-}" ] && tmux display-message -p '#{client_width} #{client_height}' 2>/dev/null | grep -q '^[1-9]'; then
+    tmux display-message -p '#{client_width} #{client_height}'
+  elif [ -t 1 ]; then
+    printf '%s %s\n' "$(tput cols)" "$(tput lines)"
+  elif [ -n "${COLUMNS:-}" ] && [ -n "${LINES:-}" ]; then
+    printf '%s %s\n' "$COLUMNS" "$LINES"
+  fi
+}
+
+# Made detached, the workspace has tmux's default size and only takes the
+# terminal's when shown, scaling every pane: the board came out narrow. So it
+# takes the terminal's size now and the board half of the room beside the
+# sidebar, as wide as the leader; then it follows the terminal again.
+fit_to_terminal() {
+  local width height sidebar board
+  read -r width height <<<"$(terminal_size)"
+  [ "${width:-0}" -gt 0 ] && [ "${height:-0}" -gt 0 ] || return 0
+  # The status line takes a row of the terminal.
+  tmux resize-window -t "=$session:" -x "$width" -y "$((height - 1))" || return 0
+  sidebar="$(tmux list-panes -t "=$session:" -F '#{pane_title} #{pane_width}' | awk '$1 == "devws-picker" { print $2; exit }')"
+  board="$(tmux list-panes -t "=$session:" -F '#{pane_id} #{@devws_role}' | awk '$2 == "team-log" { print $1; exit }')"
+  # Two borders: the sidebar's and the leader's.
+  [ -z "$board" ] || tmux resize-pane -t "$board" -x "$(((width - ${sidebar:-0} - 2) / 2))"
+  tmux set-option -wu -t "=$session:" window-size
+}
+fit_to_terminal
+
 if [ "$with_editor" = 1 ]; then
   log="$(tmux list-panes -s -t "=$session" -F '#{pane_id} #{@devws_role}' | awk '$2 == "team-log" { print $1; exit }')"
   "$script_dir/new_panel.sh" "$session" below nvim --beside "$log" --no-focus >/dev/null ||

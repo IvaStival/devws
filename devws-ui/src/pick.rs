@@ -85,7 +85,18 @@ impl Picker {
                     self.refilter();
                 }
             }
-            Key::Click(row) if row < self.matches.len() => self.cursor = row,
+            // One click picks the row, as in the menu; a multi-select ticks
+            // it instead, Enter answering with what is ticked.
+            Key::Click(row) if row < self.matches.len() => {
+                self.cursor = row;
+                if !self.multi {
+                    return Step::Done(self.accept(print_query));
+                }
+                let index = self.matches[row];
+                if !self.ticked.remove(&index) {
+                    self.ticked.insert(index);
+                }
+            }
             _ => {}
         }
         Step::Continue
@@ -156,6 +167,31 @@ mod tests {
                 code: 0
             })
         );
+    }
+
+    #[test]
+    fn a_click_answers_with_its_row_and_in_a_multi_select_ticks_it() {
+        let mut one = picker("a\tA\nb\tB\nc\tC\n", false, false);
+        match one.press(Key::Click(1), false) {
+            Step::Done(answer) => assert_eq!(answer.lines, ["b\tB"]),
+            Step::Continue => panic!("one click picks"),
+        }
+        assert!(
+            matches!(one.press(Key::Click(9), false), Step::Continue),
+            "below the rows"
+        );
+
+        let mut many = picker("a\tA\nb\tB\nc\tC\n", true, false);
+        assert!(matches!(many.press(Key::Click(2), false), Step::Continue));
+        assert!(matches!(many.press(Key::Click(0), false), Step::Continue));
+        assert!(
+            matches!(many.press(Key::Click(2), false), Step::Continue),
+            "unticks"
+        );
+        match many.press(Key::Accept, false) {
+            Step::Done(answer) => assert_eq!(answer.lines, ["a\tA"]),
+            Step::Continue => panic!("Enter answers"),
+        }
     }
 
     #[test]

@@ -57,10 +57,14 @@ repos get their own worktrees the same way, as the leader opens them.
   workspace opens. Its team has **seniors**, who plan and answer questions
   and never write the repo, and the **factory floor** (the hammers), who build
   only what a senior planned. The leader runs on Claude or Codex
-  Sol (medium) and moves to the other when its account has used 95% of its
-  5-hour window or week, or when you ask: tell it, or pick
-  **⇄ Switch leader model** in the menu's Team tab. It moves once it has
+  Sol (medium) and moves to the other when you ask (tell it, or pick
+  **⇄ Switch leader model** in the menu's Team tab) or when its account runs
+  out. The week comes first: with 95% of its week used, it moves when the
+  other account's week has room, even if that one's 5-hour window is full.
+  With only its 5-hour window used up, it moves only when the other has room
+  in both, and stays when the other's week is used up. It moves once it has
   finished its turn; the new leader catches up from the task and tells you.
+  New agents are refused on an account past 85% of its week or 5-hour window.
 - **⚙ Team roles** in the menu's Agent tab changes a role's model, effort or
   approvals (the Floor on Sonnet, a Codex senior that never asks): pick the
   role, the setting, then a value its program takes, or Default. Agents
@@ -96,7 +100,7 @@ repos get their own worktrees the same way, as the leader opens them.
   it to go to its workspace, focused on it; Enter on the team's workspace in
   the sidebar brings you back. `p` and the number **peeks** it: its panel
   comes under the board for a look; `p` and the number again send it back.
-  Enter on an agent's row in the sidebar takes you to it too.
+  A click (or Enter) on an agent's row in the sidebar takes you to it too.
 - There is **no editor**: the agents work in the folder and you read the
   leader. `--editor` adds a Neovim panel under the board.
 - The sidebar lists the workspace under its task (`▸ team`), together with the

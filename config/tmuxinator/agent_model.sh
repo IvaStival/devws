@@ -11,7 +11,9 @@ record() {
   local previous old_model old_source old_seen old_transcript current_transcript
   # These values become single-line sidebar fields.
   [ -n "$model" ] && [ "$model" != '<synthetic>' ] || return 0
-  [[ "$model" != *[$'\001'-$'\037'$'\177']* ]] || return 0
+  # A class, not a range of bytes: macOS's bash 3.2 does not match a newline
+  # against [$'\001'-$'\037'].
+  [[ "$model" != *[[:cntrl:]]* ]] || return 0
   previous="$(tmux display-message -p -t "$pane" '#{@devws_model}|#{@devws_model_source}|#{@devws_model_seen}|#{@devws_model_transcript}|#{@devws_transcript}' 2>/dev/null)" || return
   IFS='|' read -r old_model old_source old_seen old_transcript current_transcript <<< "$previous"
   case "$old_seen" in ''|*[!0-9]*) old_seen=0 ;; esac

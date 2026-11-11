@@ -16,13 +16,20 @@
 #                                       its own (not the repo's main folder)
 #   worktree.sh branch <dir>            the branch checked out in <dir>
 #   worktree.sh status <dir>            "clean", or git status --short's lines
-#   worktree.sh remove <dir>            removes the worktree's folder
+#                                       but the repo's shared files linked in
+#   worktree.sh remove <dir> [--untracked]
+#                                       removes the worktree's folder;
+#                                       --untracked deletes its untracked
+#                                       files with it, never a tracked change
 #
 # <dir> is any folder in the repo or one of its worktrees. ensure checks out
 # an existing local branch, else a remote one (tracking it), else branches a
 # new one off [base] (default: <dir>'s HEAD) without tracking it, so a plain
 # push never goes to the base. Nothing here deletes a branch or a commit, and
-# remove never forces: git refuses a worktree with changes.
+# remove forces only when asked to delete untracked files and nothing else
+# changed: git refuses a worktree with changes. The repo's shared
+# files (.shared, linked in by shared_files.sh) are devws's, not changes: a
+# repo whose .gitignore misses one would otherwise keep every worktree.
 
 set -u
 
@@ -89,9 +96,23 @@ linked() {
   [ "$git_dir" != "$common" ]
 }
 
+# The untracked links in <dir> to the repo's shared files (.shared beside its
+# git folder), one path a line, relative to <dir>.
+shared_links() {
+  local dir="$1" shared entry
+  shared="$(dirname "$(common_dir "$dir")")/.shared/"
+  git -C "$dir" status --porcelain -z --untracked-files=all | while IFS= read -r -d '' entry; do
+    [ "${entry:0:3}" = '?? ' ] || continue
+    [ -L "$dir/${entry:3}" ] || continue
+    case "$(readlink "$dir/${entry:3}")" in "$shared"*) printf '%s\n' "${entry:3}" ;; esac
+  done
+}
+
 status() {
-  local changes
+  local changes links
   changes="$(git -C "$1" status --short --untracked-files=all)" || die "cannot read the status of $1"
+  links="$(shared_links "$1")"
+  [ -z "$links" ] || changes="$(grep -vxF -f <(sed 's/^/?? /' <<<"$links") <<<"$changes")"
   if [ -z "$changes" ]; then
     printf 'clean\n'
   else
@@ -99,8 +120,27 @@ status() {
   fi
 }
 
+# Succeeds when every change in <dir> is an untracked file.
+only_untracked() {
+  local changes
+  changes="$(status "$1")"
+  [ "$changes" = clean ] || ! grep -qv '^?? ' <<<"$changes"
+}
+
 remove() {
+  local link
   linked "$1" || die "$1 is not a worktree of its own; it is kept"
+  if [ "${2:-}" = --untracked ]; then
+    only_untracked "$1" || die "git kept $1: a tracked file changed"
+    git -C "$(common_dir "$1")" worktree remove --force "$1" || die "git kept $1"
+    return 0
+  fi
+  # git refuses untracked files: the shared links go first, and only when
+  # nothing else would keep the worktree, so a kept one still has them.
+  [ "$(status "$1")" = clean ] || die "git kept $1: it has changes"
+  while IFS= read -r link; do
+    [ -z "$link" ] || rm "$1/$link"
+  done < <(shared_links "$1")
   # From the common git dir: a managed repo has no main folder to run in.
   git -C "$(common_dir "$1")" worktree remove "$1" || die "git kept $1"
 }
@@ -114,6 +154,6 @@ case "$command" in
   linked) linked "$dir" ;;
   branch) in_repo "$dir"; git -C "$dir" symbolic-ref --quiet --short HEAD ;;
   status) in_repo "$dir"; status "$dir" ;;
-  remove) in_repo "$dir"; remove "$dir" ;;
+  remove) in_repo "$dir"; remove "$dir" "${3:-}" ;;
   *) die "unknown command: $command" ;;
 esac

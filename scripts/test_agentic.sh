@@ -291,6 +291,25 @@ test_agentic_opens_the_leader_and_the_board() {
   tmux display-message -p -t "$log" "$header" | grep -q 'Team' || fail "the board pane has no header: '$(tmux display-message -p -t "$log" "$header")'"
 }
 
+# Made detached, the workspace would take tmux's default size and only scale
+# to the terminal when shown, the board coming out narrow: it is made at the
+# terminal's size, the board as wide as the leader.
+test_agentic_gives_the_board_half_the_room_beside_the_sidebar() {
+  local folder session leader log
+  folder="$TEST_ROOT/projects/team-wide"
+  mkdir -p "$folder"
+  COLUMNS=205 LINES=60 devws agentic "$folder" </dev/null >/dev/null || fail "devws agentic failed"
+  session=dev-team-wide
+  leader="$(pane_with_role "$session" agent)"
+  log="$(pane_with_role "$session" team-log)"
+  [ "$(field "$session:" window_width)" = 205 ] || fail "the workspace is not the terminal's width: $(field "$session:" window_width)"
+  [ "$(( $(field "$log" pane_width) - $(field "$leader" pane_width) ))" -ge 0 ] &&
+    [ "$(( $(field "$log" pane_width) - $(field "$leader" pane_width) ))" -le 1 ] ||
+    fail "the board is not as wide as the leader: $(field "$leader" pane_width) / $(field "$log" pane_width)"
+  [ -z "$(tmux show-options -wqv -t "=$session:" window-size)" ] || fail "the window no longer follows the terminal"
+  tmux kill-session -t "=$session"
+}
+
 # The leader is the agent named with --leader; asked on a terminal, the list
 # is every registered agent, the one that leads now first.
 test_agentic_starts_the_team_with_the_leader_chosen() {
@@ -402,6 +421,7 @@ test_a_label_names_the_panel_in_its_header
 test_team_panels_fill_the_right_half_in_a_grid
 test_the_first_agent_goes_under_the_board
 test_agentic_opens_the_leader_and_the_board
+test_agentic_gives_the_board_half_the_room_beside_the_sidebar
 test_agentic_starts_the_team_with_the_leader_chosen
 test_agentic_makes_a_worktree_for_a_repo_and_a_branch
 test_agentic_needs_devagentics

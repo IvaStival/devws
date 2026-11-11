@@ -87,6 +87,22 @@ suggested_type() {
   case " $commit_types " in *" $type "*) printf '%s: ' "$type" ;; esac
 }
 
+# <suggested type>: the commit message, into `message`. On a terminal the type
+# (feat: ) starts the line to edit. macOS's bash 3.2 cannot put text in the
+# line (read -i is bash 4's): there the type shows in the prompt and is added,
+# unless the message brings a type of its own.
+read_message() {
+  local suggestion="$1"
+  if [ ! -t 0 ]; then
+    read -r message
+  elif (( BASH_VERSINFO[0] >= 4 )); then
+    read -e -r -i "$suggestion" -p 'Message: ' message
+  else
+    read -e -r -p "Message: $suggestion" message || return 1
+    [[ "$message" =~ ^[a-z]+(\(.*\))?!?:\  ]] || message="$suggestion$message"
+  fi
+}
+
 commit_manually() {
   local root="$1" branch message
   local -a files=()
@@ -103,7 +119,7 @@ commit_manually() {
   [ "${#files[@]}" -gt 0 ] || { printf 'Nothing selected; no commit.\n'; return 1; }
 
   branch="$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null)"
-  read -e -r -i "$(suggested_type "$branch")" -p 'Message: ' message || return 1
+  read_message "$(suggested_type "$branch")" || return 1
   message="${message#"${message%%[![:space:]]*}"}"
   case "$message" in
     '' | *:) printf 'No message; no commit.\n' >&2; return 1 ;;

@@ -44,7 +44,16 @@ sleep 600
 EOF
 done
 chmod +x "$TEST_ROOT/bin/"*
-ln -s "$SCRIPTS" "$TEST_ROOT/home/.tmuxinator"
+# Every script but the .env: the agents registered on this machine (a
+# DEVWS_AGENT_claude of the user's own) must not change what the test sees.
+mkdir -p "$TEST_ROOT/home/.tmuxinator"
+for script in "$SCRIPTS"/*; do
+  ln -s "$script" "$TEST_ROOT/home/.tmuxinator/${script##*/}"
+done
+printf 'DEVWS_AGENTS="claude codex"\n' > "$TEST_ROOT/home/.tmuxinator/.env"
+# The scripts run from there, as from ~/.tmuxinator: each reads the .env
+# beside the path it was started by.
+SCRIPTS="$TEST_ROOT/home/.tmuxinator"
 # TMPDIR keeps devws's temporary files (frozen workspaces' records among them)
 # apart from the real ones.
 mkdir -p "$TEST_ROOT/tmp"

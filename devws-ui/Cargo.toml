@@ -11,5 +11,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 # ratatui's own crossterm, with keys read from /dev/tty by poll(): macOS's
 # kqueue cannot watch a tty, so the default reader fails when stdin is a pipe.
 crossterm = { version = "0.29.0", features = ["use-dev-tty"] }
+# poll() on /dev/tty, to tell a terminal that hung up (tty.rs).
+libc = "0.2.191"
 nucleo-matcher = "0.3.1"
 ratatui = "0.30.2"

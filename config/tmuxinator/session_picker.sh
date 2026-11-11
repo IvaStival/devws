@@ -231,12 +231,13 @@ truncate_label() {
 
 # Model metadata has its own dim line and never consumes the name's budget.
 # Wrap long model identifiers instead of silently clipping their version suffix.
+# The prefix begins each line: spaces, or a tree's guide (`    │    `) so the
+# tree stays drawn down to the next group.
 model_lines() {
-  local model="$1" indent="$2" room="$3" prefix content_width
+  local model="$1" prefix="$2" room="$3" content_width
   [ -n "$model" ] || return 0
-  (( indent < room )) || indent=0
-  prefix="$(printf '%*s' "$indent" '')"
-  content_width=$((room - indent))
+  (( ${#prefix} < room )) || prefix=""
+  content_width=$((room - ${#prefix}))
   (( content_width > 0 )) || content_width=1
   while [ -n "$model" ]; do
     printf '\n\033[2m%s%s\033[0m' "$prefix" "${model:0:content_width}"
@@ -272,7 +273,11 @@ agent_row() {
   fi
   label="$(truncate_label "$id" "$((${row_width:-80} - ${#prefix} - ${#mark_plain}))")"
   printf 'agent:%s\t\033[2m%s\033[0m%s%b\033[0m' "$pane" "$prefix" "$label" "$mark"
-  model_lines "$model" "${#prefix}" "${row_width:-80}"
+  # Under a group with another below it, the model line carries the │ on.
+  local model_prefix
+  model_prefix="$(printf '%*s' "${#prefix}" '')"
+  [[ "$prefix" == "    │"* ]] && model_prefix="    │${model_prefix:5}"
+  model_lines "$model" "$model_prefix" "${row_width:-80}"
   printf '\t%s %s %s %s %s ' "$session" "$team" "$id" "$agent_state" "$model"
   printf '%s\n' "$session_snapshot" | awk -F '\t' -v session="$session" '$1 == session { printf "%s", $4 }'
   printf '\0'
@@ -346,7 +351,7 @@ normal_workspace_row() {
   else
     printf '%b  %s\033[0m\n    \033[2m%s\033[0m\n    \033[2m%s%b%s · %s\033[0m' "$state" "$session" "$branch" "${agent:-unknown}" "$activity" "$pause_mark" "${editor:-unknown}"
   fi
-  model_lines "$model" 4 "$row_width"
+  model_lines "$model" "    " "$row_width"
 }
 
 # A task's heading: its workspaces' project in bold green, the task (its
@@ -446,7 +451,7 @@ workspace_rows() {
     fi
     # A team leading its task shows the task (its branch) dim below.
     [ -z "$task" ] || printf '\n  \033[2m%s\033[0m' "$(truncate_label "$task" "$((row_width - 2))")"
-    model_lines "$model" 2 "$row_width"
+    model_lines "$model" "  " "$row_width"
     printf '\t%s\0' "$(search_text "$session")"
   done < <(row_order)
 }
@@ -493,31 +498,61 @@ refresh_states() {
   ) </dev/null >/dev/null 2>&1 &
 }
 
-# Swapped in whole, so a spinner frame never reads half of the rows.
+# Swapped in whole, so a spinner frame never reads half of the rows. Its own
+# drafts (.$$): a redraw (--redraw) and fzf's --rows may draw at once.
 write_rows() {
+  local new="$rows_file.new.$$" filtered="$rows_file.filtered.$$" display="$rows_file.display.$$"
   pr_roots=()
   picker_current="${DEVWS_PICKER_CURRENT:-$(tmux display-message -p '#S' 2>/dev/null)}"
   # Not a subshell: the rows collect pr_roots.
   prepare_expansion
-  workspace_rows "$picker_current" > "$rows_file.new"
+  workspace_rows "$picker_current" > "$new"
   if [ -n "$picker_query" ]; then
     local filter_status=0
     # Filtering the complete records preserves matching ancestors while the
     # interactive picker displays only field two (the hidden index stays hidden).
     fzf --filter "$picker_query" --no-sort --read0 --print0 --delimiter="$tab" --nth=2.. \
-      < "$rows_file.new" > "$rows_file.filtered" || filter_status=$?
-    [ "$filter_status" -le 1 ] || return "$filter_status"
-    mv "$rows_file.filtered" "$rows_file.new"
+      < "$new" > "$filtered" || filter_status=$?
+    [ "$filter_status" -le 1 ] || { rm -f "$new" "$filtered"; return "$filter_status"; }
+    mv "$filtered" "$new"
   fi
   # Search indexes are private to filtering. Emit only key + visible label so
   # already-running pickers using --with-nth=2.. cannot display metadata.
   local record
   while IFS= read -r -d '' record; do
     printf '%s\0' "${record%$'\t'*}"
-  done < "$rows_file.new" > "$rows_file.display"
-  mv "$rows_file.display" "$rows_file"
-  rm -f "$rows_file.new"
+  done < "$new" > "$display"
+  mv "$display" "$rows_file"
+  rm -f "$new"
   refresh_states
+}
+
+# --redraw <socket>: a state changed (refresh_devws_pickers.sh --reload). The
+# rows are drawn here, beside fzf, which then only reads them: drawing them in
+# fzf (reload-sync of --rows) blocked its keys and clicks the whole time, on
+# every change. Redraws asked while one runs fold into one more; a lock left
+# by a redraw that was killed is taken over.
+redraw() {
+  local socket="$1" lock="$rows_file.lock" holder
+  : > "$rows_file.again"
+  while [ -e "$rows_file.again" ]; do
+    if ! mkdir "$lock" 2>/dev/null; then
+      holder="$(cat "$lock/pid" 2>/dev/null)"
+      # Another redraw runs: it sees .again and draws once more.
+      [ -z "$holder" ] || kill -0 "$holder" 2>/dev/null && return 0
+      rm -rf "$lock"
+      continue
+    fi
+    printf '%s\n' "$$" > "$lock/pid"
+    while [ -e "$rows_file.again" ]; do
+      rm -f "$rows_file.again" "$rows_file.stale"
+      write_rows
+      curl -s --max-time 2 --unix-socket "$socket" http://localhost \
+        -d "reload-sync(cat $(printf '%q' "$rows_file"))" >/dev/null 2>&1 ||
+        : > "$rows_file.stale"
+    done
+    rm -rf "$lock"
+  done
 }
 
 if [ "${1:-}" = --expand ] || [ "${1:-}" = --collapse ]; then
@@ -566,6 +601,55 @@ if [ "${1:-}" = --rows ]; then
   exit 0
 fi
 
+if [ "${1:-}" = --redraw ]; then
+  rows_file="${DEVWS_PICKER_ROWS:?}"
+  redraw "${2:?a sidebar socket}"
+  exit 0
+fi
+
+# <key>: what a row (or the header's ☰ Menu, "menu") leads to. Run by fzf
+# itself (--go) on Enter or a click, so the sidebar never closes to do it:
+# closing and drawing it again flickered, and left no sidebar when anything
+# failed in between.
+go_to() {
+  local key="$1" workspace
+  case "$key" in
+    # Every workspace action is in the tabbed menu (devws_menu.sh).
+    menu) "$HOME/.tmuxinator/devws_menu.sh" --popup ;;
+    workspace:*) workspace="${key#workspace:}" ;;
+    # A group of an agent team: its workspace.
+    group:*) workspace="${key#group:}" ;;
+    # An agent of a team: its group's workspace, the agent.
+    agent:*)
+      tmux switch-client -t "${key#agent:}" 2>/dev/null
+      "$HOME/.tmuxinator/team_groups.sh" go "${key#agent:}" 2>/dev/null
+      workspace="$(tmux display-message -p -t "${key#agent:}" '#S' 2>/dev/null)"
+      ;;
+    # A task's heading takes you to its first workspace.
+    task:*) workspace="$(workspace_for_task "${key#task:}")" ;;
+  esac
+  [ -n "${workspace:-}" ] || return 0
+  [[ "$key" == agent:* ]] || tmux switch-client -t "$workspace" 2>/dev/null
+  point_at_own_workspace "$workspace"
+}
+
+# <workspace>: its sidebar's cursor on its own row, as each sidebar starts,
+# so it shows where you are when you get there.
+point_at_own_workspace() {
+  local pane socket position
+  IFS='|' read -r pane socket <<<"$(tmux list-panes -t "=$1:" -F '#{pane_title}|#{pane_id}|#{@devws_picker_socket}' 2>/dev/null |
+    awk -F '|' '$1 == "devws-picker" { print $2 "|" $3; exit }')"
+  [ -n "$pane" ] && [ -S "$socket" ] || return 0
+  position="$(TMUX_PANE="$pane" "$picker_script" --position "$1")"
+  [ -n "$position" ] || return 0
+  curl -s --max-time 2 --unix-socket "$socket" http://localhost -d "pos($position)" >/dev/null 2>&1
+}
+
+if [ "${1:-}" = --go ]; then
+  go_to "${2:-}"
+  exit 0
+fi
+
 # Always title this script's own pane. Without an explicit target tmux titles
 # the client's active pane, which may be the editor or terminal.
 tmux select-pane -t "$TMUX_PANE" -T devws-picker 2>/dev/null
@@ -578,8 +662,14 @@ fzf_socket="${tmp_dir%/}/devws-picker-$$.sock"
 tmux set-option -p -t "$TMUX_PANE" @devws_picker_socket "$fzf_socket" 2>/dev/null
 # fzf runs "--rows" with its environment.
 export DEVWS_PICKER_ROWS="$rows_file"
-trap 'rm -f "$rows_file" "$rows_file.stale" "$rows_file.new" "$rows_file.filtered" "$rows_file.display" "$fzf_socket"' EXIT
+trap 'rm -rf "$rows_file" "$rows_file".* "$fzf_socket"' EXIT
 
+# fzf runs only once a sidebar: Enter and clicks act from inside it (--go),
+# in the background. fzf stops tracking the mouse at the next key after a
+# command it waited on for a while (the menu's popup, waking a frozen
+# workspace), and the sidebar no longer answered clicks.
+# It ends only on Esc, or when refresh_devws_pickers.sh restarts it, and
+# starts again on the current workspace with an empty search.
 while tmux list-sessions >/dev/null 2>&1; do
   set_picker_option @devws_picker_query ""
   picker_current="${DEVWS_PICKER_CURRENT:-$(tmux display-message -p '#S' 2>/dev/null)}"
@@ -588,51 +678,22 @@ while tmux list-sessions >/dev/null 2>&1; do
   [ -n "$current_position" ] || current_position=1
   rm -f "$rows_file.stale"
   write_rows
-  selected="$(
-    fzf --height=100% --layout=reverse --ansi --read0 --gap=0 --track --id-nth=1 --disabled --no-sort \
-        --highlight-line \
-        --listen="$fzf_socket" \
-        --color='bg+:244,fg+:255' \
-        --delimiter=$'\t' --with-nth=2 \
-        --bind="right:execute-silent('$picker_script' --expand {1})+reload-sync('$picker_script' --rows)" \
-        --bind="left:execute-silent('$picker_script' --collapse {1})+reload-sync('$picker_script' --rows)" \
-        --bind="change:reload-sync('$picker_script' --search {q})" \
-        --bind="load:pos($current_position)+unbind(load)" \
-        --bind="start:transform:[ -e '$rows_file.stale' ] && printf 'reload-sync(%q --rows)' '$picker_script'" \
-        --bind='click-header:transform:
-          [ "$FZF_CLICK_HEADER_LINE" = 1 ] && printf "print(menu)+accept\n"' \
-        --header=$'\033[36m☰ Menu\033[0m  \033[2mC-b Space\033[0m\n\n\033[2mOPEN WORKSPACES\033[0m' \
-        --prompt='Find › ' --footer='← collapse · → expand' \
-        --info=hidden --no-separator --border=none --margin=0 --padding=0 \
-        < "$rows_file"
-  )"
-  # Header actions add their command before fzf's current workspace output.
-  selected="${selected%%$'\n'*}"
-
-  case "${selected%%$'\t'*}" in
-    # Every workspace action is in the tabbed menu (devws_menu.sh).
-    menu) "$HOME/.tmuxinator/devws_menu.sh" --popup ;;
-    '') ;;
-    workspace:*)
-      workspace="${selected%%$'\t'*}"
-      tmux switch-client -t "${workspace#workspace:}" 2>/dev/null
-      ;;
-    # A group of an agent team: its workspace.
-    group:*)
-      workspace="${selected%%$'\t'*}"
-      tmux switch-client -t "${workspace#group:}" 2>/dev/null
-      ;;
-    # An agent of a team: its group's workspace, the agent.
-    agent:*)
-      agent="${selected%%$'\t'*}"
-      tmux switch-client -t "${agent#agent:}" 2>/dev/null
-      "$HOME/.tmuxinator/team_groups.sh" go "${agent#agent:}" 2>/dev/null
-      ;;
-    # A task's heading takes you to its first workspace.
-    task:*)
-      task="${selected%%$'\t'*}"
-      workspace="$(workspace_for_task "${task#task:}")"
-      [ -z "$workspace" ] || tmux switch-client -t "$workspace" 2>/dev/null
-      ;;
-  esac
+  go="execute-silent('$picker_script' --go {1} >/dev/null 2>&1 &)"
+  fzf --height=100% --layout=reverse --ansi --read0 --gap=0 --track --id-nth=1 --disabled --no-sort \
+      --highlight-line \
+      --listen="$fzf_socket" \
+      --color='bg+:244,fg+:255' \
+      --delimiter=$'\t' --with-nth=2 \
+      --bind="right:execute-silent('$picker_script' --expand {1})+reload-sync('$picker_script' --rows)" \
+      --bind="left:execute-silent('$picker_script' --collapse {1})+reload-sync('$picker_script' --rows)" \
+      --bind="change:reload-sync('$picker_script' --search {q})" \
+      --bind="load:pos($current_position)+unbind(load)" \
+      --bind="enter:$go" --bind="left-click:$go" --bind="double-click:$go" \
+      --bind="start:transform:[ -e '$rows_file.stale' ] && printf 'reload-sync(%q --rows)' '$picker_script'" \
+      --bind="click-header:transform:
+        [ \"\$FZF_CLICK_HEADER_LINE\" = 1 ] && printf '%s\\n' \"execute-silent('$picker_script' --go menu >/dev/null 2>&1 &)\"" \
+      --header=$'\033[36m☰ Menu\033[0m  \033[2mC-b Space\033[0m\n\n\033[2mOPEN WORKSPACES\033[0m' \
+      --prompt='Find › ' --footer='← collapse · → expand' \
+      --info=hidden --no-separator --border=none --margin=0 --padding=0 \
+      < "$rows_file" >/dev/null
 done

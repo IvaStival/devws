@@ -89,9 +89,11 @@ builds left out).
   are in moves you to the one you used last; only the last one leaves
   devws.
   - **A branch or worktree folder** asks whether to remove the folder too
-    and keeps it unless you type `y`. One with uncommitted changes or
-    untracked files is always kept, and devws lists them. The branch and
-    its commits are never deleted.
+    and keeps it unless you type `y`. One with only untracked files lists
+    them and offers to delete the folder with them (`y`); one with a changed
+    tracked file is always kept, and devws lists the changes. The repo's
+    shared files (`.shared`) linked into the folder do not count. The branch
+    and its commits are never deleted.
   - **A branch running in jungleforge** asks whether to switch its apps
     back to main (the default), stop them, or leave them running.
 - **⏏ Detach (workspaces keep running)** (`C-b d`, `devws detach`) leaves

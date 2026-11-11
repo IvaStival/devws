@@ -6,20 +6,24 @@
 #   header_pet.sh <idle|working|waiting|done>          the mood's whole cycle,
 #                                                      frame after frame
 #
-# A pixel-art ghost, after the arcade ones (a dome, straight sides, a pointed
-# hem that flips between two shapes as it moves): 12 x 6 pixels drawn with
-# quarter blocks (▘▝▖▗▀▄▌▐▚▞▛▜▙▟█), 2 x 2 pixels a character, each character
-# with its own two colors, so the ghost has a body, white eyes and dark pupils.
-# It moves a whole character at a time, which keeps its shape. The mood
-# follows the workspace's agent:
-#   idle     eyes shut, breathing, its hem flipping slowly, a z rising beside it
-#   working  drifting across the lane and back, looking where it goes, its
-#            hem flipping, blinking now and then
+# devws's pixel ghost (its icon): a round head with two tall dark eyes and a
+# smile between them, its arms out, its body tapering into a tail that
+# curls off to the right, shaded darker under it. 16 x 9 pixels drawn with
+# sextants (the 2 x 3 blocks of Unicode's Symbols for Legacy Computing, 🬀 to 🬻, with ▌ ▐ █),
+# each character with its own two colors. It moves a whole character at a
+# time, which keeps its shape. Terminals that draw these blocks themselves
+# (Ghostty, iTerm2, kitty, WezTerm) show it whole; elsewhere the font must
+# have them. The mood follows the workspace's agent:
+#   idle     eyes shut, breathing, a z rising beside it
+#   working  drifting across the lane and back, looking where it goes,
+#            blinking now and then
 #   waiting  wide-eyed and open-mouthed, shaking, a blinking "!"
-#   done     happy eyes, swaying, its hem flipping fast, a blinking heart,
-#            for 3 s of every 15; at rest the rest of the time
-# The body takes the mood's color: DEVWS_COLOR_DIM (idle), DEVWS_COLOR_GHOST
-# (working), DEVWS_COLOR_WARN (waiting), DEVWS_COLOR_OK (done).
+#   done     happy eyes, swaying, a blinking heart, for 3 s of every 15; at
+#            rest the rest of the time
+# The body takes the mood's color, its edge a darker one that still shows on
+# a dark terminal (the hem and tail are the body's, so the ghost never looks
+# cut off there): DEVWS_COLOR_DIM (idle), DEVWS_COLOR_GHOST (working),
+# DEVWS_COLOR_WARN (waiting), DEVWS_COLOR_OK (done).
 # header_ticker.sh draws the cycles once and plays them back.
 
 set -u
@@ -27,13 +31,13 @@ set -u
 mood="${1:-}"
 tick="${2:-}"
 
-# Frames in a cycle, a multiple of every motion's period in that mood; and the
-# body's color.
+# Frames in a cycle, a multiple of every motion's period in that mood; the
+# body's color and its edge's.
 case "$mood" in
-  idle) period=120 body="${DEVWS_COLOR_DIM:-colour245}" ;;
-  working) period=720 body="${DEVWS_COLOR_GHOST:-colour173}" ;;
-  waiting) period=180 body="${DEVWS_COLOR_WARN:-yellow}" ;;
-  done) period=300 body="${DEVWS_COLOR_OK:-green}" ;;
+  idle) period=120 body="${DEVWS_COLOR_DIM:-colour245}" edge=colour242 ;;
+  working) period=720 body="${DEVWS_COLOR_GHOST:-colour214}" edge=colour172 ;;
+  waiting) period=180 body="${DEVWS_COLOR_WARN:-yellow}" edge=colour178 ;;
+  done) period=300 body="${DEVWS_COLOR_OK:-green}" edge=colour34 ;;
   *)
     printf 'Unknown ghost mood: %s (idle, working, waiting, done)\n' "$mood" >&2
     exit 2
@@ -48,31 +52,25 @@ else
   last=$((period - 1))
 fi
 
-awk -v mood="$mood" -v first="$first" -v last="$last" -v body="$body" '
-  function pick(list, index_,    items) {
-    split(list, items, " ")
-    return items[index_ % length(items) + 1]
-  }
-  # The pointed hem, in the two shapes of the arcade ghosts, flipped between.
-  function hem(phase) {
-    return pick(".O.O.OO.O.O. .OO.O..O.OO.", phase)
-  }
-  # A row of the ghost across both eyes, each eye 2 pixels.
-  function eyes_row(left, right) {
-    return ".O" left "OOOO" right "O."
-  }
+awk -v mood="$mood" -v first="$first" -v last="$last" -v body="$body" -v edge="$edge" '
   # The pixel (a palette letter, "." for none) of the lane at <column> <row>.
   function pixel(column, row,    sprite_column) {
     sprite_column = column - x
-    if (sprite_column < 0 || sprite_column > 11) return "."
+    if (sprite_column < 0 || sprite_column >= width) return "."
     return substr(sprite[row], sprite_column + 1, 1)
   }
-  # One character of 2 x 2 pixels, in their two most common colors.
-  function cell(column, row,    k, letter, seen, ink, paper, mask, best, best_count, second, second_count) {
+  # One character of 2 x 3 pixels, in two colors. With pixels of none (the
+  # edge of the ghost) the terminal background is one: the character is
+  # its most common color on it, unless an eye or the mouth is there,
+  # which shows whole, its pixels of none filled in. Else the two most
+  # common, the rarer drawn as the block so an eye or the mouth shows whole.
+  function cell(column, row,    k, letter, seen, empty, ink, paper, mask, best, best_count, second, second_count) {
     delete seen
-    for (k = 0; k < 4; k++) {
-      quarter[k] = pixel(column * 2 + k % 2, row * 2 + int(k / 2))
-      if (quarter[k] != ".") seen[quarter[k]]++
+    empty = 0
+    for (k = 0; k < 6; k++) {
+      part[k] = pixel(column * 2 + k % 2, row * 3 + int(k / 2))
+      if (part[k] != ".") seen[part[k]]++
+      else empty++
     }
     best = ""; best_count = 0; second = ""; second_count = 0
     for (letter in seen) {
@@ -80,12 +78,15 @@ awk -v mood="$mood" -v first="$first" -v last="$last" -v body="$body" '
       else if (seen[letter] > second_count) { second = letter; second_count = seen[letter] }
     }
     if (best == "") return ""
-    # Drawn as the block: the rarer color, so a pupil or an eye shows whole.
+    mask = 0
+    if (empty && !("K" in seen)) {
+      for (k = 0; k < 6; k++) if (part[k] != ".") mask += 2 ^ k
+      return styled("#[fg=" color[best] ",bg=default]", glyph[mask])
+    }
     ink = (second != "" ? second : best)
     paper = (second != "" ? best : "")
-    mask = 0
-    for (k = 0; k < 4; k++) if (quarter[k] == ink) mask += weight[k]
-    return styled("#[fg=" color[ink] ",bg=" (paper != "" ? color[paper] : "default") "]", quads[mask])
+    for (k = 0; k < 6; k++) if (part[k] == ink) mask += 2 ^ k
+    return styled("#[fg=" color[ink] ",bg=" (paper != "" ? color[paper] : "default") "]", glyph[mask])
   }
   # The character, after its style when that differs from the one before.
   function styled(style, character) {
@@ -93,50 +94,63 @@ awk -v mood="$mood" -v first="$first" -v last="$last" -v body="$body" '
     last_style = style
     return style character
   }
-  function frame(t,    row, column, line, drawn, mouth, phase, head, top, bottom, sweep, rise) {
+  # <row> with <letters> laid over it from <column>.
+  function put(row, column, letters) {
+    sprite[row] = substr(sprite[row], 1, column) letters substr(sprite[row], column + length(letters) + 1)
+  }
+  # The face, moved <look> pixels aside (-1 left, 0 ahead, 1 right): <eyes>
+  # open (two tall blocks), shut (their bottoms) or happy (their tops);
+  # <mouth> a smile between them, or open.
+  function face(eyes, look, mouth,    left, right) {
+    left = 4 + look; right = 9 + look
+    if (eyes != "shut") { put(2, left, "KK"); put(2, right, "KK") }
+    if (eyes != "happy") { put(3, left, "KK"); put(3, right, "KK") }
+    if (mouth == "open") put(5, 6 + look, "KKK")
+    put(4, 6 + look, "KKK")
+  }
+  function frame(t,    row, column, line, drawn, sweep, rise, eyes, look, mouth) {
     note = ""
-    phase = int(t / 3)
-    head = "...OOOOOO..."
-    mouth = ".OOOOOOOOOO."
+    sprite[0] = "...OOOOOOOOO...."
+    sprite[1] = "..OOOOOOOOOOO..."
+    sprite[2] = "..OOOOOOOOOOO..."
+    sprite[3] = "OOOOOOOOOOOOOOO."
+    sprite[4] = ".OOOOOOOOOOOOO.."
+    sprite[5] = "...OOOOOOOOOO..."
+    sprite[6] = ".....OOOOOOO...."
+    sprite[7] = ".......OOOOOO.OO"
+    sprite[8] = "..........DDOOO."
+    eyes = "open"; look = 0; mouth = "smile"
     if (mood == "idle") {
-      x = 6
-      phase = int(t / 10)
+      x = 4
       # Breathing: the head a little narrower every other second.
-      if (int(t / 20) % 2) head = "....OOOO...."
-      top = eyes_row("OO", "OO"); bottom = eyes_row("KK", "KK")
+      if (int(t / 20) % 2) sprite[0] = ".....OOOOO......"
+      eyes = "shut"
       rise = int(t / 10) % 4
-      if (rise < 3) { note = (rise == 2 ? "Z" : "z"); note_row = 2 - rise; note_column = 10 }
+      if (rise < 3) { note = (rise == 2 ? "Z" : "z"); note_row = 2 - rise; note_column = 11 }
     } else if (mood == "working") {
-      sweep = int(t / 3) % 12
-      x = (sweep <= 6 ? sweep : 12 - sweep) * 2
-      top = eyes_row("WW", "WW")
+      sweep = int(t / 3) % 8
+      x = (sweep <= 4 ? sweep : 8 - sweep) * 2
       # Looking where it goes: right on the way out, left on the way back.
-      if (sweep < 6) bottom = eyes_row("WK", "WK")
-      else bottom = eyes_row("KW", "KW")
-      if (t % 80 < 3) { top = eyes_row("OO", "OO"); bottom = eyes_row("KK", "KK") }
+      look = (sweep < 4 ? 1 : -1)
+      if (t % 80 < 3) eyes = "shut"
     } else if (mood == "waiting") {
-      x = 6 + (int(t / 3) % 2) * 2
-      top = eyes_row("WW", "WW"); bottom = eyes_row("WW", "WW")
-      mouth = ".OOOOKKOOOO."
+      x = 4 + (int(t / 3) % 2) * 2
+      mouth = "open"
       if (int(t / 10) % 2 == 0) { note = "!"; note_row = 0; note_column = 11 }
     } else {
       # Happy for the first 3 s of every 15, then at rest: done lasts until
       # the next prompt, and every change is a redraw.
-      top = eyes_row("KK", "KK"); bottom = eyes_row("OO", "OO")
+      eyes = "happy"
       note = "♥"; note_column = 11
       if (t % 300 < 60) {
-        x = 6 + (int(t / 12) % 2) * 2
-        phase = int(t / 2)
+        x = 2 + (int(t / 12) % 2) * 2
         note_row = int(t / 12) % 2
       } else {
-        x = 6
-        phase = int(t / 20)
+        x = 2
         note_row = int(t / 20) % 2
       }
     }
-    sprite[0] = head; sprite[1] = ".OOOOOOOOOO."
-    sprite[2] = top; sprite[3] = bottom
-    sprite[4] = mouth; sprite[5] = hem(phase)
+    face(eyes, look, mouth)
     for (row = 0; row < 3; row++) {
       line = ""
       last_style = ""
@@ -150,11 +164,12 @@ awk -v mood="$mood" -v first="$first" -v last="$last" -v body="$body" '
     }
   }
   BEGIN {
-    split(" |▗|▖|▄|▝|▐|▞|▟|▘|▚|▌|▙|▀|▜|▛|█", list, "|")
-    for (k = 0; k < 16; k++) quads[k] = list[k + 1]
-    # Quarters: top left, top right, bottom left, bottom right.
-    weight[0] = 8; weight[1] = 4; weight[2] = 2; weight[3] = 1
-    color["O"] = body; color["W"] = "colour255"; color["K"] = "colour232"
+    # The block for each pattern of the six pixels, bit k the pixel k
+    # (left to right, top to bottom).
+    split(" |🬀|🬁|🬂|🬃|🬄|🬅|🬆|🬇|🬈|🬉|🬊|🬋|🬌|🬍|🬎|🬏|🬐|🬑|🬒|🬓|▌|🬔|🬕|🬖|🬗|🬘|🬙|🬚|🬛|🬜|🬝|🬞|🬟|🬠|🬡|🬢|🬣|🬤|🬥|🬦|🬧|▐|🬨|🬩|🬪|🬫|🬬|🬭|🬮|🬯|🬰|🬱|🬲|🬳|🬴|🬵|🬶|🬷|🬸|🬹|🬺|🬻|█", list, "|")
+    for (k = 0; k < 64; k++) glyph[k] = list[k + 1]
+    width = 16
+    color["O"] = body; color["D"] = edge; color["K"] = "colour232"
     for (t = first; t <= last; t++) frame(t)
   }
 '

@@ -100,8 +100,10 @@ assert_restored() {
     fail "$session: placeholders or the hidden window were left behind"
 }
 
+# Each pane's place and size. Not #{window_layout}: since tmux 3.8 it also
+# records which pane has focus, and minimizing moves focus to the editor.
 window_layout() {
-  tmux display-message -p -t "$1:" '#{window_layout}'
+  tmux list-panes -t "$1:" -F '#{pane_id} #{pane_left},#{pane_top} #{pane_width}x#{pane_height}'
 }
 
 test_stacked_minimize_and_restore() {
@@ -124,6 +126,8 @@ test_stacked_minimize_and_restore() {
   assert_restored "$session"
   [[ "$(window_layout "$session")" == "$before" ]] ||
     fail "restore did not bring back the previous sizes"
+  [[ "$(tmux display-message -p -t "$session:" '#{pane_id}')" == "$(pane_id "$session" editor)" ]] ||
+    fail "focus did not stay on the editor after restoring"
   [[ "$(pane_pid "$(pane_id "$session" agent)")" == "$agent_pid" ]] ||
     fail "the agent process did not survive minimizing"
 }
@@ -362,7 +366,8 @@ test_headers_and_mouse() {
 
   screen="$(client_screen)"
   grep -q '▾ 󰚩 Agent · claude' <<< "$screen" || fail "the agent header is missing"
-  grep -q $'▾ \uF489 Terminal' <<< "$screen" || fail "the terminal header is missing"
+  # U+F489 as UTF-8 bytes: macOS's bash 3.2 has no \u escape.
+  grep -q $'▾ \xef\x92\x89 Terminal' <<< "$screen" || fail "the terminal header is missing"
 
   click_header 'Agent · claude'
   wait_until is_minimized_now "$session" || fail "clicking the agent header did not minimize"

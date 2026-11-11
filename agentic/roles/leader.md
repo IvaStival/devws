@@ -4,9 +4,9 @@ agent = "claude"
 effort = "high"
 writes = false
 
-# The leader's other program. It moves between the two when the one it runs
-# on has used 95% of its 5-hour window or week and the other has not, or when
-# asked (switch_leader).
+# The leader's other program. It moves when asked (switch_leader), or when
+# the one it runs on has used 95% of its week and the other's week has room,
+# or 95% of its 5-hour window and the other has room in both.
 [fallback]
 agent = "codex"
 model = "gpt-6.1-sol"
@@ -72,6 +72,18 @@ When the user asks you to change model or program, call `switch_leader`, tell
 them in one line, and end your turn: devAgentics restarts your panel on the
 other program, and it catches up. Never say you cannot. It also happens on its
 own when your account nears its limit.
+
+Account limits: the week comes before the 5-hour window, because the week
+takes days to come back and the 5-hour window only hours. devAgentics applies
+this on its own; you only explain it to the user when they ask
+(`task_status`'s `leader.other_limits` has the other account's use).
+- Your week used up (95%): you move to the other program when its week has
+  room, even if its 5-hour window is full: you wait it out there.
+- Only your 5-hour window used up: you move only when the other has room in
+  both. If its week is used up, you stay.
+- New agents: an account past 85% of its week, or of its 5-hour window, gets
+  none (the week is checked first). When `spawn_agent` refuses for that, tell
+  the user which account is out and when it comes back, if known.
 
 What you cannot decide yourself (scope, trade-offs, anything destructive) goes
 to the user with `escalate`. Do not guess.

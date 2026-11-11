@@ -142,6 +142,46 @@ test_a_managed_worktree_is_removed_and_its_branch_kept() {
     fail "removing the managed worktree deleted the branch"
 }
 
+# The repo's shared files (.shared, shared_files.sh) linked into a worktree
+# are devws's, not work of its own: they neither keep the worktree nor stop
+# its removal, and .shared keeps them. A link elsewhere, or a file, is work.
+test_shared_links_are_not_changes() {
+  local folder
+  folder="$(worktree ensure "$MANAGED/.bare" feat/shared origin/main 2>/dev/null)"
+  mkdir -p "$MANAGED/.shared"
+  printf '#!/bin/sh\n' > "$MANAGED/.shared/sync-deploy.sh"
+  "$ROOT/config/tmuxinator/shared_files.sh" link "$MANAGED" "$folder" >/dev/null
+  [ -L "$folder/sync-deploy.sh" ] || fail "the shared file was not linked"
+  [ "$(worktree status "$folder")" = clean ] ||
+    fail "a shared link counts as a change: $(worktree status "$folder")"
+  ln -s "$TEST_ROOT/remote.git" "$folder/elsewhere"
+  printf 'mine\n' > "$folder/notes.txt"
+  [ "$(worktree status "$folder")" = $'?? elsewhere\n?? notes.txt' ] ||
+    fail "the real changes are not listed alone: $(worktree status "$folder")"
+  ! worktree remove "$folder" 2>/dev/null || fail "a worktree with changes was removed"
+  [ -L "$folder/sync-deploy.sh" ] || fail "a kept worktree lost its shared link"
+  rm "$folder/elsewhere" "$folder/notes.txt"
+  worktree remove "$folder" || fail "a worktree with only shared links was not removed"
+  [ ! -e "$folder" ] || fail "the folder is still there"
+  [ -f "$MANAGED/.shared/sync-deploy.sh" ] || fail "removing the worktree removed the shared file"
+}
+
+# --untracked deletes a worktree whose only changes are untracked files, and
+# still refuses one with a changed tracked file.
+test_remove_untracked_deletes_only_untracked_files() {
+  local folder
+  folder="$(worktree ensure "$REPO" scratch 2>/dev/null)"
+  printf 'changed\n' >> "$folder/file.txt"
+  printf 'draft\n' > "$folder/notes.txt"
+  ! worktree remove "$folder" --untracked 2>/dev/null || fail "--untracked removed a changed tracked file"
+  grep -q changed "$folder/file.txt" || fail "the tracked change was lost"
+  git -C "$folder" checkout -q -- file.txt
+  ! worktree remove "$folder" 2>/dev/null || fail "untracked files were removed without --untracked"
+  worktree remove "$folder" --untracked || fail "--untracked kept a worktree with only untracked files"
+  [ ! -e "$folder" ] || fail "the folder is still there"
+  git -C "$REPO" show-ref --verify --quiet refs/heads/scratch || fail "the branch was deleted"
+}
+
 test_the_folder_sits_next_to_the_repo
 test_a_managed_worktree_sits_beside_the_bare_repo
 test_a_new_managed_branch_comes_off_the_base_untracked
@@ -152,5 +192,7 @@ test_a_remote_branch_is_tracked
 test_a_foreign_folder_or_bad_name_is_refused
 test_linked_tells_a_worktree_from_the_repo
 test_status_and_remove_keep_changes
+test_shared_links_are_not_changes
+test_remove_untracked_deletes_only_untracked_files
 
 printf 'Worktree tests passed.\n'

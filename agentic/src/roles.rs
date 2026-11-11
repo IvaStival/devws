@@ -289,7 +289,7 @@ impl Setting {
                 "claude-haiku-5-5",
                 "claude-fable-5-1",
             ],
-            (Setting::Model, Kind::Codex) => &["gpt-6.1-sol", "gpt-5.6-luna"],
+            (Setting::Model, Kind::Codex) => &["gpt-6.1-sol", "gpt-6-luna", "gpt-5.6-luna"],
             (Setting::Effort, Kind::Claude) => &["low", "medium", "high", "xhigh", "max"],
             (Setting::Effort, Kind::Codex) => &["minimal", "low", "medium", "high", "xhigh"],
             // Claude's permission modes; Codex's -a, and devws's auto review.
