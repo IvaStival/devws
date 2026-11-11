@@ -8,6 +8,14 @@
 
 set -u
 
+# --closing <session> leaves out a workspace about to be closed. Close saves
+# before it kills the session: killing the last one ends the tmux server, and a
+# save after that finds nothing and would keep the closed workspace to restore.
+closing=""
+if [ "${1:-}" = --closing ]; then
+  closing="${2:-}"
+fi
+
 state_root="$HOME/.devws-state"
 state_file="$state_root/sessions.tsv"
 lock_dir="$state_root/restore.lock"
@@ -29,6 +37,7 @@ trap 'rm -f "$temporary"' EXIT
   printf '#devws-state\t1\n'
   while IFS="$tab" read -r session root agent editor task template; do
     case "$session" in dev-*) ;; *) continue ;; esac
+    [ "$session" != "$closing" ] || continue
     [ -n "$root" ] || continue
 
     # The workspace's own window, not the active one: an agent team's tab may

@@ -208,6 +208,31 @@ test_save_is_idempotent() {
     fail "a second identical save changed the state file"
 }
 
+# Close saves before it kills the workspace: once the last one is gone the
+# tmux server exits, and a save then would find nothing and keep the old state.
+test_save_leaves_out_a_closing_workspace() {
+  setup
+  two_workspace_fixture
+  run_devws_script save_state.sh --closing dev-one
+
+  ! grep -q "dev-one" "$(state_file)" || fail "the closing workspace was saved"
+  grep -q "^W${TAB}dev-two${TAB}" "$(state_file)" || fail "the workspace left open was not saved"
+}
+
+test_closing_the_last_workspace_leaves_nothing_to_restore() {
+  setup
+  local one="$TEST_ROOT/project-one"
+  mkdir -p "$one"
+  printf 'dev-one\t%s\tclaude\tlvim\n' "$one" > "$TEST_ROOT/sessions"
+  write_panes dev-one "%editor-one|1|editor||$one"
+  FIXTURE_SESSIONS="$TEST_ROOT/sessions"
+  run_save
+  grep -q "^W${TAB}dev-one${TAB}" "$(state_file)" || fail "the open workspace was not saved"
+
+  run_devws_script save_state.sh --closing dev-one
+  ! grep -q "^W" "$(state_file)" || fail "a closed last workspace would be restored: $(cat "$(state_file)")"
+}
+
 test_save_skips_during_restore() {
   setup
   two_workspace_fixture
@@ -469,6 +494,8 @@ test_save_reads_the_workspace_window_not_the_active_tab
 test_save_adopts_terminal_in_legacy_workspace
 test_save_is_idempotent
 test_save_skips_during_restore
+test_save_leaves_out_a_closing_workspace
+test_closing_the_last_workspace_leaves_nothing_to_restore
 test_restore_replays_workspaces
 test_new_panels_are_saved_and_restored
 test_restore_skips_open_and_missing

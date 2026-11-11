@@ -22,11 +22,6 @@
 set -u
 
 script="$HOME/.tmuxinator/devws_menu.sh"
-# One concern per tab: which workspaces there are, how the screen is
-# arranged, the agent and its team, git, the app the branch runs (jungleforge, its
-# database, the background jobs), and the guide (docs/guide/).
-tabs=(workspace layout agent git app help)
-
 # tab|action|label|shortcut|function in workspace_actions.sh, with its
 # arguments[|when: see shown]
 actions='workspace|github|⎇ Open or start a workspace||new_github_workspace
@@ -35,7 +30,6 @@ workspace|new|+ New folder workspace||new_workspace
 workspace|worktree|⑂ New worktree workspace||new_worktree_workspace
 workspace|open-folder|⌂ Open folder in…||open_folder
 workspace|close|× Close workspace||close_workspace
-workspace|tidy|⌫ Tidy up merged branches||tidy_up
 workspace|detach|⏏ Detach (workspaces keep running)|C-b d|detach_client
 layout|toggle-layout|▥ Toggle layout|C-b \|toggle_layout|editor
 layout|minimize|▁ Minimize agent and terminal|C-b _|minimize_agents|editor
@@ -66,20 +60,22 @@ team|switch-leader|⇄ Switch leader model||switch_leader_model|agentic
 git|commit|✓ Commit (agent)|C-b g|commit_with_agent
 git|commit-manual|✎ Commit manually||commit_by_hand
 git|push|↑ Push / PR|C-b G|push_branch
-app|setup-jungleforge|⚒ Set up jungleforge||setup_jungleforge|no-jungleforge
-app|run-here|▶ Run this branch|C-b e|run_this_branch|jungleforge
-app|switch-run|⇄ Switch running branch|C-b E|switch_running_branch|jungleforge
-app|stop-run|■ Stop||stop_running_apps|jungleforge
-app|services|⛃ Services||start_services|jungleforge
-app|migrate|⇡ Migrate||migrate_running_app|jungleforge
-app|shell|⌘ Shell||open_app_shell|jungleforge
-app|logs|≡ Logs||open_app_logs|jungleforge
-app|info|ⓘ Info||show_app_info|jungleforge
-app|settings|⚙ Settings||change_app_setting|jungleforge
-app|register-jungleforge|＋ Register in jungleforge||register_in_jungleforge|jungleforge
-app|open-database|⛁ Database|C-b B|open_database|editor
-app|database-folder|⛁ Database folder||choose_database_folder|editor
-app|job-log|◷ Job log|C-b j|show_job_log
+git|tidy|⌫ Tidy up merged branches||tidy_up
+jungleForge|setup-jungleforge|⚒ Set up JungleForge||setup_jungleforge|no-jungleforge
+jungleForge|run-here|▶ Run this branch|C-b e|run_this_branch|jungleforge
+jungleForge|switch-run|⇄ Switch running branch|C-b E|switch_running_branch|jungleforge
+jungleForge|stop-run|■ Stop||stop_running_apps|jungleforge
+jungleForge|services|⛃ Services||start_services|jungleforge
+jungleForge|migrate|⇡ Migrate||migrate_running_app|jungleforge
+jungleForge|shell|⌘ Shell||open_app_shell|jungleforge
+jungleForge|logs|≡ Logs||open_app_logs|jungleforge
+jungleForge|info|ⓘ Info||show_app_info|jungleforge
+jungleForge|settings|⚙ Settings||change_app_setting|jungleforge
+jungleForge|register-jungleforge|＋ Register in JungleForge||register_in_jungleforge|jungleforge
+tools|open-database|⛁ Database|C-b B|open_database|editor
+tools|database-folder|⛁ Database folder||choose_database_folder|editor
+tools|job-log|◷ Job log|C-b j|show_job_log
+tools|network-devices|◎ List network devices||list_network_devices
 help|guide|? Start here||open_guide README
 help|guide-shortcuts|⌨ Shortcuts||open_guide shortcuts
 help|guide-workspaces|⎇ Workspaces||open_guide workspaces
@@ -87,7 +83,7 @@ help|guide-layout|▥ Layout||open_guide layout
 help|guide-agents|◇ Agents||open_guide agents
 help|guide-agentic|◈ Agent teams||open_guide agentic
 help|guide-git|✓ Git||open_guide git
-help|guide-app|▶ App, jobs and database||open_guide app
+help|guide-app|▶ JungleForge, jobs and database||open_guide app
 help|guide-commands|$ Commands||open_guide commands
 help|guide-configuration|⚙ Configuration||open_guide configuration'
 
@@ -104,9 +100,12 @@ session() {
 team_workspace="$(tmux show-options -qv -t "=$(session):" @devws_team_of 2>/dev/null)"
 team_workspace="${team_workspace:-$(session)}"
 team_task="$(tmux show-options -qv -t "=$team_workspace:" @devws_task 2>/dev/null)"
+tabs=(workspace layout agent)
 if [ -n "$team_task" ]; then
-  tabs=(workspace layout agent team git app help)
+  tabs+=(team)
 fi
+# Both renderers capitalize the first letter of the tab ID.
+tabs+=(git jungleForge tools help)
 
 title() {
   printf '%s%s' "$(printf '%s' "${1:0:1}" | tr '[:lower:]' '[:upper:]')" "${1:1}"
@@ -115,6 +114,7 @@ title() {
 current_tab() {
   local tab
   tab="$(tmux show-option -qv -t "$(session)" @devws_menu_tab)"
+  [ "$tab" != app ] || tab=jungleForge
   case " ${tabs[*]} " in
     *" $tab "*) printf '%s' "$tab" ;;
     *) printf '%s' "${tabs[0]}" ;;
@@ -261,8 +261,8 @@ run_action() {
 
 open_popup() {
   local client="${1:-}"
-  # Room for the longest tab (App) whole, and its questions (branches, apps).
-  tmux display-popup ${client:+-c "$client"} -E -w 70 -h 18 -T ' devws ' "$script"
+  # Room for the full tab bar, including Team, and the actions' questions.
+  tmux display-popup ${client:+-c "$client"} -E -w 78 -h 18 -T ' devws ' "$script"
 }
 
 # One action alone in the menu's popup: what its key (C-b e, C-b g…) opens.

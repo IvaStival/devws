@@ -106,15 +106,17 @@ actions_of() {
 }
 
 test_tabs_list_their_actions() {
-  [ "$(actions_of workspace)" = "github agentic new worktree open-folder close tidy detach" ] ||
+  [ "$(actions_of workspace)" = "github agentic new worktree open-folder close detach" ] ||
     fail "Workspace tab: $(actions_of workspace)"
   [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor" ] ||
     fail "Layout tab: $(actions_of layout)"
   [ "$(actions_of agent)" = "jump switch-agent restart-agent follow-mode initialize-agent register-agent agent-folder remove-agent team-roles" ] ||
     fail "Agent tab: $(actions_of agent)"
-  [ "$(actions_of git)" = "commit commit-manual push" ] || fail "Git tab: $(actions_of git)"
-  [ "$(actions_of app)" = "run-here switch-run stop-run services migrate shell logs info settings register-jungleforge open-database database-folder job-log" ] ||
-    fail "App tab: $(actions_of app)"
+  [ "$(actions_of git)" = "commit commit-manual push tidy" ] || fail "Git tab: $(actions_of git)"
+  [ "$(actions_of jungleForge)" = "run-here switch-run stop-run services migrate shell logs info settings register-jungleforge" ] ||
+    fail "JungleForge tab: $(actions_of jungleForge)"
+  [ "$(actions_of tools)" = "open-database database-folder job-log network-devices" ] ||
+    fail "Tools tab: $(actions_of tools)"
   [ "$(actions_of help)" = "guide guide-shortcuts guide-workspaces guide-layout guide-agents guide-agentic guide-git guide-app guide-commands guide-configuration" ] ||
     fail "Help tab: $(actions_of help)"
 }
@@ -124,8 +126,7 @@ test_tabs_list_their_actions() {
 test_an_agent_team_has_no_editor_items() {
   tmux set-option -p -t "$PANE" @devws_role agent
   [ "$(actions_of layout)" = "header new-panel move-panel" ] || fail "Layout tab of an agent team: $(actions_of layout)"
-  ! grep -qE 'open-database|database-folder' <<<"$(actions_of app)" || fail "an agent team is offered the database: $(actions_of app)"
-  grep -q 'job-log' <<<"$(actions_of app)" || fail "an agent team lost the job log"
+  [ "$(actions_of tools)" = "job-log network-devices" ] || fail "Tools tab of an agent team: $(actions_of tools)"
   tmux set-option -p -t "$PANE" @devws_role editor
   [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor" ] ||
     fail "Layout tab of a normal workspace: $(actions_of layout)"
@@ -244,16 +245,16 @@ EOF
 
 test_items_show_labels_and_shortcuts() {
   # Captured first: with pipefail, grep -q stopping early would fail the pipe.
-  local layout agent app
+  local layout agent tools
   layout="$(menu --items layout)"
   agent="$(menu --items agent)"
-  app="$(menu --items app)"
+  tools="$(menu --items tools)"
   grep -q $'^toggle-layout\t.*Toggle layout.*C-b \\\\' <<<"$layout" || fail "Toggle layout has no shortcut"
   grep -q $'^minimize\t.*Minimize agent and terminal.*C-b _' <<<"$layout" || fail "Minimize has no shortcut"
   grep -q $'^header\t.*Hide or show the header.*C-b C-s' <<<"$layout" || fail "Hide header has no shortcut"
   grep -q $'^new-panel\t.*New panel.*C-b N' <<<"$layout" || fail "New panel has no shortcut"
   grep -q $'^move-panel\t.*Move panel.*C-b S-' <<<"$layout" || fail "Move panel has no shortcut"
-  grep -q $'^open-database\t.*Database.*C-b B' <<<"$app" || fail "Database has no shortcut"
+  grep -q $'^open-database\t.*Database.*C-b B' <<<"$tools" || fail "Database has no shortcut"
   grep -q $'^follow-mode\t.*Agent follow.*C-b F' <<<"$agent" || fail "Agent follow has no shortcut"
   grep -q $'^switch-agent\t.*Switch agent' <<<"$agent" || fail "Switch agent has no label"
 }
@@ -298,12 +299,13 @@ test_running_an_unregistered_repo_offers_registering() {
   tmux set-option -u -t dev-menu @devws_root
 }
 
-# Without jungleforge the App tab offers setting it up instead of running
-# branches; the database and the job log stay.
-test_the_app_tab_follows_jungleforge() {
+# Before setup, JungleForge shows its setup action and Tools stays available.
+test_the_jungleforge_tab_follows_setup() {
   : > "$TEST_ROOT/jf.missing"
-  [ "$(actions_of app)" = "setup-jungleforge open-database database-folder job-log" ] ||
-    fail "App tab without jungleforge: $(actions_of app)"
+  [ "$(actions_of jungleForge)" = "setup-jungleforge" ] ||
+    fail "JungleForge tab before setup: $(actions_of jungleForge)"
+  [ "$(actions_of tools)" = "open-database database-folder job-log network-devices" ] ||
+    fail "Tools tab before setup: $(actions_of tools)"
   rm "$TEST_ROOT/jf.missing"
 }
 
@@ -314,10 +316,12 @@ test_typing_searches_every_tab() {
   tmux set-option -t dev-menu @devws_menu_tab workspace
   [ "$(menu --items-for '')" = "$(menu --items workspace)" ] || fail "an empty query does not show the tab"
   all="$(menu --items-for data)"
-  grep -q $'^open-database\tApp · ⛁ Database' <<<"$all" || fail "typing does not reach the App tab: $all"
+  grep -q $'^open-database\tTools · ⛁ Database' <<<"$all" || fail "typing does not reach the Tools tab: $all"
   grep -q $'^jump\tAgent · ! Go to waiting agent' <<<"$all" || fail "not every tab is searched: $all"
+  grep -q $'^run-here\tJungleForge · ▶ Run this branch' <<<"$all" || fail "search lost JungleForge"
+  grep -q $'^network-devices\tTools · ' <<<"$all" || fail "search lost network discovery"
   # Every action shown in a tab, once.
-  [ "$(grep -c . <<<"$all")" -eq "$(for tab in workspace layout agent team git app help; do menu --items "$tab"; done | grep -c .)" ] ||
+  [ "$(grep -c . <<<"$all")" -eq "$(for tab in workspace layout agent team git jungleForge tools help; do menu --items "$tab"; done | grep -c .)" ] ||
     fail "a search does not list every action once"
 }
 
@@ -345,28 +349,51 @@ test_switching_tabs() {
   [ "$(menu --tab)" = "help" ] || fail "prev did not wrap around to Help"
   menu --switch next >/dev/null
   [ "$(menu --tab)" = "workspace" ] || fail "next did not wrap around to Workspace"
-  # A click on the tab bar " Workspace   Layout   Agent   Git   App   Help " gives its column.
+  # Tab clicks use the displayed column, including the full JungleForge title.
   [[ "$(menu --switch-at 23)" == *transform-header* ]] || fail "a tab click did not change the header"
   [ "$(menu --tab)" = "agent" ] || fail "clicking Agent (column 23) did not open it"
   menu --switch-at 1 >/dev/null
   [ "$(menu --tab)" = "workspace" ] || fail "clicking Workspace (column 1) did not open it"
   menu --switch-at 39 >/dev/null
-  [ "$(menu --tab)" = "app" ] || fail "clicking App (column 39) did not open it"
+  [ "$(menu --tab)" = "jungleForge" ] || fail "clicking JungleForge (column 39) did not open it"
   menu --switch-at 12 >/dev/null
-  [ "$(menu --tab)" = "app" ] || fail "a click between tabs changed the tab"
-  menu --switch-at 60 >/dev/null
-  [ "$(menu --tab)" = "app" ] || fail "a click beside the tabs changed the tab"
-  menu --switch-at 44 >/dev/null
-  [ "$(menu --tab)" = "help" ] || fail "clicking Help (column 44) did not open it"
+  [ "$(menu --tab)" = "jungleForge" ] || fail "a click between tabs changed the tab"
+  menu --switch-at 75 >/dev/null
+  [ "$(menu --tab)" = "jungleForge" ] || fail "a click beside the tabs changed the tab"
+  menu --switch-at 50 >/dev/null
+  [ "$(menu --tab)" = "tools" ] || fail "clicking Tools (column 50) did not open it"
+  menu --switch-at 58 >/dev/null
+  [ "$(menu --tab)" = "help" ] || fail "clicking Help (column 58) did not open it"
   menu --switch Layout >/dev/null
 }
 
 test_header_marks_the_current_tab() {
-  menu --switch App >/dev/null
+  tmux set-option -t dev-menu @devws_menu_tab app
+  [ "$(menu --tab)" = jungleForge ] || fail "saved App selection did not open JungleForge"
   local header
   header="$(menu --header)"
-  grep -q $'\033\\[1;30;46m App ' <<<"$header" || fail "the header does not mark App"
+  grep -q $'\033\\[1;30;46m JungleForge ' <<<"$header" || fail "the header does not mark JungleForge"
   grep -q $'\033\\[2m Workspace ' <<<"$header" || fail "the header does not list every tab"
+}
+
+test_network_devices_uses_the_cli() {
+  local output status=0
+  cat > "$TEST_ROOT/bin/devws-network-stub" <<'EOF'
+#!/usr/bin/env bash
+[ "$*" = "network devices" ] || exit 2
+if [ "${NETWORK_TEST_FAILURE:-0}" = 1 ]; then
+  printf 'Discovery failed\n' >&2
+  exit 1
+fi
+printf 'Nmap scan report for router.lan\n'
+EOF
+  chmod +x "$TEST_ROOT/bin/devws-network-stub"
+  output="$(DEVWS_BIN="$TEST_ROOT/bin/devws-network-stub" menu --run network-devices <<< '')" ||
+    fail "network discovery action failed"
+  grep -q 'Nmap scan report for router.lan' <<<"$output" || fail "network discovery output was hidden"
+  output="$(NETWORK_TEST_FAILURE=1 DEVWS_BIN="$TEST_ROOT/bin/devws-network-stub" menu --run network-devices <<< '' 2>&1)" ||
+    status=$?
+  [ "$status" -eq 1 ] && grep -q 'Discovery failed' <<<"$output" || fail "network discovery error was hidden"
 }
 
 # New panel asks what to open (for an agent, which one) and where — right,
@@ -434,14 +461,14 @@ case "\$answer" in esc:*) printf '%s\n' "\${answer#esc:}"; exit 130 ;; esac
 printf '%s\n' "\$answer"
 EOF
   chmod +x "$HOME/.cargo/bin/devws-ui"
-  tmux set-option -t dev-menu @devws_menu_tab layout
+  tmux set-option -t dev-menu @devws_menu_tab app
   printf 'git\tcommit-manual\n' > "$TEST_ROOT/ui.answer"
   rm -f "$TEST_ROOT/calls/git_actions.sh" "$TEST_ROOT/calls/popup"
   TMUX_PANE="$PANE" TMUX="fake,1,0" "$MENU" || fail "the menu failed with devws-ui"
 
-  [ "$(cat "$TEST_ROOT/calls/ui.args")" = "$(printf '%s\n' menu --tab layout)" ] ||
+  [ "$(cat "$TEST_ROOT/calls/ui.args")" = "$(printf '%s\n' menu --tab jungleForge)" ] ||
     fail "devws-ui was given: $(cat "$TEST_ROOT/calls/ui.args")"
-  expected="$(for tab in workspace layout agent git app help; do
+  expected="$(for tab in workspace layout agent git jungleForge tools help; do
     menu --items "$tab" | cut -f1 | sed "s/^/$tab\t/"
   done)"
   [ "$(cut -f1,2 "$TEST_ROOT/calls/ui.input")" = "$expected" ] ||
@@ -761,7 +788,7 @@ test_closing_the_running_branch_switches_back_to_main() {
 
 test_every_action_has_a_function() {
   local tab action function
-  for tab in workspace layout agent team git app help; do
+  for tab in workspace layout agent team git jungleForge tools help; do
     for action in $(actions_of "$tab"); do
       function="$(menu --function "$action")" || fail "no function for $action"
       function="${function%% *}"
@@ -853,11 +880,12 @@ test_team_roles_change_a_roles_setting
 test_items_show_labels_and_shortcuts
 test_typing_searches_every_tab
 test_memory_items_need_ai_memory
-test_the_app_tab_follows_jungleforge
+test_the_jungleforge_tab_follows_setup
 test_the_frequent_actions_have_keys
 test_switching_tabs
 test_header_marks_the_current_tab
 test_devws_ui_draws_the_menu
+test_network_devices_uses_the_cli
 test_script_actions_run_for_the_session
 test_new_panel_asks_what_to_open
 test_move_panel_asks_which_way

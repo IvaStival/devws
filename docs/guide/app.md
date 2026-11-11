@@ -1,8 +1,7 @@
-# App
+# JungleForge, jobs and database
 
-The menu's **App** tab runs the branch you work on: its apps in
-jungleforge (Docker), its database, and the
-background jobs that do the long work.
+The menu's **JungleForge** tab manages and runs your branch's apps in Docker.
+The **Tools** tab opens the database client and background job log.
 
 ## Set up jungleforge
 
@@ -10,7 +9,7 @@ background jobs that do the long work.
 plane: it runs each registered app as one container, beside shared
 databases, Redis, RabbitMQ and MinIO. devws uses it to run your branches.
 
-Without it, the App tab shows **⚒ Set up jungleforge** in place of the run
+Without it, the JungleForge tab shows **⚒ Set up JungleForge** in place of the run
 actions (`./install.sh` offers the same, and `./install.sh --jungleforge`
 asks again after a no). Setting up:
 
@@ -27,7 +26,7 @@ devws finds jungleforge at `DEVWS_JUNGLEFORGE` when it is set, else in
 
 ## Register a repo
 
-jungleforge only runs apps in its registry. **＋ Register in jungleforge**
+jungleforge only runs apps in its registry. **＋ Register in JungleForge**
 adds the workspace's repo, app by app (running an unregistered repo offers
 it too):
 
@@ -98,8 +97,8 @@ the new value; Enter on an empty value keeps the old one.
 
 ## Database pane
 
-**⛁ Database** (`C-b B`) opens **devdb**, a database client, beside the
-editor, connected to the project's database; again focuses it.
+**Tools → Database** (`C-b B`) opens **devdb**, a database client, beside the
+editor and connects it to the project's database. Run the action again to focus it.
 
 - **Keys:** `Enter` edits a cell, `+` adds a row, `d` marks one for
   deletion, `Ctrl+S` saves the changes, `Ctrl+R` reverts them; `/`
@@ -136,7 +135,7 @@ close the menu and carry on as a background job.
   a job still running after 3 seconds: the live log, in color. It never
   takes the focus. A success closes it after 5 seconds; a failure stays.
   `q` closes it at any time; the job carries on.
-- **◷ Job log** (`C-b j`, or a click on the job in the header) opens it
+- **Tools → Job log** (`C-b j`, or a click on the job in the header) opens it
   again: the latest job, a failure first.
 - **A failure says why** when its exit code tells, at the end of its log and
   in its notification:
