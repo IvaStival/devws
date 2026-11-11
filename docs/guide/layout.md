@@ -87,7 +87,7 @@ three rows under tmux's own line; a `▸` on that line brings them back.
   heart when one is done, grey and asleep otherwise. `DEVWS_HEADER_PET=0`
   hides it.
 - **Background jobs** take the network and weather's place while they run
-  ([App](app.md#background-jobs)).
+  ([Background jobs](app.md#background-jobs)).
 - On tmux's own line: this workspace's conversation (tokens and context).
 
 Narrow terminals cut the widest group first; under 110 columns the ghost

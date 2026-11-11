@@ -86,6 +86,23 @@ your own agents and extra panels are restarted ([Workspaces](workspaces.md#after
 | `devws jobs` | The recent jobs: id, state, title |
 | `devws jobs log [id]` | Page a job's log (no id: the latest, a failure first) |
 
+## Network
+
+Run `devws network devices` from a terminal or choose **Tools → List network devices**.
+The command shows the default network interface and
+its connected IPv4 subnet, then lists responding devices. Names and MAC
+addresses appear when available. Sleeping or isolated devices, and those
+that block discovery probes, may be absent.
+
+Discovery uses Nmap ARP requests on macOS and Linux to find devices on the
+local subnet, including devices whose web ports ignore connection probes.
+It requests administrator access through `sudo` for Nmap. Enter your
+system password when prompted.
+
+Install Nmap with `brew install nmap` on macOS or your Linux package manager.
+After discovery, the menu displays the results in a pager when `less` is
+available. Press `q` to close it.
+
 ## Agent memory (with ai-memory)
 
 | Command | What it does |

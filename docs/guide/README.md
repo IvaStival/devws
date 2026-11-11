@@ -29,11 +29,13 @@ menu.
 
 | Tab | What is there |
 | --- | ------------- |
-| Workspace | Open, start, close and tidy workspaces; open an agent team; detach |
+| Workspace | Open, start, and close workspaces, open an agent team, or detach |
 | Layout | Layouts, minimize, the header, panels, the editor |
-| Agent | The agent: go to the waiting one, switch, restart, follow, accounts, memory |
-| Git | Commit and push |
-| App | Run the branch, its services, database and jobs |
+| Agent | Switch, restart, and follow agents, manage accounts and team roles, and access memory |
+| Team | Open team views or manage the leader in a team workspace |
+| Git | Commit, push, open a PR, and tidy merged branches |
+| JungleForge | Set up JungleForge, register apps, run branches, and manage services |
+| Tools | Open the database or job log and list network devices |
 | Help | This guide |
 
 `←` `→` change tabs, `Enter` runs, `Esc` closes. Typing searches every
@@ -71,7 +73,7 @@ The menu's **Help** tab opens each one, as does `devws help <page>`.
 | [Agents](agents.md) | Agents and accounts, status, switch and restart, ai-memory |
 | [Agent teams](agentic.md) | A leader that opens and drives other agents (`devagentics`) |
 | [Git](git.md) | Commit, push and pull requests |
-| [App](app.md) | Running branches in jungleforge, the database pane, background jobs |
+| [JungleForge, jobs and database](app.md) | Running branches in JungleForge, the database pane, background jobs |
 | [Shortcuts](shortcuts.md) | Every key |
 | [Commands](commands.md) | Every `devws` command |
 | [Configuration](configuration.md) | Settings, where devws keeps things, where the code is |
