@@ -23,7 +23,7 @@ the agent lines for you.
 | `DEVWS_JUNGLEFORGE_REPO` | `https://github.com/IvaStival/jungleForge.git` | The repo **Set up JungleForge** clones. Set it to use your own fork |
 | `DEVWS_AUTO_RESTORE` | `1` | `0`: the first `devws` after a restart does not reopen the saved workspaces (`devws restore` still does) |
 | `DEVWS_SUSPEND_AFTER` | `15` | Minutes a workspace stays unseen, its agent idle or done, before it is paused; `0` never pauses |
-| `DEVWS_NOTIFY` | `1` | macOS notifications: `1` all, `waiting` only agents that need you, `0` none (agents and jobs) |
+| `DEVWS_NOTIFY` | `1` | macOS notifications: `1` all (an agent team's once when it stops, not after each order), `waiting` only agents that need you, `0` none (agents and jobs) |
 | `DEVWS_JOB_NOTIFY_AFTER` | `30` | Seconds a job must run before its success is notified (a failure always is) |
 | `DEVWS_JOB_PANEL_AFTER` | `3` | Seconds a job runs before its log panel opens |
 | `DEVWS_JOB_PANEL_LINGER` | `5` | Seconds the log panel stays after a success (a failure stays until `q`) |
