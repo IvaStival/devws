@@ -106,7 +106,7 @@ pub fn send_order(task: &Task, request: OrderRequest) -> Result<String> {
         match tx.state.step_mut(&request.step) {
             Some(step) => {
                 step.title = request.title.clone();
-                step.status = StepStatus::Ordered;
+                step.set_status(StepStatus::Ordered, crate::log::now());
                 step.attempts += 1;
             }
             None => tx.state.steps.push(Step {
@@ -114,6 +114,7 @@ pub fn send_order(task: &Task, request: OrderRequest) -> Result<String> {
                 title: request.title.clone(),
                 status: StepStatus::Ordered,
                 attempts: 1,
+                review_since: None,
             }),
         }
 
@@ -308,7 +309,7 @@ fn close(tx: &mut crate::task::Tx, order: &Order, step_status: StepStatus) {
         open.status = OrderStatus::Closed;
     }
     if let Some(step) = tx.state.step_mut(&order.step) {
-        step.status = step_status;
+        step.set_status(step_status, crate::log::now());
     }
 }
 
@@ -426,7 +427,7 @@ pub fn accept_step(task: &Task, step: &str) -> Result<()> {
                 found.status
             );
         }
-        found.status = StepStatus::Accepted;
+        found.set_status(StepStatus::Accepted, crate::log::now());
         tx.log(Kind::Review, None, Some(step), "accepted");
         Ok(())
     })
@@ -445,7 +446,7 @@ pub fn reject_step(task: &Task, step: &str, reason: &str) -> Result<()> {
                 found.status
             );
         }
-        found.status = StepStatus::Rejected;
+        found.set_status(StepStatus::Rejected, crate::log::now());
         tx.log(
             Kind::Review,
             None,
@@ -512,6 +513,7 @@ mod tests {
                 title: "plan the login".to_string(),
                 status: StepStatus::Accepted,
                 attempts: 1,
+                review_since: None,
             });
             tx.state.plans.push(crate::state::ExecutionPlan {
                 step: "p0".to_string(),
@@ -680,7 +682,15 @@ mod tests {
         let told = report(&f.task, "%5", Outcome::Done, "added login", SHORT).unwrap();
         assert!(told.contains("review"), "{told}");
         assert_eq!(status(&f, "s1"), StepStatus::Reported);
-        assert!(f.task.state().unwrap().open_order_of("backend-1").is_none());
+        let state = f.task.state().unwrap();
+        assert!(
+            state
+                .steps
+                .iter()
+                .any(|step| step.id == "s1" && step.review_since.is_some()),
+            "the board ages a review from its report"
+        );
+        assert!(state.open_order_of("backend-1").is_none());
 
         let message = told_the_leader(&f);
         for wanted in [

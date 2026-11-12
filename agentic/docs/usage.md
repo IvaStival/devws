@@ -90,13 +90,17 @@ cache tokens (every agent the task has had), and a row per account with its
 panes keep the 5-hour bar). A pane too short for the frame keeps its top row.
 
 The default **Overview** is one list of sections, each after a blank line and
-left out when empty: **Needs you** (unanswered questions, steps to review or
-stuck, agents waiting or gone, a dispatcher problem); **CTO**, **Seniors** and
-**Floor**, each with what its running agents cost and their tokens in all, and
+left out when empty: **Needs you** (unanswered questions, steps the leader
+left, agents waiting or gone, a dispatcher problem); **CTO**; **Leader
+reviewing** (steps reported, failed, blocked or sent back, which the leader
+acts on); **Seniors** and **Floor**, each with what its running agents cost and their tokens in all, and
 each agent with its program (and lane), state, cost and tokens in columns,
 over a dim line with its current step, the steps it got accepted and its
 retries; the number of queued orders; and **Done** (accepted steps, newest
-first, `×n` when a step took retries). The leader is the CTO's first row. The
+first, `×n` when a step took retries). The leader is the CTO's first row. A
+step the leader has left, waiting more than 10 minutes while the leader is
+not working, moves to Needs you as `leader hasn't reviewed <step>` with how
+long it has waited: tell the leader to accept or reject it. The
 frames use the devws menu's muted blue accent, while green marks successful
 states. Selection skips section titles, second lines and blank lines, and the wheel
 scrolls the whole list, down to the oldest done step. Panes under 60 columns
