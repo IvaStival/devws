@@ -4,6 +4,11 @@ The menu's **Git** tab commits and pushes the workspace's branch. Each
 workspace is one branch in its own folder ([Workspaces](workspaces.md)), so
 there is nothing to stash or switch.
 
+**GitHub login** runs `gh auth login` interactively in the menu, including over
+SSH. Use it before opening GitHub workspaces or pushing pull requests.
+Installation does not ask for GitHub authentication; local workspaces work
+without it.
+
 ## Commit
 
 - **✓ Commit (agent)** (`C-b g`, `devws commit`) asks the workspace's agent

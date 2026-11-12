@@ -10,11 +10,17 @@ When `devagentics` is missing, `devws agentic` (and the menu's Open an agent
 team) says what it needs and asks: one Y installs Rust (rustup) or updates it
 (`rustup update stable`) as needed, builds `devagentics` (and `devws-ui`, the
 menu's program), and opens the team.
-`./install.sh` rebuilds it on every run, and asks before installing or
-updating Rust. A Rust devws did not install without rustup (Homebrew's) is
+`./install.sh` prepares Rust and rebuilds both programs on a normal install;
+build failures stop installation. With `--no-deps`, Rust installation or updates
+are offered instead. A Rust devws did not install without rustup (Homebrew's) is
 left alone: update it yourself (`brew upgrade rust`). How a team
 works (roles, orders, approval, limits) is in
 [agentic/docs/usage.md](../../agentic/docs/usage.md).
+
+The board and menu include `~/.cargo/bin` on PATH even when tmux started before
+Rust was installed. In an existing board pane showing `devagentics: command not
+found`, run `PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH" devagentics board <task>`
+after installation succeeds. This restarts only the board in that pane.
 
 ## Start one
 

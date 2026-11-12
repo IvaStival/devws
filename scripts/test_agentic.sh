@@ -415,6 +415,31 @@ test_agentic_can_add_an_editor() {
   [ -z "$(pane_with_role "$session" editor)" ] || fail "--editor made the panel the workspace's editor"
 }
 
+test_board_finds_cargo_program_with_an_older_tmux_path() {
+  local command
+  mkdir -p "$HOME/.cargo/bin"
+  cat > "$HOME/.cargo/bin/devagentics" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" > "$TEST_ROOT/cargo-board-started"
+exec sleep 600
+EOF
+  chmod +x "$HOME/.cargo/bin/devagentics"
+  mv "$TEST_ROOT/bin/devagentics" "$TEST_ROOT/bin/devagentics.saved"
+  command="$(ruby -rerb -ryaml -e '
+    context = Object.new
+    context.instance_variable_set(:@settings, {"task" => "cargo-task", "project_root" => Dir.pwd})
+    config = YAML.safe_load(ERB.new(File.read(ARGV[0])).result(context.instance_eval { binding }), aliases: true)
+    puts config["windows"][0]["workspace"]["panes"].last["log"]
+  ' "$ROOT/config/tmuxinator/agentic.yml")"
+  # The server predates Rust installation and has no ~/.cargo/bin on PATH.
+  tmux set-environment -g PATH "$TEST_ROOT/bin:/usr/bin:/bin"
+  tmux new-session -d -s cargo-board "$command"
+  wait_until test -f "$TEST_ROOT/cargo-board-started" || fail "the board could not find ~/.cargo/bin/devagentics with tmux's old PATH"
+  [ "$(cat "$TEST_ROOT/cargo-board-started")" = 'board cargo-task' ] || fail "the board received incorrect arguments"
+  tmux kill-session -t cargo-board
+  mv "$TEST_ROOT/bin/devagentics.saved" "$TEST_ROOT/bin/devagentics"
+}
+
 test_a_workspace_with_no_editor_is_left_alone
 test_new_panel_works_without_an_editor
 test_a_label_names_the_panel_in_its_header
@@ -427,5 +452,6 @@ test_agentic_makes_a_worktree_for_a_repo_and_a_branch
 test_agentic_needs_devagentics
 test_agentic_offers_to_install_devagentics
 test_agentic_can_add_an_editor
+test_board_finds_cargo_program_with_an_older_tmux_path
 
 printf 'Agentic tests passed\n'

@@ -31,8 +31,8 @@ Core dependencies:
 - tmuxinator
 - fzf
 - Glow
-- [devdb](../devdb) for the database pane, installed with
-  [uv](https://docs.astral.sh/uv/) from its checkout (`~/Projects/devdb`, or
+- [devdb](https://github.com/IvaStival/devdb) for the database pane, installed
+  with uv from GitHub, or an existing checkout (`~/Projects/devdb`, or
   `DEVWS_DEVDB_SOURCE`)
 - Neovim 0.11.2 or newer, set up with [LazyVim](https://www.lazyvim.org)
 - ripgrep, fd, and the tree-sitter CLI (used by LazyVim)
@@ -85,18 +85,25 @@ mapping again.
 Clone the repository, then run:
 
 ```sh
-./install.sh --deps
+./install.sh
 source ~/.zshrc
 ```
 
-`fzf` is required for the workspace picker and is checked on every install. If
-it is missing, the installer asks permission before installing it with
-Homebrew and stops without changing configuration when permission is denied.
+The installer installs the Brewfile dependencies, including `fzf` and `uv`,
+and tmux plugin manager before linking configuration. Missing `devdb` is
+installed automatically, so a fresh machine needs no separate devdb checkout.
+Dependency failures stop installation before configuration is changed.
+
+It also prepares Rust with rustup when needed and builds `devagentics` and
+`devws-ui`. A failed build stops the normal install instead of leaving a team
+panel that cannot start. An older Rust managed without rustup must be updated
+with its package manager before rerunning installation.
 
 Every install upgrades an outdated Homebrew-managed tmuxinator automatically.
 A tmuxinator installed by another package manager is left unchanged. `--deps`
-installs the Brewfile and tmux plugin manager. If your other
-dependencies are already installed, use `./install.sh`.
+remains accepted for compatibility. Use `./install.sh --no-deps` to skip
+dependency installation when you manage packages separately; `fzf` is still
+required and the installer offers to install it if missing.
 
 The installer creates symlinks into the clone. Keep the cloned folder in its
 original location after installation. Existing managed files are moved to a
@@ -116,14 +123,15 @@ source ~/.zshrc
 Panes opened before devws became a command keep the old shell function until
 they are reopened (or run `source ~/.zshrc` in them).
 
-The installer also offers to log in to GitHub (`gh auth login`), which
-[GitHub workspaces](docs/guide/workspaces.md) need. gh asks how git should reach
+GitHub login is separate from installation: choose **Git → GitHub login** in
+the menu, or run `gh auth login` when ready. [GitHub workspaces](docs/guide/workspaces.md)
+need it. gh asks how git should reach
 GitHub: **SSH** clones with your SSH key, **HTTPS** lets gh log git in too.
 To change it later, run `gh config set git_protocol ssh` (or `https` followed
 by `gh auth setup-git`). Skip the login and only `devws` with no folder is
 unavailable until you run `gh auth login`.
 
-It then offers two optional parts, each asked once (`--ai-memory` or
+The installer offers two optional parts, each asked once (`--ai-memory` or
 `--jungleforge` asks again after a no):
 
 - [ai-memory](docs/guide/agents.md#agent-memory-ai-memory), long-term memory
@@ -225,10 +233,9 @@ with a configuration that needs to be restored, the previous configuration
 remains in `~/.devws-backups/` and the script reports its location. Only empty
 configuration directories are removed.
 
-If devws installed `fzf` after receiving permission or installed Glow through
-`./install.sh --deps`, `delete.sh` removes those owned packages. The same goes
+If devws installed `fzf` or Glow, `delete.sh` removes those owned packages. The same goes
 for `devagentics`, `devws-ui` and Rust (rustup) when devws installed them. Pre-existing
-installations are never removed. Other dependencies installed with `--deps`
+installations are never removed. Other dependencies installed by the installer
 are preserved because Homebrew packages and tmux plugin manager may
 be shared with other tools or may have existed before devws. Remove those
 separately only if they are no longer needed.

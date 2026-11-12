@@ -15,6 +15,23 @@ make_fake_bin() {
   local fake_bin="$1"
 
   mkdir -p "$fake_bin"
+  # Keep configuration-focused cases independent of real dependency installs.
+  mkdir -p "$(dirname "$fake_bin")/.tmux/plugins/tpm"
+  make_command "$fake_bin/devdb"
+  make_command "$fake_bin/devagentics"
+  make_command "$fake_bin/devws-ui"
+  cat > "$fake_bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  --version) printf 'cargo 1.85.0 (stub)\n' ;;
+  install)
+    case "$3" in */agentic) program=devagentics ;; *) program=devws-ui ;; esac
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_BIN/$program"
+    chmod +x "$FAKE_BIN/$program"
+    ;;
+esac
+EOF
+  chmod +x "$fake_bin/cargo"
   cat > "$fake_bin/brew" <<'EOF'
 #!/usr/bin/env bash
 set -u
@@ -41,6 +58,10 @@ case "${1:-} ${2:-}" in
       printf 'tmuxinator\n'
     ;;
   bundle*)
+    if [[ ! -x "$FAKE_BIN/fzf" ]]; then
+      printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_BIN/fzf"
+      chmod +x "$FAKE_BIN/fzf"
+    fi
     if [[ ! -x "$FAKE_BIN/glow" ]]; then
       printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_BIN/glow"
       chmod +x "$FAKE_BIN/glow"
@@ -65,13 +86,75 @@ run_install() {
     PATH="$fake_bin:/usr/bin:/bin" "$ROOT/install.sh" "$@"
 }
 
+test_default_install_provides_fzf_and_dependencies_before_configuration() {
+  local test_home="$TEST_ROOT/default-deps" fake_bin="$TEST_ROOT/default-deps/bin" output
+  make_fake_bin "$fake_bin"
+  cat > "$fake_bin/git" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HOME/git.log"
+[[ "$1" == clone && "$*" == *tmux-plugins/tpm* ]] || exit 1
+mkdir -p "${@: -1}"
+EOF
+  chmod +x "$fake_bin/git"
+  rmdir "$test_home/.tmux/plugins/tpm"
+  output="$(run_install "$test_home" "$fake_bin" </dev/null 2>&1)" || fail "default install failed: $output"
+  grep -q '^bundle ' "$test_home/brew.log" || fail "default install skipped the Brewfile"
+  [[ -x "$fake_bin/fzf" ]] || fail "default install left fzf missing"
+  grep -qx fzf "$test_home/.devws-state/installed-dependencies" || fail "owned fzf was not recorded"
+  [[ -d "$test_home/.tmux/plugins/tpm" ]] || fail "default install skipped the plugin manager"
+  ! grep -q 'Install fzf with Homebrew now' <<<"$output" || fail "fzf required a separate prompt"
+}
+
+test_dependency_failure_stops_before_configuration() {
+  local test_home="$TEST_ROOT/deps-failure" fake_bin="$TEST_ROOT/deps-failure/bin" output
+  make_fake_bin "$fake_bin"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$fake_bin/brew"
+  if output="$(run_install "$test_home" "$fake_bin" </dev/null 2>&1)"; then
+    fail "dependency failure was reported as success: $output"
+  fi
+  [[ ! -e "$test_home/.tmux.conf" ]] || fail "configuration changed after dependency failure"
+}
+
+test_default_install_prepares_rust_and_builds_its_programs() {
+  local test_home="$TEST_ROOT/default-rust" fake_bin="$TEST_ROOT/default-rust/bin" output
+  make_fake_bin "$fake_bin"
+  mv "$fake_bin/cargo" "$fake_bin/cargo.off"
+  rm "$fake_bin/devagentics" "$fake_bin/devws-ui"
+  cat > "$fake_bin/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HOME/curl.log"
+cat <<'INSTALLER'
+mkdir -p "$HOME/.cargo/bin"
+cp "$HOME/bin/cargo.off" "$HOME/.cargo/bin/cargo"
+INSTALLER
+EOF
+  chmod +x "$fake_bin/curl"
+  output="$(run_install "$test_home" "$fake_bin" </dev/null 2>&1)" || fail "default Rust installation failed: $output"
+  [[ -x "$fake_bin/devagentics" && -x "$fake_bin/devws-ui" ]] || fail "default install skipped Rust programs"
+  grep -qx rustup "$test_home/.devws-state/installed-dependencies" || fail "installed Rust was not recorded"
+}
+
+test_failed_rust_build_stops_installation() {
+  local test_home="$TEST_ROOT/rust-failure" fake_bin="$TEST_ROOT/rust-failure/bin" output
+  make_fake_bin "$fake_bin"
+  cat > "$fake_bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1" == --version ]] && { printf 'cargo 1.85.0 (stub)\n'; exit 0; }
+exit 1
+EOF
+  if output="$(run_install "$test_home" "$fake_bin" </dev/null 2>&1)"; then
+    fail "installation claimed success after a failed Rust build"
+  fi
+  [[ ! -e "$test_home/.tmux.conf" ]] || fail "configuration changed after a failed Rust build"
+}
+
 test_declining_fzf_leaves_home_untouched() {
   local test_home="$TEST_ROOT/decline"
   local fake_bin="$test_home/bin"
   mkdir -p "$test_home"
   make_fake_bin "$fake_bin"
 
-  if printf 'n\n' | run_install "$test_home" "$fake_bin" >/dev/null 2>&1; then
+  if printf 'n\n' | run_install "$test_home" "$fake_bin" --no-deps >/dev/null 2>&1; then
     fail "declining fzf installation should fail"
   fi
   [[ ! -e "$test_home/.tmux.conf" ]] ||
@@ -87,7 +170,7 @@ test_owned_fzf_is_removed() {
   mkdir -p "$test_home"
   make_fake_bin "$fake_bin"
 
-  printf 'y\n' | run_install "$test_home" "$fake_bin" > "$install_output" 2>&1
+  run_install "$test_home" "$fake_bin" </dev/null > "$install_output" 2>&1
   grep -qx 'fzf' "$test_home/.devws-state/installed-dependencies" ||
     fail "devws-installed fzf was not recorded"
   grep -Fq $'\033[1;36m  source ~/.zshrc\033[0m' "$install_output" ||
@@ -106,7 +189,7 @@ test_preexisting_fzf_is_preserved() {
   make_fake_bin "$fake_bin"
   make_command "$fake_bin/fzf"
 
-  run_install "$test_home" "$fake_bin" >/dev/null 2>&1
+  run_install "$test_home" "$fake_bin" --no-deps >/dev/null 2>&1
   [[ ! -f "$test_home/.devws-state/installed-dependencies" ]] ||
     fail "pre-existing fzf was recorded as owned"
 
@@ -128,7 +211,7 @@ EOF
   chmod +x "$1/gh"
 }
 
-test_install_offers_the_github_login() {
+test_install_does_not_run_github_authentication() {
   local test_home="$TEST_ROOT/github"
   local fake_bin="$test_home/bin"
   local output
@@ -137,19 +220,11 @@ test_install_offers_the_github_login() {
   make_command "$fake_bin/fzf"
   make_fake_gh "$fake_bin"
 
-  GH_LOGGED_IN=1 run_install "$test_home" "$fake_bin" </dev/null >/dev/null 2>&1
-  ! grep -q '^auth login' "$test_home/gh.log" || fail "a logged-in gh was asked to log in"
-
-  output="$(printf 'n\n' | run_install "$test_home" "$fake_bin" 2>&1)"
-  ! grep -q '^auth login' "$test_home/gh.log" || fail "gh logged in after the answer was no"
-  grep -q 'run gh auth login' <<<"$output" || fail "declining the login gave no hint"
-
-  printf 'y\n' | run_install "$test_home" "$fake_bin" >/dev/null 2>&1
-  grep -q '^auth login' "$test_home/gh.log" || fail "the GitHub login was not offered"
-
-  rm "$fake_bin/gh"
   output="$(run_install "$test_home" "$fake_bin" </dev/null 2>&1)"
-  grep -q 'gh is missing' <<<"$output" || fail "a missing gh was not reported"
+  ! grep -q '^auth ' "$test_home/gh.log" 2>/dev/null || fail "installation ran GitHub authentication"
+  ! grep -q 'Log in to GitHub now' <<<"$output" || fail "installation asked for GitHub login"
+  grep -q 'Git.*GitHub login' <<<"$output" || fail "installation gave no menu login hint"
+  grep -q 'Installation complete' <<<"$output" || fail "installation did not finish without GitHub auth"
 }
 
 # ai-memory is offered, never installed silently. A stub curl serves an
@@ -366,15 +441,31 @@ test_deps_install_devdb_from_its_checkout() {
   make_fake_bin "$fake_bin"
   make_command "$fake_bin/fzf"
   make_command "$fake_bin/nvim"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/uv.log"\n' "$test_home" > "$fake_bin/uv"
+  rm "$fake_bin/devdb"
+  cat > "$fake_bin/uv" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HOME/uv.log"
+mkdir -p "$HOME/.local/bin"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$HOME/.local/bin/devdb"
+chmod +x "$HOME/.local/bin/devdb"
+EOF
   chmod +x "$fake_bin/uv"
 
-  # Without a checkout there is nothing to install, and the user is told so.
-  DEVWS_DEVDB_SOURCE="$devdb_source" run_install "$test_home" "$fake_bin" --deps > "$output" 2>&1
+  # An explicit path is respected; a typo must not silently choose another source.
+  if DEVWS_DEVDB_SOURCE="$devdb_source" run_install "$test_home" "$fake_bin" > "$output" 2>&1; then
+    fail "a missing explicit devdb checkout should fail"
+  fi
   grep -q "devdb was not found at $devdb_source" "$output" ||
     fail "a missing devdb checkout was not reported"
   [[ ! -s "$test_home/uv.log" ]] || fail "uv ran without a devdb checkout"
+  [[ ! -e "$test_home/.tmux.conf" ]] || fail "configuration changed despite invalid devdb source"
 
+  run_install "$test_home" "$fake_bin" > "$output" 2>&1
+  grep -qx 'tool install --compile-bytecode git+https://github.com/IvaStival/devdb.git' "$test_home/uv.log" ||
+    fail "a fresh install did not install devdb from GitHub"
+  ! grep -q 'devdb (database pane) is missing' "$output" || fail "devdb installed outside the installer PATH"
+
+  rm "$test_home/.local/bin/devdb"
   mkdir -p "$devdb_source"
   : > "$devdb_source/pyproject.toml"
   DEVWS_DEVDB_SOURCE="$devdb_source" run_install "$test_home" "$fake_bin" --deps >/dev/null 2>&1
@@ -385,6 +476,14 @@ test_deps_install_devdb_from_its_checkout() {
   make_command "$fake_bin/devdb"
   DEVWS_DEVDB_SOURCE="$devdb_source" run_install "$test_home" "$fake_bin" --deps >/dev/null 2>&1
   [[ ! -s "$test_home/uv.log" ]] || fail "--deps reinstalled an existing devdb"
+
+  # Installation failures must stop before linking config on a fresh machine.
+  rm "$fake_bin/devdb" "$test_home/.local/bin/devdb" "$test_home/.tmux.conf"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$fake_bin/uv"
+  if output="$(run_install "$test_home" "$fake_bin" </dev/null 2>&1)"; then
+    fail "a failed devdb installation was reported as success: $output"
+  fi
+  [[ ! -e "$test_home/.tmux.conf" ]] || fail "configuration changed despite failed devdb installation"
 }
 
 # The agent team's program is built from agentic/ when cargo exists, and
@@ -400,12 +499,15 @@ test_agentic_is_built_and_removed_when_owned() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$CARGO_LOG"
 case "$1" in
-  install) printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_BIN/devagentics"; chmod +x "$FAKE_BIN/devagentics" ;;
+  install)
+    case "$3" in */agentic) program=devagentics ;; *) program=devws-ui ;; esac
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_BIN/$program"; chmod +x "$FAKE_BIN/$program" ;;
   uninstall) rm -f "$FAKE_BIN/devagentics" ;;
 esac
 EOF2
   chmod +x "$fake_bin/cargo"
 
+  rm "$fake_bin/devagentics" "$fake_bin/devws-ui"
   CARGO_LOG="$test_home/cargo.log" run_install "$test_home" "$fake_bin" >"$output" 2>&1
   grep -qx "install --path $ROOT/agentic --locked" "$test_home/cargo.log" ||
     fail "install did not build agentic/: $(cat "$test_home/cargo.log" 2>/dev/null)"
@@ -475,10 +577,11 @@ test_install_without_cargo_says_what_agentic_needs() {
   local output="$test_home/install-output"
   mkdir -p "$test_home"
   make_fake_bin "$fake_bin"
+  rm "$fake_bin/cargo"
   make_command "$fake_bin/fzf"
 
   # No one at the terminal: Rust is offered, not installed.
-  run_install "$test_home" "$fake_bin" </dev/null >"$output" 2>&1 || fail "install failed without cargo"
+  run_install "$test_home" "$fake_bin" --no-deps </dev/null >"$output" 2>&1 || fail "install failed without cargo"
   grep -q "install Rust" "$output" ||
     fail "install did not say agentic needs Rust: $(cat "$output")"
   grep -q "devws agentic offers it again" "$output" ||
@@ -505,7 +608,7 @@ EOF2
   printf '#!/usr/bin/env bash\nprintf "rustup %%s\\n" "$*" >> "$CARGO_LOG"\n' > "$fake_bin/rustup"
   chmod +x "$fake_bin/cargo" "$fake_bin/rustup"
 
-  CARGO_LOG="$test_home/cargo.log" run_install "$test_home" "$fake_bin" </dev/null >"$output" 2>&1 ||
+  CARGO_LOG="$test_home/cargo.log" run_install "$test_home" "$fake_bin" --no-deps </dev/null >"$output" 2>&1 ||
     fail "install failed with an old Rust"
   grep -q "Rust 1.83.0 is too old" "$output" || fail "install did not say Rust is too old: $(cat "$output")"
   ! grep -q '^install\|^rustup update' "$test_home/cargo.log" ||
@@ -557,10 +660,14 @@ test_picker_fails_once_without_fzf() {
     fail "picker did not emit exactly one missing-fzf error"
 }
 
+test_default_install_provides_fzf_and_dependencies_before_configuration
+test_dependency_failure_stops_before_configuration
+test_default_install_prepares_rust_and_builds_its_programs
+test_failed_rust_build_stops_installation
 test_declining_fzf_leaves_home_untouched
 test_owned_fzf_is_removed
 test_preexisting_fzf_is_preserved
-test_install_offers_the_github_login
+test_install_does_not_run_github_authentication
 test_install_offers_ai_memory
 test_install_offers_jungleforge
 test_homebrew_tmuxinator_is_upgraded

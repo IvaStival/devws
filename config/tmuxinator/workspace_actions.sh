@@ -3,6 +3,9 @@
 # the tabbed menu (devws_menu.sh). Source this file; each action works on the
 # client's current workspace and asks what it needs with fzf or a prompt.
 
+# A tmux server started before installation may still have its old PATH.
+PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+
 # Agents and editors to offer, and the defaults.
 config="$HOME/.tmuxinator/.env"
 [ -r "$config" ] && . "$config"
@@ -653,6 +656,19 @@ push_branch() {
   branch="$(git -C "$root" branch --show-current 2>/dev/null)"
   start_job "Push ${branch:-$(basename "$root")}" -- \
     env DEVWS_ROOT="$root" "$HOME/.tmuxinator/git_actions.sh" push --pr "$pr"
+}
+
+login_github() {
+  local status=0
+  if ! command -v gh >/dev/null 2>&1; then
+    printf 'GitHub CLI is missing; run ./install.sh in the devws checkout.\n' >&2
+    pause || true
+    return 1
+  fi
+  # Run in the popup's terminal so device/browser login also works over SSH.
+  gh auth login || status=$?
+  pause || true
+  return "$status"
 }
 
 # The repo's apps in jungleforge, run on one of its branches (jungleforge.sh):
