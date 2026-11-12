@@ -99,6 +99,13 @@ repos get their own worktrees the same way, as the leader opens them.
   keeps only the leader and the board. Each
   agent's header shows its role and state (working, `● needs you`,
   `✓ done`) as for any agent.
+- **Notifications.** An agent that needs you notifies you, as anywhere. An
+  agent finishing an order does not: the agents finish one after every
+  order. Instead the team notifies once when it stops: `<task> ✓ team
+  stopped` once nobody has worked or waited for 20 s and no order is queued
+  (a paused task's queue does not count), saying why: all steps accepted,
+  paused, or idle. Clicking it goes to the leader. Not while you are looking
+  at one of the team's workspaces; `DEVWS_NOTIFY=waiting` or `0` turns it off.
 - **Reaching an agent.** On the board each running agent has a number: press
   it to go to its workspace, focused on it; Enter on the team's workspace in
   the sidebar brings you back. `p` and the number **peeks** it: its panel

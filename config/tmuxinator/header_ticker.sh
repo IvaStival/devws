@@ -13,7 +13,8 @@
 # A source that fails keeps its last rows. Every minute too, each workspace's
 # conversation (header_tokens.sh) goes to its @devws_agent_session_usage,
 # which tmux's own line shows, and the idle workspaces are frozen
-# (suspend_workspace.sh sweep).
+# (suspend_workspace.sh sweep). Every 5 s too, an agent team that has
+# stopped alerts once (team_alert.sh sweep).
 #
 # Two speeds:
 #   every second   the clock is drawn (header_clock.sh; left out when the
@@ -335,6 +336,7 @@ run() {
       [ "$(tmux show-option -gqv @devws_header_ticker 2>/dev/null)" = "$$" ] || exit 0
       in_background system keep system nice "$scripts_dir/header_system.sh" "$state_dir/cpu.history"
       in_background network keep network nice "$scripts_dir/header_network.sh" "$state_dir"
+      in_background team_alert "$scripts_dir/team_alert.sh" sweep
     fi
     [ $((tick % (600 * fps))) -eq 0 ] && in_background costs update_costs
     [ $((tick % (60 * fps))) -eq 0 ] && in_background tokens update_tokens
