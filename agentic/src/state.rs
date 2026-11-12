@@ -109,6 +109,24 @@ pub struct Step {
     pub status: StepStatus,
     /// How many orders it has had.
     pub attempts: u32,
+    /// When it started waiting for the leader (reported, failed, blocked or
+    /// sent back), in epoch seconds. Unknown for steps saved before this was
+    /// kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_since: Option<u64>,
+}
+
+impl Step {
+    /// Moves the step on; a status the leader has to act on is stamped with
+    /// `now`, so the board can tell a review the leader left behind.
+    pub fn set_status(&mut self, status: StepStatus, now: u64) {
+        let waits_for_leader = matches!(
+            status,
+            StepStatus::Reported | StepStatus::Failed | StepStatus::Blocked | StepStatus::Rejected
+        );
+        self.review_since = waits_for_leader.then_some(now);
+        self.status = status;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,5 +232,52 @@ impl State {
             text,
             order,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn step(status: StepStatus) -> Step {
+        Step {
+            id: "s1".into(),
+            title: "title".into(),
+            status,
+            attempts: 1,
+            review_since: None,
+        }
+    }
+
+    #[test]
+    fn a_step_waiting_for_the_leader_remembers_since_when() {
+        for status in [
+            StepStatus::Reported,
+            StepStatus::Failed,
+            StepStatus::Blocked,
+            StepStatus::Rejected,
+        ] {
+            let mut waiting = step(StepStatus::Ordered);
+            waiting.set_status(status, 100);
+            assert_eq!(waiting.review_since, Some(100), "{status:?}");
+        }
+    }
+
+    #[test]
+    fn a_step_out_of_review_forgets_it() {
+        for status in [StepStatus::Ordered, StepStatus::Accepted] {
+            let mut moved = step(StepStatus::Reported);
+            moved.review_since = Some(100);
+            moved.set_status(status, 200);
+            assert_eq!(moved.review_since, None, "{status:?}");
+        }
+    }
+
+    #[test]
+    fn a_step_saved_before_the_field_loads() {
+        let loaded: Step =
+            serde_json::from_str(r#"{"id":"ph","title":"plan","status":"reported","attempts":2}"#)
+                .unwrap();
+        assert_eq!(loaded.review_since, None);
     }
 }
