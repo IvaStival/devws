@@ -207,6 +207,7 @@ esac
                     StepStatus::Reported
                 },
                 attempts: 1,
+                review_since: None,
             });
             Ok(())
         })

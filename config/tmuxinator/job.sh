@@ -19,7 +19,8 @@
 #   job.sh follow <id>    (the log panel) the log as it grows; q closes
 #   job.sh rows <width>   the header's jobs line (and two empty rows) while a
 #                         job is active (queued, running, done < 10 s ago,
-#                         failed and not seen); nothing otherwise
+#                         failed and not seen, nor settled by a later success
+#                         of the same app); nothing otherwise
 #   job.sh summary        "⏵ 2 jobs · ✗ 1 failed", for tmux's top line
 #   job.sh header <width> the summary's line, then the rows: what the header
 #                         ticker reads each second, in one call
@@ -291,13 +292,44 @@ recent_ids() {
   ids | head -n 20
 }
 
+# Whether a newer job of the same app succeeded: one holding a lock of
+# <id>'s (a jungleforge app), or with its title when it holds none. The retry
+# fixed it, so the failure needs no look.
+settled() {
+  local id="$1" newer locks title
+  locks="$(field "$id" locks)"
+  title="$(field "$id" title)"
+  for newer in $(ids); do
+    # Newest first: the ones after <id> are older.
+    [ "$newer" != "$id" ] || return 1
+    [ "$(field "$newer" state)" = ok ] || continue
+    if [ -n "$locks" ]; then
+      grep -qxFf <(printf '%s\n' "$locks") "$jobs_dir/$newer/locks" 2>/dev/null && return 0
+    else
+      [ "$(field "$newer" title)" = "$title" ] && return 0
+    fi
+  done
+  return 1
+}
+
+# A failure to show: not seen, nor settled by a later success. A settled one
+# is marked seen, so it is looked into once.
+unseen_failure() {
+  local id="$1"
+  [ "$(field "$id" state)" = failed ] && [ ! -e "$jobs_dir/$id/seen" ] || return 1
+  if settled "$id"; then
+    : > "$jobs_dir/$id/seen"
+    return 1
+  fi
+}
+
 # Still to show in the header.
 active() {
   local id="$1" ended
   case "$(field "$id" state)" in
     queued | running) return 0 ;;
-    # A failure stays until its log is opened, and goes then.
-    failed) [ ! -e "$jobs_dir/$id/seen" ]; return ;;
+    # A failure stays until its log is opened or the app runs well again.
+    failed) unseen_failure "$id"; return ;;
   esac
   ended="$(field "$id" ended_at)"
   [ -n "$ended" ] && [ $(($(now) - ended)) -lt "$shown_after_end" ]
@@ -359,7 +391,7 @@ summary() {
   for id in $(recent_ids); do
     case "$(field "$id" state)" in
       queued | running) running=$((running + 1)) ;;
-      failed) [ -e "$jobs_dir/$id/seen" ] || failed=$((failed + 1)) ;;
+      failed) ! unseen_failure "$id" || failed=$((failed + 1)) ;;
     esac
   done
   [ "$running" -eq 0 ] || out="⏵ $running job$([ "$running" -eq 1 ] || printf s)"
@@ -374,7 +406,7 @@ relevant() {
   for state in failed running; do
     for id in $(ids); do
       [ "$(field "$id" state)" = "$state" ] || continue
-      [ "$state" = failed ] && [ -e "$jobs_dir/$id/seen" ] && continue
+      [ "$state" = failed ] && ! unseen_failure "$id" && continue
       printf '%s' "$id"
       return 0
     done
