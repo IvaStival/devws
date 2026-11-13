@@ -1,5 +1,5 @@
 use super::*;
-use crate::board::{Account, AgentRow, PermissionRow, QueueRow, RoleRow, SpecRow};
+use crate::board::{Account, AgentRow, PermissionRow, QueueRow, RoleRow, SpecRow, StaleReview};
 use crate::roles::Group;
 use crate::state::Effect;
 pub(crate) fn board() -> Board {
@@ -53,11 +53,15 @@ pub(crate) fn board() -> Board {
                 agents: vec![],
             },
         ],
-        review: vec![StepRow {
-            id: "s0".into(),
-            title: "set up".into(),
-            status: StepStatus::Failed,
-            attempts: 2,
+        leader_review: vec![],
+        stale_review: vec![StaleReview {
+            step: StepRow {
+                id: "s0".into(),
+                title: "set up".into(),
+                status: StepStatus::Failed,
+                attempts: 2,
+            },
+            waiting: Some(2 * 3600 + 5 * 60),
         }],
         queue: vec![QueueRow {
             id: "o2".into(),
@@ -516,7 +520,7 @@ fn the_header_has_the_count_the_tabs_the_progress_and_limit_bars() {
     assert!(!narrow.contains("wk "), "the week bar goes first: {narrow}");
 
     board.questions.clear();
-    board.review.clear();
+    board.stale_review.clear();
     let calm = plain(&screen(&board, &nav, &rows, 84, 40, None));
     assert!(!calm.lines().next().unwrap().contains("need you"), "{calm}");
 }
@@ -565,7 +569,7 @@ fn every_step_row_starts_with_its_mark_and_ends_with_its_state() {
 fn quiet_sections_are_left_out() {
     let mut board = board();
     board.questions.clear();
-    board.review.clear();
+    board.stale_review.clear();
     board.queue.clear();
     let rows = entries(&board, View::Overview, false, &[], None);
     assert!(!rows.iter().any(|entry| entry.id == "heading:NEEDS YOU"));
@@ -1078,4 +1082,62 @@ fn an_idle_agent_shows_its_counts_where_its_step_would_be() {
         .unwrap();
     assert_eq!(note.label, "└ 11 accepted · 3 retries");
     assert_eq!(note.tail, "", "nothing left alone at the far edge");
+}
+
+#[test]
+fn a_review_the_leader_left_needs_you_and_says_so() {
+    let board = board();
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let needs_you = rows
+        .iter()
+        .position(|entry| entry.id == "heading:NEEDS YOU")
+        .unwrap();
+    let stale = rows.iter().position(|entry| entry.id == "step:s0").unwrap();
+    assert!(stale > needs_you);
+    assert_eq!(rows[stale].label, "⚠ leader hasn't reviewed s0  set up");
+    assert_eq!(rows[stale].tail, "2h 5m");
+    let mut unknown = board;
+    unknown.stale_review[0].waiting = None;
+    let rows = entries(&unknown, View::Overview, false, &[], None);
+    let stale = rows.iter().find(|entry| entry.id == "step:s0").unwrap();
+    assert_eq!(stale.tail, "failed", "no time known: its state instead");
+}
+
+#[test]
+fn what_the_leader_is_reviewing_has_its_own_card_and_does_not_need_you() {
+    let mut board = board();
+    board.questions.clear();
+    board.stale_review.clear();
+    board.leader_review = vec![StepRow {
+        id: "s5".into(),
+        title: "add login".into(),
+        status: StepStatus::Reported,
+        attempts: 1,
+    }];
+    let rows = entries(&board, View::Overview, false, &[], None);
+    assert!(
+        !rows.iter().any(|entry| entry.id == "heading:NEEDS YOU"),
+        "nothing needs you"
+    );
+    let heading = rows
+        .iter()
+        .position(|entry| entry.id == "heading:LEADER REVIEWING")
+        .expect("a LEADER REVIEWING card");
+    assert_eq!(rows[heading].label, "LEADER REVIEWING · 1");
+    assert_eq!(rows[heading + 1].id, "step:s5");
+    let cto = rows
+        .iter()
+        .position(|entry| entry.id == "heading:CTO")
+        .unwrap();
+    let floor = rows
+        .iter()
+        .position(|entry| entry.id == "heading:FLOOR")
+        .unwrap();
+    assert!(
+        cto < heading && heading < floor,
+        "it follows the leader's card"
+    );
+    let nav = Navigation::new(View::Overview);
+    let text = plain(&screen(&board, &nav, &rows, 84, 40, None));
+    assert!(!text.lines().next().unwrap().contains("need you"), "{text}");
 }

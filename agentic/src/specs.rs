@@ -105,6 +105,7 @@ mod tests {
             status: StepStatus::Accepted,
             attempts: 1,
             spec: spec.map(str::to_string),
+            review_since: None,
         }
     }
 

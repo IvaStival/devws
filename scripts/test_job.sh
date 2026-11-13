@@ -233,6 +233,42 @@ test_old_jobs_are_pruned() {
   grep -q 'Tests passed' <<<"$(job list)" || fail "a recent job was pruned"
 }
 
+# "⏵ 1 job · ✗ 3 failed" → 3; 0 without failures.
+failed_count() {
+  local count
+  count="$(grep -oE '[0-9]+ failed' <<<"$1" || true)"
+  printf '%s' "${count%% *}"
+  [ -n "$count" ] || printf 0
+}
+
+# A failure needs no look once the same app (its lock; without one, the same
+# title) has run again and succeeded: the retry fixed it.
+test_a_later_success_of_the_same_app_settles_a_failure() {
+  local early broken other fixed untitled retried before
+  early="$(job start 'api → main' --lock api -- true)"
+  wait_for "$early" ok
+  broken="$(job start 'api → fix/menu' --lock api -- false)"
+  wait_for "$broken" failed
+  other="$(job start 'web → main' --lock web -- true)"
+  wait_for "$other" ok
+  rows_show 'api → fix/menu failed' ||
+    fail "an earlier success or another app's settled the failure: $(job rows 80)"
+  before="$(job summary)"
+  fixed="$(job start 'api → feat/other' --lock api -- true)"
+  wait_for "$fixed" ok
+  ! rows_show 'api → fix/menu failed' || fail "the retried app still shows its failure: $(job rows 80)"
+  [ "$(failed_count "$(job summary)")" = $(($(failed_count "$before") - 1)) ] ||
+    fail "summary still counts it: $before, then $(job summary)"
+  [ "$(job list | grep -c 'api → fix/menu')" = 1 ] || fail "the failure left the job list"
+
+  untitled="$(job start 'Tidy up' -- false)"
+  wait_for "$untitled" failed
+  rows_show 'Tidy up failed' || fail "a failure without a lock is not shown"
+  retried="$(job start 'Tidy up' -- true)"
+  wait_for "$retried" ok
+  ! rows_show 'Tidy up failed' || fail "a lockless retry with the same title did not settle it"
+}
+
 test_a_job_returns_at_once_and_records_its_end
 test_arguments_reach_the_command_unchanged
 test_jobs_on_one_lock_run_in_order
@@ -245,5 +281,6 @@ test_jobs_notify_when_they_end
 test_a_failure_says_why
 test_a_panel_that_cannot_open_says_so
 test_old_jobs_are_pruned
+test_a_later_success_of_the_same_app_settles_a_failure
 
 printf 'Job tests passed.\n'

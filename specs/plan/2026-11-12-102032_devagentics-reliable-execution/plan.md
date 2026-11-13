@@ -149,7 +149,7 @@ Specification and execution approved. All seven steps completed and verified.
 - `cargo clippy --all-targets -- -D warnings`: passed.
 - `cargo fmt --check`: passed.
 - `cargo build --locked`: passed.
-- `bash scripts/test_agent_interrupt.sh`: passed with stub terminals.
+- `bash scripts/test_agent_cli_interrupt.sh` (named `test_agent_interrupt.sh` until main added another test of that name): passed with stub terminals.
 - `bash scripts/test_agent_cli.sh`: passed using its isolated tmux server.
 - `bash -n` for both changed shell scripts: passed.
 - New documentation links resolve; `git diff --check` passed.

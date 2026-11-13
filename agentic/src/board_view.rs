@@ -1,7 +1,7 @@
 //! Pure board navigation and rendering. Stable row identities keep a refresh
 //! from moving the user's focus to a different agent or task.
 
-use crate::board::{AgentRow, Board, PermissionRow, RoleRow, SpecRow, StepRow};
+use crate::board::{AgentRow, Board, PermissionRow, RoleRow, SpecRow, StaleReview, StepRow};
 use crate::devws::{PaneState, Usage};
 use crate::roles::Group;
 use crate::state::StepStatus;
@@ -348,6 +348,35 @@ fn step_entry(board: &Board, step: &StepRow) -> Entry {
     .with_tail(step_word(step.status))
 }
 
+/// A review the leader left: under NEEDS YOU, for you to tell the leader, so
+/// it says whose it is, and how long it has waited when that is known.
+fn stale_entry(board: &Board, review: &StaleReview) -> Entry {
+    let step = &review.step;
+    let entry = step_entry(board, step).toned(vec![
+        (format!("{} ", step_mark(step.status)), Tone::Mark),
+        ("leader hasn't reviewed ".into(), Tone::Plain),
+        (format!("{}  ", step.id), Tone::Muted),
+        (step.title.clone(), Tone::Plain),
+    ]);
+    match review.waiting {
+        Some(seconds) => entry.with_tail(waited(seconds)),
+        None => entry,
+    }
+}
+
+/// `45m`, `2h 5m`, `3d 4h`: how long something has waited.
+fn waited(seconds: u64) -> String {
+    let minutes = seconds / 60;
+    let (days, hours) = (minutes / (24 * 60), minutes / 60 % 24);
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {}m", minutes % 60)
+    } else {
+        format!("{minutes}m")
+    }
+}
+
 /// A team row: `1  executor-1       claude`, the name standing out from its
 /// number and program.
 fn member_label(mark: &str, name: &str, program: &str) -> Vec<(String, Tone)> {
@@ -569,8 +598,8 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
         );
     }
     needs_you.extend(board.permissions.iter().map(permission_entry));
-    for step in &board.review {
-        needs_you.push(step_entry(board, step));
+    for review in &board.stale_review {
+        needs_you.push(stale_entry(board, review));
     }
     let agents = board
         .roles
@@ -624,6 +653,17 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
             entries.push(row.with_tail(state_mark(agent.state)));
             if let Some(note) = agent_note(agent) {
                 entries.push(note);
+            }
+        }
+        // What the leader is reviewing follows the leader: its work, not yours.
+        if group == Group::Cto && !board.leader_review.is_empty() {
+            entries.push(Entry::gap("leader-review"));
+            entries.push(Entry::section(
+                "LEADER REVIEWING",
+                Some(board.leader_review.len()),
+            ));
+            for step in &board.leader_review {
+                entries.push(step_entry(board, step));
             }
         }
     }
@@ -1262,12 +1302,12 @@ fn limit(label: &str, used: Option<u32>) -> Vec<Span<'static>> {
     ]
 }
 
-/// What needs you: questions, leader calls to approve, steps to review, agents waiting or gone, and a
-/// dispatcher that cannot work.
+/// What needs you: questions, leader calls to approve, reviews the leader
+/// left, agents waiting or gone, and a dispatcher that cannot work.
 fn attention(board: &Board, problem: Option<&str>) -> usize {
     board.questions.len()
         + board.permissions.len()
-        + board.review.len()
+        + board.stale_review.len()
         + board
             .roles
             .iter()

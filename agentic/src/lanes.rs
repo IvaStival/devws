@@ -282,6 +282,7 @@ mod tests {
                 status: StepStatus::Accepted,
                 attempts: 1,
                 spec: None,
+                review_since: None,
             });
             tx.state.plans.push(ExecutionPlan {
                 step: "p1".into(),

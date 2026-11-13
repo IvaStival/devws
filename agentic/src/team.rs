@@ -491,7 +491,7 @@ impl Team<'_> {
             }
             for step in steps {
                 if let Some(step) = tx.state.step_mut(&step) {
-                    step.status = StepStatus::Blocked;
+                    step.set_status(StepStatus::Blocked, crate::log::now());
                 }
             }
             tx.state.queue.retain(|message| message.to != id);
@@ -1159,6 +1159,7 @@ mod tests {
                     status: StepStatus::Ordered,
                     attempts: 1,
                     spec: None,
+                    review_since: None,
                 });
                 tx.state.orders.push(crate::state::Order {
                     id: "o1".into(),
@@ -1269,6 +1270,7 @@ mod tests {
                     status: StepStatus::Ordered,
                     attempts: 1,
                     spec: None,
+                    review_since: None,
                 });
                 tx.state.orders.push(crate::state::Order {
                     id: "o1".into(),

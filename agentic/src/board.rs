@@ -40,8 +40,11 @@ pub struct Board {
     pub roles: Vec<RoleRow>,
     /// Questions not answered yet: `q7 executor-1 → planner-1: …`.
     pub questions: Vec<String>,
-    /// Steps the leader has to act on: reported, failed, blocked or sent back.
-    pub review: Vec<StepRow>,
+    /// Steps the leader is acting on: reported, failed, blocked or sent back.
+    pub leader_review: Vec<StepRow>,
+    /// Steps the leader left: waiting longer than `STALE_REVIEW_SECS` while it
+    /// is not working. These need you, to tell the leader.
+    pub stale_review: Vec<StaleReview>,
     /// Orders waiting to be typed into an agent.
     pub queue: Vec<QueueRow>,
     pub done: Vec<StepRow>,
@@ -49,6 +52,16 @@ pub struct Board {
     pub done_specs: Vec<SpecRow>,
     /// The leader and each agent: what they used.
     pub usage: Vec<(String, Usage)>,
+}
+
+/// How long a step may wait for an idle leader before it needs you.
+pub const STALE_REVIEW_SECS: u64 = 600;
+
+#[derive(Debug, PartialEq)]
+pub struct StaleReview {
+    pub step: StepRow,
+    /// Seconds it has waited; `None` when it was saved without a time.
+    pub waiting: Option<u64>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -352,26 +365,6 @@ impl Board {
             });
         }
 
-        let step_row = |step: &Step| StepRow {
-            id: step.id.clone(),
-            title: step.title.clone(),
-            status: step.status,
-            attempts: step.attempts,
-        };
-        let review = state
-            .steps
-            .iter()
-            .filter(|step| {
-                matches!(
-                    step.status,
-                    StepStatus::Reported
-                        | StepStatus::Failed
-                        | StepStatus::Blocked
-                        | StepStatus::Rejected
-                )
-            })
-            .map(step_row)
-            .collect();
         let done: Vec<StepRow> = state
             .steps
             .iter()
@@ -527,6 +520,8 @@ impl Board {
             Some(pane) => Some(devws.pane_state(pane)?),
             None => None,
         };
+        let (leader_review, stale_review) =
+            split_reviews(&state.steps, leader_state, crate::log::now());
         Ok(Self {
             phase: if state.paused {
                 "Paused"
@@ -555,13 +550,54 @@ impl Board {
             accounts: account_rows,
             roles: rows,
             questions,
-            review,
+            leader_review,
+            stale_review,
             queue,
             done,
             done_specs,
             usage: usage.by_role,
         })
     }
+}
+
+fn step_row(step: &crate::state::Step) -> StepRow {
+    StepRow {
+        id: step.id.clone(),
+        title: step.title.clone(),
+        status: step.status,
+        attempts: step.attempts,
+    }
+}
+
+/// The steps waiting for the leader, split into those it is on and those it
+/// left: waiting past `STALE_REVIEW_SECS` (or since an unknown time) while
+/// the leader is not working.
+fn split_reviews(
+    steps: &[crate::state::Step],
+    leader_state: Option<PaneState>,
+    now: u64,
+) -> (Vec<StepRow>, Vec<StaleReview>) {
+    let leader_working = leader_state == Some(PaneState::Working);
+    let mut leader_review = Vec::new();
+    let mut stale_review = Vec::new();
+    for step in steps.iter().filter(|step| {
+        matches!(
+            step.status,
+            StepStatus::Reported | StepStatus::Failed | StepStatus::Blocked | StepStatus::Rejected
+        )
+    }) {
+        let waiting = step.review_since.map(|since| now.saturating_sub(since));
+        let left = waiting.is_none_or(|seconds| seconds > STALE_REVIEW_SECS);
+        if left && !leader_working {
+            stale_review.push(StaleReview {
+                step: step_row(step),
+                waiting,
+            });
+        } else {
+            leader_review.push(step_row(step));
+        }
+    }
+    (leader_review, stale_review)
 }
 
 #[cfg(test)]
@@ -680,6 +716,7 @@ pub(crate) mod tests {
                     status,
                     attempts,
                     spec: None,
+                    review_since: None,
                 });
             }
             tx.state.orders.extend([
@@ -711,6 +748,58 @@ pub(crate) mod tests {
         assert_eq!(board.leader_usage.map(|usage| usage.input), Some(9000));
     }
 
+    fn waiting(id: &str, status: StepStatus, since: Option<u64>) -> crate::state::Step {
+        crate::state::Step {
+            id: id.into(),
+            title: format!("title {id}"),
+            status,
+            attempts: 1,
+            review_since: since,
+            spec: None,
+        }
+    }
+
+    #[test]
+    fn a_review_the_idle_leader_left_behind_needs_you() {
+        let now = 10_000;
+        let steps = [
+            waiting("fresh", StepStatus::Reported, Some(now - 60)),
+            waiting(
+                "old",
+                StepStatus::Reported,
+                Some(now - STALE_REVIEW_SECS - 1),
+            ),
+            waiting("unknown", StepStatus::Failed, None),
+            waiting("work", StepStatus::Ordered, None),
+            waiting("done", StepStatus::Accepted, None),
+        ];
+        let (leader, stale) = split_reviews(&steps, Some(PaneState::Done), now);
+        let ids = |rows: Vec<&str>| rows.into_iter().map(str::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            leader.iter().map(|row| row.id.clone()).collect::<Vec<_>>(),
+            ids(vec!["fresh"])
+        );
+        assert_eq!(
+            stale
+                .iter()
+                .map(|review| (review.step.id.clone(), review.waiting))
+                .collect::<Vec<_>>(),
+            [
+                ("old".to_string(), Some(STALE_REVIEW_SECS + 1)),
+                ("unknown".to_string(), None),
+            ],
+            "a step saved without a report time counts as long left"
+        );
+    }
+
+    #[test]
+    fn a_working_leader_keeps_its_reviews_however_old() {
+        let steps = [waiting("old", StepStatus::Reported, Some(0))];
+        let (leader, stale) = split_reviews(&steps, Some(PaneState::Working), 10_000);
+        assert_eq!(leader.len(), 1);
+        assert!(stale.is_empty());
+    }
+
     #[test]
     fn steps_split_into_done_and_what_needs_the_leader() {
         let dir = TempDir::new().unwrap();
@@ -728,6 +817,7 @@ pub(crate) mod tests {
                     status,
                     attempts: 1,
                     spec: None,
+                    review_since: (status == StepStatus::Reported).then(crate::log::now),
                 });
             }
             tx.state.say(LEADER, "x".into());
@@ -739,7 +829,12 @@ pub(crate) mod tests {
         let board = Board::build(&task, &devws, &roles, TeamUsage::default()).unwrap();
         let ids = |rows: &[StepRow]| rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
         assert_eq!(ids(&board.done), ["s3", "s1"], "newest first");
-        assert_eq!(ids(&board.review), ["s2"]);
+        assert_eq!(
+            ids(&board.leader_review),
+            ["s2"],
+            "the leader is reviewing it"
+        );
+        assert!(board.stale_review.is_empty());
         assert_eq!(
             board.summary,
             "No plan yet. 2 of 4 steps accepted. 1 to tell the leader. Paused."
@@ -763,6 +858,7 @@ pub(crate) mod tests {
                 status: StepStatus::Ordered,
                 attempts: 1,
                 spec: None,
+                review_since: None,
             });
             tx.state.orders.push(crate::state::Order {
                 id: "o1".into(),
@@ -870,6 +966,7 @@ pub(crate) mod tests {
             status,
             attempts,
             spec: spec.map(str::to_string),
+            review_since: None,
         };
         let accepted = StepStatus::Accepted;
         let steps = [
