@@ -77,6 +77,7 @@ tools|open-database|⛁ Database|C-b B|open_database|editor
 tools|database-folder|⛁ Database folder||choose_database_folder|editor
 tools|job-log|◷ Job log|C-b j|show_job_log
 tools|network-devices|◎ List network devices||list_network_devices
+tools|usage-history|◷ Usage history||show_usage_history
 help|guide|? Start here||open_guide README
 help|guide-shortcuts|⌨ Shortcuts||open_guide shortcuts
 help|guide-workspaces|⎇ Workspaces||open_guide workspaces

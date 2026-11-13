@@ -139,7 +139,7 @@ editor.
 ## Using devws
 
 ```sh
-devws                    # the start screen: a recent folder, or a GitHub branch (existing or new)
+devws                    # joins the running workspace; else the start screen: a recent folder, or a GitHub branch
 devws ~/Projects/my-app  # a workspace on a folder
 ```
 

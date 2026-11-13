@@ -198,6 +198,7 @@ pub fn start_task(
                     branch: branch.clone(),
                     workspace: session_name(&folder),
                     max_agents: 3,
+                    check_profiles: Default::default(),
                     repos: vec![repo.clone()],
                     lanes: Vec::new(),
                 };

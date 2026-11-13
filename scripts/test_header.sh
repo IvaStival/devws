@@ -293,13 +293,14 @@ test_claude_limits_come_from_its_status_line() {
   # Without a status line of the user's own, it shows nothing.
   output="$(printf '%s' "$payload" | TMUX=test "$SCRIPTS/agent_statusline.sh")"
   [ -z "$output" ] || fail "the status line printed without one of the user's: $output"
-  [ "$(tmux show-option -gqv @devws_limits_claude)" = "37 12" ] || fail "Claude's limits are not recorded"
+  [ "$(tmux show-option -gqv @devws_limits_claude | cut -d" " -f1-2)" = "37 12" ] || fail "Claude's limits are not recorded"
+  [[ "$(tmux show-option -gqv @devws_limits_claude | cut -d" " -f3)" =~ ^[0-9]+$ ]] || fail "Claude's limits are recorded without when they were read"
 
   mkdir -p "$HOME/.claude"
   printf '{"statusLine":{"type":"command","command":"jq -r .model.display_name; printf mine"}}\n' > "$HOME/.claude/settings.json"
   output="$(printf '%s' '{"model":{"display_name":"Sonnet"}}' | TMUX=test "$SCRIPTS/agent_statusline.sh")"
   [ "$output" = $'Sonnet\nmine' ] || fail "the user's own status line is not shown: $output"
-  [ "$(tmux show-option -gqv @devws_limits_claude)" = "37 12" ] ||
+  [ "$(tmux show-option -gqv @devws_limits_claude | cut -d" " -f1-2)" = "37 12" ] ||
     fail "a status line without limits forgot them"
   rm "$HOME/.claude/settings.json"
 
@@ -309,8 +310,8 @@ test_claude_limits_come_from_its_status_line() {
   output="$(printf '%s' '{"rate_limits":{"five_hour":{"used_percentage":80},"seven_day":{"used_percentage":50}}}' |
     TMUX=test DEVWS_AGENT=work CLAUDE_CONFIG_DIR="$HOME/.claude-work" "$SCRIPTS/agent_statusline.sh")"
   [ "$output" = "work-line" ] || fail "the account's own status line is not shown: $output"
-  [ "$(tmux show-option -gqv @devws_limits_work)" = "80 50" ] || fail "the work account's limits are not recorded"
-  [ "$(tmux show-option -gqv @devws_limits_claude)" = "37 12" ] || fail "another account overwrote Claude's limits"
+  [ "$(tmux show-option -gqv @devws_limits_work | cut -d" " -f1-2)" = "80 50" ] || fail "the work account's limits are not recorded"
+  [ "$(tmux show-option -gqv @devws_limits_claude | cut -d" " -f1-2)" = "37 12" ] || fail "another account overwrote Claude's limits"
   rm "$HOME/.claude-work/settings.json"
   jq -e '.statusLine.command | contains("agent_statusline.sh")' "$SCRIPTS/agent_settings.json" >/dev/null ||
     fail "devws does not start Claude Code with its status line"
@@ -337,7 +338,7 @@ test_one_column_for_the_agents() {
 
   # A row for each listed account with its own limits, names aligned to the
   # longest; a name that is not registered has no row.
-  tmux set-option -g @devws_limits_claude "37 12"
+  tmux set-option -g @devws_limits_claude "37 12 1800000000"
   tmux set-option -g @devws_limits_company_work "80 50"
   output="$(DEVWS_AGENTS="claude company_work ghost" DEVWS_AGENT_company_work="claude ~/.claude-work" \
     "$SCRIPTS/header_agents.sh" | plain)"

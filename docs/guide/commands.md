@@ -10,7 +10,7 @@ folder.
 
 | Command | What it does |
 | ------- | ------------ |
-| `devws` | The start screen: reopen a recent folder, start a new branch from GitHub, or clone another repo ([Workspaces](workspaces.md)) |
+| `devws` | Outside tmux with a workspace running: joins the first one. Otherwise the start screen: reopen a recent folder, start a new branch from GitHub, or clone another repo ([Workspaces](workspaces.md)) |
 | `devws <folder> [agent] [editor]` | A workspace on a folder (`devws .` for this one). Without an agent or editor, asks |
 | `devws agentic [--editor] [--leader <agent>] [<repo or folder> [<branch>]]` | A workspace for an agent team: the leader, a log and room for the agents it opens ([Agent teams](agentic.md)). Without arguments, the start screen. `--leader` names the registered agent that leads; without it, a terminal is asked |
 | `devws worktree <branch> [agent] [editor]` | A workspace on a git worktree of this repo's branch, in `../<repo>-<branch>`; a new branch off HEAD when it does not exist |
@@ -85,6 +85,25 @@ your own agents and extra panels are restarted ([Workspaces](workspaces.md#after
 | `devws note "<text>" [--error]` | Show a message in the header's jobs line |
 | `devws jobs` | The recent jobs: id, state, title |
 | `devws jobs log [id]` | Page a job's log (no id: the latest, a failure first) |
+
+## Usage history
+
+Run `devws usage`, or choose **Tools → ◷ Usage history**, for what every agent
+used: today, the last 7 days, the last 30 days and all time, at API prices,
+with the tokens.
+
+- **Workspaces**: one row per folder an agent worked in, named like the sidebar.
+- **Agent teams**: one row per devAgentics task. It covers its lanes and its
+  agents' folders, plus the repo worktree its leader works in. A finished
+  task keeps its row.
+- **Accounts**: one row per agent in `DEVWS_AGENTS` (`claude`, `claude_work`,
+  `codex`…). **Total** adds them up.
+
+It reads the agents' own logs (Claude Code's `projects/`, Codex's
+`sessions/`), so closed conversations count too. A message that a resumed
+conversation repeats counts once. A cost with `+` includes a model that
+`agent_prices.tsv` has no price for. The first run reads every log; after
+that, only new or changed logs are read again.
 
 ## Network
 

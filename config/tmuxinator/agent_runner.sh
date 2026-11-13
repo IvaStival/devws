@@ -96,7 +96,7 @@ fi
 
 # A respawn can reuse its pane. Never attribute the previous runtime's
 # observed model or transcript to the replacement agent.
-for option in @devws_model @devws_model_source @devws_model_seen @devws_model_transcript @devws_transcript @devws_model_configured; do
+for option in @devws_startup_error @devws_model @devws_model_source @devws_model_seen @devws_model_transcript @devws_transcript @devws_model_configured; do
   tmux set-option -p -u -t "$TMUX_PANE" "$option" 2>/dev/null
 done
 if [ "$extra" != --extra ]; then
@@ -123,6 +123,11 @@ done
 # the user's own agent settings are never changed.
 # Absolute: the hook runs from wherever the agent works.
 prompt="$(cat "$link_dir/agent_editor_prompt.md")"
+if ! command -v "$kind" >/dev/null 2>&1; then
+  tmux set-option -p -t "$TMUX_PANE" @devws_startup_error '{"type":"error","error":{"code":"provider_unavailable"}}'
+  printf 'Agent program is unavailable: %s\n' "$kind" >&2
+  exit 127
+fi
 case "$kind" in
   claude)
     claude ${resume:+--continue} --settings "$link_dir/agent_settings.json" --append-system-prompt "$prompt" \
@@ -154,3 +159,11 @@ case "$kind" in
       ${extra_args[@]+"${extra_args[@]}"}
     ;;
 esac
+
+provider_exit=$?
+if [ "$provider_exit" -ne 0 ]; then
+  # A generic exit is actionable evidence, never a quota/model guess. The
+  # transcript may supply a more specific typed rejection to the dispatcher.
+  tmux set-option -p -t "$TMUX_PANE" @devws_startup_error '{"type":"error","error":{"code":"provider_exit"}}'
+fi
+exit "$provider_exit"

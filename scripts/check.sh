@@ -18,7 +18,7 @@ quick=""
 parallel="${DEVWS_CHECK_JOBS:-4}"
 
 # The suites --quick runs: no tmux server, no waiting on real time.
-quick_suites="test_picker test_recent test_shared_files test_worktree test_github_repo
+quick_suites="test_clipboard test_picker test_recent test_shared_files test_worktree test_github_repo
   test_jungleforge test_link_scripts test_tidy test_memory test_guide test_rust_tools test_network"
 
 shell_scripts=(
@@ -76,7 +76,7 @@ ruby -rerb -ryaml -e '
   abort "agentic.yml: pre_window was cut short" unless config["pre_window"].end_with?("; clear")
   panes = config["windows"][0]["workspace"]["panes"].map { |pane| pane.values.first }
   abort "agentic.yml: the leader lost its arguments file" unless panes.find { |pane| pane.include?("agent_runner.sh") }.end_with?("codex --args-file \x27/tmp/it\x27\\\x27\x27s/args\x27")
-  abort "agentic.yml: the board pane does not run the board of the task" unless panes.last.end_with?("devagentics board team-1")
+  abort "agentic.yml: the board pane does not run the board of the task" unless panes.last.end_with?("\x27devagentics\x27 board team-1")
 ' "$ROOT/config/tmuxinator/agentic.yml"
 
 if command -v luac >/dev/null 2>&1; then

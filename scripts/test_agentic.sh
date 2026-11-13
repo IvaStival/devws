@@ -56,7 +56,7 @@ printf '%s\0' "\$@" > "$TEST_ROOT/started/devagentics-\$1.\$\$"
 case "\$1" in
   task) [ "\$2" = leader ] && { echo codex; exit 0; }
     printf 'team-1\nclaude\n$TEST_ROOT/leader-args\n' ;;
-  board) exec sleep 600 ;;
+  board) printf '%s' "\$0" > "$TEST_ROOT/board-executable"; exec sleep 600 ;;
 esac
 EOF
 ln -s "$ROOT/bin/devws" "$TEST_ROOT/bin/devws"
@@ -404,6 +404,26 @@ EOF
   ln -s "$SCRIPTS_SRC/rust_tools.sh" "$SCRIPTS/rust_tools.sh"
 }
 
+# The pane must execute the resolved command, including quoted paths.
+board_executable_is() {
+  [ -f "$TEST_ROOT/board-executable" ] && [ "$(cat "$TEST_ROOT/board-executable")" = "$1" ]
+}
+
+test_board_uses_resolved_executable() {
+  local executable="$TEST_ROOT/it's tools/devagentics" folder="$TEST_ROOT/projects/resolved-board"
+  mkdir -p "$(dirname "$executable")" "$folder"
+  cp "$TEST_ROOT/bin/devagentics" "$executable"
+  DEVWS_AGENTIC_COMMAND="$executable" devws agentic "$folder" </dev/null >/dev/null || fail "quoted executable failed"
+  wait_until board_executable_is "$executable" || fail "quoted board executable did not run"
+
+  # The launcher's Cargo PATH need not be present in the pane's shell.
+  mkdir -p "$HOME/.cargo/bin" "$TEST_ROOT/projects/path-default-board"
+  cp "$TEST_ROOT/bin/devagentics" "$HOME/.cargo/bin/devagentics"
+  devws agentic "$TEST_ROOT/projects/path-default-board" </dev/null >/dev/null || fail "Cargo executable failed"
+  wait_until board_executable_is "$HOME/.cargo/bin/devagentics" || fail "board still depends on pane PATH"
+  rm "$HOME/.cargo/bin/devagentics"
+}
+
 test_agentic_can_add_an_editor() {
   local folder session
   folder="$TEST_ROOT/projects/with-editor"
@@ -426,6 +446,7 @@ test_agentic_starts_the_team_with_the_leader_chosen
 test_agentic_makes_a_worktree_for_a_repo_and_a_branch
 test_agentic_needs_devagentics
 test_agentic_offers_to_install_devagentics
+test_board_uses_resolved_executable
 test_agentic_can_add_an_editor
 
 printf 'Agentic tests passed\n'

@@ -9,7 +9,7 @@ use crate::leader;
 use crate::log::Kind;
 use crate::orders::{self, OrderRequest};
 use crate::prs;
-use crate::state::LEADER;
+use crate::state::{Effect, LEADER, PermissionRequest, PermissionStatus};
 use crate::status;
 use crate::task::Task;
 use crate::team::Team;
@@ -41,7 +41,37 @@ fn tools() -> Vec<Value> {
     let text = |what: &str| json!({ "type": "string", "description": what });
     let globs =
         |what: &str| json!({ "type": "array", "items": { "type": "string" }, "description": what });
-    vec![
+    let mut tools = vec![
+        tool(
+            "pause_task",
+            "Pause deliveries; optionally interrupt active turns without closing panes.",
+            json!({"interrupt": {"type":"boolean"}}),
+            &[],
+        ),
+        tool(
+            "resume_task",
+            "Queue authoritative recovery work and resume deliveries.",
+            json!({}),
+            &[],
+        ),
+        tool(
+            "configure_checks",
+            "Configure repository named checks and isolated environments; configuration is a RepositoryChecks JSON object.",
+            json!({"repo": text("Repo name"), "configuration": {"type":"object"}}),
+            &["repo", "configuration"],
+        ),
+        tool(
+            "run_check",
+            "Run checks for an exact delivered order and return structured evidence.",
+            json!({"order": text("Order ID")}),
+            &["order"],
+        ),
+        tool(
+            "amend_order",
+            "Amend an open order allowlist, preserving its identity and base.",
+            json!({"order": text("Order ID"), "allowed": globs("Additional allowed paths or globs"), "reason": text("Authorization reason")}),
+            &["order", "allowed", "reason"],
+        ),
         tool(
             "task_status",
             "Where the team stands: the plan, repos, agents and their states, steps, what waits for you, limits, the recent log. Call it first, after any pause, and whenever you are unsure.",
@@ -55,8 +85,14 @@ fn tools() -> Vec<Value> {
             &[],
         ),
         tool(
+            "authorize_action",
+            "After the user explicitly approves or denies a pending call outside the current project, record that decision. Approval is for one exact invocation only; pass the returned request ID as approval_id when retrying that same tool with unchanged arguments.",
+            json!({"request": text("Pending permission request ID"), "approved": {"type":"boolean", "description":"True only after explicit user approval"}}),
+            &["request", "approved"],
+        ),
+        tool(
             "spawn_agent",
-            "Start an agent with one of the roles task_status lists in a repo's worktree. It answers 'ready' and then takes orders. Refused for a writing role before the plan is approved (approve_plan), when a writer already works in that worktree, at the agent limit, or on an account near its limit.",
+            "Start an agent with one of the roles task_status lists in a repo's worktree. It answers 'ready' and then takes orders. Refused for a writing role before the plan is approved (approve_plan), when a writer already works in that worktree, at the agent limit, or when no compatible startup candidate is available. Account exhaustion and explicit model/provider unavailability automatically try alternatives without separate approval.",
             json!({
                 "role": text("The role's name (devagentics role list)"),
                 "repo": text("The repo's name; the task's first by default"),
@@ -77,7 +113,7 @@ fn tools() -> Vec<Value> {
         tool(
             "add_repo",
             "Add another repo to the task: a worktree on the task's branch, from owner/repo, a URL or a folder. Then spawn agents in it.",
-            json!({ "repo": text("owner/repo, a URL or a folder"), "check": text("The command that decides a step is done in this repo") }),
+            json!({ "repo": text("owner/repo, a URL or a folder"), "check": text("The command that decides a step is done in this repo"), "approval_id": text("One-use approval request ID, only after explicit user approval") }),
             &["repo"],
         ),
         tool(
@@ -90,8 +126,10 @@ fn tools() -> Vec<Value> {
                 "text": text("What to do and what done means"),
                 "allowed": globs("Globs of the files it may change, from the repo's root; none means any"),
                 "forbidden": globs("Globs of the files it must not change"),
+                "profiles": globs("Selected named check profiles; cannot mix with a legacy check"),
                 "check": text("The command that decides it is done; the repo's by default. `true` for an order that changes no files"),
                 "plan": text("For a factory-floor agent (required): the senior's step whose accepted execution plan this order follows"),
+                "spec": text("The plan part this step belongs to, as a release version: a new part takes task_status's next_version (1.3.0) and its steps are named 1.3.1, 1.3.2…; the board shows finished work by it. Give it on the first order of a step"),
             }),
             &["agent", "step", "title", "text"],
         ),
@@ -121,8 +159,8 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "stop_agent",
-            "End an agent: its panel closes and its worktree is free for another writer.",
-            json!({ "agent": text("The agent's id") }),
+            "End a task-owned agent without separate approval: its panel closes and its worktree is free for another writer.",
+            json!({ "agent": text("The task-owned agent's id") }),
             &["agent"],
         ),
         tool(
@@ -155,10 +193,46 @@ fn tools() -> Vec<Value> {
         tool(
             "open_prs",
             "When every step is accepted: push each repo's branch and open a draft pull request for each, linking the others.",
-            json!({}),
+            json!({ "approval_id": text("One-use approval request ID, only after explicit user approval") }),
             &[],
         ),
-    ]
+    ];
+    for entry in &mut tools {
+        if let Some(name) = entry["name"].as_str()
+            && let Some(effect) = effect(name)
+        {
+            let description = entry["description"].as_str().unwrap_or_default();
+            entry["description"] = json!(format!("Effect: {}. {description}", effect.name()));
+        }
+    }
+    tools
+}
+
+/// Only actions crossing the project boundary require separate authorization.
+fn effect(name: &str) -> Option<Effect> {
+    match name {
+        "add_repo" | "open_prs" => Some(Effect::External),
+        "stop_agent" => Some(Effect::System),
+        "spawn_agent" | "pause_task" | "resume_task" | "configure_checks" | "run_check"
+        | "amend_order" | "task_status" | "approve_plan" | "add_lane" | "send_order"
+        | "read_plan" | "answer_question" | "accept_step" | "reject_step" | "set_check"
+        | "read_log" | "escalate" | "switch_leader" | "authorize_action" => Some(Effect::System),
+        _ => None,
+    }
+}
+
+fn validate_required(name: &str, arguments: &Value) -> Result<()> {
+    let Some(definition) = tools().into_iter().find(|tool| tool["name"] == name) else {
+        return Ok(());
+    };
+    if let Some(required) = definition["inputSchema"]["required"].as_array() {
+        for key in required.iter().filter_map(Value::as_str) {
+            if arguments.get(key).is_none_or(Value::is_null) {
+                bail!("'{key}' is required");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn string(arguments: &Value, key: &str) -> Result<String> {
@@ -250,6 +324,120 @@ impl Server<'_> {
     }
 
     fn call(&self, name: &str, arguments: &Value) -> Result<String> {
+        if name == "authorize_action" {
+            return self.authorize_action(arguments);
+        }
+        validate_required(name, arguments)?;
+        if let Some(effect) = effect(name) {
+            if effect != Effect::System {
+                return self.authorized_call(name, arguments, effect);
+            }
+        }
+        self.call_inner(name, arguments)
+    }
+
+    fn authorized_call(&self, name: &str, arguments: &Value, effect: Effect) -> Result<String> {
+        let approval_id = optional_string(arguments, "approval_id");
+        let mut exact_arguments = arguments.clone();
+        if let Some(object) = exact_arguments.as_object_mut() {
+            object.remove("approval_id");
+        }
+        let Some(approval_id) = approval_id else {
+            let request = self.task.transaction(|tx| {
+                if let Some(existing) = tx.state.permissions.iter().find(|request| {
+                    request.tool == name
+                        && request.arguments == exact_arguments
+                        && request.effect == effect
+                        && request.status == PermissionStatus::Pending
+                }) {
+                    return Ok(existing.id.clone());
+                }
+                let id = format!("p{}", tx.state.next_number());
+                tx.state.permissions.push(PermissionRequest {
+                    id: id.clone(),
+                    tool: name.to_string(),
+                    arguments: exact_arguments.clone(),
+                    effect,
+                    status: PermissionStatus::Pending,
+                });
+                tx.log(
+                    Kind::Escalate,
+                    Some(LEADER),
+                    None,
+                    &format!("Permission {id} requested for {name} ({})", effect.name()),
+                );
+                Ok(id)
+            })?;
+            return Ok(format!(
+                "Permission required ({}) for {name}. Request {request}. No action was taken. Show the user the exact invocation outside the project: {}. Ask for approval; only after an explicit yes call authorize_action with this request ID and approved=true. Then retry the same tool with the same arguments and approval_id={request}.",
+                effect.name(),
+                serde_json::to_string(&exact_arguments)?
+            ));
+        };
+
+        self.task.transaction(|tx| {
+            let request = tx
+                .state
+                .permissions
+                .iter_mut()
+                .find(|request| request.id == approval_id)
+                .with_context(|| format!("permission request {approval_id} does not exist"))?;
+            if request.tool != name
+                || request.arguments != exact_arguments
+                || request.effect != effect
+            {
+                bail!("permission {approval_id} is bound to a different tool invocation");
+            }
+            if request.status != PermissionStatus::Authorized {
+                bail!("permission {approval_id} is not authorized or has already been used");
+            }
+            request.status = PermissionStatus::Consumed;
+            Ok(())
+        })?;
+        self.call_inner(name, &exact_arguments)
+    }
+
+    fn authorize_action(&self, arguments: &Value) -> Result<String> {
+        let id = string(arguments, "request")?;
+        let approved = arguments["approved"]
+            .as_bool()
+            .context("'approved' is required (a boolean)")?;
+        self.task.transaction(|tx| {
+            let request = tx
+                .state
+                .permissions
+                .iter_mut()
+                .find(|request| request.id == id)
+                .with_context(|| format!("permission request {id} does not exist"))?;
+            if request.status != PermissionStatus::Pending {
+                bail!("permission request {id} is no longer pending");
+            }
+            request.status = if approved {
+                PermissionStatus::Authorized
+            } else {
+                PermissionStatus::Denied
+            };
+            tx.log(
+                Kind::Review,
+                Some(LEADER),
+                None,
+                &format!(
+                    "Permission {id} {}",
+                    if approved { "authorized" } else { "denied" }
+                ),
+            );
+            Ok(())
+        })?;
+        Ok(if approved {
+            format!(
+                "Permission {id} authorized for one exact invocation. Retry that tool once with approval_id={id}."
+            )
+        } else {
+            format!("Permission {id} denied. The action will not run.")
+        })
+    }
+
+    fn call_inner(&self, name: &str, arguments: &Value) -> Result<String> {
         match name {
             "task_status" => Ok(serde_json::to_string_pretty(&status::summary(
                 self.task, self.devws, self.home,
@@ -298,11 +486,47 @@ impl Server<'_> {
                     repo.name
                 ))
             }
+            "pause_task" => {
+                self.team().pause_mode(
+                    arguments
+                        .get("interrupt")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    std::env::var("TMUX_PANE").ok().as_deref(),
+                )?;
+                Ok("Paused.".into())
+            }
+            "resume_task" => {
+                let restarted = self.team().resume()?;
+                Ok(format!("Resumed; restarted: {}", restarted.join(", ")))
+            }
+            "configure_checks" => {
+                let config = serde_json::from_value(
+                    arguments
+                        .get("configuration")
+                        .context("missing configuration")?
+                        .clone(),
+                )?;
+                crate::check_profiles::configure(self.task, &string(arguments, "repo")?, config)?;
+                Ok("Check profiles configured.".into())
+            }
+            "run_check" => Ok(serde_json::to_string(
+                &crate::check_profiles::run(self.task, &string(arguments, "order")?, None)?
+                    .response(),
+            )?),
+            "amend_order" => orders::amend(
+                self.task,
+                &string(arguments, "order")?,
+                strings(arguments, "allowed")?,
+                &string(arguments, "reason")?,
+                "leader MCP",
+            ),
             "send_order" => {
                 let agent = string(arguments, "agent")?;
                 let id = orders::send_order(
                     self.task,
                     OrderRequest {
+                        profiles: strings(arguments, "profiles")?,
                         agent: agent.clone(),
                         step: string(arguments, "step")?,
                         title: string(arguments, "title")?,
@@ -311,6 +535,7 @@ impl Server<'_> {
                         forbidden: strings(arguments, "forbidden")?,
                         check: optional_string(arguments, "check"),
                         plan: optional_string(arguments, "plan"),
+                        spec: optional_string(arguments, "spec"),
                     },
                 )?;
                 Ok(format!(
@@ -511,8 +736,14 @@ mod tests {
         assert_eq!(
             names,
             [
+                "pause_task",
+                "resume_task",
+                "configure_checks",
+                "run_check",
+                "amend_order",
                 "task_status",
                 "approve_plan",
+                "authorize_action",
                 "spawn_agent",
                 "add_lane",
                 "add_repo",
@@ -597,7 +828,7 @@ mod tests {
         let (failed, text) = f.call("approve_plan", json!({}));
         assert!(!failed && text.contains("approved"), "{text}");
         let (failed, text) = f.call("spawn_agent", json!({ "role": "executor" }));
-        assert!(!failed, "{text}");
+        assert!(!failed && text.contains("Started"), "{text}");
     }
 
     #[test]
@@ -617,6 +848,110 @@ mod tests {
     }
 
     #[test]
+    fn leader_starts_agents_without_separate_permission() {
+        let f = fixture();
+        let (failed, text) = f.call("spawn_agent", json!({"role":"planner"}));
+        assert!(!failed && text.contains("Started planner-1"), "{text}");
+        assert!(f.task.state().unwrap().permissions.is_empty());
+        assert_eq!(f.task.state().unwrap().agents.len(), 1);
+    }
+
+    #[test]
+    fn leader_stops_and_replaces_only_task_owned_agents_without_permission() {
+        let f = fixture();
+        let (_, text) = f.call("spawn_agent", json!({"role":"planner"}));
+        assert!(text.contains("Started planner-1"));
+        let pane = f.task.state().unwrap().agents[0].pane.clone();
+        for foreign in ["%1", "other-task-agent", "leader"] {
+            let (failed, _) = f.call("stop_agent", json!({"agent":foreign}));
+            assert!(failed);
+            assert!(f.task.state().unwrap().agents[0].live);
+        }
+        let (failed, text) = f.call("stop_agent", json!({"agent":"planner-1"}));
+        assert!(!failed, "{text}");
+        assert_eq!(
+            f.devws.pane_state(&pane).unwrap(),
+            crate::devws::PaneState::Gone
+        );
+        let (failed, text) = f.call("spawn_agent", json!({"role":"planner"}));
+        assert!(!failed && text.contains("Started planner-2"), "{text}");
+        assert!(f.task.state().unwrap().permissions.is_empty());
+    }
+
+    #[test]
+    fn external_calls_require_exact_one_use_authorization() {
+        let f = fixture();
+        let arguments = json!({"repo":"acme/library"});
+        let (failed, text) = f.call("add_repo", arguments.clone());
+        assert!(!failed && text.contains("No action was taken"), "{text}");
+        assert_eq!(f.task.config().unwrap().repos.len(), 1);
+        let request = f.task.state().unwrap().permissions[0].id.clone();
+        f.call(
+            "authorize_action",
+            json!({"request":request,"approved":true}),
+        );
+        let (failed, text) = f.call("add_repo", json!({"repo":"other","approval_id":request}));
+        assert!(
+            failed && text.contains("different tool invocation"),
+            "{text}"
+        );
+        let arguments = json!({"repo":"acme/library","approval_id":request});
+        let (failed, text) = f.call("add_repo", arguments.clone());
+        assert!(!failed, "{text}");
+        assert_eq!(
+            f.task.state().unwrap().permissions[0].status,
+            PermissionStatus::Consumed
+        );
+        let (failed, text) = f.call("add_repo", arguments);
+        assert!(
+            failed && text.contains("not authorized or has already been used"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn denied_external_calls_never_add_a_repository() {
+        let f = fixture();
+        f.call("add_repo", json!({"repo":"acme/library"}));
+        let request = f.task.state().unwrap().permissions[0].id.clone();
+        f.call(
+            "authorize_action",
+            json!({"request":request,"approved":false}),
+        );
+        let (failed, _) = f.call(
+            "add_repo",
+            json!({"repo":"acme/library","approval_id":request}),
+        );
+        assert!(failed);
+        assert_eq!(f.task.config().unwrap().repos.len(), 1);
+        assert_eq!(
+            f.task.state().unwrap().permissions[0].status,
+            PermissionStatus::Denied
+        );
+    }
+
+    #[test]
+    fn tool_catalog_labels_effects_and_includes_authorization() {
+        let listed = tools();
+        let described = |name: &str| {
+            listed.iter().find(|entry| entry["name"] == name).unwrap()["description"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(described("add_repo").starts_with("Effect: external."));
+        assert!(described("open_prs").starts_with("Effect: external."));
+        assert!(described("task_status").starts_with("Effect: system."));
+        assert!(described("spawn_agent").starts_with("Effect: system."));
+        assert!(described("stop_agent").starts_with("Effect: system."));
+        assert!(
+            listed
+                .iter()
+                .any(|entry| entry["name"] == "authorize_action")
+        );
+    }
+
+    #[test]
     fn the_leader_can_start_a_planner_give_it_an_order_and_read_the_status() {
         let f = fixture();
         let (failed, text) = f.call("spawn_agent", json!({ "role": "planner" }));
@@ -633,6 +968,11 @@ mod tests {
         let status: Value = serde_json::from_str(&status).unwrap();
         assert_eq!(status["agents"][0]["order"]["step"], "plan");
         assert_eq!(status["steps"][0]["status"], "ordered");
+        assert_eq!(
+            status["steps"][0]["version"], "1.1.1",
+            "its spec is the first"
+        );
+        assert_eq!(status["next_version"], "1.2.0", "the next plan part's name");
 
         let (_, stopped) = f.call("stop_agent", json!({ "agent": "planner-1" }));
         assert!(stopped.contains("planner-1 is stopped"));

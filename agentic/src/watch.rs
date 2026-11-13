@@ -7,6 +7,7 @@ use crate::devws::{Delivery, Devws, PaneState};
 use crate::log::Kind;
 use crate::state::{Agent, LEADER, OrderStatus};
 use crate::task::Task;
+use crate::team::Team;
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
 use std::collections::HashMap;
@@ -23,6 +24,7 @@ const BACKLOG: usize = 20;
 
 pub struct Dispatcher<'a> {
     task: &'a Task,
+    home: &'a crate::home::Home,
     devws: &'a dyn Devws,
     grace: Duration,
     /// When each agent was first seen done with an open order.
@@ -30,9 +32,15 @@ pub struct Dispatcher<'a> {
 }
 
 impl<'a> Dispatcher<'a> {
-    pub fn new(task: &'a Task, devws: &'a dyn Devws, grace: Duration) -> Self {
+    pub fn new(
+        task: &'a Task,
+        devws: &'a dyn Devws,
+        home: &'a crate::home::Home,
+        grace: Duration,
+    ) -> Self {
         Self {
             task,
+            home,
             devws,
             grace,
             done_since: HashMap::new(),
@@ -41,6 +49,7 @@ impl<'a> Dispatcher<'a> {
 
     /// One pass over the team.
     pub fn tick(&mut self) -> Result<()> {
+        let _control = self.task.control_lock()?;
         let state = self.task.state()?;
         for agent in state
             .agents
@@ -48,11 +57,26 @@ impl<'a> Dispatcher<'a> {
             .filter(|agent| agent.live && !agent.lost)
         {
             let pane_state = self.devws.pane_state(&agent.pane)?;
+            if pane_state != PaneState::Gone
+                && !state.paused
+                && !agent.ready
+                && let Some(failure) = self.devws.startup_failure(&agent.pane)?
+            {
+                Team {
+                    task: self.task,
+                    home: self.home,
+                    devws: self.devws,
+                }
+                .retry_startup(agent, &failure)?;
+                continue;
+            }
             if pane_state == PaneState::Gone {
                 self.lose(agent)?;
                 continue;
             }
-            self.watch_for_a_stall(agent, pane_state)?;
+            if !state.paused && !state.recovery.contains_key(&agent.id) {
+                self.watch_for_a_stall(agent, pane_state)?;
+            }
 
             // The first thing it did was answer its role: now it takes orders.
             let ready =
@@ -123,7 +147,15 @@ impl<'a> Dispatcher<'a> {
 
     fn delivered(&self, ids: &[u64], agent: Option<&str>, order: Option<&str>) -> Result<()> {
         self.task.transaction(|tx| {
+            let leader_delivered = tx
+                .state
+                .queue
+                .iter()
+                .any(|message| ids.contains(&message.id) && message.to == LEADER);
             tx.state.queue.retain(|message| !ids.contains(&message.id));
+            if leader_delivered {
+                tx.state.recovery.remove(LEADER);
+            }
             if let Some(order) = order.and_then(|id| {
                 tx.state
                     .orders
@@ -131,6 +163,8 @@ impl<'a> Dispatcher<'a> {
                     .find(|candidate| candidate.id == id)
             }) {
                 order.delivered = true;
+                let agent = order.agent.clone();
+                tx.state.recovery.remove(&agent);
             }
             tx.log(
                 Kind::Delivered,
@@ -320,7 +354,9 @@ mod tests {
         let home = Home::at(dir.path().join("home"));
         let repo = crate::checks::tests::repo();
         crate::checks::tests::run(repo.path(), &["checkout", "-q", "-b", "feat/x"]);
-        let devws = FakeDevws::new(&dir.path().join("w")).with_kind("claude", Program::Claude);
+        let devws = FakeDevws::new(&dir.path().join("w"))
+            .with_kind("claude", Program::Claude)
+            .with_kind("codex", Program::Codex);
         start_task(&home, &devws, repo.path(), "d", None).unwrap();
         let task = Task::open(&home, "feat-x").unwrap();
         devws.set_role(&task.config().unwrap().workspace, "agent", "%1");
@@ -362,7 +398,7 @@ mod tests {
         }
 
         fn dispatcher(&self) -> Dispatcher<'_> {
-            Dispatcher::new(&self.task, &self.devws, Duration::ZERO)
+            Dispatcher::new(&self.task, &self.devws, &self.home, Duration::ZERO)
         }
 
         fn sent_to(&self, pane: &str) -> Vec<String> {
@@ -400,6 +436,189 @@ mod tests {
         // It is working on it: nothing more, and not the same twice.
         dispatcher.tick().unwrap();
         assert_eq!(f.sent_to(&agent.pane).len(), 1);
+    }
+
+    #[test]
+    fn startup_quota_retries_on_codex_and_preserves_queued_work_once() {
+        let f = fixture();
+        let agent = f.spawn("executor");
+        f.task
+            .transaction(|tx| {
+                tx.state.orders.push(crate::state::Order {
+                    id: "original".into(),
+                    step: "s1".into(),
+                    agent: agent.id.clone(),
+                    text: "Build".into(),
+                    allowed: vec!["src/**".into()],
+                    forbidden: vec![],
+                    check: None,
+                    base: "base-commit".into(),
+                    status: OrderStatus::Open,
+                    delivered: false,
+                    stalled: false,
+                    plan: None,
+                });
+                tx.state
+                    .say_about(&agent.id, "ORDER original".into(), Some("original".into()));
+                Ok(())
+            })
+            .unwrap();
+        f.devws
+            .fail_startup(&agent.pane, crate::worker::FailureScope::Account);
+        f.devws.set_state(&agent.pane, PaneState::Done);
+        f.dispatcher().tick().unwrap();
+        let state = f.task.state().unwrap();
+        let replacement = &state.agents[0];
+        assert_eq!(replacement.id, agent.id);
+        assert_eq!(replacement.agent, "codex");
+        assert!(replacement.writes && !replacement.ready && !replacement.lost);
+        assert_eq!(state.queue[0].text, "ORDER original");
+        assert_eq!(state.orders[0].id, "original");
+        assert_eq!(state.orders[0].base, "base-commit");
+        assert!(!state.orders[0].delivered);
+        assert_ne!(replacement.pane, agent.pane);
+        assert_eq!(f.devws.pane_state(&agent.pane).unwrap(), PaneState::Gone);
+        // A new dispatcher must not retry the stale error from the former pane.
+        f.devws.set_state(&replacement.pane, PaneState::Done);
+        f.dispatcher().tick().unwrap();
+        f.dispatcher().tick().unwrap();
+        assert_eq!(f.sent_to(&replacement.pane), ["ORDER original"]);
+        assert!(f.sent_to(&agent.pane).is_empty());
+        assert!(f.task.state().unwrap().orders[0].delivered);
+        assert_eq!(f.task.state().unwrap().worker_launches[&agent.id].next, 2);
+    }
+
+    #[test]
+    fn unavailable_model_tries_next_model_on_same_provider() {
+        let f = fixture();
+        std::fs::write(f.home.roles_dir().join("planner.md"), "+++\nagent = \"claude\"\nmodel = \"preferred\"\n[fallback]\nagent = \"claude\"\nmodel = \"alternative\"\n+++\nPlan.\n").unwrap();
+        let agent = f.spawn("planner");
+        f.devws
+            .fail_startup(&agent.pane, crate::worker::FailureScope::Model);
+        f.dispatcher().tick().unwrap();
+        let state = f.task.state().unwrap();
+        assert_eq!(state.agents[0].agent, "claude");
+        assert_ne!(state.agents[0].pane, agent.pane);
+        assert_eq!(
+            state.worker_launches[&agent.id]
+                .selected
+                .as_ref()
+                .unwrap()
+                .model
+                .as_deref(),
+            Some("alternative")
+        );
+    }
+
+    #[test]
+    fn failed_alternatives_stop_retrying_and_explicit_resume_rechecks_availability() {
+        let f = fixture();
+        let agent = f.spawn("executor");
+        f.queue(&agent.id, "pending work");
+        f.devws.set_limits(
+            "codex",
+            crate::devws::Limits {
+                week: Some(100),
+                five_hour: None,
+            },
+        );
+        f.devws
+            .fail_startup(&agent.pane, crate::worker::FailureScope::Account);
+        f.dispatcher().tick().unwrap();
+        f.dispatcher().tick().unwrap();
+        let state = f.task.state().unwrap();
+        assert!(state.agents[0].unavailable && !state.agents[0].live);
+        assert_eq!(
+            state
+                .queue
+                .iter()
+                .filter(|message| message.to == agent.id)
+                .count(),
+            1
+        );
+        assert_eq!(state.worker_launches[&agent.id].next, 2);
+        assert!(f.sent_to("%1")[0].contains("unavailable during startup"));
+        // Retry only on explicit resume, after the quota has reset.
+        f.devws.set_limits("codex", crate::devws::Limits::default());
+        f.devws.set_limits(
+            "claude",
+            crate::devws::Limits {
+                week: Some(100),
+                five_hour: None,
+            },
+        );
+        Team {
+            task: &f.task,
+            home: &f.home,
+            devws: &f.devws,
+        }
+        .resume()
+        .unwrap();
+        let resumed = &f.task.state().unwrap().agents[0];
+        assert!(resumed.live && !resumed.unavailable);
+        assert_eq!(resumed.agent, "codex");
+    }
+
+    #[test]
+    fn failed_cleanup_never_duplicates_a_worker_even_on_resume() {
+        let f = fixture();
+        let agent = f.spawn("executor");
+        f.devws.fail_stop(&agent.pane);
+        f.devws
+            .fail_startup(&agent.pane, crate::worker::FailureScope::Account);
+        f.dispatcher().tick().unwrap();
+        assert!(f.task.state().unwrap().agents[0].unavailable);
+        let result = Team {
+            task: &f.task,
+            home: &f.home,
+            devws: &f.devws,
+        }
+        .resume();
+        assert!(result.is_err());
+        assert_eq!(
+            f.devws
+                .calls()
+                .iter()
+                .filter(|call| call.starts_with("spawn "))
+                .count(),
+            1
+        );
+        assert_eq!(f.task.state().unwrap().agents[0].pane, agent.pane);
+        assert!(f.task.state().unwrap().paused);
+    }
+
+    #[test]
+    fn unrelated_errors_pause_and_healthy_workers_never_trigger_automatic_fallback() {
+        let f = fixture();
+        let agent = f.spawn("planner");
+        f.devws
+            .fail_startup(&agent.pane, crate::worker::FailureScope::Other);
+        f.dispatcher().tick().unwrap();
+        assert!(f.task.state().unwrap().agents[0].unavailable);
+        assert_eq!(f.task.state().unwrap().worker_launches[&agent.id].next, 1);
+        let f = fixture();
+        let agent = f.spawn("planner");
+        f.devws
+            .fail_startup(&agent.pane, crate::worker::FailureScope::Account);
+        Team {
+            task: &f.task,
+            home: &f.home,
+            devws: &f.devws,
+        }
+        .pause()
+        .unwrap();
+        f.dispatcher().tick().unwrap();
+        assert_eq!(f.task.state().unwrap().agents[0].pane, agent.pane);
+        f.task
+            .transaction(|tx| {
+                tx.state.paused = false;
+                tx.state.agents[0].ready = true;
+                Ok(())
+            })
+            .unwrap();
+        f.devws.set_state(&agent.pane, PaneState::Working);
+        f.dispatcher().tick().unwrap();
+        assert_eq!(f.task.state().unwrap().agents[0].pane, agent.pane);
     }
 
     #[test]
@@ -632,7 +851,7 @@ mod tests {
             })
             .unwrap();
         f.devws.set_state(&agent.pane, PaneState::Done);
-        let mut patient = Dispatcher::new(&f.task, &f.devws, Duration::from_secs(60));
+        let mut patient = Dispatcher::new(&f.task, &f.devws, &f.home, Duration::from_secs(60));
         patient.tick().unwrap();
         patient.tick().unwrap();
         assert!(f.sent_to("%1").is_empty());

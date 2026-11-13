@@ -35,7 +35,7 @@ menu.
 | Team | Open team views or manage the leader in a team workspace |
 | Git | Commit, push, open a PR, and tidy merged branches |
 | JungleForge | Set up JungleForge, register apps, run branches, and manage services |
-| Tools | Open the database or job log and list network devices |
+| Tools | Open the database or job log, list network devices, and see the usage history |
 | Help | This guide |
 
 `←` `→` change tabs, `Enter` runs, `Esc` closes. Typing searches every
@@ -52,8 +52,9 @@ instead, as before.
 ## The first workspace
 
 ```sh
-devws                       # the start screen: a recent folder, or a new
-                            # branch of a GitHub repo
+devws                       # joins the running workspace, or the start
+                            # screen: a recent folder, or a new branch of
+                            # a GitHub repo
 devws ~/Projects/my-app     # or any folder
 ```
 

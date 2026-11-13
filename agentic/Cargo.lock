@@ -441,6 +441,7 @@ dependencies = [
  "clap",
  "fs2",
  "globset",
+ "libc",
  "ratatui",
  "serde",
  "serde_json",

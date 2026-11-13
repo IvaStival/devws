@@ -186,6 +186,7 @@ esac
             branch: "feat/x".into(),
             workspace: "dev-a".into(),
             max_agents: 3,
+            check_profiles: Default::default(),
             lanes: Vec::new(),
             repos: repos
                 .iter()
@@ -207,6 +208,7 @@ esac
                     StepStatus::Reported
                 },
                 attempts: 1,
+                spec: None,
                 review_since: None,
             });
             Ok(())

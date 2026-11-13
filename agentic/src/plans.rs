@@ -91,6 +91,7 @@ mod tests {
         send_order(
             task,
             OrderRequest {
+                profiles: Vec::new(),
                 agent: agent.into(),
                 step: step.into(),
                 title: "plan the screen".into(),
@@ -99,6 +100,7 @@ mod tests {
                 forbidden: vec![],
                 check: Some("true".into()),
                 plan: None,
+                spec: None,
             },
         )
         .unwrap();

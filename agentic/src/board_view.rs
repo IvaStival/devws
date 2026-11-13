@@ -1,7 +1,7 @@
 //! Pure board navigation and rendering. Stable row identities keep a refresh
 //! from moving the user's focus to a different agent or task.
 
-use crate::board::{AgentRow, Board, RoleRow, StaleReview, StepRow};
+use crate::board::{AgentRow, Board, PermissionRow, RoleRow, SpecRow, StaleReview, StepRow};
 use crate::devws::{PaneState, Usage};
 use crate::roles::Group;
 use crate::state::StepStatus;
@@ -164,6 +164,35 @@ pub enum Kind {
     Gap,
 }
 
+/// What a drawn screen has where, so a click finds it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScreenMap {
+    /// Each selectable row drawn: its screen row and its entry.
+    pub rows: Vec<(u16, usize)>,
+    /// Each view's name in the header: its screen row, its columns and the view.
+    pub tabs: Vec<(u16, std::ops::Range<u16>, View)>,
+    /// The open dialog's area.
+    pub dialog: Option<Rect>,
+}
+
+impl ScreenMap {
+    /// The selectable entry drawn on screen row `y`.
+    pub fn entry_at(&self, y: u16) -> Option<usize> {
+        self.rows
+            .iter()
+            .find(|(row, _)| *row == y)
+            .map(|(_, index)| *index)
+    }
+
+    /// The view whose name is at `x`, `y`.
+    pub fn view_at(&self, x: u16, y: u16) -> Option<View> {
+        self.tabs
+            .iter()
+            .find(|(row, columns, _)| *row == y && columns.contains(&x))
+            .map(|(_, _, view)| *view)
+    }
+}
+
 /// The rows the selection can be on: every one but the headings, notes and
 /// gaps.
 fn selectable(entries: &[Entry]) -> Vec<usize> {
@@ -241,6 +270,17 @@ impl Navigation {
             .min(rows.len().saturating_sub(1));
         self.select(entries, rows.get(target).copied());
         self.detail_scroll = 0;
+    }
+
+    /// Selects the row at `index`, as a click on it does.
+    pub fn select_row(&mut self, entries: &[Entry], index: usize) {
+        if entries
+            .get(index)
+            .is_some_and(|entry| entry.kind == Kind::Row)
+        {
+            self.select(entries, Some(index));
+            self.detail_scroll = 0;
+        }
     }
 
     fn select(&mut self, entries: &[Entry], index: Option<usize>) {
@@ -351,7 +391,7 @@ fn member_label(mark: &str, name: &str, program: &str) -> Vec<(String, Tone)> {
 fn agent_entry(board: &Board, role: &RoleRow, agent: &AgentRow, label: String) -> Entry {
     let id = format!("agent:{}", agent.id);
     let detail = format!(
-        "{}\nGroup: {} · {}\nPane activity: {}\nCurrent: {}\nNext: {}",
+        "{}\nGroup: {} · {}\nPermission ceiling: {}\nPane activity: {}\nCurrent: {}\nNext: {}",
         board
             .details
             .get(&id)
@@ -359,6 +399,7 @@ fn agent_entry(board: &Board, role: &RoleRow, agent: &AgentRow, label: String) -
             .unwrap_or_else(|| agent.id.clone()),
         role.group.label(),
         role.program,
+        role.permissions,
         state_word(agent.state),
         agent.now.as_deref().unwrap_or("No delivered order"),
         agent.next.join("\n")
@@ -457,12 +498,75 @@ fn agent_note(agent: &AgentRow) -> Option<Entry> {
             if agent.retries == 1 { "y" } else { "ies" }
         ));
     }
-    let now = agent.now.as_ref().map(|now| format!("└ now {now}"));
-    if now.is_none() && counts.is_empty() {
-        return None;
-    }
     let of = format!("agent:{}", agent.id);
-    Some(Entry::note(&of, now.as_deref().unwrap_or("└")).with_tail(counts.join(" · ")))
+    let counts = counts.join(" · ");
+    match &agent.now {
+        Some(now) => Some(Entry::note(&of, &format!("└ now {now}")).with_tail(counts)),
+        // Nothing at work: the counts on the left, where the step would be,
+        // not alone at the far edge.
+        None if !counts.is_empty() => Some(Entry::note(&of, &format!("└ {counts}"))),
+        None => None,
+    }
+}
+
+/// A leader call held for your approval: its id, tool and effect, then the
+/// exact arguments, since you approve that one call and nothing else.
+fn permission_entry(permission: &PermissionRow) -> Entry {
+    let call = format!(
+        "{} {} · {} · {}",
+        permission.id,
+        permission.tool,
+        permission.effect.name(),
+        permission.arguments
+    );
+    let detail = format!(
+        "Permission {} waits for your approval.\nTool: {}\nEffect: {}\nArguments: {}\n\nThe approval covers this exact call only. Answer the leader in its pane.",
+        permission.id,
+        permission.tool,
+        permission.effect.name(),
+        permission.arguments
+    );
+    Entry::text(
+        format!("permission:{}", permission.id),
+        String::new(),
+        detail,
+        true,
+    )
+    .toned(vec![("⚠ ".into(), Tone::Mark), (call, Tone::Plain)])
+}
+
+/// What Enter on the leader's row shows: how it runs, what it may do, where
+/// the task stands and which of its calls wait for you.
+fn leader_detail(board: &Board) -> String {
+    let pane = match (&board.leader_pane, board.leader_state) {
+        (Some(pane), Some(state)) => format!("{pane} · {}", state_word(state)),
+        (Some(pane), None) => pane.clone(),
+        (None, _) => "none".into(),
+    };
+    let yes_no = |value: bool| if value { "yes" } else { "no" };
+    let mut text = format!(
+        "The leader: {}\nYou talk to it in its pane.\n\nPane: {pane}\nPermissions: {}\nFallback: {}\nPlan approved: {}\nPaused: {}\nPending permissions: ",
+        board.leader,
+        board.leader_permissions,
+        board.leader_fallback.as_deref().unwrap_or("none"),
+        yes_no(board.approved),
+        yes_no(board.paused),
+    );
+    if board.permissions.is_empty() {
+        text.push_str("none");
+    } else {
+        text.push_str(&board.permissions.len().to_string());
+        for permission in &board.permissions {
+            text.push_str(&format!(
+                "\n  {} {} · {} · {}",
+                permission.id,
+                permission.tool,
+                permission.effect.name(),
+                permission.arguments
+            ));
+        }
+    }
+    text
 }
 
 /// The Overview: only what needs looking at, as sections the selection moves
@@ -493,6 +597,7 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
             ]),
         );
     }
+    needs_you.extend(board.permissions.iter().map(permission_entry));
     for review in &board.stale_review {
         needs_you.push(stale_entry(board, review));
     }
@@ -529,13 +634,9 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
         let count = (group != Group::Cto).then_some(members.len());
         entries.push(Entry::section(&name, count));
         if group == Group::Cto {
-            let mut leader = Entry::text(
-                "leader".into(),
-                String::new(),
-                format!("The leader: {}\nYou talk to it in its pane.", board.leader),
-                false,
-            )
-            .toned(member_label("L", "leader", &board.leader));
+            let mut leader =
+                Entry::text("leader".into(), String::new(), leader_detail(board), false)
+                    .toned(member_label("L", "leader", &board.leader));
             leader.pane = board.leader_pane.clone();
             entries.push(leader.with_tail(board.leader_state.map_or("", state_mark)));
         }
@@ -585,20 +686,76 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
         }
     }
     usage_card(board, &mut entries);
-    if !board.done.is_empty() {
+    if !board.done_specs.is_empty() {
+        let steps: usize = board.done_specs.iter().map(|spec| spec.steps.len()).sum();
         entries.push(Entry::gap("done"));
-        entries.push(Entry::section(DONE, Some(board.done.len())).with_tail("newest first"));
-        for step in &board.done {
-            // Done rows need no "accepted" at the edge: the card says it. They
-            // end with their retries instead.
-            entries.push(step_entry(board, step).with_tail(attempts(step)));
-        }
+        entries.push(
+            Entry::section(DONE, Some(board.done_specs.len())).with_tail(format!(
+                "{} · newest first",
+                counted(steps, "step", "steps")
+            )),
+        );
+        entries.extend(board.done_specs.iter().map(spec_entry));
     }
     entries
 }
 
-/// The one Overview card that scrolls: it takes the room the others leave.
+/// `1 step`, `7 steps`.
+fn counted(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
+}
+
+/// A finished spec, as finished work is read: one row for all its steps, by
+/// its version, ending with how many there were and their retries. Enter
+/// lists them as `1.78.1`, `1.78.2`…, with the leader's names.
+fn spec_entry(spec: &SpecRow) -> Entry {
+    let mut tail = counted(spec.steps.len(), "step", "steps");
+    let retries = spec.retries() as usize;
+    if retries > 0 {
+        tail.push_str(&format!(" · {}", counted(retries, "retry", "retries")));
+    }
+    // The leader's own names stay in the details, where they are looked up.
+    let named = |version: &str, name: &str| {
+        if version == name {
+            String::new()
+        } else {
+            format!(" ({name})")
+        }
+    };
+    let mut detail = format!(
+        "{} {}{}\nDone: {tail}\n",
+        spec.version,
+        spec.title,
+        named(&spec.version, &spec.id)
+    );
+    for (place, step) in spec.steps.iter().enumerate() {
+        let version = crate::specs::step_version(&spec.version, place + 1);
+        detail.push_str(&format!("\n✓ {version}  {}", step.title));
+        let retried = attempts(step);
+        if !retried.is_empty() {
+            detail.push_str(&format!(" {retried}"));
+        }
+        detail.push_str(&named(&version, &step.id));
+    }
+    Entry::text(
+        format!("spec:{}", spec.id),
+        String::new(),
+        detail.trim_end().to_string(),
+        false,
+    )
+    .toned(vec![
+        ("✓ ".into(), Tone::Mark),
+        (format!("{}  ", spec.version), Tone::Muted),
+        (spec.title.clone(), Tone::Plain),
+    ])
+    .with_tail(tail)
+}
+
+/// The one Overview card that scrolls, within its fixed height.
 const DONE: &str = "DONE";
+
+/// The most rows DONE shows; it scrolls through the rest.
+pub const DONE_ROWS: usize = 15;
 
 pub fn entries(
     board: &Board,
@@ -635,8 +792,9 @@ pub fn entries(
                     format!("role:{}", role.name),
                     label.clone(),
                     format!(
-                        "{label}\n{}\n{}",
+                        "{label}\n{}\nPermissions: {}\n{}",
                         role.group.label(),
+                        role.permissions,
                         role.description.as_deref().unwrap_or("")
                     ),
                     false,
@@ -922,8 +1080,8 @@ fn cards(entries: &[Entry]) -> Option<Vec<Card<'_>>> {
 const MIN_SCROLL_ROWS: usize = 3;
 
 /// How many rows each card shows inside its frame in `body` rows: every card
-/// all of its rows, but the scrolling one, which takes what is left. None
-/// when they do not fit.
+/// all of its rows, but the scrolling one, which takes what is left up to
+/// `DONE_ROWS`. None when they do not fit.
 fn card_heights(cards: &[Card], body: usize) -> Option<Vec<usize>> {
     let fixed: usize = cards
         .iter()
@@ -937,7 +1095,7 @@ fn card_heights(cards: &[Card], body: usize) -> Option<Vec<usize>> {
             heights.push(card.rows.len());
             continue;
         }
-        let inside = room.saturating_sub(2).min(card.rows.len());
+        let inside = room.saturating_sub(2).min(card.rows.len()).min(DONE_ROWS);
         if inside < card.rows.len().min(MIN_SCROLL_ROWS) {
             return None;
         }
@@ -951,7 +1109,17 @@ fn card_heights(cards: &[Card], body: usize) -> Option<Vec<usize>> {
 /// their frames, else one a row.
 pub fn list_rows(entries: &[Entry]) -> usize {
     cards(entries).map_or(entries.len(), |cards| {
-        cards.iter().map(|card| card.rows.len() + 2).sum()
+        cards
+            .iter()
+            .map(|card| {
+                let rows = card.rows.len();
+                2 + if card.scrolls() {
+                    rows.min(DONE_ROWS)
+                } else {
+                    rows
+                }
+            })
+            .sum()
     })
 }
 
@@ -1012,8 +1180,9 @@ fn thumb(height: usize, total: usize, top: usize) -> (usize, usize) {
 }
 
 /// One card at `y`, `inside` rows tall; the scrolling one keeps the selection
-/// in view and has a scrollbar when it shows only some of its rows. Returns
-/// the row below it.
+/// in view and has a scrollbar when it shows only some of its rows. Its
+/// selectable rows go in `drawn`. Returns the row below it.
+#[allow(clippy::too_many_arguments)]
 fn draw_card(
     card: &Card,
     entries: &[Entry],
@@ -1022,6 +1191,7 @@ fn draw_card(
     y: u16,
     width: u16,
     buffer: &mut Buffer,
+    drawn: &mut Vec<(u16, usize)>,
 ) -> u16 {
     card_top(card.heading, y, width, buffer);
     let total = card.rows.len();
@@ -1038,10 +1208,14 @@ fn draw_card(
     for offset in 0..inside {
         let row_y = y + 1 + offset as u16;
         let index = card.rows[top + offset];
+        let selected = index == nav.index && nav.selected.is_some();
+        if entries[index].kind == Kind::Row {
+            drawn.push((row_y, index));
+        }
         Span::styled("│ ", CARD).render(Rect::new(0, row_y, 2, 1), buffer);
         entry_line(
             &entries[index],
-            index == nav.index && nav.selected.is_some(),
+            selected,
             Rect::new(2, row_y, content, 1),
             buffer,
         );
@@ -1062,8 +1236,9 @@ fn draw_card(
     bottom + 1
 }
 
-/// The Overview as cards in `body` rows from `y`; false when they do not fit
-/// and the board falls back to a plain list.
+/// The Overview as cards in `body` rows from `y`, their selectable rows in
+/// `drawn`; false when they do not fit and the board falls back to a plain
+/// list.
 fn draw_cards(
     entries: &[Entry],
     nav: &Navigation,
@@ -1071,6 +1246,7 @@ fn draw_cards(
     body: u16,
     width: u16,
     buffer: &mut Buffer,
+    drawn: &mut Vec<(u16, usize)>,
 ) -> bool {
     if width < FRAME_WIDTH {
         return false;
@@ -1083,7 +1259,7 @@ fn draw_cards(
     };
     let mut y = y;
     for (card, inside) in cards.iter().zip(heights) {
-        y = draw_card(card, entries, nav, inside, y, width, buffer);
+        y = draw_card(card, entries, nav, inside, y, width, buffer, drawn);
     }
     true
 }
@@ -1126,10 +1302,11 @@ fn limit(label: &str, used: Option<u32>) -> Vec<Span<'static>> {
     ]
 }
 
-/// What needs you: questions, reviews the leader left, agents waiting or
-/// gone, and a dispatcher that cannot work.
+/// What needs you: questions, leader calls to approve, reviews the leader
+/// left, agents waiting or gone, and a dispatcher that cannot work.
 fn attention(board: &Board, problem: Option<&str>) -> usize {
     board.questions.len()
+        + board.permissions.len()
         + board.stale_review.len()
         + board
             .roles
@@ -1327,9 +1504,42 @@ pub fn screen(
     height: u16,
     problem: Option<&str>,
 ) -> Buffer {
+    screen_map(board, nav, entries, width, height, problem).0
+}
+
+/// The view names on the header's tab row, where they were drawn.
+fn tab_places(buffer: &Buffer, y: u16) -> Vec<(u16, std::ops::Range<u16>, View)> {
+    if y >= buffer.area.height {
+        return Vec::new();
+    }
+    let cells: Vec<&str> = (0..buffer.area.width)
+        .map(|x| buffer[(x, y)].symbol())
+        .collect();
+    View::ALL
+        .iter()
+        .filter_map(|view| {
+            let name: Vec<String> = view.name().chars().map(String::from).collect();
+            let start = cells
+                .windows(name.len())
+                .position(|window| window.iter().zip(&name).all(|(cell, char)| cell == char))?;
+            Some((y, start as u16..(start + name.len()) as u16, *view))
+        })
+        .collect()
+}
+
+/// The board, and what it has where for the mouse.
+pub fn screen_map(
+    board: &Board,
+    nav: &Navigation,
+    entries: &[Entry],
+    width: u16,
+    height: u16,
+    problem: Option<&str>,
+) -> (Buffer, ScreenMap) {
     let mut buffer = Buffer::empty(Rect::new(0, 0, width, height));
+    let mut map = ScreenMap::default();
     if width == 0 || height == 0 {
-        return buffer;
+        return (buffer, map);
     }
     let header_rows = header_rows(board, nav, width, height);
     if framed(board, nav, width, height) {
@@ -1340,15 +1550,27 @@ pub fn screen(
             row.render(Rect::new(0, y as u16, width, 1), &mut buffer);
         }
     }
+    // The tabs are the header's second row, when it has one.
+    if header_rows >= 2 {
+        map.tabs = tab_places(&buffer, 1);
+    }
     if height == 1 {
-        return buffer;
+        return (buffer, map);
     }
     let body = height.saturating_sub(header_rows + 1);
     if entries.is_empty() {
         if body > 0 {
             text_line("Nothing here yet.", DIM, header_rows, width, &mut buffer);
         }
-    } else if !draw_cards(entries, nav, header_rows, body, width, &mut buffer) {
+    } else if !draw_cards(
+        entries,
+        nav,
+        header_rows,
+        body,
+        width,
+        &mut buffer,
+        &mut map.rows,
+    ) {
         let top = nav.index.saturating_sub(body.saturating_sub(1) as usize);
         for (offset, entry) in entries.iter().skip(top).take(body as usize).enumerate() {
             let area = Rect::new(0, header_rows + offset as u16, width, 1);
@@ -1359,6 +1581,9 @@ pub fn screen(
                 Kind::Gap => {}
                 Kind::Row | Kind::Note => {
                     let selected = top + offset == nav.index && nav.selected.is_some();
+                    if entry.kind == Kind::Row {
+                        map.rows.push((area.y, top + offset));
+                    }
                     entry_line(entry, selected, area, &mut buffer);
                 }
             }
@@ -1379,13 +1604,27 @@ pub fn screen(
     text_line(footer, DIM, height - 1, width, &mut buffer);
     if nav.detail {
         if let Some(entry) = entries.get(nav.index) {
-            draw_dialog(&mut buffer, &entry.label, &entry.detail, nav.detail_scroll);
+            // The details open next to the row they are of.
+            let selected_y = nav
+                .selected
+                .is_some()
+                .then(|| map.rows.iter().find(|(_, index)| *index == nav.index))
+                .flatten()
+                .map(|(y, _)| *y);
+            map.dialog = Some(draw_dialog(
+                &mut buffer,
+                &entry.label,
+                &entry.detail,
+                nav.detail_scroll,
+                selected_y,
+            ));
         }
     }
-    buffer
+    (buffer, map)
 }
 
-fn dialog_area(width: u16, height: u16) -> Rect {
+/// The most a dialog takes: the pane less a margin.
+fn dialog_bounds(width: u16, height: u16) -> Rect {
     let horizontal_margin = if width >= 12 { 2 } else { 0 };
     let vertical_margin = if height >= 8 { 1 } else { 0 };
     Rect::new(
@@ -1396,21 +1635,64 @@ fn dialog_area(width: u16, height: u16) -> Rect {
     )
 }
 
-/// Shared by rendering and input so wrapping, page movement and End agree,
-/// including after a resize. Leave a hint row when there is room for text too.
-pub fn dialog_body(width: u16, height: u16) -> Rect {
-    let inner = Block::bordered().inner(dialog_area(width, height));
+/// The text inside a dialog's frame, one column in from each border when
+/// there is room.
+fn dialog_text_area(inner: Rect) -> Rect {
     let padding = u16::from(inner.width >= 6);
     Rect::new(
         inner.x + padding,
         inner.y,
         inner.width.saturating_sub(padding * 2),
-        inner.height.saturating_sub(u16::from(inner.height >= 2)),
+        inner.height,
     )
 }
 
+/// A dialog as tall as its content wrapped, with its frame and hint row, up
+/// to the pane less a margin. It opens just below the row at `anchor`, or
+/// above it when there is no room below, so the details show where you
+/// looked; without a row (the help) it is centered.
+fn dialog_area(content: &str, width: u16, height: u16, anchor: Option<u16>) -> Rect {
+    let bounds = dialog_bounds(width, height);
+    let text_width = dialog_text_area(Block::bordered().inner(bounds)).width;
+    if text_width == 0 {
+        return bounds;
+    }
+    let lines = Paragraph::new(content)
+        .wrap(Wrap { trim: false })
+        .line_count(text_width)
+        .max(1);
+    // Two borders and the hint row.
+    let wanted = (lines + 3).min(bounds.height as usize) as u16;
+    let y = match anchor {
+        Some(row) if row + 1 + wanted <= bounds.bottom() => row + 1,
+        Some(row) if row >= bounds.y + wanted => row - wanted,
+        // Neither side has room: the side with more of it, up to the edge.
+        Some(row) if row - bounds.y.min(row) < bounds.height / 2 => bounds.bottom() - wanted,
+        Some(_) => bounds.y,
+        None => bounds.y + (bounds.height - wanted) / 2,
+    };
+    Rect::new(bounds.x, y, bounds.width, wanted)
+}
+
+/// The text area of a dialog at `area`, less the hint row when there is room
+/// for text too.
+fn dialog_body_of(area: Rect) -> Rect {
+    let text = dialog_text_area(Block::bordered().inner(area));
+    Rect {
+        height: text.height.saturating_sub(u16::from(text.height >= 2)),
+        ..text
+    }
+}
+
+/// Shared by rendering and input so wrapping, page movement and End agree,
+/// including after a resize. Leave a hint row when there is room for text too.
+/// Its height does not depend on where the dialog opens.
+pub fn dialog_body(content: &str, width: u16, height: u16) -> Rect {
+    dialog_body_of(dialog_area(content, width, height, None))
+}
+
 pub fn dialog_scroll_max(content: &str, width: u16, height: u16) -> u16 {
-    let body = dialog_body(width, height);
+    let body = dialog_body(content, width, height);
     if body.width == 0 || body.height == 0 {
         return 0;
     }
@@ -1422,12 +1704,19 @@ pub fn dialog_scroll_max(content: &str, width: u16, height: u16) -> u16 {
 }
 
 /// Draw into the board's buffer: tmux popups would cover neighboring panes.
-pub fn draw_dialog(buffer: &mut Buffer, title: &str, content: &str, scroll: u16) {
+/// `anchor` is the screen row the details are of. Returns where it is.
+pub fn draw_dialog(
+    buffer: &mut Buffer,
+    title: &str,
+    content: &str,
+    scroll: u16,
+    anchor: Option<u16>,
+) -> Rect {
     let width = buffer.area.width;
     let height = buffer.area.height;
-    let area = dialog_area(width, height);
+    let area = dialog_area(content, width, height, anchor);
     if area.is_empty() {
-        return;
+        return area;
     }
     Clear.render(area, buffer);
     let block = Block::bordered()
@@ -1437,7 +1726,7 @@ pub fn draw_dialog(buffer: &mut Buffer, title: &str, content: &str, scroll: u16)
         .title(Line::styled(format!(" {title} "), TITLE));
     let inner = block.inner(area);
     block.render(area, buffer);
-    let body = dialog_body(width, height);
+    let body = dialog_body_of(area);
     if !body.is_empty() {
         Paragraph::new(content)
             .wrap(Wrap { trim: false })
@@ -1460,6 +1749,7 @@ pub fn draw_dialog(buffer: &mut Buffer, title: &str, content: &str, scroll: u16)
         Line::styled(hint, DIM)
             .render(Rect::new(body.x, inner.bottom() - 1, body.width, 1), buffer);
     }
+    area
 }
 
 pub fn plain(buffer: &Buffer) -> String {
@@ -1478,4 +1768,4 @@ pub fn plain(buffer: &Buffer) -> String {
 
 #[cfg(test)]
 #[path = "board_view_tests.rs"]
-mod tests;
+pub(crate) mod tests;

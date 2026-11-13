@@ -82,6 +82,13 @@ if ! command -v "$agentic_command" >/dev/null 2>&1; then
   command -v "$agentic_command" >/dev/null 2>&1 || fail "$agentic_command is still not on PATH after installing it"
 fi
 
+# Pane shells may reset PATH; carry the executable we actually found.
+agentic_command="$(command -v "$agentic_command")"
+case "$agentic_command" in
+  /*) ;;
+  *) agentic_command="$(cd "$(dirname "$agentic_command")" && pwd -P)/$(basename "$agentic_command")" ;;
+esac
+
 case "${#places[@]}" in
   0)
     # 1 is a cancelled question; anything else failed and said why.

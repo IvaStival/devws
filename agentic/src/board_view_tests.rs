@@ -1,7 +1,8 @@
 use super::*;
-use crate::board::{Account, AgentRow, QueueRow, RoleRow, StaleReview};
+use crate::board::{Account, AgentRow, PermissionRow, QueueRow, RoleRow, SpecRow, StaleReview};
 use crate::roles::Group;
-fn board() -> Board {
+use crate::state::Effect;
+pub(crate) fn board() -> Board {
     Board {
         task: "feat-x".into(),
         branch: "feat/x".into(),
@@ -9,6 +10,11 @@ fn board() -> Board {
         leader_pane: Some("%2".into()),
         leader_state: Some(PaneState::Working),
         leader_usage: None,
+        leader_permissions: "read-only · provider-managed · default".into(),
+        leader_fallback: Some("codex · gpt-5.5 · standby".into()),
+        approved: true,
+        paused: false,
+        permissions: vec![],
         steps: vec![],
         details: Default::default(),
         phase: "Approved".into(),
@@ -22,6 +28,7 @@ fn board() -> Board {
             RoleRow {
                 name: "executor".into(),
                 group: Group::Floor,
+                permissions: "order-scoped write · workspace-write · acceptEdits".into(),
                 program: "claude".into(),
                 description: Some("Does one order".into()),
                 agents: vec![AgentRow {
@@ -40,6 +47,7 @@ fn board() -> Board {
             RoleRow {
                 name: "tester".into(),
                 group: Group::Senior,
+                permissions: "read-only · read-only · on-request".into(),
                 program: "codex · high".into(),
                 description: Some("Runs the tests".into()),
                 agents: vec![],
@@ -61,6 +69,7 @@ fn board() -> Board {
         }],
         questions: vec!["q9 executor-1 → tester: which file?".into()],
         done: vec![],
+        done_specs: vec![],
         usage: vec![
             (
                 "leader".into(),
@@ -193,6 +202,21 @@ fn board_with_history() -> Board {
             attempts: step.attempts,
         })
         .collect();
+    board.done_specs = board
+        .done
+        .iter()
+        .map(|step| SpecRow {
+            id: step.id.clone(),
+            version: format!("1.{}.0", &step.id[1..]),
+            title: step.title.clone(),
+            steps: vec![StepRow {
+                id: step.id.clone(),
+                title: step.title.clone(),
+                status: step.status,
+                attempts: step.attempts,
+            }],
+        })
+        .collect();
     board
 }
 
@@ -261,8 +285,8 @@ fn the_overview_groups_the_team_with_what_each_agent_costs() {
     assert!(place("agent:executor-2") < place("queue:o2"));
     assert!(place("queue:o2") < place("heading:USAGE"));
     assert!(place("heading:USAGE") < place("heading:DONE"));
-    assert_eq!(ids[place("heading:DONE") + 1], "step:p99", "newest first");
-    assert_eq!(*ids.last().unwrap(), "step:p1");
+    assert_eq!(ids[place("heading:DONE") + 1], "spec:p99", "newest first");
+    assert_eq!(*ids.last().unwrap(), "spec:p1");
 
     let leader = &rows[place("leader")];
     assert!(leader.label.starts_with("L  leader"), "{}", leader.label);
@@ -281,9 +305,13 @@ fn the_overview_groups_the_team_with_what_each_agent_costs() {
         "nothing to say, no second line"
     );
     assert!(rows[place("queue:o2")].label.contains("s2 add a test"));
-    assert_eq!(rows[place("step:p99")].tail, "×2", "retries end the row");
-    assert!(rows[place("step:p99")].label.starts_with("✓ p99"));
-    assert_eq!(rows[place("step:p98")].tail, "");
+    assert_eq!(
+        rows[place("spec:p99")].tail,
+        "1 step · 1 retry",
+        "retries end the row"
+    );
+    assert!(rows[place("spec:p99")].label.starts_with("✓ 1.99.0"));
+    assert_eq!(rows[place("spec:p98")].tail, "1 step");
 
     // The USAGE card: each agent's tokens and cost, then the team's total.
     assert!(place("heading:USAGE") < place("usage:leader"));
@@ -335,10 +363,10 @@ fn the_overview_groups_the_team_with_what_each_agent_costs() {
     // Only DONE scrolls: the wheel reaches the oldest step and the cards
     // above it stay where they were.
     nav.move_by(&rows, isize::MAX);
-    assert_eq!(nav.selected.as_deref(), Some("step:p1"));
+    assert_eq!(nav.selected.as_deref(), Some("spec:p1"));
     let scrolled = plain(&screen(&board, &nav, &rows, 84, 60, None));
-    assert!(scrolled.contains("p1  step number 1"), "{scrolled}");
-    assert!(!scrolled.contains("p99  "), "{scrolled}");
+    assert!(scrolled.contains("1.1.0  step number 1"), "{scrolled}");
+    assert!(!scrolled.contains("1.99.0  "), "{scrolled}");
     // The same lines, but for the selection marker, which moved to DONE.
     let above = |text: &str| {
         text.lines()
@@ -369,7 +397,7 @@ fn the_done_card_scrolls_with_a_bar_and_too_short_a_pane_is_a_plain_list() {
         .skip_while(|line| !line.contains("DONE"))
         .collect();
     let bottom = done.iter().find(|line| line.starts_with('╰')).unwrap();
-    let shown = done.iter().filter(|line| line.contains("✓ p")).count();
+    let shown = done.iter().filter(|line| line.contains("✓ 1.")).count();
     assert!(shown >= MIN_SCROLL_ROWS, "{text}");
     assert!(bottom.contains(&format!(" 1–{shown} of 99 ")), "{bottom:?}");
     assert_eq!(
@@ -389,7 +417,8 @@ fn the_done_card_scrolls_with_a_bar_and_too_short_a_pane_is_a_plain_list() {
     assert!(short.contains("▌NEEDS YOU · 2"), "{short}");
     assert_eq!(
         list_rows(&rows),
-        rows.iter().filter(|row| row.kind != Kind::Gap).count() + 6
+        rows.iter().filter(|row| row.kind != Kind::Gap).count() + 6 - (99 - DONE_ROWS),
+        "DONE counts its fixed height"
     );
 }
 
@@ -729,6 +758,27 @@ fn a_refresh_keeps_the_detail_target_or_closes_it_if_removed() {
     assert_eq!(nav.detail_scroll, 0);
 }
 
+/// The text area of the details dialog as `screen` draws it: next to the
+/// selected row when it shows.
+fn drawn_body(
+    board: &Board,
+    nav: &mut Navigation,
+    rows: &[Entry],
+    width: u16,
+    height: u16,
+) -> Rect {
+    let open = std::mem::replace(&mut nav.detail, false);
+    let buffer = screen(board, nav, rows, width, height, None);
+    nav.detail = open;
+    let anchor = (0..height).find(|&y| {
+        (0..width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>()
+            .contains('▸')
+    });
+    dialog_body_of(dialog_area(&rows[nav.index].detail, width, height, anchor))
+}
+
 #[test]
 fn dialog_wrapping_and_end_scrolling_reach_the_last_line_after_resize() {
     let board = board();
@@ -740,7 +790,7 @@ fn dialog_wrapping_and_end_scrolling_reach_the_last_line_after_resize() {
     for (width, height) in [(84, 30), (24, 12), (12, 8), (5, 5), (84, 30)] {
         nav.detail_scroll = dialog_scroll_max(&rows[nav.index].detail, width, height);
         let rendered = screen(&board, &nav, &rows, width, height, None);
-        let body = dialog_body(width, height);
+        let body = drawn_body(&board, &mut nav, &rows, width, height);
         let text = (body.y..body.bottom())
             .map(|row| {
                 (body.x..body.right())
@@ -831,6 +881,207 @@ fn shortcut_hints_fit_the_available_width() {
             "width {width}: {footer}"
         );
     }
+}
+
+#[test]
+fn the_leaders_details_show_how_it_runs_and_what_waits_for_you() {
+    let rows = entries(&board(), View::Overview, false, &[], None);
+    let leader = rows.iter().find(|row| row.id == "leader").unwrap();
+    for line in [
+        "The leader: claude · high",
+        "Pane: %2 · working",
+        "Permissions: read-only · provider-managed · default",
+        "Fallback: codex · gpt-5.5 · standby",
+        "Plan approved: yes",
+        "Paused: no",
+        "Pending permissions: none",
+    ] {
+        assert!(leader.detail.contains(line), "{line}\n{}", leader.detail);
+    }
+    assert!(
+        !rows.iter().any(|row| row.id.starts_with("permission:")),
+        "nothing to approve, no row"
+    );
+}
+
+#[test]
+fn a_pending_leader_call_needs_you_with_its_exact_arguments() {
+    let mut board = board();
+    board.paused = true;
+    board.permissions = vec![PermissionRow {
+        id: "p7".into(),
+        tool: "stop_agent".into(),
+        effect: Effect::Destructive,
+        arguments: r#"{"agent":"executor-1"}"#.into(),
+    }];
+    let quiet = attention(&self::board(), None);
+    assert_eq!(attention(&board, None), quiet + 1);
+
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let place = |id: &str| rows.iter().position(|row| row.id == id).unwrap();
+    assert!(place("heading:NEEDS YOU") < place("permission:p7"));
+    assert!(place("permission:p7") < place("heading:CTO"));
+    let request = &rows[place("permission:p7")];
+    assert!(request.attention);
+    assert_eq!(
+        request.label,
+        r#"⚠ p7 stop_agent · destructive · {"agent":"executor-1"}"#
+    );
+    assert!(request.detail.contains("Effect: destructive"));
+    assert!(
+        request
+            .detail
+            .contains(r#"Arguments: {"agent":"executor-1"}"#)
+    );
+
+    let leader = &rows[place("leader")];
+    assert!(leader.detail.contains("Paused: yes"), "{}", leader.detail);
+    assert!(
+        leader.detail.contains(
+            "Pending permissions: 1\n  p7 stop_agent · destructive · {\"agent\":\"executor-1\"}"
+        ),
+        "{}",
+        leader.detail
+    );
+}
+
+#[test]
+fn the_done_card_keeps_its_fixed_height_in_a_tall_pane() {
+    let board = board_with_history();
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let mut nav = Navigation::new(View::Overview);
+    nav.reconcile(&rows);
+    let text = plain(&screen(&board, &nav, &rows, 84, 200, None));
+    let done: Vec<_> = text
+        .lines()
+        .skip_while(|line| !line.contains("╭─ DONE"))
+        .take_while(|line| !line.starts_with('╰'))
+        .collect();
+    assert_eq!(done.len() - 1, DONE_ROWS, "{text}");
+    assert!(text.contains(&format!(" 1–{DONE_ROWS} of 99 ─╯")), "{text}");
+}
+
+#[test]
+fn a_finished_spec_is_one_row_and_its_details_list_its_steps() {
+    let mut board = board();
+    let step = |id: &str, attempts| StepRow {
+        id: id.into(),
+        title: format!("title {id}"),
+        status: StepStatus::Accepted,
+        attempts,
+    };
+    board.done_specs = vec![SpecRow {
+        id: "H2f".into(),
+        version: "1.78.0".into(),
+        title: "Plan H2f replay".into(),
+        steps: vec![step("H2f-execution", 1), step("H2f.1", 3), step("H2f.2", 1)],
+    }];
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let heading = rows.iter().find(|row| row.id == "heading:DONE").unwrap();
+    assert_eq!(heading.label, "DONE · 1");
+    assert_eq!(heading.tail, "3 steps · newest first");
+    let spec = rows.iter().find(|row| row.id == "spec:H2f").unwrap();
+    assert_eq!(spec.label, "✓ 1.78.0  Plan H2f replay");
+    assert_eq!(spec.tail, "3 steps · 2 retries");
+    for line in [
+        "1.78.0 Plan H2f replay (H2f)",
+        "✓ 1.78.1  title H2f-execution (H2f-execution)",
+        "✓ 1.78.2  title H2f.1 ×3 (H2f.1)",
+    ] {
+        assert!(spec.detail.contains(line), "{line}\n{}", spec.detail);
+    }
+    assert!(
+        !rows.iter().any(|row| row.id.starts_with("step:H2f")),
+        "its steps are not rows of their own"
+    );
+}
+
+#[test]
+fn a_dialog_is_as_tall_as_its_content_and_opens_next_to_its_row() {
+    let row_of = |buffer: &Buffer, y: u16| {
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>()
+    };
+    let selected_y = |buffer: &Buffer| {
+        (0..buffer.area.height)
+            .find(|&y| row_of(buffer, y).contains('▸'))
+            .unwrap()
+    };
+    let (width, height) = (84, 60);
+
+    // A row near the top: the details open just below it.
+    let board = board();
+    let mut rows = entries(&board, View::Agents, false, &[], None);
+    let mut nav = Navigation::new(View::Agents);
+    nav.reconcile(&rows);
+    rows[nav.index].detail = "first line\nsecond line".into();
+    let row = selected_y(&screen(&board, &nav, &rows, width, height, None));
+    nav.detail = true;
+    let rendered = screen(&board, &nav, &rows, width, height, None);
+    assert!(
+        row_of(&rendered, row).contains('▸'),
+        "the row stays in sight"
+    );
+    assert!(row_of(&rendered, row + 1).trim_start().starts_with('╭'));
+    assert!(row_of(&rendered, row + 2).contains("first line"));
+    assert!(row_of(&rendered, row + 3).contains("second line"));
+    assert!(
+        row_of(&rendered, row + 4).contains("Esc/q close"),
+        "the hint row"
+    );
+    assert!(
+        row_of(&rendered, row + 5).trim_start().starts_with('╰'),
+        "as tall as its content"
+    );
+    assert_eq!(
+        dialog_body(&rows[nav.index].detail, width, height).height,
+        2
+    );
+
+    // The last done spec, at the bottom of a pane it fills: the details open
+    // above it.
+    let height = 40;
+    let board = board_with_history();
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let mut nav = Navigation::new(View::Overview);
+    nav.reconcile(&rows);
+    nav.move_by(&rows, isize::MAX);
+    let row = selected_y(&screen(&board, &nav, &rows, width, height, None));
+    nav.detail = true;
+    let rendered = screen(&board, &nav, &rows, width, height, None);
+    assert!(
+        row_of(&rendered, row).contains('▸'),
+        "the row stays in sight"
+    );
+    assert!(
+        row_of(&rendered, row - 1).chars().nth(2) == Some('╰'),
+        "row {row}:\n{}",
+        plain(&rendered)
+    );
+
+    let long = "line\n".repeat(200);
+    assert_eq!(
+        dialog_body(&long, width, height).height,
+        height - 2 - 2 - 1,
+        "long details still take the pane less its margin, borders and hints"
+    );
+}
+
+#[test]
+fn an_idle_agent_shows_its_counts_where_its_step_would_be() {
+    let mut board = board();
+    let idle = &mut board.roles[0].agents[0];
+    idle.now = None;
+    idle.accepted = 11;
+    idle.retries = 3;
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let note = rows
+        .iter()
+        .find(|row| row.id == "note:agent:executor-1")
+        .unwrap();
+    assert_eq!(note.label, "└ 11 accepted · 3 retries");
+    assert_eq!(note.tail, "", "nothing left alone at the far edge");
 }
 
 #[test]

@@ -177,6 +177,45 @@ test_worktree_ensure_clones_a_github_repo() {
   [ "$(git -C "$folder" rev-parse HEAD)" = "$(git -C "$seed" rev-parse main)" ] || fail "the branch did not start from main"
 }
 
+# `devws` alone, outside tmux: with a workspace running, it joins the first
+# one (an agent team's group session is not one) and asks nothing; with none,
+# it shows the start screen. On a tmux server of its own, whose attach is
+# recorded: the tests have no terminal to attach.
+test_devws_alone_joins_the_first_running_workspace() {
+  local socket="$SOCKET-attach" start_screen="$HOME/.tmuxinator/github_workspace.sh"
+  local attach_tmux="$TEST_ROOT/attach-bin/tmux"
+  mkdir -p "$TEST_ROOT/attach-bin"
+  cat > "$attach_tmux" <<EOF
+#!/usr/bin/env bash
+[ "\$1" = attach-session ] && { printf '%s\n' "\$*" > "$TEST_ROOT/attached"; exit 0; }
+exec "$REAL_TMUX" -L "$socket" -f /dev/null "\$@"
+EOF
+  chmod +x "$attach_tmux"
+  rm "$start_screen"
+  printf '#!/usr/bin/env bash\ntouch "%s"\nexit 1\n' "$TEST_ROOT/start-screen" > "$start_screen"
+  chmod +x "$start_screen"
+  alone() { PATH="$TEST_ROOT/attach-bin:$PATH" TMUX= zsh "$DEVWS" </dev/null >/dev/null 2>&1 || true; }
+
+  "$attach_tmux" new-session -d -s dev-a-floor
+  "$attach_tmux" set-option -t =dev-a-floor: @devws_team_of dev-b
+  alone
+  [ ! -e "$TEST_ROOT/attached" ] || fail "devws joined an agent team's group session: $(cat "$TEST_ROOT/attached")"
+  [ -e "$TEST_ROOT/start-screen" ] || fail "devws without a workspace running did not show the start screen"
+
+  "$attach_tmux" new-session -d -s dev-b
+  "$attach_tmux" new-session -d -s dev-c
+  rm -f "$TEST_ROOT/start-screen"
+  alone
+  [ "$(cat "$TEST_ROOT/attached" 2>/dev/null)" = "attach-session -t =dev-b" ] ||
+    fail "devws did not join the first workspace: '$(cat "$TEST_ROOT/attached" 2>/dev/null)'"
+  [ ! -e "$TEST_ROOT/start-screen" ] || fail "devws showed the start screen with a workspace running"
+
+  "$REAL_TMUX" -L "$socket" kill-server 2>/dev/null || true
+  rm "$start_screen"
+  ln -s "$SCRIPTS_SRC/github_workspace.sh" "$start_screen"
+}
+
+test_devws_alone_joins_the_first_running_workspace
 test_open_starts_a_detached_workspace_for_a_task
 test_open_without_a_task_takes_the_defaults_and_is_remembered
 test_open_refuses_what_it_cannot_do
