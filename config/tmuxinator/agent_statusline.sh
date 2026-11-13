@@ -3,7 +3,8 @@
 # limits — the 5-hour session and the week, as % used — in the tmux option
 # @devws_limits_<agent> ("<session> <week>"), which the header's agent column
 # shows, then prints the user's own status line from the account's
-# settings.json (in CLAUDE_CONFIG_DIR, else ~/.claude), unchanged. Claude Code
+# settings.json (in CLAUDE_CONFIG_DIR, else ~/.claude), unchanged, or devws's
+# usage bar (agent_usage_bar.sh) when the account has none. Claude Code
 # passes the limits only to a status line, and only on plans that have them.
 # The agent is the devws name agent_runner.sh exports as DEVWS_AGENT, so each
 # account keeps its own limits.
@@ -30,5 +31,5 @@ if [ -n "${TMUX_PANE:-}" ] && [ -n "$model" ]; then
 fi
 
 user_command="$(jq -r '.statusLine.command // empty' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" 2>/dev/null)"
-[ -n "$user_command" ] || exit 0
+[ -n "$user_command" ] || user_command="\"$(dirname "$0")/agent_usage_bar.sh\""
 printf '%s' "$payload" | bash -c "$user_command"

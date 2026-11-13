@@ -290,9 +290,12 @@ test_claude_limits_come_from_its_status_line() {
   local output
   tmux new-session -d -s dev-work -x 200 -y 50 'sleep 600'
   local payload='{"model":{"display_name":"Opus"},"rate_limits":{"five_hour":{"used_percentage":37.6},"seven_day":{"used_percentage":12.2}}}'
-  # Without a status line of the user's own, it shows nothing.
-  output="$(printf '%s' "$payload" | TMUX=test "$SCRIPTS/agent_statusline.sh")"
-  [ -z "$output" ] || fail "the status line printed without one of the user's: $output"
+  # Without a status line of the user's own, it shows devws's usage bar.
+  output="$(printf '%s' "$payload" | TMUX=test "$SCRIPTS/agent_statusline.sh" | sed $'s/\033\\[[0-9;]*m//g')"
+  case "$output" in
+    "[Opus]"*"5h "*" 37%"*"7d "*" 12%"*) ;;
+    *) fail "the usage bar is not shown without the user's own status line: $output" ;;
+  esac
   [ "$(tmux show-option -gqv @devws_limits_claude)" = "37 12" ] || fail "Claude's limits are not recorded"
 
   mkdir -p "$HOME/.claude"
@@ -314,6 +317,31 @@ test_claude_limits_come_from_its_status_line() {
   rm "$HOME/.claude-work/settings.json"
   jq -e '.statusLine.command | contains("agent_statusline.sh")' "$SCRIPTS/agent_settings.json" >/dev/null ||
     fail "devws does not start Claude Code with its status line"
+}
+
+test_usage_bar_shows_what_was_used() {
+  local output plain
+  output="$(printf '%s' '{"model":{"display_name":"Opus 5.5"},"workspace":{"current_dir":"/nowhere"},
+    "rate_limits":{"five_hour":{"used_percentage":47.9},"seven_day":{"used_percentage":72}},
+    "context_window":{"used_percentage":130}}' | "$SCRIPTS/agent_usage_bar.sh")"
+  plain="$(sed $'s/\033\\[[0-9;]*m//g' <<< "$output")"
+  [ "$plain" = "[Opus 5.5]  5h ▓▓▓▓░░░░░░ 47%  7d ▓▓▓▓▓▓▓░░░ 72%  ctx ▓▓▓▓▓▓▓▓▓▓ 130%" ] ||
+    fail "unexpected usage bar: $plain"
+  # Green under 60%, yellow under 85%, red from there.
+  grep -q $'\033\\[32m▓▓▓▓░' <<< "$output" || fail "a low use is not green: $output"
+  grep -q $'\033\\[33m▓▓▓▓▓▓▓░' <<< "$output" || fail "a high use is not yellow: $output"
+  grep -q $'\033\\[31m▓▓▓▓▓▓▓▓▓▓ ' <<< "$output" || fail "a use over the limit is not red: $output"
+
+  # A plan without limits: only the model and the context.
+  plain="$(printf '%s' '{"model":{"display_name":"Sonnet"},"workspace":{"current_dir":"/nowhere"},"context_window":{"used_percentage":5}}' |
+    "$SCRIPTS/agent_usage_bar.sh" | sed $'s/\033\\[[0-9;]*m//g')"
+  [ "$plain" = "[Sonnet]  ctx ░░░░░░░░░░ 5%" ] || fail "a missing limit is shown: $plain"
+
+  # The branch of the folder the agent works in.
+  git init -q -b topic "$TEST_ROOT/repo"
+  plain="$(printf '{"model":{"display_name":"Opus"},"workspace":{"current_dir":"%s"}}' "$TEST_ROOT/repo" |
+    "$SCRIPTS/agent_usage_bar.sh" | sed $'s/\033\\[[0-9;]*m//g')"
+  [ "$plain" = "[Opus] topic" ] || fail "the agent's branch is not shown: $plain"
 }
 
 # One column for every agent: a row each with its limits used and its month's
@@ -948,6 +976,7 @@ test_month_costs_per_account
 test_codex_limits
 test_tokens_of_the_current_conversation
 test_claude_limits_come_from_its_status_line
+test_usage_bar_shows_what_was_used
 test_one_column_for_the_agents
 test_system_usage
 test_network

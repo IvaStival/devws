@@ -10,7 +10,10 @@ Around them:
 - GitHub as the source: pick a repo, and each task gets a branch in a folder
   of its own; commit, push and open the PR from the menu;
 - several agents and accounts at once, with their state, plan limits and an
-  optional shared long-term memory (ai-memory);
+  optional shared long-term memory (ai-memory); each agent's status line
+  shows its model, branch and the 5-hour, weekly and context use, unless the
+  account sets its own (Claude's `statusLine.command`, Codex's `[tui]
+  status_line`);
 - branches run in Docker through jungleforge, with long work as background
   jobs that never block the screen;
 - a database pane, two layouts, panels that minimize, and a header with the
