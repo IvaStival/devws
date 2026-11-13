@@ -69,7 +69,9 @@ agent_has_folder() {
 
 # <name>: the plan limits the agent has used, in per cent: "<5-hour session>
 # <week>", a "-" for what is not known. A Claude agent's come from its status
-# line (agent_statusline.sh), a Codex agent's from its logs (header_tokens.sh).
+# line (agent_statusline.sh), followed by the epoch they were read at; a Codex
+# agent's from its logs (header_tokens.sh). `devws agent limits` asks
+# Anthropic for a Claude agent's live ones (claude_limits.sh).
 agent_limits() {
   case "$(agent_kind "$1")" in
     claude) tmux show-option -gqv "@devws_limits_$1" 2>/dev/null ;;

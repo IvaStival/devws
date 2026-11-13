@@ -32,6 +32,7 @@ fn find<'c>(lanes: &'c [Lane], name: &str) -> Result<&'c Lane> {
 /// task's folder (`lanes/<name>`), on `<task branch>--<name>`, from where the
 /// task's branch is now.
 pub fn add(task: &Task, name: &str, globs: &[String], repo_name: Option<&str>) -> Result<Lane> {
+    let _control = task.control_lock()?;
     if name.is_empty()
         || !name
             .chars()
@@ -280,6 +281,7 @@ mod tests {
                 title: "plan".into(),
                 status: StepStatus::Accepted,
                 attempts: 1,
+                spec: None,
             });
             tx.state.plans.push(ExecutionPlan {
                 step: "p1".into(),
@@ -315,6 +317,7 @@ mod tests {
             send_order(
                 &task,
                 OrderRequest {
+                    profiles: Vec::new(),
                     agent: agent.into(),
                     step: step.into(),
                     title: step.into(),
@@ -323,6 +326,7 @@ mod tests {
                     forbidden: vec![],
                     check: Some("true".into()),
                     plan: Some("p1".into()),
+                    spec: None,
                 },
             )
             .unwrap()
@@ -344,9 +348,22 @@ mod tests {
         );
         commit_file(&back.worktree, "backend/api.rs", "api\n", "api");
         commit_file(&front.worktree, "frontend/page.ts", "page\n", "page");
+        let orders = task
+            .transaction(|tx| {
+                for order in &mut tx.state.orders {
+                    order.delivered = true;
+                }
+                Ok(tx.state.orders.clone())
+            })
+            .unwrap();
         report(
             &task,
             &one.pane,
+            &orders
+                .iter()
+                .find(|order| order.agent == one.id)
+                .unwrap()
+                .id,
             Outcome::Done,
             "api",
             std::time::Duration::from_secs(5),
@@ -355,6 +372,11 @@ mod tests {
         report(
             &task,
             &two.pane,
+            &orders
+                .iter()
+                .find(|order| order.agent == two.id)
+                .unwrap()
+                .id,
             Outcome::Done,
             "page",
             std::time::Duration::from_secs(5),

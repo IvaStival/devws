@@ -101,6 +101,34 @@ else:
             self.assertNotIn("@devws_model", self.options())
             self.assertNotIn("@devws_transcript", self.options())
 
+    def test_completion_publishes_transcript_before_done(self):
+        self.executable(self.scripts / "agent_status.sh", """#!/usr/bin/env python3
+import json, os
+from pathlib import Path
+state = json.loads(Path(os.environ['MODEL_TEST_STATE']).read_text())
+assert state['%1']['@devws_transcript'] == '/new/startup.jsonl'
+Path(os.environ['MODEL_TEST_REFRESH']).write_text('done')
+""")
+        self.run_script("agent_state.sh", payload=json.dumps({"hook_event_name": "Stop", "transcript_path": "/new/startup.jsonl"}))
+        self.assertEqual(self.refreshes.read_text(), "done")
+
+    def test_explicit_provider_exit_is_recorded_and_cleared_on_relaunch(self):
+        self.executable(self.bin / "codex", "#!/usr/bin/env bash\nexit 1\n")
+        subprocess.run([str(self.scripts / "agent_runner.sh"), "codex"], env=self.environment, check=False, capture_output=True)
+        self.assertEqual(json.loads(self.options()["@devws_startup_error"])["error"]["code"], "provider_exit")
+        self.executable(self.bin / "codex", "#!/usr/bin/env bash\nexit 0\n")
+        self.run_script("agent_runner.sh", "codex")
+        self.assertNotIn("@devws_startup_error", self.options())
+
+    def test_missing_program_is_typed_provider_unavailability(self):
+        (self.bin / "codex").unlink()
+        for name in ["bash", "dirname", "cat", "jq", "python3"]:
+            (self.bin / name).symlink_to(shutil.which(name))
+        environment = dict(self.environment, PATH=str(self.bin))
+        result = subprocess.run([str(self.scripts / "agent_runner.sh"), "codex"], env=environment, capture_output=True)
+        self.assertEqual(result.returncode, 127, result.stderr)
+        self.assertEqual(json.loads(self.options()["@devws_startup_error"])["error"]["code"], "provider_unavailable")
+
     def test_hook_models_are_observed_and_unchanged_models_do_not_refresh(self):
         payload = json.dumps({"hook_event_name": "PreToolUse", "model": "gpt-runtime"})
         self.run_script("agent_state.sh", payload=payload)

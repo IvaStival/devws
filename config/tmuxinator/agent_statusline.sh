@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Claude Code's status line in devws (agent_settings.json): records the plan's
 # limits — the 5-hour session and the week, as % used — in the tmux option
-# @devws_limits_<agent> ("<session> <week>"), which the header's agent column
+# @devws_limits_<agent> ("<session> <week> <epoch read>"), which the header's agent column
 # shows, then prints the user's own status line from the account's
 # settings.json (in CLAUDE_CONFIG_DIR, else ~/.claude), unchanged. Claude Code
 # passes the limits only to a status line, and only on plans that have them.
@@ -21,7 +21,7 @@ json() {
 session_used="$(json '.rate_limits.five_hour.used_percentage // empty | floor')"
 week_used="$(json '.rate_limits.seven_day.used_percentage // empty | floor')"
 if [ -n "${TMUX:-}" ] && [ -n "$session_used$week_used" ]; then
-  tmux set-option -g "@devws_limits_${DEVWS_AGENT:-claude}" "${session_used:--} ${week_used:--}" 2>/dev/null
+  tmux set-option -g "@devws_limits_${DEVWS_AGENT:-claude}" "${session_used:--} ${week_used:--} $(date +%s)" 2>/dev/null
 fi
 
 model="$(json '.model.id // empty | select(type == "string")')"

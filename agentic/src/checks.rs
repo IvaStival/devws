@@ -5,6 +5,7 @@
 use anyhow::{Context, Result, bail};
 use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};
 use std::fs::File;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -61,7 +62,7 @@ pub fn git_data(worktree: &Path) -> Result<Vec<std::path::PathBuf>> {
 
 /// Globs relative to the repo's root. `*` stays inside a folder, `**` crosses
 /// them, and a trailing `/` means everything under it.
-fn glob_set(patterns: &[String]) -> Result<GlobSet> {
+pub(crate) fn glob_set(patterns: &[String]) -> Result<GlobSet> {
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
         let pattern = if pattern.ends_with('/') {
@@ -176,6 +177,7 @@ pub fn run_check(
 ) -> Result<CheckRun> {
     let output = File::create(log).with_context(|| format!("creating {}", log.display()))?;
     let mut child = Command::new("sh")
+        .process_group(0)
         .arg("-c")
         .arg(command)
         .current_dir(worktree)
@@ -191,8 +193,12 @@ pub fn run_check(
             break (Some(status), false);
         }
         if started.elapsed() >= timeout {
-            child.kill().ok();
-            child.wait().ok();
+            // The shell may have descendants; kill the complete isolated group.
+            let killed = unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+            if killed != 0 {
+                child.kill().context("killing timed-out check")?;
+            }
+            child.wait().context("reaping timed-out check")?;
             break (None, true);
         }
         std::thread::sleep(Duration::from_millis(50));

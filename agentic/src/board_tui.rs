@@ -3,7 +3,7 @@
 
 use crate::board::Board;
 use crate::board_usage::UsageReader;
-use crate::board_view::{self, Navigation, View};
+use crate::board_view::{self, Navigation, ScreenMap, View};
 use crate::devws::Devws;
 use crate::home::Home;
 use crate::leader;
@@ -12,7 +12,8 @@ use crate::task::Task;
 use crate::watch::{self, Dispatcher};
 use anyhow::Result;
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
+    MouseEventKind,
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
@@ -90,7 +91,7 @@ fn dispatch(
     let Ok(_lock) = watch::lock(task) else {
         return;
     };
-    let mut dispatcher = Dispatcher::new(task, devws, watch::STALL_GRACE);
+    let mut dispatcher = Dispatcher::new(task, devws, home, watch::STALL_GRACE);
     let command = std::env::current_exe()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| "devagentics".to_string());
@@ -181,9 +182,11 @@ struct Interaction {
     nav: Navigation,
     peeking: bool,
     help: bool,
+    /// What the last drawn screen had where, for clicks.
+    map: ScreenMap,
 }
 
-const HELP: &str = "Board navigation\n\nTab / Shift-Tab: next / previous view\nj/k or arrows: select row; scroll details\nPgUp/PgDn: move a page\ng/G or Home/End: first / last\nEnter: full details\nEsc: close details or cancel peek\no: go to selected agent\nv: peek selected agent\n1–9: go to numbered agent\np then 1–9: peek numbered agent\nL: return to leader\nl: toggle Activity\nc: toggle completed steps or inactive role catalog\nr: refresh\nz: zoom\n?: help\nq: close details, or quit board (dispatcher stops)";
+const HELP: &str = "Board navigation\n\nTab / Shift-Tab: next / previous view\nj/k or arrows: select row; scroll details\nPgUp/PgDn: move a page\ng/G or Home/End: first / last\nEnter: full details\nClick: select a row; click it again for details\nClick a view's name: show that view\nClick outside details: close them\nEsc: close details or cancel peek\no: go to selected agent\nv: peek selected agent\n1–9: go to numbered agent\np then 1–9: peek numbered agent\nL: return to leader\nl: toggle Activity\nc: toggle completed steps or inactive role catalog\nr: refresh\nz: zoom\n?: help\nq: close details, or quit board (dispatcher stops)";
 
 impl Interaction {
     /// One event from the terminal: a key, or the wheel, which moves `WHEEL`
@@ -196,8 +199,8 @@ impl Interaction {
         size: Rect,
     ) -> Action {
         self.clamp_scroll(entries, size);
-        let page = if self.help || self.nav.detail {
-            board_view::dialog_body(size.width, size.height).height
+        let page = if let Some(content) = self.dialog_content(entries) {
+            board_view::dialog_body(content, size.width, size.height).height
         } else {
             size.height.saturating_sub(
                 board_view::header_rows(board, &self.nav, size.width, size.height) + 1,
@@ -207,6 +210,10 @@ impl Interaction {
         let action = match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 self.key(key.code, board, entries, page)
+            }
+            Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
+                self.click(mouse.column, mouse.row, entries);
+                Action::None
             }
             Event::Mouse(mouse) => {
                 let code = match mouse.kind {
@@ -225,8 +232,9 @@ impl Interaction {
         action
     }
 
-    fn clamp_scroll(&mut self, entries: &[board_view::Entry], size: Rect) {
-        let content = if self.help {
+    /// What the open dialog shows: the help, or the selected row's details.
+    fn dialog_content<'a>(&self, entries: &'a [board_view::Entry]) -> Option<&'a str> {
+        if self.help {
             Some(HELP)
         } else if self.nav.detail {
             entries
@@ -234,8 +242,43 @@ impl Interaction {
                 .map(|entry| entry.detail.as_str())
         } else {
             None
+        }
+    }
+
+    /// A left click: outside an open dialog closes it; on a view's name
+    /// shows that view; on a row selects it, and on the selected row opens
+    /// its details, as Enter does. Anything else does nothing.
+    fn click(&mut self, column: u16, row: u16, entries: &[board_view::Entry]) {
+        if self.help || self.nav.detail {
+            let inside = self
+                .map
+                .dialog
+                .is_some_and(|area| area.contains(ratatui::layout::Position::new(column, row)));
+            if !inside {
+                self.help = false;
+                self.nav.detail = false;
+                self.nav.detail_scroll = 0;
+            }
+            return;
+        }
+        self.peeking = false;
+        if let Some(view) = self.map.view_at(column, row) {
+            self.nav.change_view(view);
+            return;
+        }
+        let Some(index) = self.map.entry_at(row) else {
+            return;
         };
-        if let Some(content) = content {
+        if self.nav.selected.is_some() && self.nav.index == index {
+            self.nav.detail = true;
+            self.nav.detail_scroll = 0;
+        } else {
+            self.nav.select_row(entries, index);
+        }
+    }
+
+    fn clamp_scroll(&mut self, entries: &[board_view::Entry], size: Rect) {
+        if let Some(content) = self.dialog_content(entries) {
             self.nav.detail_scroll = self.nav.detail_scroll.min(board_view::dialog_scroll_max(
                 content,
                 size.width,
@@ -251,12 +294,19 @@ impl Interaction {
         width: u16,
         height: u16,
         notice: Option<&str>,
-    ) -> ratatui::buffer::Buffer {
-        let mut screen = board_view::screen(board, &self.nav, entries, width, height, notice);
+    ) -> (ratatui::buffer::Buffer, ScreenMap) {
+        let (mut screen, mut map) =
+            board_view::screen_map(board, &self.nav, entries, width, height, notice);
         if self.help {
-            board_view::draw_dialog(&mut screen, "Help", HELP, self.nav.detail_scroll);
+            map.dialog = Some(board_view::draw_dialog(
+                &mut screen,
+                "Help",
+                HELP,
+                self.nav.detail_scroll,
+                None,
+            ));
         }
-        screen
+        (screen, map)
     }
 
     fn new(view: View) -> Self {
@@ -264,6 +314,7 @@ impl Interaction {
             nav: Navigation::new(view),
             peeking: false,
             help: false,
+            map: ScreenMap::default(),
         }
     }
 
@@ -540,10 +591,12 @@ fn screen_loop(
             ui.nav.reconcile(&entries);
             let size = terminal.size()?;
             ui.clamp_scroll(&entries, Rect::new(0, 0, size.width, size.height));
+            let mut drawn = ScreenMap::default();
             terminal.draw(|frame| {
                 let area = frame.area();
-                let screen = ui.screen(&board, &entries, area.width, area.height, notice);
+                let (screen, map) = ui.screen(&board, &entries, area.width, area.height, notice);
                 *frame.buffer_mut() = screen;
+                drawn = map;
                 if ui.peeking && area.height > 0 {
                     use ratatui::widgets::Widget;
                     ratatui::text::Line::raw("Peek: choose 1–9 · Esc cancel").render(
@@ -552,6 +605,7 @@ fn screen_loop(
                     );
                 }
             })?;
+            ui.map = drawn;
             if !event::poll(KEY_WAIT)? {
                 continue;
             }
@@ -631,9 +685,9 @@ mod tests {
         let mut ui = Interaction::new(View::Overview);
         ui.nav.reconcile(&entries);
         let selected = ui.nav.selected.clone();
-        let background = ui.screen(&board, &entries, 84, 30, None);
+        let (background, _) = ui.screen(&board, &entries, 84, 30, None);
         ui.key(KeyCode::Char('?'), &board, &entries, 10);
-        let rendered = ui.screen(&board, &entries, 84, 30, None);
+        let (rendered, _) = ui.screen(&board, &entries, 84, 30, None);
         let text = board_view::plain(&rendered);
         assert!(text.contains("Help"), "{text}");
         assert!(text.contains("Board navigation"), "{text}");
@@ -669,7 +723,10 @@ mod tests {
         let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
         ui.apply(key(KeyCode::Enter), &board, &entries, size);
         ui.apply(key(KeyCode::PageDown), &board, &entries, size);
-        assert_eq!(ui.nav.detail_scroll, board_view::dialog_body(30, 16).height);
+        assert_eq!(
+            ui.nav.detail_scroll,
+            board_view::dialog_body(&entries[0].detail, 30, 16).height
+        );
         ui.apply(key(KeyCode::End), &board, &entries, size);
         let maximum = board_view::dialog_scroll_max(&entries[0].detail, 30, 16);
         assert_eq!(ui.nav.detail_scroll, maximum);
@@ -849,5 +906,81 @@ mod tests {
         assert_eq!(reader.lines, ["replaced"]);
         assert!(reader.update(None, || Ok(Vec::new())).unwrap());
         assert!(reader.lines.is_empty());
+    }
+
+    #[test]
+    fn a_click_selects_a_row_opens_it_shows_a_view_and_closes_the_dialog() {
+        use ratatui::crossterm::event::{KeyModifiers, MouseEvent};
+        let board = board_view::tests::board();
+        let entries = board_view::entries(&board, View::Overview, false, &[], None);
+        let mut ui = Interaction::new(View::Overview);
+        ui.nav.reconcile(&entries);
+        let size = Rect::new(0, 0, 84, 60);
+        let draw = |ui: &mut Interaction| {
+            ui.map = ui.screen(&board, &entries, 84, 60, None).1;
+        };
+        let click = |ui: &mut Interaction, column: u16, row: u16| {
+            let event = Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            });
+            ui.apply(event, &board, &entries, size)
+        };
+        let row_of = |ui: &Interaction, id: &str| {
+            ui.map
+                .rows
+                .iter()
+                .find(|(_, index)| entries[*index].id == id)
+                .map(|(y, _)| *y)
+                .unwrap_or_else(|| panic!("{id} is not drawn"))
+        };
+        draw(&mut ui);
+        assert_ne!(ui.nav.selected.as_deref(), Some("leader"));
+
+        let leader = row_of(&ui, "leader");
+        assert_eq!(click(&mut ui, 10, leader), Action::None);
+        assert_eq!(
+            ui.nav.selected.as_deref(),
+            Some("leader"),
+            "a click selects"
+        );
+        assert!(!ui.nav.detail);
+        draw(&mut ui);
+        click(&mut ui, 10, leader);
+        assert!(ui.nav.detail, "a second click opens its details");
+
+        draw(&mut ui);
+        let dialog = ui.map.dialog.expect("the dialog is drawn");
+        click(&mut ui, dialog.x + 3, dialog.y + 1);
+        assert!(ui.nav.detail, "a click inside keeps it open");
+        click(&mut ui, 0, 0);
+        assert!(!ui.nav.detail, "a click outside closes it");
+        assert_eq!(
+            ui.nav.selected.as_deref(),
+            Some("leader"),
+            "and keeps the row"
+        );
+
+        // The second line of an agent and the headings are not rows.
+        draw(&mut ui);
+        let note = row_of(&ui, "agent:executor-1") + 1;
+        click(&mut ui, 10, note);
+        assert_eq!(ui.nav.selected.as_deref(), Some("leader"));
+
+        let (row, columns, _) = ui
+            .map
+            .tabs
+            .iter()
+            .find(|(_, _, view)| *view == View::Agents)
+            .cloned()
+            .expect("the agents tab is drawn");
+        click(&mut ui, columns.start + 1, row);
+        assert_eq!(
+            ui.nav.view,
+            View::Agents,
+            "a click on a view's name shows it"
+        );
     }
 }

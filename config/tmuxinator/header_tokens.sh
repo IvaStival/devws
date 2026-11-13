@@ -11,6 +11,10 @@
 #   header_tokens.sh usage <transcript>     what one conversation used:
 #                                           "<input> <output> <cache> <US$> <unpriced>"
 #                                           (tokens; cache is read + written)
+#   header_tokens.sh messages <transcript>  the same, a line per response:
+#                                           "<id> <YYYY-MM-DD> <input> <output>
+#                                           <cache> <US$> <unpriced>" (id "-"
+#                                           for Codex, whose logs do not repeat)
 #
 # Read from the agents' own logs, in each agent's folder (agents.sh): Claude
 # Code's <folder>/projects/*/*.jsonl and Codex's
@@ -195,6 +199,67 @@ usage() {
   return 0
 }
 
+# What one conversation used, a line per response with its local day, for
+# the usage history (usage_history.sh), priced as usage() prices it. Claude
+# Code repeats a message in the log of a resumed conversation, so its lines
+# carry the message id: the history counts an id once over every log. A Codex
+# log's responses each have their own record; an older log without them
+# counts its last total on the day of its last count.
+messages() {
+  local transcript="$1" records
+  [ -r "$transcript" ] || return 0
+  records="$(printf '%s\0' "$transcript" | token_records)"
+  local lines='.[] | "\(.id) \(.day) \(.input) \(.output) \(.cache) \(.cost | . * 1000000 | round / 1000000) \(.unpriced)"'
+  if grep -q '"token_count"\|"token_usage_record"' <<< "$records"; then
+    printf '%s\n' "$records" |
+      jq -nRr --rawfile prices "$prices_file" "$epoch $price"'
+        def day: epoch | strflocaltime("%Y-%m-%d");
+        def priced($model; $input; $written; $cached; $output):
+          price($model) as $rates
+          | {input: $input, output: $output, cache: ($written + $cached),
+             unpriced: (if $rates == null then 1 else 0 end),
+             cost: (if $rates == null then 0
+               else (($input * $rates[0] + $written * $rates[1] + $cached * $rates[3] + $output * $rates[4]) / 1000000) end)};
+        [inputs | fromjson?] as $lines
+        | ($lines | map(select(.type == "turn_context") | {key: (.payload.turn_id // ""), value: .payload.model}) | from_entries) as $models
+        | ($lines | map(select(.type == "turn_context") | .payload.model) | last // "") as $last_model
+        | ($lines | map(select(.type == "token_usage_record"))) as $responses
+        | if ($responses | length) > 0 then
+            $responses | map(.payload.usage as $usage
+              | ($usage.cached_input_tokens // 0) as $cached
+              | ($usage.cache_write_input_tokens // 0) as $written
+              | priced($models[.payload.turn_id // ""] // $last_model;
+                  $usage.input_tokens - $cached - $written; $written; $cached; $usage.output_tokens)
+              + {id: "-", day: (.timestamp | day)})
+          else
+            $lines | map(select(.type == "event_msg" and .payload.type == "token_count" and .payload.info))
+            | last // empty
+            | [.payload.info.total_token_usage as $total
+               | ($total.cached_input_tokens // 0) as $cached
+               | priced($last_model; $total.input_tokens - $cached; 0; $cached; $total.output_tokens)
+               + {id: "-", day: (.timestamp | day)}]
+          end
+        | '"$lines" 2>/dev/null
+  else
+    printf '%s\n' "$records" |
+      jq -nRr --rawfile prices "$prices_file" "$epoch $price $claude_messages"'
+        | map(select(.model != "<synthetic>") | price(.model) as $rates
+          | (.usage.cache_creation // {}) as $writes
+          | (($writes.ephemeral_5m_input_tokens // null) == null and ($writes.ephemeral_1h_input_tokens // null) == null) as $unsplit
+          | {id, day: (.at | strflocaltime("%Y-%m-%d")),
+             input: .usage.input_tokens, output: .usage.output_tokens,
+             cache: ((.usage.cache_creation_input_tokens // 0) + (.usage.cache_read_input_tokens // 0)),
+             unpriced: (if $rates == null then 1 else 0 end),
+             cost: (if $rates == null then 0 else ((.usage.input_tokens * $rates[0]
+               + (if $unsplit then (.usage.cache_creation_input_tokens // 0) else ($writes.ephemeral_5m_input_tokens // 0) end) * $rates[1]
+               + (if $unsplit then 0 else ($writes.ephemeral_1h_input_tokens // 0) end) * $rates[2]
+               + (.usage.cache_read_input_tokens // 0) * $rates[3]
+               + .usage.output_tokens * $rates[4]) / 1000000) end)})
+        | '"$lines" 2>/dev/null
+  fi
+  return 0
+}
+
 # Reuse the compact transcript cache; no prompts or message bodies are read
 # from it. The final observed record wins when a conversation switches model.
 model() {
@@ -215,6 +280,7 @@ case "$mode" in
   model) model "${2:-}" ;;
   model-info) model "${2:-}" timed ;;
   usage) usage "${2:-}" ;;
+  messages) messages "${2:-}" ;;
   session) session "${2:-}" ;;
   limits)
     if [ "$(agent_kind "${2:-}")" != codex ]; then

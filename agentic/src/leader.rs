@@ -114,6 +114,7 @@ pub fn led_by(role: &Role, agent: &str, devws: &dyn Devws) -> Result<Role> {
                 model: role.model.clone(),
                 effort: role.effort.clone(),
                 approvals: role.approvals.clone(),
+                sandbox: role.sandbox.clone(),
             }),
             ..fallback
         });
@@ -263,6 +264,10 @@ pub fn hand_over(
     devws: &dyn Devws,
     command: &str,
 ) -> Result<Option<String>> {
+    let _control = task.control_lock()?;
+    if task.state()?.paused {
+        return Ok(None);
+    }
     let role = leader_role(home, task, devws)?;
     let state = task.state()?;
     let Some((now, other)) = now_and_other(&role, &state) else {

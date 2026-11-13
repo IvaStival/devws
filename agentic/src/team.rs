@@ -2,7 +2,7 @@
 //! them in check (one writer per worktree, a limit on how many, no writers
 //! before the user approves the plan, no agents on an account near its limit).
 
-use crate::agent_args::{self, Launch};
+use crate::agent_args::{self, Kind as Program, Launch};
 use crate::devws::{Devws, PaneState};
 use crate::home::Home;
 use crate::lanes;
@@ -12,11 +12,9 @@ use crate::roles::{Role, Roles};
 use crate::start::{AGENT_FIRST, opening, repo_name};
 use crate::state::{Agent, OrderStatus, StepStatus};
 use crate::task::{Repo, Task, TaskConfig};
+use crate::worker::{FailureScope, LaunchState, StartupFailure, program_name};
 use anyhow::{Context, Result, bail};
 use std::time::Duration;
-
-/// An account this far into its week or its 5-hour limit gets no new agents.
-const LIMIT_PERCENT: u32 = 85;
 
 pub struct Team<'a> {
     pub task: &'a Task,
@@ -52,6 +50,7 @@ fn find_repo<'c>(config: &'c TaskConfig, name: Option<&str>) -> Result<&'c Repo>
 impl Team<'_> {
     /// Another repo for the task: a worktree on the task's branch.
     pub fn add_repo(&self, spec: &str, check: Option<&str>) -> Result<Repo> {
+        let _control = self.task.control_lock()?;
         let mut config = self.task.config()?;
         let worktree = self.devws.ensure_worktree(spec, &config.branch)?;
         let name = repo_name(&worktree)?;
@@ -78,13 +77,26 @@ impl Team<'_> {
     }
 
     pub fn set_check(&self, repo_name: &str, command: &str) -> Result<()> {
+        let _control = self.task.control_lock()?;
         let mut config = self.task.config()?;
+        if !command.trim().is_empty()
+            && config
+                .check_profiles
+                .get(repo_name)
+                .is_some_and(|profiles| !profiles.selected.is_empty())
+        {
+            bail!("clear named profile selection before setting a legacy check");
+        }
         config
             .repos
             .iter_mut()
             .find(|repo| repo.name == repo_name)
             .with_context(|| format!("the task has no repo {repo_name}"))?
-            .check = Some(command.to_string());
+            .check = if command.trim().is_empty() {
+            None
+        } else {
+            Some(command.to_string())
+        };
         self.task.write_config(&config)
     }
 
@@ -104,6 +116,7 @@ impl Team<'_> {
         repo_name: Option<&str>,
         lane_name: Option<&str>,
     ) -> Result<Agent> {
+        let _control = self.task.control_lock()?;
         let config = self.task.config()?;
         let lane = lane_name
             .map(|name| lanes::get(self.task, name))
@@ -149,17 +162,11 @@ impl Team<'_> {
                 );
             }
         }
-        self.devws.agent_kind(&role.agent)?;
-        // The week first: it takes days to come back, the 5-hour limit hours.
-        let limits = self.devws.limits(&role.agent)?;
-        for (window, used) in [("week", limits.week), ("5-hour limit", limits.five_hour)] {
-            if let Some(used) = used.filter(|used| *used >= LIMIT_PERCENT) {
-                bail!(
-                    "{} has used {used}% of its {window}: no new agents on it until it resets",
-                    role.agent
-                );
-            }
-        }
+        let kind = self
+            .devws
+            .agent_kind(&role.agent)
+            .or_else(|error| Program::parse(&role.agent).ok_or(error))?;
+        let mut launch = LaunchState::new(role, kind);
 
         // The agent is reserved before it starts, so two spawns cannot both
         // pass the rules.
@@ -184,6 +191,7 @@ impl Team<'_> {
             }
             let number = tx.state.agents.iter().filter(|agent| agent.role == role.name).count() + 1;
             let id = format!("{}-{number}", role.name);
+            tx.state.worker_launches.insert(id.clone(), launch.clone());
             tx.state.agents.push(Agent {
                 id: id.clone(),
                 role: role.name.clone(),
@@ -195,6 +203,7 @@ impl Team<'_> {
                 group: Some(role.group),
                 lane: lane_name,
                 live: true,
+                unavailable: false,
                 ready: false,
                 lost: false,
                 usage: None,
@@ -207,7 +216,7 @@ impl Team<'_> {
         if let Some(lane) = &lane {
             workplace.worktree = lane.worktree.clone();
         }
-        match self.launch(&config, role, &workplace, &id) {
+        match self.launch_worker(&config, &workplace, &id, &mut launch) {
             Ok((session, pane)) => self.task.transaction(|tx| {
                 let agent = tx
                     .state
@@ -215,6 +224,12 @@ impl Team<'_> {
                     .iter_mut()
                     .find(|agent| agent.id == id)
                     .expect("the agent was reserved");
+                agent.agent = launch
+                    .selected
+                    .as_ref()
+                    .expect("launched candidate")
+                    .agent
+                    .clone();
                 agent.session = session;
                 agent.pane = pane;
                 let started = agent.clone();
@@ -223,10 +238,29 @@ impl Team<'_> {
                     Some(&id),
                     None,
                     &match &lane {
-                        Some(lane) => format!("{} in {}, lane {}", role.name, repo.name, lane.name),
-                        None => format!("{} in {}", role.name, repo.name),
+                        Some(lane) => format!(
+                            "{} in {}, lane {} on {}",
+                            role.name,
+                            repo.name,
+                            lane.name,
+                            program_name(launch.selected.as_ref().unwrap())
+                        ),
+                        None => format!(
+                            "{} in {} on {}",
+                            role.name,
+                            repo.name,
+                            program_name(launch.selected.as_ref().unwrap())
+                        ),
                     },
                 );
+                if !launch.failures.is_empty() {
+                    tx.log(
+                        Kind::Spawn,
+                        Some(&id),
+                        None,
+                        &format!("fallback reasons: {}", launch.failures.join("; ")),
+                    );
+                }
                 Ok(started)
             }),
             Err(error) => {
@@ -237,6 +271,114 @@ impl Team<'_> {
                 Err(error)
             }
         }
+    }
+
+    /// Persist attempts before effects so a dispatcher restart cannot loop candidates.
+    fn launch_worker(
+        &self,
+        config: &TaskConfig,
+        repo: &Repo,
+        id: &str,
+        launch: &mut LaunchState,
+    ) -> Result<(String, String)> {
+        loop {
+            let candidate = launch.next_available(self.devws);
+            self.task.transaction(|tx| {
+                tx.state.worker_launches.insert(id.into(), launch.clone());
+                Ok(())
+            })?;
+            let role = candidate?;
+            match self.launch(config, &role, repo, id) {
+                Ok(started) => return Ok(started),
+                Err(error) => {
+                    let Some(failure) = error.downcast_ref::<StartupFailure>() else {
+                        return Err(error);
+                    };
+                    if failure.scope == FailureScope::Other {
+                        return Err(error);
+                    }
+                    launch.rejected(failure);
+                }
+            }
+        }
+    }
+
+    /// Called under the dispatcher's control lock, before a worker is ready.
+    pub fn retry_startup(&self, agent: &Agent, failure: &StartupFailure) -> Result<()> {
+        let state = self.task.state()?;
+        if state.paused || agent.ready {
+            return Ok(());
+        }
+        let Some(mut launch) = state.worker_launches.get(&agent.id).cloned() else {
+            // Older tasks have no candidate snapshot: report instead of guessing settings.
+            return self.startup_blocked(agent, &failure.reason);
+        };
+        launch.rejected(failure);
+        self.task.transaction(|tx| {
+            tx.state
+                .worker_launches
+                .insert(agent.id.clone(), launch.clone());
+            // A rejected startup must never receive queued work, including after a crash.
+            if let Some(current) = tx.state.agents.iter_mut().find(|item| item.id == agent.id) {
+                current.lost = true;
+            }
+            Ok(())
+        })?;
+        if self.devws.pane_state(&agent.pane)? != PaneState::Gone {
+            // Close only this failed task-owned worker; never replay work in a healthy pane.
+            if let Err(error) = self.devws.stop(&agent.pane) {
+                return self
+                    .startup_blocked(agent, &format!("failed to close rejected startup: {error}"));
+            }
+        }
+        if failure.scope == FailureScope::Other {
+            return self.startup_blocked(agent, &failure.reason);
+        }
+        let config = self.task.config()?;
+        let workplace = lanes::workplace(self.task, agent)?;
+        match self.launch_worker(&config, &workplace, &agent.id, &mut launch) {
+            Ok((session, pane)) => self.task.transaction(|tx| {
+                let current = tx
+                    .state
+                    .agents
+                    .iter_mut()
+                    .find(|item| item.id == agent.id)
+                    .context("worker disappeared during startup retry")?;
+                current.session = session;
+                current.pane = pane;
+                current.agent = launch.selected.as_ref().unwrap().agent.clone();
+                current.ready = false;
+                current.unavailable = false;
+                current.lost = false;
+                tx.log(
+                    Kind::Spawn,
+                    Some(&agent.id),
+                    None,
+                    &format!(
+                        "startup fallback to {}: {}",
+                        program_name(launch.selected.as_ref().unwrap()),
+                        launch.failures.join("; ")
+                    ),
+                );
+                Ok(())
+            }),
+            Err(error) => self.startup_blocked(agent, &format!("{error:#}")),
+        }
+    }
+
+    fn startup_blocked(&self, agent: &Agent, reason: &str) -> Result<()> {
+        let gone = self.devws.pane_state(&agent.pane)? == PaneState::Gone;
+        self.task.transaction(|tx| {
+            if let Some(current) = tx.state.agents.iter_mut().find(|item| item.id == agent.id) {
+                current.live = !gone;
+                current.unavailable = true;
+                current.lost = true;
+                current.ready = false;
+            }
+            tx.state.say(crate::state::LEADER, format!("{} unavailable during startup: {reason}. Inspect task_status; resume after correcting availability.", agent.id));
+            tx.log(Kind::Lost, Some(&agent.id), None, reason);
+            Ok(())
+        })
     }
 
     /// Runs the agent: a panel in the leader's workspace for the task's first
@@ -313,7 +455,7 @@ impl Team<'_> {
             .task
             .state()?
             .agent(id)
-            .filter(|agent| agent.live)
+            .filter(|agent| agent.live || agent.unavailable)
             .cloned()
             .with_context(|| format!("there is no live agent {id}"))?;
         let usage = self.devws.usage(&agent.pane)?;
@@ -328,6 +470,8 @@ impl Team<'_> {
                 .find(|candidate| candidate.id == id)
             {
                 stopped.live = false;
+                stopped.unavailable = false;
+                stopped.lost = false;
                 stopped.usage = usage;
             }
             let open: Vec<_> = tx
@@ -393,35 +537,108 @@ impl Team<'_> {
     }
 
     pub fn pause(&self) -> Result<()> {
+        self.pause_mode(false, None)
+    }
+
+    pub fn pause_mode(&self, interrupt: bool, invoking: Option<&str>) -> Result<()> {
+        let _control = self.task.control_lock()?;
         self.task.transaction(|tx| {
             tx.state.paused = true;
             tx.log(Kind::Pause, None, None, "paused");
             Ok(())
-        })
+        })?;
+        if interrupt {
+            crate::recovery::interrupt(self.task, self.devws, invoking)?;
+        }
+        Ok(())
     }
 
     /// Takes the task off pause, and starts again the agents whose panels
     /// went (a restart) as new conversations, each told its open order again.
     /// Returns their ids.
     pub fn resume(&self) -> Result<Vec<String>> {
+        let _control = self.task.control_lock()?;
         let config = self.task.config()?;
         self.task.transaction(|tx| {
-            tx.state.paused = false;
-            tx.log(Kind::Pause, None, None, "resumed");
+            tx.state.paused = true;
+            tx.log(Kind::Pause, None, None, "preparing resume");
             Ok(())
         })?;
 
         let mut restarted = Vec::new();
-        for agent in self.task.state()?.agents.iter().filter(|agent| agent.live) {
+        for agent in self
+            .task
+            .state()?
+            .agents
+            .iter()
+            .filter(|agent| agent.live || agent.unavailable)
+        {
             if !agent.lost && self.devws.pane_state(&agent.pane)? != PaneState::Gone {
                 continue;
+            }
+            if !agent.live {
+                let state = self.task.state()?;
+                if state
+                    .agents
+                    .iter()
+                    .filter(|candidate| candidate.live)
+                    .count()
+                    >= config.max_agents
+                {
+                    bail!("cannot resume {}: agent capacity is full", agent.id);
+                }
+                if agent.writes
+                    && state.agents.iter().any(|candidate| {
+                        candidate.live
+                            && candidate.writes
+                            && candidate.repo == agent.repo
+                            && candidate.lane == agent.lane
+                    })
+                {
+                    bail!(
+                        "cannot resume {}: another writer occupies its worktree",
+                        agent.id
+                    );
+                }
+                if agent.writes && !state.approved {
+                    bail!("cannot resume writer: the plan is not approved");
+                }
             }
             let repo = lanes::workplace(self.task, agent)?;
             let roles = Roles::load(self.home, Some(&repo.worktree))?;
             let role = roles
                 .get(&agent.role)
                 .with_context(|| format!("the role {} of {} is gone", agent.role, agent.id))?;
-            let (session, pane) = self.launch(&config, role, &repo, &agent.id)?;
+            // Automatic retries use a snapshot. Explicit resume may pick up corrected
+            // provider settings while retaining this worker's instructions and scope.
+            let resumed_role =
+                if let Some(previous) = self.task.state()?.worker_launches.get(&agent.id) {
+                    Role {
+                        fallback: role.fallback.clone(),
+                        alternatives: role.alternatives.clone(),
+                        ..previous.role.with_program(&role.program())
+                    }
+                } else {
+                    role.clone()
+                };
+            if resumed_role.writes != agent.writes || resumed_role.group != agent.group() {
+                bail!(
+                    "cannot resume {}: its role's write scope or group changed",
+                    agent.id
+                );
+            }
+            let kind = self
+                .devws
+                .agent_kind(&resumed_role.agent)
+                .or_else(|error| Program::parse(&resumed_role.agent).ok_or(error))?;
+            let mut launch = LaunchState::new(&resumed_role, kind);
+            // A failed cleanup is not permission to duplicate the still-live process.
+            if agent.unavailable && self.devws.pane_state(&agent.pane)? != PaneState::Gone {
+                self.devws
+                    .stop(&agent.pane)
+                    .context("close the unavailable worker before resuming")?;
+            }
+            let (session, pane) = self.launch_worker(&config, &repo, &agent.id, &mut launch)?;
             self.task.transaction(|tx| {
                 let order = tx.state.open_order_of(&agent.id).cloned();
                 let title = order
@@ -432,7 +649,15 @@ impl Team<'_> {
                 if let (Some(order), Some(title)) = (order, title) {
                     tx.state.say_about(
                         &agent.id,
-                        orders::order_message(&order, &title),
+                        orders::order_message(
+                            &order,
+                            &title,
+                            tx.state
+                                .order_profiles
+                                .get(&order.id)
+                                .map(Vec::as_slice)
+                                .unwrap_or(&[]),
+                        ),
                         Some(order.id.clone()),
                     );
                     if let Some(open) = tx
@@ -451,8 +676,11 @@ impl Team<'_> {
                     .iter_mut()
                     .find(|candidate| candidate.id == agent.id)
                     .expect("the agent is in the state");
+                restarted.agent = launch.selected.as_ref().unwrap().agent.clone();
                 restarted.session = session;
                 restarted.pane = pane;
+                restarted.live = true;
+                restarted.unavailable = false;
                 restarted.ready = false;
                 restarted.lost = false;
                 tx.log(Kind::Spawn, Some(&agent.id), None, "started again");
@@ -460,13 +688,25 @@ impl Team<'_> {
             })?;
             restarted.push(agent.id.clone());
         }
+        crate::recovery::queue_resumption(self.task, self.devws)?;
+        self.task.transaction(|tx| {
+            tx.state.paused = false;
+            tx.log(Kind::Pause, None, None, "resumed");
+            Ok(())
+        })?;
         Ok(restarted)
     }
 
     /// Stops every agent and the task with them; the worktrees stay.
     pub fn cancel(&self) -> Result<()> {
         self.pause()?;
-        for agent in self.task.state()?.agents.iter().filter(|agent| agent.live) {
+        for agent in self
+            .task
+            .state()?
+            .agents
+            .iter()
+            .filter(|agent| agent.live || agent.unavailable)
+        {
             self.stop_agent(&agent.id)?;
         }
         Ok(())
@@ -684,9 +924,9 @@ mod tests {
         .spawn_agent("executor", None)
         .unwrap_err()
         .to_string();
-        assert_eq!(
-            error,
-            "claude has used 85% of its week: no new agents on it until it resets"
+        assert!(
+            error.contains("claude has used 85% of its week: no new agents on it until it resets"),
+            "{error}"
         );
 
         let below = FakeDevws::new(&f.home_dir.path().join("w"))
@@ -719,6 +959,98 @@ mod tests {
             .is_ok(),
             "limits devws does not know do not stop an agent"
         );
+    }
+
+    #[test]
+    fn exhausted_claude_starts_codex_with_the_same_worker_scope() {
+        let f = fixture().approved();
+        f.devws.set_limits(
+            "claude",
+            Limits {
+                week: Some(100),
+                five_hour: Some(100),
+            },
+        );
+        let agent = f.team().spawn_agent("executor", None).unwrap();
+        assert_eq!(agent.agent, "codex");
+        assert!(agent.writes);
+        assert_eq!(agent.role, "executor");
+        let state = f.task.state().unwrap();
+        let launch = &state.worker_launches[&agent.id];
+        assert_eq!(
+            launch.selected.as_ref().unwrap().model.as_deref(),
+            Some(crate::roles::FLOOR_CODEX_MODEL),
+            "the floor's Codex is Luna"
+        );
+        assert!(launch.failures[0].contains("week"));
+        let args = std::fs::read(f.task.dir().join("agents/executor-1.args")).unwrap();
+        let args = String::from_utf8_lossy(&args);
+        assert!(args.contains("factory floor") && args.contains(crate::roles::FLOOR_CODEX_MODEL));
+        assert!(!args.contains("acceptEdits"));
+        assert!(state.permissions.is_empty());
+    }
+
+    #[test]
+    fn no_available_candidate_leaves_no_live_worker() {
+        let f = fixture().approved();
+        for provider in ["claude", "codex"] {
+            f.devws.set_limits(
+                provider,
+                Limits {
+                    week: Some(100),
+                    five_hour: None,
+                },
+            );
+        }
+        let error = f
+            .team()
+            .spawn_agent("executor", None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("claude") && error.contains("codex"),
+            "{error}"
+        );
+        assert!(f.task.state().unwrap().agents.is_empty());
+        assert!(
+            !f.devws
+                .calls()
+                .iter()
+                .any(|call| call.starts_with("spawn "))
+        );
+    }
+
+    #[test]
+    fn explicit_launch_rejection_falls_back_but_unrelated_errors_do_not() {
+        let f = fixture().approved();
+        f.devws.fail_launch("claude", FailureScope::Account);
+        assert_eq!(
+            f.team().spawn_agent("executor", None).unwrap().agent,
+            "codex"
+        );
+        let f = fixture().approved();
+        f.devws.fail_launch("claude", FailureScope::Other);
+        assert!(f.team().spawn_agent("executor", None).is_err());
+        assert!(f.task.state().unwrap().agents.is_empty());
+        assert!(!f.devws.calls().iter().any(|call| call.contains(" codex ")));
+    }
+
+    #[test]
+    fn explicit_resume_uses_corrected_provider_settings_without_widening_scope() {
+        let f = fixture().approved();
+        let agent = f.team().spawn_agent("executor", None).unwrap();
+        f.devws.set_state(&agent.pane, PaneState::Gone);
+        std::fs::write(f.home.roles_dir().join("executor.md"), "+++\nagent = \"codex\"\nmodel = \"gpt-6-luna-corrected\"\nwrites = true\ngroup = \"floor\"\n+++\nNew instructions must not replace snapshotted scope.\n").unwrap();
+        f.team().resume().unwrap();
+        let state = f.task.state().unwrap();
+        assert_eq!(state.agents[0].agent, "codex");
+        let launch = &state.worker_launches[&agent.id];
+        assert_eq!(
+            launch.selected.as_ref().unwrap().model.as_deref(),
+            Some("gpt-6-luna-corrected")
+        );
+        assert!(launch.role.instructions.contains("factory floor"));
+        assert!(state.agents[0].writes);
     }
 
     #[test]
@@ -826,6 +1158,7 @@ mod tests {
                     title: "T".into(),
                     status: StepStatus::Ordered,
                     attempts: 1,
+                    spec: None,
                 });
                 tx.state.orders.push(crate::state::Order {
                     id: "o1".into(),
@@ -869,6 +1202,61 @@ mod tests {
     }
 
     #[test]
+    fn interrupt_preserves_panes_and_busy_recovery_keeps_the_task_paused() {
+        let f = fixture().approved();
+        let agent = f.team().spawn_agent("executor", None).unwrap();
+        f.devws.set_state(&agent.pane, PaneState::Working);
+        f.team().pause_mode(true, None).unwrap();
+        let state = f.task.state().unwrap();
+        assert!(state.paused && state.recovery[&agent.id].interrupted);
+        assert_eq!(state.agents[0].pane, agent.pane);
+        f.devws.set_state(&agent.pane, PaneState::Working);
+        assert!(f.team().resume().is_err());
+        assert!(f.task.state().unwrap().paused);
+        f.devws.set_state(&agent.pane, PaneState::Done);
+        f.team().resume().unwrap();
+        f.team().resume().unwrap();
+        let state = f.task.state().unwrap();
+        assert!(!state.paused && state.recovery.is_empty());
+        assert!(
+            state.queue.is_empty(),
+            "no invented assignment for an idle agent"
+        );
+        assert_eq!(state.agents[0].pane, agent.pane);
+    }
+
+    #[test]
+    fn partial_interrupt_failure_preserves_successful_recovery_and_pause() {
+        let f = fixture().approved();
+        let first = f.team().spawn_agent("planner", None).unwrap();
+        let second = f.team().spawn_agent("executor", None).unwrap();
+        for pane in [&first.pane, &second.pane] {
+            f.devws.set_state(pane, PaneState::Working);
+        }
+        f.devws.fail_interrupt(&second.pane);
+        assert!(f.team().pause_mode(true, None).is_err());
+        let state = f.task.state().unwrap();
+        assert!(state.paused);
+        assert!(state.recovery[&first.id].interrupted);
+        assert!(state.recovery[&second.id].error.is_some());
+        assert!(f.team().resume().is_err());
+        assert!(f.task.state().unwrap().paused);
+        f.devws.set_state(&second.pane, PaneState::Done);
+        f.team().resume().unwrap();
+        assert!(!f.task.state().unwrap().paused);
+    }
+
+    #[test]
+    fn interrupt_exempts_the_invoking_pane() {
+        let f = fixture().approved();
+        let agent = f.team().spawn_agent("executor", None).unwrap();
+        f.devws.set_state(&agent.pane, PaneState::Working);
+        f.team().pause_mode(true, Some(&agent.pane)).unwrap();
+        assert!(f.task.state().unwrap().recovery.is_empty());
+        assert_eq!(f.devws.pane_state(&agent.pane).unwrap(), PaneState::Working);
+    }
+
+    #[test]
     fn resuming_starts_the_agents_whose_panels_are_gone_and_tells_them_their_order_again() {
         let f = fixture().approved();
         let agent = f.team().spawn_agent("executor", None).unwrap();
@@ -880,6 +1268,7 @@ mod tests {
                     title: "Add it".into(),
                     status: StepStatus::Ordered,
                     attempts: 1,
+                    spec: None,
                 });
                 tx.state.orders.push(crate::state::Order {
                     id: "o1".into(),

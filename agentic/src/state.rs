@@ -11,11 +11,20 @@ pub const LEADER: &str = "leader";
 pub struct State {
     /// The user has approved the plan: agents that write may start.
     pub approved: bool,
+    pub order_profiles: std::collections::BTreeMap<String, Vec<String>>,
+    pub order_revisions: std::collections::BTreeMap<String, u64>,
+    pub amendments: Vec<Amendment>,
+    pub check_evidence: std::collections::BTreeMap<String, crate::check_profiles::Evidence>,
+    pub recovery: std::collections::BTreeMap<String, Recovery>,
+    /// Exact MCP calls awaiting or holding a one-use user authorization.
+    pub permissions: Vec<PermissionRequest>,
     /// New deliveries and spawns wait.
     pub paused: bool,
     /// The last number handed out for an agent, an order or a message.
     pub next_id: u64,
     pub agents: Vec<Agent>,
+    /// Snapshotted worker candidates and attempts, independent of pane lifetime.
+    pub worker_launches: std::collections::BTreeMap<String, crate::worker::LaunchState>,
     pub steps: Vec<Step>,
     pub orders: Vec<Order>,
     /// What waits to be typed into an agent's pane (the dispatcher does it
@@ -76,6 +85,9 @@ pub struct Agent {
     pub lane: Option<String>,
     /// Its panel is there.
     pub live: bool,
+    /// Startup alternatives were exhausted or rejected; explicit resume may retry.
+    #[serde(default)]
+    pub unavailable: bool,
     /// It has answered its first message: orders may be typed into it.
     pub ready: bool,
     /// Its panel went (a restart, a closed pane); the leader has been told.
@@ -109,6 +121,10 @@ pub struct Step {
     pub status: StepStatus,
     /// How many orders it has had.
     pub attempts: u32,
+    /// The spec or plan part it belongs to (`H2f`, `etapa-5`): the board
+    /// shows finished work by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,5 +230,94 @@ impl State {
             text,
             order,
         });
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Amendment {
+    pub order: String,
+    pub revision: u64,
+    pub allowed: Vec<String>,
+    pub reason: String,
+    pub source: String,
+}
+
+impl State {
+    pub fn revision(&self, order: &str) -> u64 {
+        self.order_revisions.get(order).copied().unwrap_or(0)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Recovery {
+    pub pane: String,
+    pub interrupted: bool,
+    pub error: Option<String>,
+}
+
+/// A request to run one specific MCP invocation outside the system effect tier.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PermissionRequest {
+    pub id: String,
+    pub tool: String,
+    pub arguments: serde_json::Value,
+    pub effect: Effect,
+    pub status: PermissionStatus,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Effect {
+    System,
+    External,
+    Destructive,
+}
+
+impl Effect {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::External => "external",
+            Self::Destructive => "destructive",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionStatus {
+    Pending,
+    Authorized,
+    Denied,
+    Consumed,
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_orders_load_without_execution_metadata() {
+        let state: State = serde_json::from_value(serde_json::json!({"approved":true,"orders":[{
+            "id":"o1", "step":"s1", "agent":"executor-1", "text":"work", "allowed":[], "forbidden":[], "check":null,"base":"abc","status":"open"
+        }]})).unwrap();
+        assert_eq!(state.revision("o1"), 0);
+        let step: Step = serde_json::from_value(serde_json::json!({
+            "id":"s1", "title":"t", "status":"accepted", "attempts":1
+        }))
+        .unwrap();
+        assert_eq!(step.spec, None, "a step from before specs has none");
+        assert!(!serde_json::to_string(&step).unwrap().contains("spec"));
+        assert!(
+            state.recovery.is_empty()
+                && state.check_evidence.is_empty()
+                && state.amendments.is_empty()
+                && state.permissions.is_empty()
+        );
+        let encoded = serde_json::to_string(&state).unwrap();
+        assert_eq!(serde_json::from_str::<State>(&encoded).unwrap(), state);
+        let config: crate::task::TaskConfig =
+            toml::from_str("id = 't'\nbranch = 'feat/x'\nworkspace = 'dev-x'\n").unwrap();
+        assert!(config.check_profiles.is_empty());
     }
 }

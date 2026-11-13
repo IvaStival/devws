@@ -20,4 +20,4 @@ windows:
       panes:
         - picker: ~/.tmuxinator/session_picker.sh
         - leader: tmux set-option -p -t "$TMUX_PANE" @devws_label Leader; ~/.tmuxinator/agent_runner.sh <%= @settings["agent"] || "claude" %><%= " --args-file '" + @settings["agent_args"].gsub("'") { "'\\''" } + "'" if @settings["agent_args"] %>
-        - log: tmux set-option -p -t "$TMUX_PANE" @devws_role team-log; tmux set-option -p -t "$TMUX_PANE" @devws_place anchor; <%= @settings["agentic_command"] || "devagentics" %> board <%= @settings["task"] %>
+        - log: tmux set-option -p -t "$TMUX_PANE" @devws_role team-log; tmux set-option -p -t "$TMUX_PANE" @devws_place anchor; '<%= (@settings["agentic_command"] || "devagentics").gsub("'") { "'\\''" } %>' board <%= @settings["task"] %>

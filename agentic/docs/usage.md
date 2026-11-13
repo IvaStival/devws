@@ -64,7 +64,7 @@ Every role is in one of three groups (`group` in its file):
    (`devagentics ask "…"`) and the senior who planned it answers
    (`devagentics answer q… "…"`), or the leader (`answer_question`) when that
    senior is gone. The answer is typed back into the hammer.
-5. **Check.** When the agent reports (`devagentics report done "…"`), devAgentics
+5. **Check.** When the agent reports (`devagentics report done --order <order-id> "…"`), devAgentics
    checks the work itself, not the agent's word:
    - the tree is clean (the work is committed);
    - only the allowed files changed, none of the forbidden ones;
@@ -90,13 +90,27 @@ cache tokens (every agent the task has had), and a row per account with its
 panes keep the 5-hour bar). A pane too short for the frame keeps its top row.
 
 The default **Overview** is one list of sections, each after a blank line and
-left out when empty: **Needs you** (unanswered questions, steps to review or
-stuck, agents waiting or gone, a dispatcher problem); **CTO**, **Seniors** and
+left out when empty: **Needs you** (unanswered questions, leader calls
+waiting for your approval — `⚠ p7 open_prs · external · {…}`, with the
+exact arguments you approve — steps to review or stuck, agents waiting or
+gone, a dispatcher problem); **CTO**, **Seniors** and
 **Floor**, each with what its running agents cost and their tokens in all, and
 each agent with its program (and lane), state, cost and tokens in columns,
 over a dim line with its current step, the steps it got accepted and its
-retries; the number of queued orders; and **Done** (accepted steps, newest
-first, `×n` when a step took retries). The leader is the CTO's first row. The
+retries; the number of queued orders; and **Done**, finished work by spec:
+one row per spec whose steps are all accepted, newest first, with its step
+count and retries (Enter lists its steps). A step's spec is the `spec` its
+order named (`send_order`); without one, its id up to the last numbered
+part (`H2f.3` and `H2f-execution` are `H2f`, `RP-B3-support` is `RP-B3`), or
+the step alone. Specs read as code releases: the task is major version 1,
+each spec a minor release in the order it started (`1.1.0`, `1.2.0`…), each
+of its steps a patch (`1.2.1`, `1.2.2`…), with the leader's own names in the
+details. The leader names new work this way: `task_status` gives it
+`next_version`, and a spec already named as a release (`1.87.0`) keeps it. Done has a fixed height of 15 rows and scrolls through the
+rest. The leader is the CTO's first row;
+Enter on it shows its pane and state, effective permissions, fallback (active
+or standby), whether the plan is approved and the task paused, and its pending
+permission requests. The
 frames use the devws menu's muted blue accent, while green marks successful
 states. Selection skips section titles, second lines and blank lines, and the wheel
 scrolls the whole list, down to the oldest done step. Panes under 60 columns
@@ -117,10 +131,13 @@ Use Tab / Shift-Tab to move between five views:
 - **Usage** shows account limits and the leader's and agents' token usage,
   including the team total and estimated API cost (`+` means an unpriced model).
 
-Use `j`/`k`, arrows, or the mouse wheel to select rows, PgUp/PgDn (`b`/space)
+The mouse works too: click a row to select it and click it again to open its
+details, click a view's name in the header to show that view, and click
+outside the details to close them. Use `j`/`k`, arrows, or the mouse wheel to select rows, PgUp/PgDn (`b`/space)
 to move a page, and `g`/`G` or Home/End for the first/last row. Enter opens full,
-wrapped details in a titled dialog inside the info panel, with the board
-visible behind it. The same movement keys scroll within the dialog; Esc or
+wrapped details in a titled dialog inside the info panel, as tall as its
+content (up to the pane), just below the selected row (above it when there
+is no room below), with the board visible around it. The same movement keys scroll within the dialog; Esc or
 `q` closes it and returns to the selected row. Selection and dialog scrolling
 stay on the same item when the team refreshes; if that item disappears, its
 dialog closes. Short panes keep attention counts and scrolling; `z` zooms the
@@ -156,7 +173,12 @@ agents and reveals their team path without replacing manual expansion choices.
   again.
 - At most `max_agents` running (6), the seniors included. Agents stay between
   steps; the leader stops them at the end, near a limit, or to make room.
-- No new agents on an account past 85% of its 5-hour limit.
+- No new agents on an account at 85% of its week or five-hour limit. Workers
+  automatically try available alternatives, including Claude → Codex, without
+  asking you again. Their role, lane and queued work stay the same. See
+  [worker availability and configuration](../../docs/user/devagentics-execution.md#continue-when-a-provider-or-model-is-unavailable).
+- Project-local agent start, stop and replacement require no extra approval.
+  Adding another repository and publishing pull requests still ask first.
 - **The leader has two programs**: its role's and its role's `[fallback]`
   (the built-in leader's are Claude, and Codex `gpt-6.1-sol`, effort medium).
   It moves from the one it runs on to the other, either way:
@@ -173,8 +195,8 @@ agents and reveals their team path without replacing manual expansion choices.
   from `task_status` and the log (the conversation does not go with it) and
   tells you. The board's leader row says `· fallback` while it runs on the
   fallback, `task_status`'s `leader` shows both programs, and the log says
-  why each move happened. Only the leader has a fallback; your own
-  `leader.md` sets another, or none (then it never moves):
+  why each move happened. The leader keeps its two-program policy; your own
+  `leader.md` sets its fallback, or none (then it never moves):
 
   ```toml
   [fallback]
@@ -206,7 +228,7 @@ agents and reveals their team path without replacing manual expansion choices.
 | `devagentics plan show <step>` | Print a step's execution plan (a hammer runs it) |
 | `devagentics ask "<question>"` | A hammer asks about its order; the senior who planned it is told |
 | `devagentics answer <q…> "<answer>"` | A senior answers; the answer is typed into the hammer |
-| `devagentics report done\|blocked "<text>"` | An agent reports (run by the agent, in its pane) |
+| `devagentics report done\|blocked --order <order-id> "<text>"` | An agent reports (run by the agent, in its pane) |
 | `devagentics board <task> [--once] [--view <view>]` | The team board (and the dispatcher): the workspace's team pane. `--once` prints it as text |
 | `devagentics watch <task> [--once]` | The dispatcher alone, with the log as plain lines |
 | `devagentics mcp <task>` | The leader's tools, as an MCP server on stdio |
@@ -230,11 +252,18 @@ group = "floor"        # cto, senior or floor; by default floor if it writes, el
 sandbox = "workspace-write"   # optional (Codex)
 approvals = "on-request"      # optional: Codex's -a, or Claude's permission mode;
                               # "auto" works without asking you (Claude's auto
-                              # mode, Codex's --approve-for-me)
+                              # mode, Codex's --approve-for-me). Without it,
+                              # Claude runs the leader in auto mode, a role
+                              # that writes in acceptEdits, the rest in default
 description = "Writes the tests"   # optional: the board's line for the role
 +++
 You write the tests for the step you are given…
 ```
+
+The factory floor runs on Claude Sonnet or Codex Luna only (`gpt-6-luna`):
+a floor role's model, and its alternatives' when the account runs out, stay
+only when they are a Sonnet or a Luna; anything else (Opus, Claude's
+default) becomes one of them.
 
 Only the `leader` is built in. Every other role is a file of yours: put them in
 `~/.devagentics/roles/<name>.md`, or in a repo's `.devws/roles/`; a file with
@@ -301,3 +330,7 @@ in a new conversation.
   are typing in its input at that moment it lands in your draft.
 - A planner or executor starts by answering "ready"; its first order waits for
   that answer.
+
+## Reliable execution
+
+See the [order, recovery and isolated-check guide](../../docs/user/devagentics-execution.md) for required report IDs, audited amendments, interrupt/resume, named check configuration and result formats.

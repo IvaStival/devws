@@ -6,7 +6,7 @@ use crate::board_usage::{LEADER_NAME, TeamUsage};
 use crate::devws::{Devws, PaneState, Usage};
 use crate::roles::{Group, Role, Roles};
 use crate::state::LEADER;
-use crate::state::StepStatus;
+use crate::state::{Effect, PermissionStatus, Step, StepStatus};
 use crate::task::Task;
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet};
@@ -22,6 +22,15 @@ pub struct Board {
     /// What the leader's pane is doing; `None` without a pane.
     pub leader_state: Option<PaneState>,
     pub leader_usage: Option<Usage>,
+    /// The leader's effective repository access, sandbox and approval mode.
+    pub leader_permissions: String,
+    /// The leader's other program and whether it runs now:
+    /// `codex · gpt-5.5 · standby`; `None` without a `[fallback]`.
+    pub leader_fallback: Option<String>,
+    pub approved: bool,
+    pub paused: bool,
+    /// The leader's external or destructive calls waiting for your approval.
+    pub permissions: Vec<PermissionRow>,
     pub steps: Vec<StepRow>,
     /// Full context keyed by stable row identity; presentation never truncates this.
     pub details: BTreeMap<String, String>,
@@ -36,6 +45,8 @@ pub struct Board {
     /// Orders waiting to be typed into an agent.
     pub queue: Vec<QueueRow>,
     pub done: Vec<StepRow>,
+    /// The specs whose steps are all accepted, newest first: DONE's rows.
+    pub done_specs: Vec<SpecRow>,
     /// The leader and each agent: what they used.
     pub usage: Vec<(String, Usage)>,
 }
@@ -51,6 +62,8 @@ pub struct Account {
 pub struct RoleRow {
     pub name: String,
     pub group: Group,
+    /// Effective repository access, sandbox and provider approval mode.
+    pub permissions: String,
     /// The program and how it is set: `claude · high`.
     pub program: String,
     pub description: Option<String>,
@@ -86,6 +99,74 @@ pub struct StepRow {
     pub attempts: u32,
 }
 
+/// A finished spec: a plan part whose steps are all accepted.
+#[derive(Debug, PartialEq)]
+pub struct SpecRow {
+    /// The leader's name for it: `H2f`, `v80`.
+    pub id: String,
+    /// Its release, by the order specs started: `1.78.0` (specs.rs).
+    pub version: String,
+    /// Its oldest step's title.
+    pub title: String,
+    /// Its steps, oldest first.
+    pub steps: Vec<StepRow>,
+}
+
+impl SpecRow {
+    /// The orders its steps took after their first.
+    pub fn retries(&self) -> u32 {
+        self.steps
+            .iter()
+            .map(|step| step.attempts.saturating_sub(1))
+            .sum()
+    }
+}
+
+/// The finished specs, newest first by their latest step.
+fn finished_specs(steps: &[Step], step_row: impl Fn(&Step) -> StepRow) -> Vec<SpecRow> {
+    let versions = crate::specs::versions(steps);
+    let mut specs: Vec<(String, usize, Vec<&Step>)> = Vec::new();
+    for (index, step) in steps.iter().enumerate() {
+        let id = crate::specs::spec_of(step);
+        match specs.iter_mut().find(|(known, _, _)| *known == id) {
+            Some((_, latest, members)) => {
+                *latest = index;
+                members.push(step);
+            }
+            None => specs.push((id, index, vec![step])),
+        }
+    }
+    specs.retain(|(_, _, members)| {
+        members
+            .iter()
+            .all(|step| step.status == StepStatus::Accepted)
+    });
+    specs.sort_by_key(|(_, latest, _)| std::cmp::Reverse(*latest));
+    specs
+        .into_iter()
+        .map(|(id, _, members)| SpecRow {
+            version: versions
+                .iter()
+                .find(|(spec, _)| *spec == id)
+                .map(|(_, version)| version.clone())
+                .unwrap_or_else(|| id.clone()),
+            id,
+            title: members[0].title.clone(),
+            steps: members.into_iter().map(&step_row).collect(),
+        })
+        .collect()
+}
+
+/// One exact leader call, held until you approve or deny it.
+#[derive(Debug, PartialEq)]
+pub struct PermissionRow {
+    pub id: String,
+    pub tool: String,
+    pub effect: Effect,
+    /// The call's arguments as compact JSON, exactly as it was asked.
+    pub arguments: String,
+}
+
 #[derive(Debug, PartialEq)]
 pub struct QueueRow {
     pub id: String,
@@ -114,22 +195,59 @@ impl Board {
         let mut rows: Vec<RoleRow> = roles
             .all()
             .iter()
-            .map(|role| RoleRow {
-                name: role.name.clone(),
-                group: role.group,
-                // A leader on its fallback (leader.rs) shows the program it
-                // runs now.
-                program: match role.on_fallback() {
-                    Some(fallback)
-                        if state.leader_agent.as_deref() == Some(fallback.agent.as_str())
-                            && fallback.agent != role.agent =>
-                    {
-                        format!("{} · fallback", program(&fallback))
-                    }
-                    _ => program(role),
-                },
-                description: role.description.clone(),
-                agents: Vec::new(),
+            .map(|role| {
+                let fallback = role.on_fallback();
+                let effective = if role.name == "leader"
+                    && fallback.as_ref().is_some_and(|fallback| {
+                        state.leader_agent.as_deref() == Some(fallback.agent.as_str())
+                    }) {
+                    fallback.as_ref().unwrap_or(role)
+                } else {
+                    role
+                };
+                RoleRow {
+                    name: role.name.clone(),
+                    group: role.group,
+                    permissions: format!(
+                        "{} · {} · {}",
+                        if role.writes {
+                            "order-scoped write"
+                        } else {
+                            "read-only"
+                        },
+                        if crate::agent_args::Kind::parse(&effective.agent)
+                            == Some(crate::agent_args::Kind::Codex)
+                        {
+                            effective.sandbox.as_deref().unwrap_or(if role.writes {
+                                "workspace-write"
+                            } else {
+                                "read-only"
+                            })
+                        } else {
+                            "provider-managed"
+                        },
+                        match crate::agent_args::Kind::parse(&effective.agent) {
+                            Some(crate::agent_args::Kind::Claude) =>
+                                crate::agent_args::claude_permission_mode(effective),
+                            Some(crate::agent_args::Kind::Codex) =>
+                                effective.approvals.as_deref().unwrap_or("on-request"),
+                            None => effective.approvals.as_deref().unwrap_or("provider-default"),
+                        },
+                    ),
+                    // A leader on its fallback (leader.rs) shows the program it
+                    // runs now.
+                    program: match role.on_fallback() {
+                        Some(fallback)
+                            if state.leader_agent.as_deref() == Some(fallback.agent.as_str())
+                                && fallback.agent != role.agent =>
+                        {
+                            format!("{} · fallback", program(&fallback))
+                        }
+                        _ => program(role),
+                    },
+                    description: role.description.clone(),
+                    agents: Vec::new(),
+                }
             })
             .collect();
         let mut working = 0;
@@ -188,6 +306,12 @@ impl Board {
                 rows.push(RoleRow {
                     name: agent.role.clone(),
                     group: agent.group(),
+                    permissions: if agent.writes {
+                        "order-scoped write · recorded role settings"
+                    } else {
+                        "read-only · recorded role settings"
+                    }
+                    .to_string(),
                     program: agent.agent.clone(),
                     description: None,
                     agents: vec![row],
@@ -228,7 +352,7 @@ impl Board {
             });
         }
 
-        let step_row = |step: &crate::state::Step| StepRow {
+        let step_row = |step: &Step| StepRow {
             id: step.id.clone(),
             title: step.title.clone(),
             status: step.status,
@@ -255,6 +379,7 @@ impl Board {
             .filter(|step| step.status == StepStatus::Accepted)
             .map(step_row)
             .collect();
+        let done_specs = finished_specs(&state.steps, step_row);
         let queue = state
             .queue
             .iter()
@@ -374,6 +499,29 @@ impl Board {
             Some(reason) => format!("{leader_program} · handover pending: {reason}"),
             None => leader_program,
         };
+        let leader_permissions = rows
+            .iter()
+            .find(|row| row.name == "leader")
+            .map(|row| row.permissions.clone())
+            .unwrap_or_else(|| "unknown".into());
+        let leader_fallback = roles.get("leader").and_then(|role| {
+            let fallback = role.on_fallback()?;
+            let active = state.leader_agent.as_deref() == Some(fallback.agent.as_str())
+                && fallback.agent != role.agent;
+            let mark = if active { "active" } else { "standby" };
+            Some(format!("{} · {mark}", program(&fallback)))
+        });
+        let permissions = state
+            .permissions
+            .iter()
+            .filter(|request| request.status == PermissionStatus::Pending)
+            .map(|request| PermissionRow {
+                id: request.id.clone(),
+                tool: request.tool.clone(),
+                effect: request.effect,
+                arguments: request.arguments.to_string(),
+            })
+            .collect();
         let leader_pane = devws.pane_with_role(&config.workspace, "agent")?;
         let leader_state = match &leader_pane {
             Some(pane) => Some(devws.pane_state(pane)?),
@@ -394,6 +542,11 @@ impl Board {
             leader_pane,
             leader_state,
             leader_usage: usage.by_agent.get(LEADER_NAME).copied(),
+            leader_permissions,
+            leader_fallback,
+            approved: state.approved,
+            paused: state.paused,
+            permissions,
             steps: state.steps.iter().map(step_row).collect(),
             details,
             task: config.id,
@@ -405,6 +558,7 @@ impl Board {
             review,
             queue,
             done,
+            done_specs,
             usage: usage.by_role,
         })
     }
@@ -470,6 +624,7 @@ pub(crate) mod tests {
         );
         let tester = &board.roles[2];
         assert_eq!(tester.program, "codex");
+        assert_eq!(tester.permissions, "read-only · read-only · on-request");
         assert_eq!(tester.description.as_deref(), Some("Runs the tests"));
         assert!(tester.agents.is_empty());
         let running = &board.roles[1].agents[0];
@@ -524,6 +679,7 @@ pub(crate) mod tests {
                     title: format!("title {id}"),
                     status,
                     attempts,
+                    spec: None,
                 });
             }
             tx.state.orders.extend([
@@ -571,6 +727,7 @@ pub(crate) mod tests {
                     title: format!("title {id}"),
                     status,
                     attempts: 1,
+                    spec: None,
                 });
             }
             tx.state.say(LEADER, "x".into());
@@ -605,6 +762,7 @@ pub(crate) mod tests {
                 title: "add a file".into(),
                 status: StepStatus::Ordered,
                 attempts: 1,
+                spec: None,
             });
             tx.state.orders.push(crate::state::Order {
                 id: "o1".into(),
@@ -645,5 +803,121 @@ pub(crate) mod tests {
         assert!(board.details["queue:o1"].contains("do it"));
         assert!(board.details["agent:planner-1"].contains("Delivered: false"));
         assert!(board.details["step:s1"].contains("Order o1"));
+    }
+
+    #[test]
+    fn the_leader_shows_its_permissions_fallback_task_state_and_pending_calls() {
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, _repo) = started(&dir);
+        let request = |id: &str, effect, status| crate::state::PermissionRequest {
+            id: id.into(),
+            tool: "spawn_agent".into(),
+            arguments: serde_json::json!({"role": "executor"}),
+            effect,
+            status,
+        };
+        let roles = Roles::load(&home, None).unwrap();
+        let board = Board::build(&task, &devws, &roles, TeamUsage::default()).unwrap();
+        assert!(board.permissions.is_empty(), "nothing pending yet");
+        assert!(!board.approved && !board.paused);
+        let fallback = board.leader_fallback.clone().unwrap();
+        assert!(
+            fallback.starts_with("codex") && fallback.ends_with("· standby"),
+            "{fallback}"
+        );
+
+        task.transaction(|tx| {
+            tx.state.approved = true;
+            tx.state.paused = true;
+            tx.state.leader_agent = Some("codex".into());
+            tx.state.permissions.extend([
+                request("p1", Effect::External, PermissionStatus::Consumed),
+                request("p2", Effect::External, PermissionStatus::Pending),
+                request("p3", Effect::Destructive, PermissionStatus::Denied),
+            ]);
+            Ok(())
+        })
+        .unwrap();
+        let board = Board::build(&task, &devws, &roles, TeamUsage::default()).unwrap();
+        assert!(board.approved && board.paused);
+        assert!(
+            board
+                .leader_fallback
+                .as_deref()
+                .unwrap()
+                .ends_with("· active"),
+            "the leader runs on its fallback"
+        );
+        let leader_row = board.roles.iter().find(|row| row.name == "leader").unwrap();
+        assert_eq!(board.leader_permissions, leader_row.permissions);
+        assert_eq!(
+            board.permissions,
+            [PermissionRow {
+                id: "p2".into(),
+                tool: "spawn_agent".into(),
+                effect: Effect::External,
+                arguments: r#"{"role":"executor"}"#.into(),
+            }],
+            "only pending requests"
+        );
+    }
+
+    #[test]
+    fn done_shows_each_finished_spec_once_newest_first() {
+        let step = |id: &str, status, attempts, spec: Option<&str>| Step {
+            id: id.into(),
+            title: format!("title {id}"),
+            status,
+            attempts,
+            spec: spec.map(str::to_string),
+        };
+        let accepted = StepStatus::Accepted;
+        let steps = [
+            step("H2e.1", accepted, 1, None),
+            step("H2f-execution", accepted, 1, None),
+            step("H2f.1", accepted, 3, None),
+            step("replay-contracts", accepted, 1, None),
+            step("H2e.2", accepted, 2, None),
+            step("H2g.1", StepStatus::Ordered, 1, None),
+            step("H2g-execution", accepted, 1, None),
+            step("pf", accepted, 1, Some("H2f")),
+            step("s1", accepted, 1, None),
+            step("RP-B3", accepted, 1, None),
+            step("RP-B3-support", accepted, 2, None),
+            step("general-observation-model", accepted, 1, None),
+        ];
+        let row = |step: &Step| StepRow {
+            id: step.id.clone(),
+            title: step.title.clone(),
+            status: step.status,
+            attempts: step.attempts,
+        };
+        let specs = finished_specs(&steps, row);
+        let ids: Vec<_> = specs.iter().map(|spec| spec.id.as_str()).collect();
+        let versions: Vec<_> = specs.iter().map(|spec| spec.version.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "general-observation-model",
+                "RP-B3",
+                "s1",
+                "H2f",
+                "H2e",
+                "replay-contracts"
+            ],
+            "by their latest step; H2g still has a step at work"
+        );
+        let h2f = &specs[3];
+        let members: Vec<_> = h2f.steps.iter().map(|step| step.id.as_str()).collect();
+        assert_eq!(members, ["H2f-execution", "H2f.1", "pf"], "oldest first");
+        assert_eq!(h2f.title, "title H2f-execution");
+        assert_eq!(h2f.retries(), 2);
+        assert_eq!(
+            versions,
+            ["1.7.0", "1.6.0", "1.5.0", "1.2.0", "1.1.0", "1.3.0"],
+            "numbered by when each started, H2g (1.4.0) too"
+        );
+        assert_eq!(specs[1].steps.len(), 2, "RP-B3-support is RP-B3's");
+        assert_eq!(specs[4].retries(), 1);
     }
 }
