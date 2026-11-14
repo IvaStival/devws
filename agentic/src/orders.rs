@@ -658,7 +658,21 @@ pub fn accept_step(task: &Task, step: &str) -> Result<()> {
         found.set_status(StepStatus::Accepted, crate::log::now());
         tx.log(Kind::Review, None, Some(step), "accepted");
         Ok(())
-    })
+    })?;
+    // The step stays accepted when its record cannot be committed: the
+    // leader reads why in the log.
+    if let Err(error) = crate::history::save(task, Some(step)) {
+        task.transaction(|tx| {
+            tx.log(
+                Kind::Review,
+                None,
+                Some(step),
+                &format!("team history not saved: {error:#}"),
+            );
+            Ok(())
+        })?;
+    }
+    Ok(())
 }
 
 /// The leader sends a reported step back.
@@ -1321,6 +1335,26 @@ mod tests {
 
         let log = f.task.log_lines().unwrap().join("\n");
         assert!(log.contains("rejected: use the existing helper") && log.contains("accepted"));
+    }
+
+    #[test]
+    fn accepting_a_step_commits_the_teams_history() {
+        let f = fixture(None);
+        crate::checks::tests::run(f.repo.path(), &["config", "user.name", "t"]);
+        crate::checks::tests::run(f.repo.path(), &["config", "user.email", "t@t"]);
+        send_order(&f.task, request("s1")).unwrap();
+        commit_file(f.repo.path(), "src/a.rs", "x\n", "a");
+        delivered_report(&f.task, "%5", Outcome::Done, "done", SHORT).unwrap();
+        accept_step(&f.task, "s1").unwrap();
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(f.repo.path())
+            .args(["log", "-1", "--format=%s"])
+            .output()
+            .unwrap();
+        let subject = String::from_utf8_lossy(&output.stdout);
+        assert!(subject.starts_with("chore(team): record "), "{subject}");
+        assert!(subject.contains("Add the login"), "{subject}");
     }
 
     #[test]

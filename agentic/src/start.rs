@@ -66,6 +66,9 @@ pub fn session_name(folder: &Path) -> String {
 /// What the leader does first when the team starts.
 pub const LEADER_FIRST: &str =
     "Call task_status, then tell the user in one line that you are ready for their goal, and wait.";
+/// What the leader does first when the task carries on from the history in
+/// its repo (history.rs).
+pub const LEADER_CONTINUES: &str = "This task continues from the team history in the repo (.devagentics/history): its accepted steps, approved plan and execution plans are loaded. Call task_status and read the plan, then tell the user in one line what is done and what comes next, and wait.";
 /// What any other agent does first.
 pub const AGENT_FIRST: &str = "Reply with exactly: ready — then wait for your first order.";
 
@@ -212,6 +215,7 @@ pub fn start_task(
                     );
                     Ok(())
                 })?;
+                crate::history::load(&task, &folder)?;
                 break task;
             }
         }
@@ -229,7 +233,14 @@ pub fn start_task(
         (Some(agent), None) => leader::choose(&leader::led_by(role, agent, devws)?, devws)?,
         (None, _) => leader::choose(role, devws)?,
     };
-    let args_file = write_leader_args(&task, devws, &leader, command, LEADER_FIRST)?;
+    // Carrying on: the steps it has came from the repo's history, or from
+    // earlier in this home; either way the leader catches up first.
+    let first = if task.state()?.steps.is_empty() {
+        LEADER_FIRST
+    } else {
+        LEADER_CONTINUES
+    };
+    let args_file = write_leader_args(&task, devws, &leader, command, first)?;
     task.transaction(|tx| {
         tx.state.leader_agent = Some(leader.agent.clone());
         tx.state.leader_pick = pick.clone();

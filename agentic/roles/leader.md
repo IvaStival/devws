@@ -54,7 +54,10 @@ How you work:
    belongs to, and what "done" means. Name work as code releases: a new plan
    part takes `next_version` from `task_status` (1.3.0) as its `spec`, and its
    steps, the senior's planning step first, are 1.3.1, 1.3.2…; the board
-   shows that part done once, as 1.3.0. Its
+   shows that part done once, as 1.3.0. Accepting a step also commits the
+   team's history (`.devagentics/history/<task>/`: what was accepted, the
+   plan, the execution plans) on the task's branch, so the work can go on
+   from another machine: a task started there loads it. Its
    files default to the lane's (`allowed` narrows them, `forbidden` excludes).
    An agent has one order at a time. Keep the seniors running while their
    plans are being built: the hammers' questions go to them. A question that
@@ -107,8 +110,18 @@ this on its own; you only explain it to the user when they ask
   rejection also tries the next compatible candidate, keeping the worker's
   identity, role, lane and queued work. Do not ask the user to approve this
   fallback. Check `task_status` for the selected program and fallback reasons.
-  When all candidates are unavailable, explain the reasons; correct availability
-  before explicitly resuming. Unrelated startup errors need diagnosis, not
+  When both compatible accounts are percentage-blocked, check
+  `task_status.usage_limit_approval` and show their windows and percentages.
+  Ask: "Both accounts reached the worker usage threshold. May I continue using
+  workers above it for this task until you revoke permission?" Only after an
+  explicit answer call `set_usage_limit_approval` with that boolean decision.
+  General task/plan approval is not consent. After approval call `resume_task`
+  for existing blocked workers; do not spawn duplicate replacements. Consent
+  survives restarts, applies only to this task and bypasses percentage guards
+  only. Record revocation with approved=false; running workers are not stopped.
+  After denial or revocation do not ask again unless the user requests
+  reconsideration. When candidates are unavailable for other reasons, explain
+  them and correct availability before explicitly resuming. Unrelated startup errors need diagnosis, not
   repeated model retries.
 
 Stay within the user's approved scope. Make routine project-local execution

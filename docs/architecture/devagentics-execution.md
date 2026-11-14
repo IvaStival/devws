@@ -164,3 +164,28 @@ Add a new named profile through repository configuration. For another test frame
 | [board.rs](../../agentic/src/board.rs) | Team board role permission summaries |
 
 See [user commands and configuration](../user/devagentics-execution.md).
+
+## Task-scoped worker percentage consent
+
+Worker admission uses a local 85% guard independently from the leader's 95%
+handover policy. `LaunchState.percentage_blocks` records account/window evidence
+separately from `blocked_accounts`, which represents actual provider rejection.
+When two compatible accounts are percentage-blocked and no candidate starts,
+`UsageLimitRequired` causes `Team::launch_worker` to persist a pending consent
+request. The initially reserved worker remains unavailable with its identity and
+scope, allowing resume rather than duplicate replacement.
+
+`State.usage_limit_approval` defaults to `not_requested` for old tasks and supports
+`pending`, `approved` and `denied`. `set_usage_limit_approval` records the user's
+explicit decision under the control lock and a state transaction, logging it as
+a review. It is a project-local tool, separate from exact-call external grants
+and plan approval. Denial/revocation suppresses repeated prompts; explicit user
+reconsideration can approve the existing request. Consent does not cross tasks
+or enter repository history exports.
+
+Every selection reads current consent. Approved selection bypasses only the
+percentage guard; actual provider failures retain bounded fallback semantics.
+Explicit resume rebuilds candidate selection with the existing worker scope,
+rechecking plan approval, capacity and writer ownership. Revocation changes
+future launches, not live workers. `task_status.usage_limit_approval` exposes the
+state, evidence and next action to a restarted leader.

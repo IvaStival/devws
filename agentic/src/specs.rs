@@ -88,9 +88,16 @@ pub fn step_versions(steps: &[Step]) -> std::collections::BTreeMap<String, Strin
         .collect()
 }
 
-/// The release a new spec gets: the minor after every spec there is.
+/// The release a new spec gets: the minor after the highest there is, so a
+/// spec a loaded history left out (history.rs) never has its number reused.
 pub fn next_version(steps: &[Step]) -> String {
-    format!("{MAJOR}.{}.0", versions(steps).len() + 1)
+    let highest = versions(steps)
+        .iter()
+        .filter_map(|(_, version)| release(version))
+        .map(|(_, minor, _)| minor)
+        .max()
+        .unwrap_or(0);
+    format!("{MAJOR}.{}.0", highest + 1)
 }
 
 #[cfg(test)]
@@ -155,6 +162,12 @@ mod tests {
         );
         assert_eq!(next_version(&steps), "1.3.0");
         assert_eq!(step_versions(&steps)["check"], "1.2.3");
+        let gap = [step("1.1.1", None), step("1.4.1", None)];
+        assert_eq!(
+            next_version(&gap),
+            "1.5.0",
+            "after the highest, never a taken one"
+        );
         assert_eq!(release("1.2"), None);
         assert_eq!(release("1.2.3.4"), None);
         assert_eq!(release("H2.1.0"), None);

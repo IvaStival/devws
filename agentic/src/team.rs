@@ -10,7 +10,7 @@ use crate::log::Kind;
 use crate::orders;
 use crate::roles::{Role, Roles};
 use crate::start::{AGENT_FIRST, opening, repo_name};
-use crate::state::{Agent, OrderStatus, StepStatus};
+use crate::state::{Agent, OrderStatus, StepStatus, UsageApproval};
 use crate::task::{Repo, Task, TaskConfig};
 use crate::worker::{FailureScope, LaunchState, StartupFailure, program_name};
 use anyhow::{Context, Result, bail};
@@ -265,7 +265,16 @@ impl Team<'_> {
             }),
             Err(error) => {
                 self.task.transaction(|tx| {
-                    tx.state.agents.retain(|agent| agent.id != id);
+                    if error.is::<crate::worker::UsageLimitRequired>() {
+                        if let Some(agent) = tx.state.agents.iter_mut().find(|agent| agent.id == id)
+                        {
+                            agent.live = false;
+                            agent.unavailable = true;
+                            agent.lost = true;
+                        }
+                    } else {
+                        tx.state.agents.retain(|agent| agent.id != id);
+                    }
                     Ok(())
                 })?;
                 Err(error)
@@ -282,11 +291,29 @@ impl Team<'_> {
         launch: &mut LaunchState,
     ) -> Result<(String, String)> {
         loop {
-            let candidate = launch.next_available(self.devws);
+            let approved = self.task.state()?.usage_limit_approval == UsageApproval::Approved;
+            let candidate = launch.next_available(self.devws, approved);
+            let needs_consent = candidate
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.is::<crate::worker::UsageLimitRequired>());
             self.task.transaction(|tx| {
                 tx.state.worker_launches.insert(id.into(), launch.clone());
+                if needs_consent {
+                    tx.state.usage_limit_blocks = launch.percentage_blocks.clone();
+                    if tx.state.usage_limit_approval == UsageApproval::NotRequested {
+                        tx.state.usage_limit_approval = UsageApproval::Pending;
+                        tx.state.say(crate::state::LEADER, "Both worker accounts reached the percentage guard. Ask the user for task-scoped usage-limit approval, then record their decision with set_usage_limit_approval. Resume existing workers after approval.".into());
+                        tx.log(Kind::Review, None, None, "worker usage-limit approval requested");
+                    }
+                }
                 Ok(())
             })?;
+            if needs_consent && self.task.state()?.usage_limit_approval == UsageApproval::Denied {
+                return Err(anyhow::Error::new(crate::worker::UsageLimitRequired).context(
+                    "Worker percentage override denied or revoked. Do not ask again unless the user requests reconsideration; resume when usage resets."
+                ));
+            }
             let role = candidate?;
             match self.launch(config, &role, repo, id) {
                 Ok(started) => return Ok(started),
@@ -551,6 +578,32 @@ impl Team<'_> {
             crate::recovery::interrupt(self.task, self.devws, invoking)?;
         }
         Ok(())
+    }
+
+    /// Record only an explicit user decision; this does not launch workers.
+    pub fn set_usage_limit_approval(&self, approved: bool) -> Result<()> {
+        let _control = self.task.control_lock()?;
+        self.task.transaction(|tx| {
+            if tx.state.usage_limit_approval == UsageApproval::NotRequested {
+                bail!("no eligible usage-limit approval request exists");
+            }
+            tx.state.usage_limit_approval = if approved {
+                UsageApproval::Approved
+            } else {
+                UsageApproval::Denied
+            };
+            tx.log(
+                Kind::Review,
+                None,
+                None,
+                if approved {
+                    "user approved worker percentage override for this task"
+                } else {
+                    "user denied or revoked worker percentage override for this task"
+                },
+            );
+            Ok(())
+        })
     }
 
     /// Takes the task off pause, and starts again the agents whose panels
@@ -962,6 +1015,89 @@ mod tests {
     }
 
     #[test]
+    fn usage_consent_requires_a_request_and_survives_reload_and_revocation() {
+        use crate::state::UsageApproval;
+        let f = fixture().approved();
+        assert!(f.team().set_usage_limit_approval(true).is_err());
+        for account in ["claude", "codex"] {
+            f.devws.set_limits(
+                account,
+                Limits {
+                    week: Some(85),
+                    five_hour: None,
+                },
+            );
+        }
+        let error = f
+            .team()
+            .spawn_agent("executor", None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("approval"), "{error}");
+        let state = f.task.state().unwrap();
+        assert_eq!(state.usage_limit_approval, UsageApproval::Pending);
+        assert_eq!(state.usage_limit_blocks.len(), 2);
+        let worker_id = state.agents[0].id.clone();
+        assert!(!state.agents[0].live);
+        f.team().set_usage_limit_approval(false).unwrap();
+        assert!(f.team().resume().is_err());
+        assert_eq!(
+            f.task.state().unwrap().usage_limit_approval,
+            UsageApproval::Denied
+        );
+        f.team().set_usage_limit_approval(true).unwrap();
+        assert_eq!(
+            f.task.state().unwrap().usage_limit_approval,
+            UsageApproval::Approved
+        );
+        assert_eq!(
+            f.team().resume().unwrap().as_slice(),
+            std::slice::from_ref(&worker_id)
+        );
+        assert_eq!(f.task.state().unwrap().agents[0].id, worker_id);
+        f.team().stop_agent(&worker_id).unwrap();
+        f.team().set_usage_limit_approval(false).unwrap();
+        assert!(f.team().spawn_agent("executor", None).is_err());
+        assert_eq!(
+            f.task.state().unwrap().usage_limit_approval,
+            UsageApproval::Denied
+        );
+        let other = fixture().approved();
+        assert_eq!(
+            other.task.state().unwrap().usage_limit_approval,
+            UsageApproval::NotRequested
+        );
+    }
+
+    #[test]
+    fn usage_override_keeps_provider_rejections_and_execution_guards() {
+        let f = fixture().approved();
+        for account in ["claude", "codex"] {
+            f.devws.set_limits(
+                account,
+                Limits {
+                    week: Some(90),
+                    five_hour: Some(90),
+                },
+            );
+        }
+        assert!(f.team().spawn_agent("executor", None).is_err());
+        f.team().set_usage_limit_approval(true).unwrap();
+        f.devws.fail_launch("claude", FailureScope::Account);
+        f.devws.fail_launch("codex", FailureScope::Account);
+        assert!(f.team().resume().is_err());
+        assert!(!f.task.state().unwrap().agents[0].live);
+        f.task
+            .transaction(|tx| {
+                tx.state.approved = false;
+                Ok(())
+            })
+            .unwrap();
+        let error = f.team().resume().unwrap_err().to_string();
+        assert!(error.contains("plan is not approved"), "{error}");
+    }
+
+    #[test]
     fn exhausted_claude_starts_codex_with_the_same_worker_scope() {
         let f = fixture().approved();
         f.devws.set_limits(
@@ -1011,7 +1147,14 @@ mod tests {
             error.contains("claude") && error.contains("codex"),
             "{error}"
         );
-        assert!(f.task.state().unwrap().agents.is_empty());
+        assert!(
+            f.task
+                .state()
+                .unwrap()
+                .agents
+                .iter()
+                .all(|agent| !agent.live)
+        );
         assert!(
             !f.devws
                 .calls()

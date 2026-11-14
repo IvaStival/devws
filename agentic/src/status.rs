@@ -113,6 +113,16 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
         "recovery": state.recovery,
         "amendments": state.amendments,
         "permissions": state.permissions,
+        "usage_limit_approval": {
+            "status": state.usage_limit_approval,
+            "blocked_accounts": state.usage_limit_blocks,
+            "next_action": match state.usage_limit_approval {
+                crate::state::UsageApproval::Pending => "Ask the user whether workers may exceed percentage limits for this task; record the explicit decision with set_usage_limit_approval.",
+                crate::state::UsageApproval::Approved => "Resume existing blocked workers with resume_task; do not create duplicate replacements.",
+                crate::state::UsageApproval::Denied => "No override. Do not ask again unless the user requests reconsideration.",
+                crate::state::UsageApproval::NotRequested => "Use normal worker selection.",
+            },
+        },
         "task": {
             "id": config.id, "branch": config.branch, "workspace": config.workspace,
             "approved": state.approved, "paused": state.paused, "max_agents": config.max_agents,
@@ -127,7 +137,7 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
         "next_version": crate::specs::next_version(&state.steps),
         "execution_plans": state.plans.iter().map(|plan| json!({ "step": plan.step, "author": plan.author })).collect::<Vec<_>>(),
         "open_questions": state.questions.iter().filter(|question| question.answer.is_none()).map(|question| json!({ "id": question.id, "from": question.from, "to": question.to, "text": question.text })).collect::<Vec<_>>(),
-        "waiting_for_you": state.queue.iter().filter(|message| message.to == LEADER).count()
+        "waiting_for_you": usize::from(state.usage_limit_approval == crate::state::UsageApproval::Pending) + state.queue.iter().filter(|message| message.to == LEADER).count()
             + state.permissions.iter().filter(|request| request.status == crate::state::PermissionStatus::Pending).count(),
         "pending_permissions": state.permissions.iter().filter(|request| request.status == crate::state::PermissionStatus::Pending).count(),
         "limits": limits,

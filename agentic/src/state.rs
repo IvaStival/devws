@@ -11,6 +11,8 @@ pub const LEADER: &str = "leader";
 pub struct State {
     /// The user has approved the plan: agents that write may start.
     pub approved: bool,
+    pub usage_limit_approval: UsageApproval,
+    pub usage_limit_blocks: Vec<crate::worker::PercentageBlock>,
     pub order_profiles: std::collections::BTreeMap<String, Vec<String>>,
     pub order_revisions: std::collections::BTreeMap<String, u64>,
     pub amendments: Vec<Amendment>,
@@ -385,5 +387,29 @@ mod tests {
             serde_json::from_str(r#"{"id":"ph","title":"plan","status":"reported","attempts":2}"#)
                 .unwrap();
         assert_eq!(loaded.review_since, None);
+    }
+}
+
+/// Consent is local to this task and independent of plan approval.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageApproval {
+    #[default]
+    NotRequested,
+    Pending,
+    Approved,
+    Denied,
+}
+
+#[cfg(test)]
+mod usage_approval_tests {
+    #[test]
+    fn older_state_does_not_grant_usage_consent() {
+        let state: super::State = serde_json::from_str(r#"{"approved":true}"#).unwrap();
+        assert_eq!(
+            state.usage_limit_approval,
+            super::UsageApproval::NotRequested
+        );
+        assert!(state.usage_limit_blocks.is_empty());
     }
 }

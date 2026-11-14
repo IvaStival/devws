@@ -31,7 +31,7 @@ effort; the default Claude alternative uses its default model at high effort.
 Fallback keeps the worker's role, lane and queued assignment.
 
 Accounts at 85% or more of their week or five-hour allowance receive no new
-workers. Explicit provider or model rejection during the opening turn also
+workers unless you explicitly approve the task override described below. Explicit provider or model rejection during the opening turn also
 tries an alternative. A worker already doing an order is not automatically
 interrupted or moved.
 
@@ -180,3 +180,24 @@ Done reports use the same runner. Passing named evidence can be reused only for 
 
 - [Team usage](../../agentic/docs/usage.md)
 - [Execution architecture](../architecture/devagentics-execution.md)
+
+## Continue above the worker percentage threshold
+
+When both compatible accounts reach 85% of their weekly or five-hour allowance,
+the leader shows their usage and asks whether it may continue using workers for
+this task. Say yes to allow workers above that threshold, or no to keep the guard.
+Approving the plan does not grant this separate permission.
+
+After your explicit answer the leader records it with
+`set_usage_limit_approval` (`approved: true` or `false`). After approval it calls
+`resume_task` to start the existing blocked workers with their original IDs and
+assignments. Approval lasts for this task, survives restarts and does not apply
+to other tasks. To revoke it, tell the leader to stop allowing workers above the
+threshold; it records `approved: false`. This affects future launches, leaving
+running workers in place. After denial the leader asks again only if you request
+reconsideration. Workers can still start normally after usage falls below the guard.
+
+Provider-enforced quota errors and unavailable models still prevent startup.
+Plan approval, worker capacity and worktree ownership rules still apply. The
+leader's separate 95% switching policy is unchanged. `task_status` shows the
+consent state, affected accounts and next action.

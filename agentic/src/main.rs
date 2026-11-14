@@ -6,6 +6,7 @@ mod board_view;
 mod check_profiles;
 mod checks;
 mod devws;
+mod history;
 mod home;
 mod lanes;
 mod leader;
@@ -53,6 +54,11 @@ enum Command {
     Task {
         #[command(subcommand)]
         action: TaskAction,
+    },
+    /// The team's history in the repo (.devagentics/history/<task>/)
+    History {
+        #[command(subcommand)]
+        action: HistoryAction,
     },
     /// Run checks for an exact delivered order
     Check {
@@ -117,6 +123,14 @@ enum Command {
         #[arg(long)]
         once: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum HistoryAction {
+    /// Write what the task accepted, its plan and execution plans into the
+    /// repo and commit them on the task's branch (each accepted step does it
+    /// too)
+    Save { task: String },
 }
 
 #[derive(Subcommand)]
@@ -534,6 +548,19 @@ fn run() -> Result<()> {
                 "{}",
                 questions::answer(&task, questions::Answerer::Pane(&pane), &question, &answer)?
             );
+        }
+        Command::History {
+            action: HistoryAction::Save { task },
+        } => {
+            let task = open(&task)?;
+            if history::save(&task, None)? {
+                println!(
+                    "The team's history is committed on {}.",
+                    task.config()?.branch
+                );
+            } else {
+                println!("The team's history in the repo is up to date.");
+            }
         }
         Command::Check {
             action: CheckAction::Run { order, task },

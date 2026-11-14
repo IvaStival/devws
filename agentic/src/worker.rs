@@ -10,6 +10,22 @@ use std::path::Path;
 
 const LIMIT_PERCENT: u32 = 85;
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PercentageBlock {
+    pub account: String,
+    pub week_percent: Option<u32>,
+    pub five_hour_percent: Option<u32>,
+}
+
+#[derive(Debug)]
+pub struct UsageLimitRequired;
+impl std::fmt::Display for UsageLimitRequired {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "usage-limit approval required")
+    }
+}
+impl std::error::Error for UsageLimitRequired {}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureScope {
@@ -39,6 +55,8 @@ pub struct LaunchState {
     pub selected: Option<Fallback>,
     pub failures: Vec<String>,
     pub blocked_accounts: Vec<String>,
+    #[serde(default)]
+    pub percentage_blocks: Vec<PercentageBlock>,
 }
 
 impl LaunchState {
@@ -50,6 +68,7 @@ impl LaunchState {
             selected: None,
             failures: Vec::new(),
             blocked_accounts: Vec::new(),
+            percentage_blocks: Vec::new(),
         }
     }
 
@@ -63,7 +82,7 @@ impl LaunchState {
         }
     }
 
-    pub fn next_available(&mut self, devws: &dyn Devws) -> Result<Role> {
+    pub fn next_available(&mut self, devws: &dyn Devws, approved: bool) -> Result<Role> {
         self.selected = None;
         while let Some(candidate) = self.candidates.get(self.next).cloned() {
             self.next += 1;
@@ -84,17 +103,33 @@ impl LaunchState {
                     used.filter(|used| *used >= LIMIT_PERCENT)
                         .map(|used| (window, used))
                 });
-            if let Some((window, used)) = exhausted {
+            if let Some((window, used)) = exhausted.filter(|_| !approved) {
                 self.failures.push(format!(
                     "{} has used {used}% of its {window}: no new agents on it until it resets",
                     candidate.agent
                 ));
-                self.blocked_accounts.push(candidate.agent);
+                if !self
+                    .percentage_blocks
+                    .iter()
+                    .any(|block| block.account == candidate.agent)
+                {
+                    self.percentage_blocks.push(PercentageBlock {
+                        account: candidate.agent.clone(),
+                        week_percent: limits.week,
+                        five_hour_percent: limits.five_hour,
+                    });
+                }
                 continue;
             }
             let role = self.role.with_program(&candidate);
             self.selected = Some(candidate);
             return Ok(role);
+        }
+        if self.percentage_blocks.len() >= 2 {
+            return Err(anyhow::Error::new(UsageLimitRequired).context(format!(
+                "usage-limit approval required: {}. Ask the user whether workers may exceed the percentage threshold for this task; record explicit consent with set_usage_limit_approval, then resume_task",
+                self.failures.join("; ")
+            )));
         }
         bail!(
             "no available worker candidate: {}",

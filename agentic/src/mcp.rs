@@ -85,6 +85,12 @@ fn tools() -> Vec<Value> {
             &[],
         ),
         tool(
+            "set_usage_limit_approval",
+            "Record the user's explicit approval, denial or revocation of a pending worker percentage-limit override. Never infer consent from plan approval. Applies to this task until revoked; provider quota errors still apply. After approval call resume_task to restart existing blocked workers, not spawn_agent. Reconsider a denied request only when the user explicitly asks.",
+            json!({"approved": {"type":"boolean"}}),
+            &["approved"],
+        ),
+        tool(
             "authorize_action",
             "After the user explicitly approves or denies a pending call outside the current project, record that decision. Approval is for one exact invocation only; pass the returned request ID as approval_id when retrying that same tool with unchanged arguments.",
             json!({"request": text("Pending permission request ID"), "approved": {"type":"boolean", "description":"True only after explicit user approval"}}),
@@ -213,10 +219,26 @@ fn effect(name: &str) -> Option<Effect> {
     match name {
         "add_repo" | "open_prs" => Some(Effect::External),
         "stop_agent" => Some(Effect::System),
-        "spawn_agent" | "pause_task" | "resume_task" | "configure_checks" | "run_check"
-        | "amend_order" | "task_status" | "approve_plan" | "add_lane" | "send_order"
-        | "read_plan" | "answer_question" | "accept_step" | "reject_step" | "set_check"
-        | "read_log" | "escalate" | "switch_leader" | "authorize_action" => Some(Effect::System),
+        "set_usage_limit_approval"
+        | "spawn_agent"
+        | "pause_task"
+        | "resume_task"
+        | "configure_checks"
+        | "run_check"
+        | "amend_order"
+        | "task_status"
+        | "approve_plan"
+        | "add_lane"
+        | "send_order"
+        | "read_plan"
+        | "answer_question"
+        | "accept_step"
+        | "reject_step"
+        | "set_check"
+        | "read_log"
+        | "escalate"
+        | "switch_leader"
+        | "authorize_action" => Some(Effect::System),
         _ => None,
     }
 }
@@ -462,6 +484,17 @@ impl Server<'_> {
                     lane.branch,
                     lane.name
                 ))
+            }
+            "set_usage_limit_approval" => {
+                let approved = arguments["approved"]
+                    .as_bool()
+                    .context("approved must be a boolean")?;
+                self.team().set_usage_limit_approval(approved)?;
+                Ok(if approved {
+                    "Worker percentage override approved for this task until revoked. Call resume_task for existing blocked workers; provider errors remain enforced."
+                } else {
+                    "Worker percentage override denied or revoked. Do not ask again unless the user requests reconsideration."
+                }.into())
             }
             "spawn_agent" => {
                 let agent = self.team().spawn_agent_in(
@@ -743,6 +776,7 @@ mod tests {
                 "amend_order",
                 "task_status",
                 "approve_plan",
+                "set_usage_limit_approval",
                 "authorize_action",
                 "spawn_agent",
                 "add_lane",
@@ -845,6 +879,56 @@ mod tests {
             json!({ "agent": "x", "step": "s", "title": "t", "text": "t", "allowed": "src/**" }),
         );
         assert!(failed && text.contains("list of strings"), "{text}");
+    }
+
+    #[test]
+    fn usage_approval_is_separate_from_plan_approval_and_validated() {
+        let mut f = fixture();
+        f.devws = f.devws.with_kind("codex", Program::Codex);
+        assert!(f.call("set_usage_limit_approval", json!({})).0);
+        assert!(
+            f.call("set_usage_limit_approval", json!({"approved":"yes"}))
+                .0
+        );
+        assert!(
+            f.call("set_usage_limit_approval", json!({"approved":true}))
+                .0
+        );
+        for account in ["claude", "codex"] {
+            f.devws.set_limits(
+                account,
+                crate::devws::Limits {
+                    week: None,
+                    five_hour: Some(85),
+                },
+            );
+        }
+        assert!(f.call("spawn_agent", json!({"role":"planner"})).0);
+        let (_, status) = f.call("task_status", json!({}));
+        let status: Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(status["usage_limit_approval"]["status"], "pending");
+        assert_eq!(
+            status["usage_limit_approval"]["blocked_accounts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            !f.call("set_usage_limit_approval", json!({"approved":true}))
+                .0
+        );
+        assert!(!f.task.state().unwrap().approved);
+        assert!(!f.call("resume_task", json!({})).0);
+        assert!(f.task.state().unwrap().agents[0].live);
+        assert!(
+            !f.call("set_usage_limit_approval", json!({"approved":false}))
+                .0
+        );
+        assert_eq!(
+            f.task.state().unwrap().usage_limit_approval,
+            crate::state::UsageApproval::Denied
+        );
     }
 
     #[test]

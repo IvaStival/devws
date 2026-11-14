@@ -118,8 +118,12 @@ pub fn inspect(
     .lines()
     .map(|line| line.get(3..).unwrap_or(line).to_string())
     .collect();
+    // The team's own record (history.rs) is committed by devAgentics, also
+    // while an order is open: it is no agent's work.
+    let history = format!("{}/", crate::history::FOLDER);
     let changed: Vec<String> = git(worktree, &["diff", "--name-only", &range])?
         .lines()
+        .filter(|path| !path.starts_with(&history))
         .map(str::to_string)
         .collect();
 
