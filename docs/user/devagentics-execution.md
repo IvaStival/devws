@@ -329,6 +329,28 @@ evidence; changed inputs invalidate it. Only leader acceptance integrates the
 approved candidate. Divergent lane catch-up is blocked rather than inventing
 unreviewed conflict-resolution code. Resolve it through a reviewed assignment.
 
+Each lane passes its own checks, but two lanes can break each other once
+merged. Name a fast build/smoke set as the repo's `candidate` profiles:
+
+```json
+{"checks": {"smoke": {"command": "make build smoke", "environment": "testing"}},
+ "environments": {"testing": {}}, "selected": ["unit"], "candidate": ["smoke"]}
+```
+
+`review_request` then runs them on the merge candidate (the lane's work merged
+with the task's branch) in a disposable runner snapshot before the reviewer is
+asked. A failing candidate fails the step as an integration defect, and the
+leader orders a correction. A passing result is bound to the review: the merge,
+acceptance and recovery require it to be current, and a changed candidate or
+candidate configuration needs a fresh review. Without candidate profiles,
+`application_workflow` `status` warns that merges are first tested together at
+the milestone check.
+
+A step gets the task's `max_attempts` (3, in `task.toml`) in all: orders, and
+reviews that ask for changes. Past it, orders and review requests are refused
+and the leader escalates to you; `devagentics task attempts <task> <step>
+<limit>` allows that step more.
+
 Required checks run in the isolated source environment. Use image-local runtimes
 and dependencies; network downloads and host secret sources are unavailable.
 Database tests must use explicitly disposable data in the isolated environment,

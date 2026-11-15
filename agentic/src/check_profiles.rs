@@ -19,6 +19,11 @@ pub struct RepositoryChecks {
     pub environments: BTreeMap<String, Environment>,
     pub checks: BTreeMap<String, Profile>,
     pub selected: Vec<String>,
+    /// Profiles run on each reviewed merge candidate (the lane's work merged
+    /// with the task's branch) before its review: a fast build/smoke set that
+    /// finds two lanes that pass alone and break together at that merge, not
+    /// at the milestone.
+    pub candidate: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -89,6 +94,29 @@ impl Evidence {
     }
 }
 
+/// The definitions of the profiles `names`, each with its environment.
+pub(crate) fn named(
+    definitions: &RepositoryChecks,
+    names: impl IntoIterator<Item = String>,
+) -> Result<Vec<(String, Profile, Environment)>> {
+    names
+        .into_iter()
+        .map(|name| {
+            let profile = definitions
+                .checks
+                .get(&name)
+                .with_context(|| format!("check profile {name} is not defined"))?
+                .clone();
+            let environment = definitions
+                .environments
+                .get(&profile.environment)
+                .with_context(|| format!("environment {} is not defined", profile.environment))?
+                .clone();
+            Ok((name, profile, environment))
+        })
+        .collect()
+}
+
 pub fn validate(config: &RepositoryChecks) -> Result<()> {
     if config.selected.len() > 32 {
         bail!("select at most 32 check profiles");
@@ -131,7 +159,17 @@ pub fn validate(config: &RepositoryChecks) -> Result<()> {
         }
     }
 
-    for name in &config.selected {
+    let mut candidate = std::collections::BTreeSet::new();
+    for name in &config.candidate {
+        if !candidate.insert(name) {
+            bail!("duplicate candidate profile {name}");
+        }
+    }
+    if config.candidate.len() > 32 {
+        bail!("select at most 32 candidate profiles");
+    }
+
+    for name in config.selected.iter().chain(&config.candidate) {
         let profile = config
             .checks
             .get(name)
@@ -963,5 +1001,22 @@ mod tests {
             .values
             .insert("DEVAGENTICS_RESULT".into(), "override".into());
         assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn candidate_profiles_must_be_defined_once() {
+        let mut config = RepositoryChecks {
+            checks: BTreeMap::from([("smoke".into(), profile("true"))]),
+            environments: BTreeMap::from([("testing".into(), Environment::default())]),
+            candidate: vec!["smoke".into()],
+            ..Default::default()
+        };
+        validate(&config).unwrap();
+        config.candidate = vec!["build".into()];
+        assert!(validate(&config).unwrap_err().to_string().contains("build"));
+        config.candidate = vec!["smoke".into(), "smoke".into()];
+        assert!(validate(&config).is_err());
+        let old: RepositoryChecks = serde_json::from_str(r#"{"selected":[]}"#).unwrap();
+        assert!(old.candidate.is_empty(), "configurations from before load");
     }
 }

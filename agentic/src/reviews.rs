@@ -35,6 +35,10 @@ pub struct Review {
     pub evidence: String,
     #[serde(default)]
     pub candidate: crate::integration::Candidate,
+    /// Hash of the passing candidate check evidence the review was asked on;
+    /// empty when the repo configures no candidate check.
+    #[serde(default)]
+    pub candidate_evidence: String,
     pub verdict: Option<Verdict>,
     pub findings: Vec<Finding>,
     pub summary: Option<String>,
@@ -112,7 +116,82 @@ pub fn changes_requested(state: &crate::state::State, step: &str) -> u32 {
     u32::try_from(rounds).unwrap_or(u32::MAX)
 }
 
+/// Before a reviewed step's review: its merge candidate passes the repo's
+/// candidate profiles. Runs without the control lock (checks take minutes);
+/// the review binds the result under it. A failing candidate fails the step,
+/// for the leader to order a correction: the lanes break each other.
+fn check_candidate_first(
+    task: &Task,
+    order_id: &str,
+) -> Result<Option<crate::integration::CandidateEvidence>> {
+    let state = task.state()?;
+    if state.workflow != Workflow::Reviewed {
+        return Ok(None);
+    }
+    let Some(order) = state.orders.iter().find(|order| order.id == order_id) else {
+        return Ok(None);
+    };
+    let reported = state
+        .steps
+        .iter()
+        .any(|step| step.id == order.step && step.status == StepStatus::Reported);
+    let Some(lane) = state
+        .agent(&order.agent)
+        .and_then(|author| author.lane.clone())
+    else {
+        return Ok(None);
+    };
+    if !reported {
+        return Ok(None);
+    }
+    let lane = crate::lanes::get(task, &lane)?;
+    let candidate = crate::integration::candidate(task, &lane)?;
+    let Some(evidence) = crate::integration::check_candidate(task, &lane.repo, &candidate)? else {
+        return Ok(None);
+    };
+    if evidence.passed() {
+        return Ok(Some(evidence));
+    }
+    let failed: Vec<String> = evidence
+        .phases
+        .iter()
+        .filter(|phase| phase.outcome != crate::check_profiles::Outcome::Passed)
+        .map(|phase| {
+            format!(
+                "{} ({:?}): {}",
+                phase.profile, phase.outcome, phase.diagnostic
+            )
+        })
+        .collect();
+    let step = order.step.clone();
+    task.transaction(|tx| {
+        if let Some(found) = tx.state.step_mut(&step) {
+            found.set_status(StepStatus::Failed, crate::log::now());
+        }
+        tx.state.say(
+            crate::state::LEADER,
+            format!(
+                "INTEGRATION FAILED {step}: its work merged with the task's branch fails the \
+                 candidate check: {}. Order a correction (an integration defect) or escalate.",
+                failed.join("; ")
+            ),
+        );
+        tx.log(
+            Kind::Check,
+            None,
+            Some(&step),
+            &format!("candidate check failed: {}", failed.join("; ")),
+        );
+        Ok(())
+    })?;
+    anyhow::bail!(
+        "the merge candidate of {step} fails its candidate check: {}",
+        failed.join("; ")
+    )
+}
+
 pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
+    let checked = check_candidate_first(task, order_id)?;
     let _control = task.control_lock()?;
     let state = task.state()?;
     let order = state
@@ -161,6 +240,26 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
             .context("reviewed implementation requires an isolated lane")?,
     )?;
     let candidate = crate::integration::candidate(task, &lane)?;
+    let candidate_evidence = match &checked {
+        Some(evidence) => {
+            ensure!(
+                evidence.matches(&candidate),
+                "the branch moved during the candidate check: request the review again"
+            );
+            evidence.hash()?
+        }
+        None => String::new(),
+    };
+    crate::integration::require_candidate_evidence(
+        task,
+        &lane.repo,
+        &Review {
+            id: "the requested review".into(),
+            candidate: candidate.clone(),
+            candidate_evidence: candidate_evidence.clone(),
+            ..Review::default()
+        },
+    )?;
     if state.workflow == Workflow::Reviewed {
         ensure!(
             !state
@@ -211,6 +310,7 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
             target,
             evidence,
             candidate,
+            candidate_evidence,
             verdict: None,
             findings: vec![],
             summary: None,
@@ -297,6 +397,7 @@ pub fn validate(task: &Task, review: &Review) -> Result<()> {
         evidence(task, &order.id)? == review.evidence,
         "review evidence changed"
     );
+    crate::integration::require_candidate_evidence(task, &repo.name, review)?;
     Ok(())
 }
 pub fn submit(

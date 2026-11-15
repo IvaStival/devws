@@ -1067,6 +1067,9 @@ mod docker_tests {
         let mut definitions = serde_json::json!({"environments":{"testing":{}},"checks":{"unit":{"command":"test -f src/new.rs && test ! -e src/old.rs && printf '{\"tests\":1,\"failures\":0,\"required_skipped\":0}' > \"$DEVAGENTICS_RESULT\"","environment":"testing","test_evidence":true}},"selected":["unit"]});
         definitions["environments"]["testing"]["values"] =
             serde_json::json!({"RUNNER_TEXT":"value with 'quote"});
+        definitions["checks"]["smoke"] =
+            serde_json::json!({"command":"test -f src/new.rs","environment":"testing"});
+        definitions["candidate"] = serde_json::json!(["smoke"]);
         let original = definitions["checks"]["unit"]["command"].as_str().unwrap();
         definitions["checks"]["unit"]["command"] = serde_json::json!(format!(
             "test \"$RUNNER_TEXT\" = \"value with 'quote\" && {original}"
@@ -1246,6 +1249,10 @@ mod docker_tests {
             "Exact refreshed integration context reviewed",
         )
         .unwrap();
+        assert!(
+            !final_review.candidate_evidence.is_empty(),
+            "the merge candidate passed its candidate check before review"
+        );
         crate::orders::accept_step(&task, "S01-B01").unwrap();
         let merged = checks::head(repo.path()).unwrap();
         task.transaction(|tx| {

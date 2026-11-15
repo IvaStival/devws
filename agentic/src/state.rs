@@ -17,6 +17,9 @@ pub struct State {
     pub application_revisions: Vec<crate::execution::Revision>,
     pub milestone_evidence: std::collections::BTreeMap<String, crate::milestones::Evidence>,
     pub integrations: std::collections::BTreeMap<String, crate::integration::Journal>,
+    /// Candidate check results, by merge candidate tree.
+    pub candidate_evidence:
+        std::collections::BTreeMap<String, crate::integration::CandidateEvidence>,
     pub reviews: Vec<crate::reviews::Review>,
     pub timing: crate::performance::Timing,
     pub runner: Option<crate::runner::Configuration>,

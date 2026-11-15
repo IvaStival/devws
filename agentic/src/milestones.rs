@@ -137,17 +137,7 @@ pub fn validate(task: &Task, id: &str) -> Result<Evidence> {
             .check_profiles
             .get(&repo_name)
             .context("final named checks are missing")?;
-        for name in profiles {
-            let profile = definitions
-                .checks
-                .get(&name)
-                .context("final profile missing")?
-                .clone();
-            let environment = definitions
-                .environments
-                .get(&profile.environment)
-                .context("final environment missing")?
-                .clone();
+        for (name, profile, environment) in crate::check_profiles::named(definitions, profiles)? {
             workspaces.push((worker.clone(), name, profile, environment));
         }
     }

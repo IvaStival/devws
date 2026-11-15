@@ -86,8 +86,28 @@ pub fn status(task: &Task) -> Result<Value> {
         .map(|error| error.to_string());
         items.push(json!({"id":id,"scope":item.scope,"role":item.role,"lane":item.lane,"stage":stage,"assigned":assigned,"reusable_worker":reusable,"ready":reason.is_none(),"blocked":reason}));
     }
+    // A repo without candidate profiles merges reviewed work untested in
+    // combination until the milestone check: say so.
+    let candidate_checks: serde_json::Map<String, Value> = config
+        .repos
+        .iter()
+        .map(|repo| {
+            let profiles = config
+                .check_profiles
+                .get(&repo.name)
+                .map(|checks| checks.candidate.clone())
+                .unwrap_or_default();
+            let warning = profiles.is_empty().then(|| {
+                "no candidate check: merges are first tested together at the milestone".to_string()
+            });
+            (
+                repo.name.clone(),
+                json!({"profiles":profiles,"warning":warning}),
+            )
+        })
+        .collect();
     Ok(
-        json!({"workflow":state.workflow,"application":state.application,"proposal":state.application_proposal,"interview_frontier":execution::question_frontier(state.application_proposal.as_ref().unwrap_or(&state.application)),"ready_work":items,"reviews":state.reviews,"performance":performance::update(task)?,"capacity":{"limit":config.max_agents,"live":state.agents.iter().filter(|agent|agent.live).count()},"runner":{"configured":state.runner.is_some(),"available":state.runner.is_some(),"adapter":"claude_mcp_only","network":"none","live_project_mounts":false,"configuration":state.runner}}),
+        json!({"workflow":state.workflow,"candidate_checks":candidate_checks,"application":state.application,"proposal":state.application_proposal,"interview_frontier":execution::question_frontier(state.application_proposal.as_ref().unwrap_or(&state.application)),"ready_work":items,"reviews":state.reviews,"performance":performance::update(task)?,"capacity":{"limit":config.max_agents,"live":state.agents.iter().filter(|agent|agent.live).count()},"runner":{"configured":state.runner.is_some(),"available":state.runner.is_some(),"adapter":"claude_mcp_only","network":"none","live_project_mounts":false,"configuration":state.runner}}),
     )
 }
 pub fn adoption(task: &Task) -> Result<Value> {
@@ -313,6 +333,33 @@ pub fn block_unverified_runner(task: &Task) -> Result<()> {
 mod tests {
     use super::*;
     use crate::execution::tests::baseline;
+    #[test]
+    fn status_warns_about_a_repo_without_a_candidate_check() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        let repo = task.config().unwrap().repos[0].name.clone();
+        let warning =
+            |task: &Task| status(task).unwrap()["candidate_checks"][&repo]["warning"].clone();
+        assert!(
+            warning(&task)
+                .as_str()
+                .unwrap()
+                .contains("no candidate check")
+        );
+
+        let checks = serde_json::from_value(serde_json::json!({
+            "environments": {"testing": {}},
+            "checks": {"smoke": {"command": "true", "environment": "testing"}},
+            "candidate": ["smoke"]
+        }))
+        .unwrap();
+        crate::check_profiles::configure(&task, &repo, checks).unwrap();
+        assert!(warning(&task).is_null());
+        assert_eq!(
+            status(&task).unwrap()["candidate_checks"][&repo]["profiles"][0],
+            "smoke"
+        );
+    }
     #[test]
     fn approved_baseline_prevents_silent_check_weakening() {
         let directory = tempfile::TempDir::new().unwrap();
