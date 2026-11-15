@@ -839,3 +839,39 @@ fn reviewed_tasks_preserve_the_boundary_without_changing_existing_teams() {
     let pane_calls = fs::read_to_string(world.path("devws.calls")).unwrap_or_default();
     assert!(!pane_calls.contains("agent spawn"));
 }
+
+#[test]
+fn a_finished_run_is_measured_and_compared() {
+    let world = World::new();
+    world.ok(
+        None,
+        &[
+            "task",
+            "start",
+            "--legacy",
+            &world.repo.path().display().to_string(),
+        ],
+        "",
+    );
+
+    let report = world.ok(None, &["bench", "report", "feat-x"], "");
+    assert!(report.starts_with("feat-x"), "{report}");
+    assert!(
+        report.contains("first pass") && report.contains("0 of 0"),
+        "{report}"
+    );
+
+    let json: Value =
+        serde_json::from_str(&world.ok(None, &["bench", "report", "feat-x", "--json"], ""))
+            .unwrap();
+    assert_eq!(json["workflow"], "legacy");
+    assert_eq!(json["accepted"], 0);
+
+    let table = world.ok(None, &["bench", "compare", "feat-x", "feat-x"], "");
+    assert!(
+        table.lines().any(|line| line.contains("corrective orders")),
+        "{table}"
+    );
+    let (succeeded, _, error) = world.run(None, &["bench", "report", "nope"], "");
+    assert!(!succeeded, "an unknown task is an error: {error}");
+}

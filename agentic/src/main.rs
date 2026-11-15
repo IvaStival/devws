@@ -1,4 +1,5 @@
 mod agent_args;
+mod bench;
 mod board;
 mod board_tui;
 mod board_usage;
@@ -100,6 +101,12 @@ enum Command {
         #[command(subcommand)]
         action: HistoryAction,
     },
+    /// Measure a team run: first-pass acceptance, corrections and their
+    /// causes, waits, what you had to do and the cost
+    Bench {
+        #[command(subcommand)]
+        action: BenchAction,
+    },
     /// Run checks for an exact delivered order
     Check {
         #[command(subcommand)]
@@ -163,6 +170,19 @@ enum Command {
         #[arg(long)]
         once: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum BenchAction {
+    /// A task's run
+    Report {
+        task: String,
+        /// As JSON, to collect runs
+        #[arg(long)]
+        json: bool,
+    },
+    /// Two tasks' runs side by side (a legacy and a reviewed one)
+    Compare { first: String, second: String },
 }
 
 #[derive(Subcommand)]
@@ -661,6 +681,23 @@ fn run() -> Result<()> {
                 "{}",
                 questions::answer(&task, questions::Answerer::Pane(&pane), &question, &answer)?
             );
+        }
+        Command::Bench {
+            action: BenchAction::Report { task, json },
+        } => {
+            let report = bench::report(&open(&task)?, &devws)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", bench::render(&report));
+            }
+        }
+        Command::Bench {
+            action: BenchAction::Compare { first, second },
+        } => {
+            let first = bench::report(&open(&first)?, &devws)?;
+            let second = bench::report(&open(&second)?, &devws)?;
+            print!("{}", bench::compare(&first, &second));
         }
         Command::History {
             action: HistoryAction::Save { task },

@@ -10,6 +10,19 @@ pub enum Verdict {
     ChangesRequested,
     Blocked,
 }
+/// Why work had to be corrected: what the benchmark counts, so a change to
+/// the team can be judged by the corrections it removes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Category {
+    RequirementAmbiguity,
+    StalePlanInterface,
+    ScopeOmission,
+    EnvironmentMismatch,
+    ImplementationDefect,
+    IntegrationDefect,
+    TestWeakening,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Finding {
@@ -19,6 +32,9 @@ pub struct Finding {
     pub blocking: bool,
     pub rationale: String,
     pub resolution: Option<String>,
+    /// Required for a blocking finding.
+    #[serde(default)]
+    pub category: Option<Category>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -42,6 +58,12 @@ pub struct Review {
     pub verdict: Option<Verdict>,
     pub findings: Vec<Finding>,
     pub summary: Option<String>,
+    /// When it was requested and submitted, in epoch seconds (0 / None for
+    /// reviews from before they were kept).
+    #[serde(default)]
+    pub requested_at: u64,
+    #[serde(default)]
+    pub submitted_at: Option<u64>,
 }
 pub fn pending<'a>(state: &'a crate::state::State, reviewer: &str) -> Option<&'a Review> {
     state
@@ -314,6 +336,8 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
             verdict: None,
             findings: vec![],
             summary: None,
+            requested_at: crate::log::now(),
+            submitted_at: None,
         };
         tx.state.reviews.push(review.clone());
         tx.state.say(reviewer,format!("Independently review {} for order {} using review_diff, inspect surrounding source through execute, then review_submit. Source {}, target {}, integration tree {}. Do not modify code.",review.id,review.order,review.source,review.target,review.candidate.tree));
@@ -434,6 +458,12 @@ pub fn submit(
                 && !finding.rationale.trim().is_empty(),
             "actionable file/line/rationale required"
         );
+        ensure!(
+            !finding.blocking || finding.category.is_some(),
+            "a blocking finding needs a category (requirement_ambiguity, stale_plan_interface, \
+             scope_omission, environment_mismatch, implementation_defect, integration_defect \
+             or test_weakening)"
+        );
     }
     ensure!(
         verdict != Verdict::Approved
@@ -452,9 +482,17 @@ pub fn submit(
             .iter_mut()
             .find(|review| review.id == id)
             .context("review disappeared")?;
+        let now = crate::log::now();
         review.verdict = Some(verdict);
         review.findings = findings;
         review.summary = Some(summary.into());
+        review.submitted_at = Some(now);
+        let requested = review.requested_at;
+        if requested > 0 {
+            tx.state
+                .timing
+                .record("review_wait", requested, now.max(requested))?;
+        }
         tx.log(
             Kind::Review,
             Some(&agent.id),
@@ -602,6 +640,70 @@ mod tests {
             !error.contains("attempts"),
             "the user's limit lets the next review through: {error}"
         );
+    }
+
+    #[test]
+    fn findings_from_before_categories_load_and_blocking_ones_need_one() {
+        let old: Finding = serde_json::from_value(serde_json::json!({
+            "file": "a.rs", "line": 1, "severity": "high", "blocking": false,
+            "rationale": "why", "resolution": null
+        }))
+        .unwrap();
+        assert_eq!(old.category, None);
+        let categorized: Finding = serde_json::from_value(serde_json::json!({
+            "file": "a.rs", "line": 1, "severity": "high", "blocking": true,
+            "rationale": "why", "resolution": null, "category": "test_weakening"
+        }))
+        .unwrap();
+        assert_eq!(categorized.category, Some(Category::TestWeakening));
+        let review: Review = serde_json::from_value(serde_json::json!({
+            "id": "r1", "order": "o1", "author": "a", "reviewer": "b",
+            "baseline_revision": 1, "order_revision": 0, "base": "x", "source": "y",
+            "target": "z", "evidence": "e", "verdict": null, "findings": [], "summary": null
+        }))
+        .unwrap();
+        assert_eq!((review.requested_at, review.submitted_at), (0, None));
+    }
+
+    #[test]
+    fn a_blocking_finding_without_a_category_is_refused() {
+        let root = tempfile::TempDir::new().unwrap();
+        let (home, devws, task, _repo) = crate::board::tests::started(&root);
+        let team = crate::team::Team {
+            task: &task,
+            home: &home,
+            devws: &devws,
+        };
+        let reviewer = team.spawn_agent("planner", None).unwrap();
+        task.transaction(|tx| {
+            tx.state.reviews.push(Review {
+                id: "r1".into(),
+                reviewer: reviewer.id.clone(),
+                ..Review::default()
+            });
+            Ok(())
+        })
+        .unwrap();
+        let finding = Finding {
+            file: "a.rs".into(),
+            line: 3,
+            severity: "high".into(),
+            blocking: true,
+            rationale: "the assertion was removed".into(),
+            resolution: None,
+            category: None,
+        };
+        let error = submit(
+            &task,
+            &reviewer.pane,
+            "r1",
+            Verdict::ChangesRequested,
+            vec![finding],
+            "weakened test",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("needs a category"), "{error}");
     }
 
     #[test]

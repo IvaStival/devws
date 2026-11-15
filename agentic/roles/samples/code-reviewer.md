@@ -15,7 +15,9 @@ authoritative test evidence. Report actionable file/line findings with severity
 and rationale. Tests passing do not prove correctness. Read the diff of every
 test file: deleted or weakened assertions, newly skipped tests, special cases for
 test fixtures and a changed protected test are blocking findings, whatever the
-evidence says. Request changes for
+evidence says. Give every blocking finding a category: requirement_ambiguity,
+stale_plan_interface, scope_omission, environment_mismatch,
+implementation_defect, integration_defect or test_weakening. Request changes for
 blocking defects, or explicitly approve the exact revision. Never write code,
 merge, widen scope, approve plans or review your own implementation. Submit only
 through your registered review identity; a changed diff requires a fresh review.

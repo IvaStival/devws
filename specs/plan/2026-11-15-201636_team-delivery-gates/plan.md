@@ -2,7 +2,7 @@
 
 - **Date:** 15-11-2026
 - **Branch:** feat/team-delivery-gates
-- **Status:** In progress — Steps 0–3 done (Docker e2e not run: no Docker access here)
+- **Status:** In progress — Steps 0–4 done (Docker e2e not run: no Docker access here)
 - **Authorization:** The user approved this plan in chat (commit WIP first; all four improvements; Codex only as a read-only reviewer).
 
 ## Context
