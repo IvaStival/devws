@@ -419,9 +419,10 @@ impl Team<'_> {
         id: &str,
     ) -> Result<(String, String)> {
         let kind = self.devws.agent_kind(&role.agent)?;
-        let reviewed = self.task.state()?.workflow == crate::execution::Workflow::Reviewed;
-        if reviewed && kind != Program::Claude {
-            return Err(StartupFailure {scope:FailureScope::Model,reason:"reviewed execution requires the verified Claude MCP-only adapter; native Codex tools are not an isolation boundary".into()}.into());
+        let state = self.task.state()?;
+        let reviewed = state.workflow == crate::execution::Workflow::Reviewed;
+        if reviewed {
+            reviewed_adapter(kind, &role.name, role.writes, state.codex_reviewers)?;
         }
         let first_message = opening(role, config, id, repo, AGENT_FIRST);
         let arguments = if reviewed {
@@ -799,10 +800,72 @@ impl Team<'_> {
     }
 }
 
+/// Which program may run a reviewed worker. Claude runs every role with its
+/// native tools off. Codex cannot turn its shell off, so it runs only the
+/// read-only code reviewer, and only when the user opted in: its read-only
+/// sandbox stops writes, not reads of host files. Refused as a model
+/// failure, so the worker falls back to its next candidate (Claude).
+fn reviewed_adapter(
+    kind: Program,
+    role: &str,
+    writes: bool,
+    codex_reviewers: bool,
+) -> std::result::Result<(), StartupFailure> {
+    let refuse = |reason: &str| {
+        Err(StartupFailure {
+            scope: FailureScope::Model,
+            reason: reason.into(),
+        })
+    };
+    match kind {
+        Program::Claude => Ok(()),
+        Program::Codex if role == "code-reviewer" && !writes => {
+            if codex_reviewers {
+                Ok(())
+            } else {
+                refuse(
+                    "a Codex code reviewer needs your opt-in (devagentics task codex-reviewers <task> on): its read-only shell can still read host files",
+                )
+            }
+        }
+        _ => refuse(
+            "reviewed execution requires the verified Claude MCP-only adapter; native Codex tools are not an isolation boundary",
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent_args::Kind as Program;
+
+    #[test]
+    fn codex_runs_only_an_opted_in_read_only_reviewer() {
+        assert!(reviewed_adapter(Program::Claude, "backend-data", true, false).is_ok());
+        assert!(reviewed_adapter(Program::Codex, "code-reviewer", false, true).is_ok());
+        let refused = |kind, role, writes, opted_in| {
+            reviewed_adapter(kind, role, writes, opted_in).unwrap_err()
+        };
+        let without_opt_in = refused(Program::Codex, "code-reviewer", false, false);
+        assert_eq!(
+            without_opt_in.scope,
+            FailureScope::Model,
+            "falls back to Claude"
+        );
+        assert!(without_opt_in.reason.contains("codex-reviewers"));
+        for (role, writes) in [
+            ("backend-data", true),
+            ("code-reviewer", true),
+            ("planner", false),
+        ] {
+            assert!(
+                refused(Program::Codex, role, writes, true)
+                    .reason
+                    .contains("verified Claude"),
+                "{role}"
+            );
+        }
+    }
     use crate::devws::Limits;
     use crate::devws::fake::FakeDevws;
     use crate::start::start_task;

@@ -214,6 +214,22 @@ scoped devAgentics MCP catalog enabled. Codex remains available for legacy teams
 reviewed startup skips unsupported worker adapters and tries compatible
 alternatives. An unsupported coordinator switch is refused.
 
+Codex can run the read-only code reviewers, so a second model reviews what
+the first wrote. It is off by default, because Codex cannot turn its own shell
+off: in its read-only sandbox it cannot write, but it can read files on the
+host. To allow it for one task:
+
+```sh
+devagentics task codex-reviewers <task> on    # off returns them to Claude
+```
+
+Reviewers started from then on (from the `code-reviewer` role, whose program
+is Codex) run `codex exec` without your Codex config or rules, with the
+worker tools as their only MCP server, in their read-only review snapshot.
+Their conversation continues across turns. Writers and the leader always run
+on Claude. Without the opt-in, a Codex reviewer falls back to Claude.
+`application_workflow` `status` shows the reviewer adapter in use.
+
 ### Prepare the isolated tool environment
 
 Inspect available local images and project facts through the leader's

@@ -172,6 +172,12 @@ enum Command {
     },
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum Switch {
+    On,
+    Off,
+}
+
 #[derive(Subcommand)]
 enum BenchAction {
     /// A task's run
@@ -247,6 +253,10 @@ enum TaskAction {
     Resume { task: String },
     /// Stop every agent (the worktrees stay)
     Cancel { task: String },
+    /// You let Codex run this task's read-only code reviewers (on) or not
+    /// (off). In its read-only sandbox it cannot write, but its shell can
+    /// read host files; writers always run on Claude.
+    CodexReviewers { task: String, switch: Switch },
     /// You allow a step more attempts than the task's limit (orders and
     /// reviews asking for changes): `limit` in all. The leader cannot.
     Attempts {
@@ -550,6 +560,31 @@ fn run() -> Result<()> {
                 }
                 .cancel()?;
                 println!("Every agent is stopped; the worktrees stay.");
+            }
+            TaskAction::CodexReviewers { task, switch } => {
+                let enabled = matches!(switch, Switch::On);
+                open(&task)?.transaction(|tx| {
+                    tx.state.codex_reviewers = enabled;
+                    tx.log(
+                        log::Kind::Review,
+                        None,
+                        None,
+                        if enabled {
+                            "the user let Codex run read-only code reviewers"
+                        } else {
+                            "code reviewers run on Claude"
+                        },
+                    );
+                    Ok(())
+                })?;
+                println!(
+                    "{}",
+                    if enabled {
+                        "Code reviewers started from now on may run on Codex (read-only)."
+                    } else {
+                        "Code reviewers started from now on run on Claude."
+                    }
+                );
             }
             TaskAction::Attempts { task, step, limit } => {
                 orders::allow_attempts(&open(&task)?, &step, limit)?;

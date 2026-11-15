@@ -28,6 +28,12 @@ pub struct State {
     pub environment_preflight: std::collections::BTreeMap<String, crate::runner::Preflight>,
     pub message_created: std::collections::BTreeMap<u64, u64>,
     pub worker_turns: std::collections::BTreeMap<String, Message>,
+    /// Provider conversations of managed workers that do not derive theirs
+    /// from their identity (a Codex reviewer's thread).
+    pub worker_sessions: std::collections::BTreeMap<String, String>,
+    /// The user let Codex run the read-only code reviewers of this reviewed
+    /// task (`devagentics task codex-reviewers`).
+    pub codex_reviewers: bool,
     pub runner_identities: std::collections::BTreeMap<String, std::path::PathBuf>,
     pub usage_limit_approval: UsageApproval,
     pub usage_limit_blocks: Vec<crate::worker::PercentageBlock>,

@@ -107,7 +107,7 @@ pub fn status(task: &Task) -> Result<Value> {
         })
         .collect();
     Ok(
-        json!({"workflow":state.workflow,"candidate_checks":candidate_checks,"application":state.application,"proposal":state.application_proposal,"interview_frontier":execution::question_frontier(state.application_proposal.as_ref().unwrap_or(&state.application)),"ready_work":items,"reviews":state.reviews,"performance":performance::update(task)?,"capacity":{"limit":config.max_agents,"live":state.agents.iter().filter(|agent|agent.live).count()},"runner":{"configured":state.runner.is_some(),"available":state.runner.is_some(),"adapter":"claude_mcp_only","network":"none","live_project_mounts":false,"configuration":state.runner}}),
+        json!({"workflow":state.workflow,"candidate_checks":candidate_checks,"application":state.application,"proposal":state.application_proposal,"interview_frontier":execution::question_frontier(state.application_proposal.as_ref().unwrap_or(&state.application)),"ready_work":items,"reviews":state.reviews,"performance":performance::update(task)?,"capacity":{"limit":config.max_agents,"live":state.agents.iter().filter(|agent|agent.live).count()},"runner":{"configured":state.runner.is_some(),"available":state.runner.is_some(),"adapter":"claude_mcp_only","reviewer_adapter":if state.codex_reviewers {"codex_read_only_sandbox: cannot write; its shell can read host files"} else {"claude_mcp_only"},"network":"none","live_project_mounts":false,"configuration":state.runner}}),
     )
 }
 pub fn adoption(task: &Task) -> Result<Value> {
