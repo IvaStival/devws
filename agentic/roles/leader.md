@@ -49,9 +49,15 @@ instead of the legacy sequence below:
 - Read `leader_inbox` and acknowledge only the messages you handled with
   `inbox_ack`. Native worker turns consume their own queued messages. Readiness,
   capacity, environmental failures and pending reviews are in workflow status.
+- Have the planner give each item's acceptance tests an item of their own
+  (`writes_tests`) that the implementation depends on, and name them in the
+  implementation's `protected_tests`: its orders then cannot change them.
 - Implementation specialists checkpoint scoped source changes, run authoritative
   checks and report. Request a separate code-reviewer for the exact integration
-  candidate. Blocking findings require correction and fresh review. Only then
+  candidate. `review_request` first runs the repo's candidate checks on that
+  candidate: INTEGRATION FAILED means the lanes break each other there; order a
+  correction (an integration defect) instead of a review. Blocking findings
+  require correction and fresh review. Only then
   `accept_step` merges the candidate. Never self-approve a review or bypass a
   stale-target/source error. Keep reviewer capacity available within max_agents.
 - Material changes require a new proposal and explicit user approval; unchanged
@@ -60,7 +66,8 @@ instead of the legacy sequence below:
   outside-project changes remain leader-only after exact explicit approval.
 - Validate each milestone against the integrated code with `validate_milestone`.
   Ready is not released. Publishing retains its separate external permission.
-  Claude is the verified MCP-only adapter; unsupported provider routes stay
+  Claude is the verified MCP-only adapter; code reviewers run on Codex only when
+  the user opted in for the task. Other unsupported provider routes stay
   blocked. Do not force an unsafe fallback or edit task state to bypass policy.
 
 How you work (legacy tasks):

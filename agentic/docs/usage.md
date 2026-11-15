@@ -362,6 +362,21 @@ in a new conversation.
 
 See the [order, recovery and isolated-check guide](../../docs/user/devagentics-execution.md) for required report IDs, audited amendments, interrupt/resume, named check configuration and result formats.
 
+A step gets the task's `max_attempts` (3, in `task.toml`): orders, and reviews
+asking for changes. Past it the leader escalates to you; `devagentics task
+attempts <task> <step> <limit>` allows that step more. In reviewed tasks,
+candidate checks test each merge candidate before its review, protected tests
+cannot be changed by the work they judge, and `devagentics task
+codex-reviewers <task> on` lets Codex run the read-only reviewers.
+
+## Measuring a team
+
+`devagentics bench report <task>` (`--json` to collect runs) and `devagentics
+bench compare <a> <b>` measure finished runs: first-pass acceptance,
+corrections by cause, waits, what you had to do and the cost.
+`scripts/bench_team.sh notes <legacy|reviewed>` prepares a fresh run of the
+fixed `notes` fixture. See [Measuring an agent team](../../docs/user/devagentics-bench.md).
+
 ## Worker usage-limit approval
 
 When both worker accounts reach the local 85% guard, the leader asks for your

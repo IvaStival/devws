@@ -2,7 +2,7 @@
 
 - **Date:** 15-11-2026
 - **Branch:** feat/team-delivery-gates
-- **Status:** In progress — Steps 0–5 done (Codex live smoke run pending the user) (Docker e2e not run: no Docker access here)
+- **Status:** Executed — Steps 0–6 done; not run here: the Docker end-to-end test (no Docker access), the live Codex smoke run (needs the user's go), the benchmark series (real agent runs)
 - **Authorization:** The user approved this plan in chat (commit WIP first; all four improvements; Codex only as a read-only reviewer).
 
 ## Context
