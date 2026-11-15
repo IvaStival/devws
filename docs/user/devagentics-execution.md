@@ -281,7 +281,11 @@ devagentics workflow <task> approve --input '{"revision":1}'
 The proposal file contains `application` and `reason`. Every implementation item
 specifies its scope, specialist, repository, lane, dependencies, file scope,
 reuse references, interfaces, behavior/errors, tests, named profiles, acceptance,
-open questions, data effects and standards version (`1`). Required profile
+open questions, data effects and standards version (`1`). An item may name
+`protected_tests` (globs): the acceptance tests that judge it. They come from an
+item of their own with `writes_tests: true`, which the implementation must
+depend on, and every order for the implementation forbids them, so it can read
+but not change the tests it is judged by. Required profile
 definitions are captured in `check_configuration` for your review. Missing fields,
 path escapes, unresolved decisions and cyclic dependencies cannot become ready.
 

@@ -7,7 +7,9 @@ names, explicit errors, shallow control flow, early returns and encapsulation.
 Apply Object Calisthenics to improve clarity; do not add meaningless wrappers or
 force object-oriented forms onto idiomatic functional/UI code.
 
-Use TDD for changed behavior. Validate inputs and authorization/tenant boundaries.
+Use TDD for changed behavior. Never weaken, skip or special-case a test to make
+it pass; an order's protected tests are read-only, and a test you believe wrong is
+a question for the leader. Validate inputs and authorization/tenant boundaries.
 Keep secrets out of code, logs, reports and prompts. Avoid injection and unsafe
 rendering. Use least privilege and transaction/idempotency boundaries where
 needed. Do not modify unrelated code or change shared interfaces without an

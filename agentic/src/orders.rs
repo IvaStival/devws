@@ -115,6 +115,7 @@ pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
         );
         request.allowed = item.allowed.clone();
         request.profiles = item.profiles.clone();
+        request.forbidden = item.forbidden_for_order(&request.forbidden);
         Some(item)
     } else {
         None
@@ -789,6 +790,15 @@ pub(crate) fn ensure_contract(
         anyhow::ensure!(
             checks::within(&runner.source_paths, path)?,
             "planned source path is unavailable in the isolated runner"
+        );
+    }
+    // The implementer reads its protected tests: they must be in its source
+    // snapshot, which leaves the runner's protected paths out entirely.
+    for path in &item.protected_tests {
+        anyhow::ensure!(
+            checks::within(&runner.source_paths, path)?
+                && !checks::within(&runner.protected_paths, path)?,
+            "protected tests {path} must be runner source the implementer can read"
         );
     }
     for path in item.allowed.iter().chain(&item.supporting_files) {

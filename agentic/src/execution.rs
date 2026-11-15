@@ -64,6 +64,28 @@ pub struct Contract {
     pub questions: Vec<String>,
     pub standards: String,
     pub data_effects: Vec<String>,
+    /// Test files (globs) that judge this item: an implementation may read
+    /// them but not change them, so it cannot pass by weakening its tests.
+    pub protected_tests: Vec<String>,
+    /// This item writes the protected tests (of the items that depend on it).
+    pub writes_tests: bool,
+}
+
+impl Contract {
+    /// What an order for this item may not change: the leader's `requested`
+    /// globs, and, unless the item writes them, its protected tests.
+    pub fn forbidden_for_order(&self, requested: &[String]) -> Vec<String> {
+        let mut forbidden = requested.to_vec();
+        if self.writes_tests {
+            return forbidden;
+        }
+        for glob in &self.protected_tests {
+            if !forbidden.contains(glob) {
+                forbidden.push(glob.clone());
+            }
+        }
+        forbidden
+    }
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -207,6 +229,8 @@ impl Application {
             );
             paths(&item.allowed)?;
             paths(&item.supporting_files)?;
+            paths(&item.protected_tests)?;
+            self.validate_protected_tests(id, item)?;
         }
         acyclic(
             &self
@@ -264,6 +288,34 @@ impl Application {
                 .map(|(id, milestone)| (id.clone(), milestone.dependencies.clone()))
                 .collect(),
         )?;
+        Ok(())
+    }
+    /// A test-writing item can write its tests; an item judged by protected
+    /// tests depends on the item that writes them, so they land first.
+    fn validate_protected_tests(&self, id: &str, item: &Contract) -> Result<()> {
+        if item.writes_tests || item.protected_tests.is_empty() {
+            return Ok(());
+        }
+        let writers: Vec<&Contract> = item
+            .dependencies
+            .iter()
+            .filter_map(|dependency| self.items.get(dependency))
+            .filter(|dependency| dependency.writes_tests)
+            .collect();
+        ensure!(
+            !writers.is_empty(),
+            "{id}: must depend on the item that writes its protected tests"
+        );
+        for glob in &item.protected_tests {
+            let mut writable = false;
+            for writer in &writers {
+                writable |= crate::checks::within(&writer.allowed, glob)?;
+            }
+            ensure!(
+                writable,
+                "{id}: the test-writing item may not write its protected tests ({glob})"
+            );
+        }
         Ok(())
     }
     pub fn resolved(&self) -> bool {
@@ -536,6 +588,82 @@ pub mod tests {
             .clear();
         assert!(application.validate().is_err());
     }
+    /// The baseline with its acceptance tests written by an item of their
+    /// own, which the implementation depends on.
+    fn with_protected_tests() -> Application {
+        let mut application = baseline();
+        let implementation = application.items.get_mut("S01-B01").unwrap();
+        implementation.protected_tests = vec!["backend/tests/acceptance/**".into()];
+        implementation.dependencies = vec!["S01-T01".into()];
+        let tests = Contract {
+            title: "Acceptance tests for the token service".into(),
+            allowed: vec!["backend/tests/acceptance/**".into()],
+            writes_tests: true,
+            dependencies: vec![],
+            protected_tests: vec![],
+            ..implementation.clone()
+        };
+        application.items.insert("S01-T01".into(), tests);
+        application
+            .milestones
+            .get_mut("M01")
+            .unwrap()
+            .required
+            .push("S01-T01".into());
+        application
+    }
+
+    #[test]
+    fn protected_tests_come_from_an_item_that_writes_them_first() {
+        with_protected_tests().validate().unwrap();
+
+        let mut application = with_protected_tests();
+        application
+            .items
+            .get_mut("S01-B01")
+            .unwrap()
+            .dependencies
+            .clear();
+        let error = application.validate().unwrap_err().to_string();
+        assert!(error.contains("depend on the item that writes"), "{error}");
+
+        let mut application = with_protected_tests();
+        application.items.get_mut("S01-T01").unwrap().allowed = vec!["backend/src/**".into()];
+        let error = application.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("may not write its protected tests"),
+            "{error}"
+        );
+
+        let mut application = with_protected_tests();
+        application
+            .items
+            .get_mut("S01-B01")
+            .unwrap()
+            .protected_tests = vec!["../escape/**".into()];
+        assert!(application.validate().is_err());
+    }
+
+    #[test]
+    fn an_implementation_order_may_not_touch_its_protected_tests() {
+        let application = with_protected_tests();
+        let implementation = &application.items["S01-B01"];
+        assert_eq!(
+            implementation.forbidden_for_order(&["secrets/**".into()]),
+            ["secrets/**", "backend/tests/acceptance/**"]
+        );
+        assert_eq!(
+            implementation.forbidden_for_order(&["backend/tests/acceptance/**".into()]),
+            ["backend/tests/acceptance/**"],
+            "listed once"
+        );
+        let tests = &application.items["S01-T01"];
+        assert!(
+            tests.forbidden_for_order(&[]).is_empty(),
+            "the item that writes the tests may change them"
+        );
+    }
+
     #[test]
     fn interview_only_asks_settled_frontier_and_approval_is_revision_bound() {
         let mut application = baseline();

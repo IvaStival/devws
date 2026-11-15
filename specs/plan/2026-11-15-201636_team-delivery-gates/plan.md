@@ -2,7 +2,7 @@
 
 - **Date:** 15-11-2026
 - **Branch:** feat/team-delivery-gates
-- **Status:** In progress — Steps 0–1 done
+- **Status:** In progress — Steps 0–2 done
 - **Authorization:** The user approved this plan in chat (commit WIP first; all four improvements; Codex only as a read-only reviewer).
 
 ## Context
