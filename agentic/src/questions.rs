@@ -137,6 +137,7 @@ mod tests {
 
     fn request(agent: &str, step: &str, plan: Option<&str>) -> OrderRequest {
         OrderRequest {
+            profiles: Vec::new(),
             agent: agent.into(),
             step: step.into(),
             title: step.into(),
@@ -145,6 +146,7 @@ mod tests {
             forbidden: vec![],
             check: Some("true".into()),
             plan: plan.map(str::to_string),
+            spec: None,
         }
     }
 

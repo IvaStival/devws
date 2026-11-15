@@ -3,6 +3,7 @@ mod board;
 mod board_tui;
 mod board_usage;
 mod board_view;
+mod check_profiles;
 mod checks;
 mod devws;
 mod home;
@@ -14,13 +15,16 @@ mod orders;
 mod plans;
 mod prs;
 mod questions;
+mod recovery;
 mod roles;
+mod specs;
 mod start;
 mod state;
 mod status;
 mod task;
 mod team;
 mod watch;
+mod worker;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -50,6 +54,16 @@ enum Command {
         #[command(subcommand)]
         action: TaskAction,
     },
+    /// Run checks for an exact delivered order
+    Check {
+        #[command(subcommand)]
+        action: CheckAction,
+    },
+    /// Amend an existing order
+    Order {
+        #[command(subcommand)]
+        action: OrderAction,
+    },
     /// The roles agents can have
     Role {
         #[command(subcommand)]
@@ -72,6 +86,8 @@ enum Command {
     Answer { question: String, answer: String },
     /// An agent reports on its order (run by the agent itself, in its pane)
     Report {
+        #[arg(long)]
+        order: String,
         #[arg(value_enum)]
         outcome: ReportOutcome,
         /// What it did, or what stops it
@@ -104,6 +120,29 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum CheckAction {
+    Run {
+        #[arg(long)]
+        order: String,
+        #[arg(long)]
+        task: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum OrderAction {
+    Amend {
+        id: String,
+        #[arg(long)]
+        task: Option<String>,
+        #[arg(long, required = true)]
+        allow: Vec<String>,
+        #[arg(long)]
+        reason: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum TaskAction {
     /// Make the task for a worktree, or find it; prints its id, the leader's
     /// agent and the leader's arguments file (what `devws agentic` calls)
@@ -122,7 +161,11 @@ enum TaskAction {
     /// Where the team stands
     Status { task: String },
     /// Stop new deliveries and new agents
-    Pause { task: String },
+    Pause {
+        task: String,
+        #[arg(long)]
+        interrupt: bool,
+    },
     /// Take it off pause, and start again the agents whose panels went
     Resume { task: String },
     /// Stop every agent (the worktrees stay)
@@ -250,6 +293,22 @@ fn task_of_this_pane(home: &Home) -> Result<Task> {
     bail!("{pane} is not the pane of an agent of any task")
 }
 
+fn task_of_control_pane(home: &Home, devws: &dyn devws::Devws) -> Result<Task> {
+    let pane = this_pane()?;
+    for id in home.task_ids()? {
+        let task = Task::open(home, &id)?;
+        if task.state()?.agent_in_pane(&pane).is_some()
+            || devws
+                .pane_with_role(&task.config()?.workspace, "agent")?
+                .as_deref()
+                == Some(&pane)
+        {
+            return Ok(task);
+        }
+    }
+    bail!("no task for this pane; pass --task <task>")
+}
+
 fn task_list(home: &Home) -> Result<String> {
     let mut lines = Vec::new();
     for id in home.task_ids()? {
@@ -315,13 +374,13 @@ fn run() -> Result<()> {
                 "{}",
                 serde_json::to_string_pretty(&status::summary(&open(&task)?, &devws, &home)?)?
             ),
-            TaskAction::Pause { task } => {
+            TaskAction::Pause { task, interrupt } => {
                 Team {
                     task: &open(&task)?,
                     home: &home,
                     devws: &devws,
                 }
-                .pause()?;
+                .pause_mode(interrupt, std::env::var("TMUX_PANE").ok().as_deref())?;
                 println!("Paused: nothing new is delivered or started.");
             }
             TaskAction::Resume { task } => {
@@ -476,7 +535,64 @@ fn run() -> Result<()> {
                 questions::answer(&task, questions::Answerer::Pane(&pane), &question, &answer)?
             );
         }
-        Command::Report { outcome, summary } => {
+        Command::Check {
+            action: CheckAction::Run { order, task },
+        } => {
+            let task = match task {
+                Some(id) => open(&id)?,
+                None => task_of_control_pane(&home, &devws)?,
+            };
+            let pane = std::env::var("TMUX_PANE").ok();
+            let agent_pane = if let Some(pane) = &pane {
+                if task.state()?.agent_in_pane(pane).is_some() {
+                    Some(pane.as_str())
+                } else {
+                    use devws::Devws;
+                    if devws
+                        .pane_with_role(&task.config()?.workspace, "agent")?
+                        .as_deref()
+                        != Some(pane)
+                    {
+                        bail!("not this task's leader or agent pane");
+                    }
+                    None
+                }
+            } else {
+                None
+            };
+            let evidence = check_profiles::run(&task, &order, agent_pane)?;
+            println!("{}", serde_json::to_string_pretty(&evidence.response())?);
+            if !evidence.passed() {
+                bail!("checks failed; see structured phase results");
+            }
+        }
+        Command::Order {
+            action:
+                OrderAction::Amend {
+                    id,
+                    task,
+                    allow,
+                    reason,
+                },
+        } => {
+            let task = match task {
+                Some(id) => open(&id)?,
+                None => task_of_control_pane(&home, &devws)?,
+            };
+            println!("{}", {
+                if let Ok(pane) = std::env::var("TMUX_PANE") {
+                    if task.state()?.agent_in_pane(&pane).is_some() {
+                        bail!("order amendments require the leader or a local operator");
+                    }
+                }
+                orders::amend(&task, &id, allow, &reason, "operator/leader CLI")?
+            });
+        }
+        Command::Report {
+            order,
+            outcome,
+            summary,
+        } => {
             let pane = this_pane()?;
             let task = task_of_this_pane(&home)?;
             let outcome = match outcome {
@@ -485,7 +601,14 @@ fn run() -> Result<()> {
             };
             println!(
                 "{}",
-                orders::report(&task, &pane, outcome, &summary, orders::check_timeout())?
+                orders::report(
+                    &task,
+                    &pane,
+                    &order,
+                    outcome,
+                    &summary,
+                    orders::check_timeout()
+                )?
             );
         }
         Command::Mcp { task } => {
@@ -517,7 +640,7 @@ fn run() -> Result<()> {
         }
         Command::Watch { task, once } => {
             let task = open(&task)?;
-            let mut dispatcher = watch::Dispatcher::new(&task, &devws, watch::STALL_GRACE);
+            let mut dispatcher = watch::Dispatcher::new(&task, &devws, &home, watch::STALL_GRACE);
             dispatcher.run(
                 &mut std::io::stdout(),
                 Duration::from_secs(1),

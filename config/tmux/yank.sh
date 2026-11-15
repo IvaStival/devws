@@ -7,7 +7,9 @@ is_app_installed() {
 }
 
 # get data either form stdin or from file
-buf=$(cat "$@")
+# A sentinel preserves trailing newlines through command substitution.
+buf=$(cat "$@" && printf '.')
+buf=${buf%.}
 
 copy_backend_remote_tunnel_port=$(tmux show-option -gvq "@copy_backend_remote_tunnel_port")
 copy_use_osc52_fallback=$(tmux show-option -gvq "@copy_use_osc52_fallback")
@@ -55,14 +57,7 @@ if [ "$buflen" -gt "$maxlen" ]; then
   printf "input is %d bytes too long" "$(( buflen - maxlen ))" >&2
 fi
 
-# build up OSC 52 ANSI escape sequence
-esc="\033]52;c;$( printf %s "$buf" | head -c $maxlen | base64 | tr -d '\r\n' )\a"
-esc="\033Ptmux;\033$esc\033\\"
-
-# resolve target terminal to send escape sequence
-# if we are on remote machine, send directly to SSH_TTY to transport escape sequence
-# to terminal on local machine, so data lands in clipboard on our local machine
-pane_active_tty=$(tmux list-panes -F "#{pane_active} #{pane_tty}" | awk '$1=="1" { print $2 }')
-target_tty="${SSH_TTY:-$pane_active_tty}"
-
-printf "$esc" > "$target_tty"
+# tmux addresses its attached client, including after SSH reattachment. Writing
+# to an inherited SSH_TTY can target an old connection; wrapping OSC 52 also
+# assumes that connection is itself inside another tmux.
+printf '%s' "$buf" | head -c "$maxlen" | tmux load-buffer -w -

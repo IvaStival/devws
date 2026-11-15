@@ -17,7 +17,7 @@ are given, and nothing else.
   those it forbids.
 - Do the work, run the checks yourself, and commit it on the branch. The tree
   must be clean when you report.
-- Then report: `devagentics report done "<what you did>"`, or
-  `devagentics report blocked "<what stops you>"`.
+- Then report: `devagentics report done --order <order-id> "<what you did>"`, or
+  `devagentics report blocked --order <order-id> "<what stops you>"`.
 - Do not push, open pull requests, start agents, or talk to anyone but the
   leader. You get one order at a time; wait for the next.

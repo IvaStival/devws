@@ -18,7 +18,7 @@ pub const SAMPLES: [(&str, &str); 2] = [
 
 /// Where a role came from. A repo's own beats the user's, which beats the
 /// ones shipped in the binary.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Source {
     Builtin,
     Home,
@@ -75,7 +75,7 @@ impl Group {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Role {
     pub name: String,
     /// A `DEVWS_AGENTS` name: `claude`, `codex`, `claude_work`…
@@ -91,12 +91,14 @@ pub struct Role {
     pub description: Option<String>,
     pub instructions: String,
     pub source: Source,
-    /// Where the leader moves when its account runs out (leader.rs).
+    /// Preferred alternative program for the same role.
     pub fallback: Option<Fallback>,
+    #[serde(default)]
+    pub alternatives: Vec<Fallback>,
 }
 
 /// Another program for the same role: `[fallback]` in a role's settings.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fallback {
     pub agent: String,
@@ -104,21 +106,103 @@ pub struct Fallback {
     pub effort: Option<String>,
     /// Its own: the role's suit the role's program, not this one.
     pub approvals: Option<String>,
+    pub sandbox: Option<String>,
+}
+
+/// The factory floor works on these and nothing else: a model the role names
+/// stays only when it is one of them (any Sonnet, any Luna).
+pub const FLOOR_CLAUDE_MODEL: &str = "sonnet";
+pub const FLOOR_CODEX_MODEL: &str = "gpt-6-luna";
+
+/// A floor agent's model on `kind`: the one named when it is of the floor's
+/// family, else the floor's.
+fn floor_model(kind: Kind, named: Option<&str>) -> String {
+    let (family, model) = match kind {
+        Kind::Claude => ("sonnet", FLOOR_CLAUDE_MODEL),
+        Kind::Codex => ("luna", FLOOR_CODEX_MODEL),
+    };
+    match named {
+        Some(named) if named.contains(family) => named.to_string(),
+        _ => model.to_string(),
+    }
 }
 
 impl Role {
     /// The same role on its fallback's agent, model and effort.
     pub fn on_fallback(&self) -> Option<Role> {
         let fallback = self.fallback.as_ref()?;
-        Some(Role {
-            agent: fallback.agent.clone(),
-            model: fallback.model.clone(),
-            effort: fallback.effort.clone(),
-            approvals: fallback.approvals.clone(),
-            sandbox: None,
+        Some(self.with_program(fallback))
+    }
+
+    pub fn program(&self) -> Fallback {
+        Fallback {
+            agent: self.agent.clone(),
+            model: self.model.clone(),
+            effort: self.effort.clone(),
+            approvals: self.approvals.clone(),
+            sandbox: self.sandbox.clone(),
+        }
+    }
+
+    pub fn with_program(&self, program: &Fallback) -> Role {
+        Role {
+            agent: program.agent.clone(),
+            model: program.model.clone(),
+            effort: program.effort.clone(),
+            approvals: program.approvals.clone(),
+            sandbox: program.sandbox.clone(),
             fallback: None,
+            alternatives: Vec::new(),
             ..self.clone()
-        })
+        }
+    }
+
+    /// Explicit alternatives replace defaults, preserving the preferred program.
+    /// The floor's run on Claude Sonnet or Codex Luna only.
+    pub fn worker_candidates(&self, kind: Kind) -> Vec<Fallback> {
+        let mut candidates = vec![self.program()];
+        let explicit = self.fallback.iter().chain(&self.alternatives);
+        for candidate in explicit {
+            if !candidates.iter().any(|existing| {
+                existing.agent == candidate.agent && existing.model == candidate.model
+            }) {
+                candidates.push(candidate.clone());
+            }
+        }
+        if self.fallback.is_none() && self.alternatives.is_empty() {
+            candidates.push(match kind {
+                Kind::Claude => Fallback {
+                    agent: "codex".into(),
+                    model: Some("gpt-6.1-sol".into()),
+                    effort: Some("medium".into()),
+                    approvals: Some("auto".into()),
+                    sandbox: None,
+                },
+                Kind::Codex => Fallback {
+                    agent: "claude".into(),
+                    model: None,
+                    effort: Some("high".into()),
+                    approvals: Some("auto".into()),
+                    sandbox: None,
+                },
+            });
+        }
+        if self.group == Group::Floor {
+            for (place, candidate) in candidates.iter_mut().enumerate() {
+                // The role's own program is of `kind`; an alternative is
+                // known by its name, and an account name devws alone knows
+                // (`claude_work`) keeps what it names.
+                let candidate_kind = if place == 0 {
+                    Some(kind)
+                } else {
+                    Kind::parse(&candidate.agent)
+                };
+                if let Some(candidate_kind) = candidate_kind {
+                    candidate.model = Some(floor_model(candidate_kind, candidate.model.as_deref()));
+                }
+            }
+        }
+        candidates
     }
 }
 
@@ -135,6 +219,8 @@ struct FrontMatter {
     approvals: Option<String>,
     description: Option<String>,
     fallback: Option<Fallback>,
+    #[serde(default)]
+    alternatives: Vec<Fallback>,
 }
 
 const FENCE: &str = "+++";
@@ -172,10 +258,8 @@ fn parse(name: &str, text: &str, source: Source, origin: &str) -> Result<Role> {
         ),
         _ => {}
     }
-    // The other roles are refused when their account is near its limit; only
-    // the leader, who keeps the team going, moves.
-    if front.fallback.is_some() && name != "leader" {
-        bail!("{origin}: only the leader has a fallback");
+    if name == "leader" && !front.alternatives.is_empty() {
+        bail!("{origin}: alternatives are for workers; the leader uses [fallback]");
     }
     Ok(Role {
         name: name.to_string(),
@@ -190,6 +274,7 @@ fn parse(name: &str, text: &str, source: Source, origin: &str) -> Result<Role> {
         instructions,
         source,
         fallback: front.fallback,
+        alternatives: front.alternatives,
     })
 }
 
@@ -433,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn the_leader_falls_back_to_codex_sol_and_only_the_leader_has_a_fallback() {
+    fn the_leader_and_workers_support_compatible_fallbacks() {
         let (_dir, home) = home_with(&[]);
         let roles = Roles::load(&home, None).unwrap();
         let leader = roles.get("leader").unwrap();
@@ -482,8 +567,82 @@ mod tests {
             "hammer.md",
             "+++\nagent = \"claude\"\nwrites = true\n[fallback]\nagent = \"codex\"\n+++\nBuild.\n",
         )]);
-        let message = format!("{:#}", Roles::load(&home, None).err().unwrap());
-        assert!(message.contains("only the leader"), "{message}");
+        let roles = Roles::load(&home, None).unwrap();
+        let worker = roles.get("hammer").unwrap();
+        let moved = worker.on_fallback().unwrap();
+        assert_eq!(moved.agent, "codex");
+        assert!(moved.writes);
+        assert_eq!(moved.group, worker.group);
+        assert_eq!(moved.instructions, worker.instructions);
+    }
+
+    #[test]
+    fn worker_candidates_are_ordered_deduplicated_and_do_not_leak_provider_settings() {
+        let text = "+++\nagent = \"claude\"\nmodel = \"opus\"\neffort = \"max\"\napprovals = \"acceptEdits\"\n+++\nPlan.\n";
+        let role = parse("planner", text, Source::Home, "test").unwrap();
+        let candidates = role.worker_candidates(Kind::Claude);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[1].agent, "codex");
+        assert_eq!(candidates[1].model.as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(candidates[1].effort.as_deref(), Some("medium"));
+        assert_eq!(
+            role.with_program(&candidates[1]).instructions,
+            role.instructions
+        );
+        let explicit = text.replace("+++\nPlan.", "[fallback]\nagent = \"claude\"\nmodel = \"sonnet\"\n[[alternatives]]\nagent = \"claude\"\nmodel = \"sonnet\"\n[[alternatives]]\nagent = \"codex\"\nmodel = \"custom\"\n+++\nPlan.");
+        let role = parse("planner", &explicit, Source::Home, "test").unwrap();
+        let candidates = role.worker_candidates(Kind::Claude);
+        assert_eq!(candidates.len(), 3);
+        assert_eq!(candidates[1].model.as_deref(), Some("sonnet"));
+        assert_eq!(candidates[2].model.as_deref(), Some("custom"));
+    }
+
+    #[test]
+    fn the_floor_runs_only_on_claude_sonnet_and_codex_luna() {
+        let models = |text: &str, kind| {
+            parse("hammer", text, Source::Home, "test")
+                .unwrap()
+                .worker_candidates(kind)
+                .into_iter()
+                .map(|candidate| (candidate.agent, candidate.model.unwrap_or_default()))
+                .collect::<Vec<_>>()
+        };
+        let pair = |agent: &str, model: &str| (agent.to_string(), model.to_string());
+        let floor = "+++\nagent = \"claude\"\nwrites = true\ngroup = \"floor\"\n+++\nBuild.\n";
+        assert_eq!(
+            models(floor, Kind::Claude),
+            [
+                pair("claude", FLOOR_CLAUDE_MODEL),
+                pair("codex", FLOOR_CODEX_MODEL)
+            ],
+            "no model named: Sonnet, then Luna"
+        );
+        let codex = floor.replace("agent = \"claude\"", "agent = \"codex\"");
+        assert_eq!(
+            models(&codex, Kind::Codex),
+            [
+                pair("codex", FLOOR_CODEX_MODEL),
+                pair("claude", FLOOR_CLAUDE_MODEL)
+            ],
+            "never Claude's default model, Opus"
+        );
+        let opus = floor.replace("group", "model = \"opus\"\ngroup");
+        assert_eq!(
+            models(&opus, Kind::Claude)[0],
+            pair("claude", FLOOR_CLAUDE_MODEL)
+        );
+        let pinned = floor.replace("group", "model = \"claude-sonnet-5-5\"\ngroup");
+        assert_eq!(
+            models(&pinned, Kind::Claude)[0],
+            pair("claude", "claude-sonnet-5-5"),
+            "a Sonnet the role names stays"
+        );
+        let senior = "+++\nagent = \"claude\"\nmodel = \"opus\"\ngroup = \"senior\"\n+++\nPlan.\n";
+        assert_eq!(
+            models(senior, Kind::Claude)[0],
+            pair("claude", "opus"),
+            "only the floor"
+        );
     }
 
     #[test]
@@ -521,6 +680,7 @@ mod tests {
             "read_plan",
             "answer_question",
             "approve_plan",
+            "authorize_action",
             "accept_step",
             "reject_step",
             "add_repo",

@@ -33,6 +33,22 @@ pub struct McpServer {
 /// auto permission mode, Codex's automatic review.
 pub const AUTO: &str = "auto";
 
+/// Claude's permission mode for a role: its `approvals`, else auto for the
+/// leader (it runs the team and its risky calls already wait for your
+/// approval through its own tools), acceptEdits for a role that writes, and
+/// default for the rest.
+pub fn claude_permission_mode(role: &Role) -> &str {
+    role.approvals
+        .as_deref()
+        .unwrap_or(if role.name == "leader" {
+            AUTO
+        } else if role.writes {
+            "acceptEdits"
+        } else {
+            "default"
+        })
+}
+
 pub struct Launch<'a> {
     pub role: &'a Role,
     pub kind: Kind,
@@ -70,12 +86,11 @@ fn claude(context: &Launch) -> Vec<String> {
     let mut arguments = vec![context.first_message.to_string()];
     push_option(&mut arguments, "--model", role.model.as_deref());
     push_option(&mut arguments, "--effort", role.effort.as_deref());
-    let permission_mode = role.approvals.as_deref().unwrap_or(if role.writes {
-        "acceptEdits"
-    } else {
-        "default"
-    });
-    push_option(&mut arguments, "--permission-mode", Some(permission_mode));
+    push_option(
+        &mut arguments,
+        "--permission-mode",
+        Some(claude_permission_mode(role)),
+    );
 
     // What every agent does by itself; the leader's tools too.
     arguments.push("--allowedTools".to_string());
@@ -210,6 +225,7 @@ mod tests {
             instructions: "Do it.".to_string(),
             source: Source::Builtin,
             fallback: None,
+            alternatives: Vec::new(),
         }
     }
 
@@ -273,7 +289,7 @@ mod tests {
                 "--effort",
                 "high",
                 "--permission-mode",
-                "default",
+                "auto",
                 "--allowedTools",
                 "Bash(devagentics report:*)",
                 "Bash(devagentics plan write:*)",
@@ -286,6 +302,36 @@ mod tests {
             ])
         );
         assert!(!arguments.contains(&"--strict-mcp-config".to_string()));
+    }
+
+    #[test]
+    fn only_the_claude_leader_runs_in_auto_mode_unless_its_role_says_otherwise() {
+        let mode = |role: &Role| {
+            let arguments = arguments(&Launch {
+                role,
+                kind: Kind::Claude,
+                first_message: "Go",
+                mcp: None,
+                writable: Vec::new(),
+            });
+            let at = arguments
+                .iter()
+                .position(|argument| argument == "--permission-mode")
+                .unwrap();
+            arguments[at + 1].clone()
+        };
+        assert_eq!(mode(&role("leader", "claude", None, None, false)), "auto");
+        assert_eq!(
+            mode(&role("planner", "claude", None, None, false)),
+            "default"
+        );
+        assert_eq!(
+            mode(&role("hammer", "claude", None, None, true)),
+            "acceptEdits"
+        );
+        let mut asked = role("leader", "claude", None, None, false);
+        asked.approvals = Some("default".into());
+        assert_eq!(mode(&asked), "default", "the role's approvals win");
     }
 
     #[test]

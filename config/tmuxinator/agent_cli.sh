@@ -49,8 +49,11 @@
 #                                         runs claude); 1 when unregistered
 #   agent_cli.sh limits <agent>           "<5h> <week>": the per cent of its
 #                                         plan's limits that account has used,
-#                                         a - for what is not known
-#   agent_cli.sh stop <pane>              asks the agent to exit, closes the
+#                                         a - for what is not known. A Claude
+#                                         account's are asked of Anthropic
+#                                         live (claude_limits.sh), else its
+#                                         status line's if under 15 minutes old
+#   agent_cli.sh stop <pane>             asks the agent to exit, closes the
 #                                         pane if it did not, and updates the
 #                                         workspace's state
 #
@@ -229,11 +232,35 @@ kind() {
   agent_kind "$1" 2>/dev/null || fail "unknown agent: $1 (register it in the devws menu)"
 }
 
+# How long a Claude status line's reading stands in when Anthropic cannot be
+# asked: an older one may be from before a reset (one bought early, too), and
+# a stale "used up" blocks the team until a Claude session happens to run.
+claude_reading_lasts=900
+
+# A Claude account's limits: Anthropic's own when it answers (recorded for the
+# header too), else a recent status line reading, else nothing.
+claude_limits() {
+  local agent="$1" live five_hour week at
+  if live="$("$script_dir/claude_limits.sh" "$agent")"; then
+    tmux set-option -g "@devws_limits_$agent" "$live $(date +%s)" 2>/dev/null
+    printf '%s' "$live"
+    return
+  fi
+  read -r five_hour week at <<< "$(agent_limits "$agent")"
+  [[ "${at:-}" =~ ^[0-9]+$ ]] || return 0
+  [ $(($(date +%s) - at)) -le "$claude_reading_lasts" ] || return 0
+  printf '%s %s' "$five_hour" "$week"
+}
+
 limits() {
-  local value
+  local value kind
   [ "$#" -eq 1 ] || usage_fail "usage: devws agent limits <agent>"
-  agent_kind "$1" >/dev/null 2>&1 || fail "unknown agent: $1 (register it in the devws menu)"
-  value="$(agent_limits "$1")"
+  kind="$(agent_kind "$1" 2>/dev/null)" || fail "unknown agent: $1 (register it in the devws menu)"
+  if [ "$kind" = claude ]; then
+    value="$(claude_limits "$1")"
+  else
+    value="$(agent_limits "$1")"
+  fi
   printf '%s\n' "${value:-- -}"
 }
 
@@ -249,6 +276,28 @@ usage() {
   value=""
   [ -z "$transcript" ] || value="$("$script_dir/header_tokens.sh" usage "$transcript")"
   printf '%s\n' "${value:--}"
+}
+
+# Interrupt one turn without invoking the quit/kill behavior of stop.
+interrupt() {
+  local pane agent kind current attempt
+  [ "$#" -eq 1 ] || usage_fail "usage: devws agent interrupt <pane>"
+  pane="$1"
+  require_pane "$pane"
+  pane_exists "$pane" || code=4 fail "$pane is gone"
+  agent="$(tmux show-options -pqv -t "$pane" @devws_agent 2>/dev/null)"
+  [ -n "$agent" ] || agent="$(tmux show-options -qv -t "$(pane_session "$pane")" @devws_agent 2>/dev/null)"
+  kind="$(agent_kind "$agent" 2>/dev/null)" || fail "unsupported agent in $pane"
+  case "$kind" in claude|codex) ;; *) fail "unsupported interrupt program: $kind" ;; esac
+  current="$(pane_state "$pane")"
+  case "$current" in done|idle) return 0 ;; working|waiting) ;; *) fail "cannot interrupt $current" ;; esac
+  tmux send-keys -t "$pane" C-c || fail "could not interrupt $pane"
+  for attempt in $(seq 1 40); do
+    current="$(pane_state "$pane")"
+    case "$current" in done|idle) return 0 ;; gone) code=4 fail "$pane went away during interrupt" ;; esac
+    sleep 0.1
+  done
+  fail "interrupt was not acknowledged by $pane; pane preserved"
 }
 
 # Ctrl-C twice is how Claude Code and Codex quit; what is still there after a
@@ -280,6 +329,7 @@ case "$command" in
   send) send "$@" ;;
   mark) mark "$@" ;;
   stop) stop "$@" ;;
+  interrupt) interrupt "$@" ;;
   spawn) spawn "$@" ;;
   run) run "$@" ;;
   limits) limits "$@" ;;
@@ -289,5 +339,5 @@ case "$command" in
     [ "$#" -eq 1 ] || usage_fail "usage: devws agent $command <pane>"
     exec "$script_dir/team_groups.sh" "$command" "$1"
     ;;
-  *) usage_fail "usage: devws agent state|send|mark|stop|spawn|run|limits|usage|kind|go|peek …" ;;
+  *) usage_fail "usage: devws agent state|send|mark|stop|interrupt|spawn|run|limits|usage|kind|go|peek …" ;;
 esac

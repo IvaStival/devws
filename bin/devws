@@ -115,6 +115,13 @@ devws() {
     return
   fi
 
+  # Every workspace's, team's and account's token usage, from the agents' own
+  # logs: today, 7 and 30 days, all time (usage_history.sh).
+  if [[ "${1:-}" == "usage" ]]; then
+    "$HOME/.tmuxinator/usage_history.sh" show
+    return
+  fi
+
   if [[ "${1:-}" == "memory" ]]; then
     devws-memory "${@:2}"
     return
@@ -124,6 +131,18 @@ devws() {
   # editor it had (recent.sh), or a branch of a GitHub repo (one on GitHub or
   # a new one), which asks for them. `devws .` opens the current folder.
   if (( $# == 0 )); then
+    # Outside tmux, with a workspace already running: join the first one
+    # instead of asking for another. An agent team's group session
+    # (@devws_team_of) is part of its workspace, not one to join.
+    if [[ -z "${TMUX:-}" ]]; then
+      local running_workspace
+      running_workspace="$(tmux list-sessions -F "#{session_name}	#{@devws_team_of}" 2>/dev/null |
+        awk -F '\t' '$2 == "" { print $1; exit }')"
+      if [[ -n "$running_workspace" ]]; then
+        tmux attach-session -t "=$running_workspace"
+        return
+      fi
+    fi
     local github_folder
     github_folder="$("$HOME/.tmuxinator/github_workspace.sh")" || return
     devws "$github_folder" ${=$("$HOME/.tmuxinator/recent.sh" get "$github_folder")}

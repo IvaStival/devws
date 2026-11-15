@@ -439,6 +439,23 @@ test_notifications_name_the_workspace_and_agent() {
 }
 
 # A client that shows the workspace sees the state already: no notification.
+# An agent team's agents turn done after every order: only needs-you alerts
+# (team_alert.sh tells when the whole team stops).
+test_a_team_agent_alerts_only_when_it_needs_you() {
+  local needs_you="work ● needs you|orbit · feat/alerts|claude needs you|dev-work|$AGENT_PANE"
+  "$SCRIPTS/agent_status.sh" dev-work idle
+  tmux set-option -t dev-work @devws_task feat-alerts
+  rm -f "$TEST_ROOT/notifications"
+  "$SCRIPTS/agent_status.sh" dev-work working
+  "$SCRIPTS/agent_status.sh" dev-work done
+  sleep 0.3
+  [ -z "$(notifications)" ] || fail "a team agent's done notified: $(notifications)"
+  "$SCRIPTS/agent_status.sh" dev-work waiting
+  wait_until notified "$needs_you" || fail "a team agent needing you was not notified: $(notifications)"
+  tmux set-option -u -t dev-work @devws_task
+  "$SCRIPTS/agent_status.sh" dev-work idle
+}
+
 test_no_notification_for_the_workspace_on_screen() {
   rm -f "$TEST_ROOT/notifications"
   "$REAL_TMUX" -L "$CLIENT_SOCKET" -f /dev/null new-session -d -s client -x 200 -y 50 \
@@ -741,6 +758,7 @@ test_the_sidebar_shows_each_workspace_state
 test_the_state_records_when_it_started
 test_an_agent_event_restarts_a_dead_header_ticker
 test_notifications_name_the_workspace_and_agent
+test_a_team_agent_alerts_only_when_it_needs_you
 test_no_notification_for_the_workspace_on_screen
 test_an_extra_agent_alert_names_it
 test_an_alert_outside_a_repo_names_the_folder

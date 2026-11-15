@@ -115,10 +115,13 @@ pub trait Devws: Send + Sync {
     /// leader's handover): the pane keeps its place and role.
     fn restart_agent(&self, pane: &str, agent: &str, args_file: &Path) -> Result<()>;
     fn pane_state(&self, pane: &str) -> Result<PaneState>;
+    /// Explicit provider rejection during the opening turn, never visible pane text.
+    fn startup_failure(&self, pane: &str) -> Result<Option<crate::worker::StartupFailure>>;
     fn send(&self, pane: &str, text: &str) -> Result<Delivery>;
     /// Marks the agent `waiting` ("needs you") or `done`.
     fn mark(&self, pane: &str, state: &str) -> Result<()>;
     fn stop(&self, pane: &str) -> Result<()>;
+    fn interrupt(&self, pane: &str) -> Result<()>;
     /// Shows the agent: its group's workspace, focused on it.
     fn go(&self, pane: &str) -> Result<()>;
     /// Brings the agent under the board for a look; again, back to its group.
@@ -178,6 +181,15 @@ impl CommandDevws {
     fn succeed(&self, program: &str, arguments: &[&str], stdin: Option<&str>) -> Result<String> {
         let output = self.run(program, arguments, stdin)?;
         if !output.status.success() {
+            if arguments.first() == Some(&"open") || arguments.starts_with(&["agent", "spawn"]) {
+                for bytes in [&output.stderr, &output.stdout] {
+                    if let Ok(record) = serde_json::from_slice::<serde_json::Value>(bytes)
+                        && let Some(failure) = crate::worker::failure_from_record(&record)
+                    {
+                        return Err(failure.into());
+                    }
+                }
+            }
             bail!(
                 "{program} {} failed: {}",
                 arguments.join(" "),
@@ -268,6 +280,38 @@ impl Devws for CommandDevws {
         PaneState::parse(&self.devws(&["agent", "state", pane])?)
     }
 
+    fn startup_failure(&self, pane: &str) -> Result<Option<crate::worker::StartupFailure>> {
+        let output = self.run(
+            &self.tmux,
+            &[
+                "display-message",
+                "-p",
+                "-t",
+                pane,
+                "#{@devws_transcript}\n#{@devws_startup_error}",
+            ],
+            None,
+        )?;
+        if !output.status.success() {
+            bail!("could not read worker startup metadata for {pane}");
+        }
+        let metadata = String::from_utf8(output.stdout)?;
+        let metadata = metadata.trim_end_matches('\n');
+        let (path, marker) = metadata.split_once('\n').unwrap_or((metadata, ""));
+        if !path.is_empty()
+            && let Some(failure) = crate::worker::transcript_failure(Path::new(path))
+                .context("reading worker startup evidence")?
+        {
+            return Ok(Some(failure));
+        }
+        if marker.is_empty() {
+            return Ok(None);
+        }
+        let record = serde_json::from_str::<serde_json::Value>(marker)
+            .context("parsing worker startup error marker")?;
+        Ok(crate::worker::failure_from_record(&record))
+    }
+
     fn send(&self, pane: &str, text: &str) -> Result<Delivery> {
         let output = self.run(&self.devws, &["agent", "send", pane, "-"], Some(text))?;
         match output.status.code() {
@@ -285,6 +329,10 @@ impl Devws for CommandDevws {
 
     fn mark(&self, pane: &str, state: &str) -> Result<()> {
         self.devws(&["agent", "mark", pane, state]).map(drop)
+    }
+
+    fn interrupt(&self, pane: &str) -> Result<()> {
+        self.devws(&["agent", "interrupt", pane]).map(drop)
     }
 
     fn stop(&self, pane: &str) -> Result<()> {
@@ -366,6 +414,10 @@ pub mod fake {
         roles: HashMap<(String, String), String>,
         options: HashMap<(String, String), String>,
         sent: Vec<(String, String)>,
+        interrupt_failure: Option<String>,
+        stop_failure: Option<String>,
+        startup_failures: HashMap<String, crate::worker::StartupFailure>,
+        launch_failures: HashMap<String, crate::worker::StartupFailure>,
         next_pane: u32,
         worktrees: PathBuf,
     }
@@ -403,6 +455,34 @@ pub mod fake {
                 .limits
                 .insert(agent.to_string(), limits);
             self
+        }
+
+        pub fn fail_startup(&self, pane: &str, scope: crate::worker::FailureScope) {
+            self.inner.lock().unwrap().startup_failures.insert(
+                pane.into(),
+                crate::worker::StartupFailure {
+                    scope,
+                    reason: "fixture provider unavailable".into(),
+                },
+            );
+        }
+
+        pub fn fail_launch(&self, agent: &str, scope: crate::worker::FailureScope) {
+            self.inner.lock().unwrap().launch_failures.insert(
+                agent.into(),
+                crate::worker::StartupFailure {
+                    scope,
+                    reason: "fixture launch rejected".into(),
+                },
+            );
+        }
+
+        pub fn fail_stop(&self, pane: &str) {
+            self.inner.lock().unwrap().stop_failure = Some(pane.into());
+        }
+
+        pub fn fail_interrupt(&self, pane: &str) {
+            self.inner.lock().unwrap().interrupt_failure = Some(pane.into());
         }
 
         pub fn set_usage(&self, pane: &str, usage: Usage) {
@@ -546,6 +626,9 @@ pub mod fake {
                 args_file.display(),
                 folder.display()
             ));
+            if let Some(failure) = inner.launch_failures.get(agent) {
+                return Err(failure.clone().into());
+            }
             Ok(Self::new_pane(&mut inner))
         }
 
@@ -558,6 +641,16 @@ pub mod fake {
         fn pane_state(&self, pane: &str) -> Result<PaneState> {
             let inner = self.record(format!("state {pane}"));
             Ok(inner.states.get(pane).copied().unwrap_or(PaneState::Gone))
+        }
+
+        fn startup_failure(&self, pane: &str) -> Result<Option<crate::worker::StartupFailure>> {
+            Ok(self
+                .inner
+                .lock()
+                .unwrap()
+                .startup_failures
+                .get(pane)
+                .cloned())
         }
 
         fn send(&self, pane: &str, text: &str) -> Result<Delivery> {
@@ -587,8 +680,20 @@ pub mod fake {
             Ok(())
         }
 
+        fn interrupt(&self, pane: &str) -> Result<()> {
+            let mut inner = self.record(format!("interrupt {pane}"));
+            if inner.interrupt_failure.as_deref() == Some(pane) {
+                bail!("fixture interruption failure");
+            }
+            inner.states.insert(pane.into(), PaneState::Done);
+            Ok(())
+        }
+
         fn stop(&self, pane: &str) -> Result<()> {
             let mut inner = self.record(format!("stop {pane}"));
+            if inner.stop_failure.as_deref() == Some(pane) {
+                bail!("fixture stop failure");
+            }
             inner.states.insert(pane.to_string(), PaneState::Gone);
             Ok(())
         }
@@ -693,6 +798,30 @@ esac
             .lines()
             .map(str::to_string)
             .collect()
+    }
+
+    #[test]
+    fn startup_bridge_reads_structured_evidence_and_marker_without_transcript() {
+        let dir = TempDir::new().unwrap();
+        let (devws, _) = command_devws(&dir);
+        let tmux = dir.path().join("tmux");
+        // Keep the leading empty transcript field: a missing binary has no transcript.
+        fs::write(&tmux, "#!/bin/sh\nprintf '\\n%s\\n' '{\"type\":\"error\",\"error\":{\"code\":\"provider_unavailable\"}}'\n").unwrap();
+        assert_eq!(
+            devws.startup_failure("%7").unwrap().unwrap().scope,
+            crate::worker::FailureScope::Account
+        );
+        let transcript = dir.path().join("startup.jsonl");
+        fs::write(
+            &transcript,
+            "{\"type\":\"assistant\",\"isApiErrorMessage\":true,\"error\":\"model_not_found\"}\n",
+        )
+        .unwrap();
+        fs::write(&tmux, format!("#!/bin/sh\nprintf '%s\\n%s\\n' '{}' '{{\"type\":\"error\",\"error\":{{\"code\":\"provider_exit\"}}}}'\n", transcript.display())).unwrap();
+        assert_eq!(
+            devws.startup_failure("%7").unwrap().unwrap().scope,
+            crate::worker::FailureScope::Model
+        );
     }
 
     #[test]

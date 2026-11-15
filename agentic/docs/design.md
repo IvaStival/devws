@@ -59,7 +59,10 @@ Decisions about one repo go into that repo's project; decisions about the
 whole task go into a dedicated ai-memory project, `devagentics-tasks`.
 
 **Limits.** Per task: at most N agents at once (3 by default), an OpenRouter
-spending cap, and no new agents on an account past 85% of its 5-hour usage.
+spending cap, and no new agents on an account at 85% of its week or five-hour
+usage. Workers try compatible alternatives when that account or their model is
+unavailable; project-local agent management needs no separate approval. See
+[worker startup fallback](../../docs/architecture/devagentics-execution.md#worker-availability-and-startup-fallback).
 Reaching a limit pauses the task and kills nothing.
 
 **Screen.** The task's window holds the leader, the log pane and the plan in
@@ -87,3 +90,7 @@ executor in separate worktrees, a step that breaks its file rules is
 rejected, the checks gate each step, and the result is two linked draft PRs.
 Killing the leader mid-task and starting a new one resumes the task from
 `task_status`.
+
+## Reliable execution state
+
+The [execution architecture](../../docs/architecture/devagentics-execution.md) describes order revisions, operation locks, isolated check evidence and durable interruption recovery.

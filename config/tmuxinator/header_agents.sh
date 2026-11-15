@@ -69,7 +69,7 @@ lines=()
 total=0
 total_unpriced=0
 for agent in ${agents[@]+"${agents[@]}"}; do
-  read -r session_used week_used <<< "$(agent_limits "$agent")"
+  read -r session_used week_used _ <<< "$(agent_limits "$agent")"
   row="$(printf '#[bold]%-*s#[nobold] %s %s' "$width" "$agent" "$(limit 5h "${session_used:-}")" "$(limit wk "${week_used:-}")")"
   read -r cost unpriced <<< "$(cost_of "$agent")"
   if [ -n "${cost:-}" ]; then

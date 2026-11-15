@@ -48,8 +48,6 @@ case "$event" in
   SessionStart|SessionEnd) state=idle ;;
 esac
 
-# The state is this pane's: a workspace can run several agents.
-[ -z "$state" ] || "$(dirname "$0")/agent_status.sh" "$session" "$state" "$TMUX_PANE" >/dev/null 2>&1
 # The conversation's log, whose tokens tmux's own line shows
 # (header_tokens.sh): the main agent's, not an extra one's.
 if [ -n "$transcript" ]; then
@@ -64,4 +62,7 @@ if [ -n "$transcript" ]; then
 fi
 # Hook models are runtime evidence; recording them never scans transcripts.
 [ -z "$model" ] || "$(dirname "$0")/agent_model.sh" record "$TMUX_PANE" "$model" >/dev/null 2>&1
+# Publish completion after transcript metadata: dispatchers must inspect provider
+# rejection evidence before treating the opening turn as ready.
+[ -z "$state" ] || "$(dirname "$0")/agent_status.sh" "$session" "$state" "$TMUX_PANE" >/dev/null 2>&1
 exit 0

@@ -8,6 +8,9 @@ or move to it and press `Enter`, to go there.
 ## The start screen
 
 **⎇ Open or start a workspace** in the menu, or `devws` with no folder:
+outside tmux, when a workspace is already running, `devws` joins the first
+one instead (an agent team's Floor and Seniors sessions are part of their
+workspace and are skipped); use the menu there to open another.
 
 ```
 devws >

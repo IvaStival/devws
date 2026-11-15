@@ -14,10 +14,11 @@
 # When an agent starts waiting or is done in a workspace no client shows, a
 # macOS notification says so: the workspace and its state, its folder and
 # branch, and the agent. Clicked, it takes you to that agent (focus_agent.sh);
-# that needs terminal-notifier, else osascript shows it, not clickable.
-# DEVWS_NOTIFY in .env: 1 (default) for both, "waiting" for waiting only, 0
-# for none. DEVWS_NOTIFY_COMMAND replaces the notifier, for tests: it is
-# called with the title, the subtitle, the message, the session and the pane.
+# that needs terminal-notifier, else osascript shows it, not clickable
+# (alert.sh). An agent team's agents (@devws_task) are done after every
+# order, so they alert only when waiting; team_alert.sh tells when the whole
+# team stops. DEVWS_NOTIFY in .env: 1 (default) for both, "waiting" for
+# waiting only, 0 for none.
 #
 #   agent_status.sh <session> <working|waiting|done|idle> [pane]
 #                                  the agent in <pane>; without one, the
@@ -32,8 +33,8 @@ session="${1:-}"
 state="${2:-}"
 pane="${3:-}"
 script="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-# Posts clickable alerts; DEVWS_TERMINAL_NOTIFIER replaces it, for tests.
-notifier="${DEVWS_TERMINAL_NOTIFIER:-terminal-notifier}"
+# shellcheck source=alert.sh
+. "$(dirname "$script")/alert.sh"
 
 case "$state" in
   working|waiting|done|idle) ;;
@@ -78,29 +79,16 @@ project_line() {
   printf '%s%s' "$(basename "$root")" "${branch:+ · $branch}"
 }
 
-# What a click on the alert runs: Notification Center runs it with /bin/sh,
-# outside tmux and with a bare PATH, so it names the server by its socket in
-# TMUX (as tmux does for its own panes) and puts tmux's folder on PATH.
-click_command() {
-  local socket tmux_dir
-  socket="$(tmux display-message -p '#{socket_path}' 2>/dev/null)"
-  tmux_dir="$(dirname "$(command -v tmux)")"
-  printf 'TMUX=%q PATH=%q %q %q %q' "$socket,0,0" "$tmux_dir:/usr/bin:/bin" \
-    "$(dirname "$script")/focus_agent.sh" "$session" "$1"
-}
-
 notify() {
-  local title subtitle message agent agent_pane where="" setting
-  # DEVWS_ENV_FILE replaces .env, for tests.
-  setting="$(
-    env_file="${DEVWS_ENV_FILE:-$(dirname "$script")/.env}"
-    # shellcheck source=/dev/null
-    [ -r "$env_file" ] && . "$env_file"
-    printf '%s' "${DEVWS_NOTIFY:-1}"
-  )"
-  case "$setting:$state" in
+  local title subtitle message agent agent_pane where=""
+  case "$(notify_setting):$state" in
     0:*|waiting:done) return 0 ;;
   esac
+  # An agent team's agents are done after every order: only needing you
+  # alerts; team_alert.sh tells when the whole team stops.
+  if [ "$state" = done ] && [ -n "$(tmux show-option -qv -t "=$session:" @devws_task 2>/dev/null)" ]; then
+    return 0
+  fi
   on_screen && return 0
   agent_pane="$(alerting_pane)"
   # An extra agent (New panel) carries its own name on its pane.
@@ -121,19 +109,7 @@ notify() {
       ;;
   esac
   subtitle="$(project_line)"
-  # In the background: the hook that called this must not wait on it.
-  if [ -n "${DEVWS_NOTIFY_COMMAND:-}" ]; then
-    "$DEVWS_NOTIFY_COMMAND" "$title" "$subtitle" "$message" "$session" "$agent_pane" >/dev/null 2>&1 &
-  elif command -v "$notifier" >/dev/null 2>&1; then
-    # A newer alert from the workspace replaces the older one.
-    "$notifier" -title "$title" -subtitle "$subtitle" -message "$message" -group "devws-$session" \
-      -activate com.googlecode.iterm2 -execute "$(click_command "$agent_pane")" >/dev/null 2>&1 &
-  else
-    # Passed as arguments, so quotes in a name can't break the script.
-    osascript -e 'on run argv' \
-      -e 'display notification (item 3 of argv) with title (item 1 of argv) subtitle (item 2 of argv)' \
-      -e 'end run' "$title" "$subtitle" "$message" >/dev/null 2>&1 &
-  fi
+  post_alert "$title" "$subtitle" "$message" "$session" "$agent_pane"
 }
 
 # The workspace's agent panes, also those hidden while minimized.

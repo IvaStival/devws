@@ -38,14 +38,18 @@ pub struct Entry {
     pub text: String,
 }
 
+/// Seconds since the epoch, as the log stamps its entries.
+pub fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
 impl Entry {
     pub fn new(kind: Kind, agent: Option<&str>, step: Option<&str>, text: &str) -> Self {
-        let at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_secs())
-            .unwrap_or(0);
         Self {
-            at,
+            at: now(),
             kind,
             agent: agent.map(str::to_string),
             step: step.map(str::to_string),

@@ -24,6 +24,8 @@ pub struct TaskConfig {
     #[serde(default = "default_max_agents")]
     pub max_agents: usize,
     #[serde(default)]
+    pub check_profiles: std::collections::BTreeMap<String, crate::check_profiles::RepositoryChecks>,
+    #[serde(default)]
     pub repos: Vec<Repo>,
     /// Areas of a repo the factory floor works on side by side, each in a
     /// worktree of its own.
@@ -166,6 +168,13 @@ impl Task {
     }
 
     /// The state as it is now.
+    /// Serializes terminal effects with pause and queued-order amendments.
+    pub fn control_lock(&self) -> Result<File> {
+        let lock = File::create(self.dir.join("control.lock"))?;
+        lock.lock_exclusive()?;
+        Ok(lock)
+    }
+
     pub fn state(&self) -> Result<State> {
         self.transaction(|tx| Ok(tx.state.clone()))
     }
@@ -199,6 +208,7 @@ mod tests {
             branch: "feat/login".to_string(),
             workspace: "dev-app".to_string(),
             max_agents: 3,
+            check_profiles: Default::default(),
             lanes: Vec::new(),
             repos: vec![Repo {
                 name: "app".to_string(),

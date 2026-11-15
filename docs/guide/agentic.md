@@ -70,7 +70,12 @@ repos get their own worktrees the same way, as the leader opens them.
   With only its 5-hour window used up, it moves only when the other has room
   in both, and stays when the other's week is used up. It moves once it has
   finished its turn; the new leader catches up from the task and tells you.
-  New agents are refused on an account past 85% of its week or 5-hour window.
+  Accounts at 85% of their week or five-hour window receive no new workers;
+  workers automatically try compatible alternatives, including Codex when Claude
+  is exhausted. See [worker availability](../user/devagentics-execution.md#continue-when-a-provider-or-model-is-unavailable).
+  Starting, stopping and replacing this project's agents need no extra approval;
+  actions outside the project, such as adding another repo or publishing PRs,
+  still ask first.
 - **⚙ Team roles** in the menu's Agent tab changes a role's model, effort or
   approvals (the Floor on Sonnet, a Codex senior that never asks): pick the
   role, the setting, then a value its program takes, or Default. Agents
@@ -86,9 +91,11 @@ repos get their own worktrees the same way, as the leader opens them.
   Tab / Shift-Tab switches to **Agents**, **Steps**, **Activity**, and **Usage**.
   Completed work stays in Steps (`c` includes it); inactive roles stay in the
   Agents catalog (`c` shows it). Use `j`/`k`, arrows, or the wheel to select a
-  row; Enter opens full details in a dialog inside the info panel, with the
-  board behind it. Arrows, `j`/`k`, the wheel, PgUp/PgDn and Home/End scroll
-  the dialog; Esc or `q` closes it and keeps the selection. `o` goes to a selected agent,
+  row; Enter opens full details in a dialog inside the info panel, as tall
+  as its content and next to the selected row, with the board around it. Arrows, `j`/`k`, the wheel, PgUp/PgDn and Home/End scroll
+  the dialog; Esc or `q` closes it and keeps the selection. With the mouse,
+  click a row to select it, click it again for its details, click a view's
+  name to show it, and click outside the details to close them. `o` goes to a selected agent,
   `v` peeks it, and `L` returns to the leader. Number keys `1`–`9` and `p` then
   a number still work. Short panes preserve attention counts and scrolling;
   `z` zooms, `l` opens Activity, and `?` shows shortcuts in the same dialog. `q` closes details or
@@ -105,6 +112,13 @@ repos get their own worktrees the same way, as the leader opens them.
   keeps only the leader and the board. Each
   agent's header shows its role and state (working, `● needs you`,
   `✓ done`) as for any agent.
+- **Notifications.** An agent that needs you notifies you, as anywhere. An
+  agent finishing an order does not: the agents finish one after every
+  order. Instead the team notifies once when it stops: `<task> ✓ team
+  stopped` once nobody has worked or waited for 20 s and no order is queued
+  (a paused task's queue does not count), saying why: all steps accepted,
+  paused, or idle. Clicking it goes to the leader. Not while you are looking
+  at one of the team's workspaces; `DEVWS_NOTIFY=waiting` or `0` turns it off.
 - **Reaching an agent.** On the board each running agent has a number: press
   it to go to its workspace, focused on it; Enter on the team's workspace in
   the sidebar brings you back. `p` and the number **peeks** it: its panel

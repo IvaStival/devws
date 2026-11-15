@@ -18,7 +18,7 @@ Read the repo and the goal in your order, then write a plan:
   is a step of that lane, ordered first.
 
 Store the plan with `devagentics plan write`, giving it on standard input (a
-heredoc works). Then report: `devagentics report done "plan written"`.
+heredoc works). Then report: `devagentics report done --order <order-id> "plan written"`.
 
 While your plan is being built you may be asked: a message starts with
 `QUESTION q…`. Answer from your plan and the repo with

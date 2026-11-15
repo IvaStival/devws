@@ -53,12 +53,13 @@ impl World {
 DIR="$DEVAGENTICS_TEST_DIR"
 echo "$*" >> "$DIR/devws.calls"
 case "$1 $2" in
-  "agent kind") echo claude ;;
+  "agent kind") case "$3" in codex) echo codex ;; *) echo claude ;; esac ;;
   "agent spawn") n=$(cat "$DIR/pane.counter" 2>/dev/null || echo 6); n=$((n+1)); echo $n > "$DIR/pane.counter"; echo "%$n" ;;
   "agent state") cat "$DIR/state/$3" 2>/dev/null || echo idle ;;
   "agent send") cat >> "$DIR/sent/$3"; echo >> "$DIR/sent/$3" ;;
-  "agent limits") echo "- -" ;;
+  "agent limits") if [ -f "$DIR/limits/$3" ]; then cat "$DIR/limits/$3"; else echo "- -"; fi ;;
   "agent usage") [ "$3" = "%7" ] && echo "1200 300 4000 0.5 0" || echo - ;;
+  "agent interrupt") echo done > "$DIR/state/$3" ;;
   "agent mark"|"agent stop") ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
@@ -143,14 +144,72 @@ esac
     }
 
     fn ok(&self, pane: Option<&str>, arguments: &[&str], stdin: &str) -> String {
-        let (success, stdout, stderr) = self.run(pane, arguments, stdin);
+        let mut explicit = arguments.to_vec();
+        let order_id;
+        if arguments.first() == Some(&"report") && !arguments.contains(&"--order") {
+            let pane = pane.unwrap();
+            self.set_state(pane, "done");
+            self.ok(None, &["watch", "feat-x", "--once"], "");
+            let state: Value = serde_json::from_str(
+                &fs::read_to_string(self.path("home/tasks/feat-x/state.json")).unwrap(),
+            )
+            .unwrap();
+            let agent = state["agents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|agent| agent["pane"] == pane)
+                .unwrap();
+            order_id = state["orders"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|order| order["agent"] == agent["id"] && order["status"] == "open")
+                .unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            explicit.extend(["--order", &order_id]);
+        }
+        let (success, stdout, stderr) = self.run(pane, &explicit, stdin);
         assert!(success, "devagentics {arguments:?} failed: {stderr}");
         stdout
     }
 
     /// The leader's side: tool calls over a session on standard input, as the
-    /// leader's program makes them. Returns (is an error, text) for each.
+    /// leader's program makes them. Tests explicitly approve gated calls.
     fn leader(&self, task: &str, calls: &[(&str, Value)]) -> Vec<(bool, String)> {
+        calls
+            .iter()
+            .map(|(name, arguments)| {
+                let mut result =
+                    self.leader_session(task, &[(*name, arguments.clone())])[0].clone();
+                if !result.0 && result.1.contains("No action was taken") {
+                    let request = result
+                        .1
+                        .split("Request ")
+                        .nth(1)
+                        .and_then(|tail| tail.split('.').next())
+                        .expect("permission response names its request ID")
+                        .to_string();
+                    let authorization = self.leader_session(
+                        task,
+                        &[(
+                            "authorize_action",
+                            json!({"request":request,"approved":true}),
+                        )],
+                    );
+                    assert!(!authorization[0].0, "{}", authorization[0].1);
+                    let mut retry = arguments.clone();
+                    retry["approval_id"] = json!(request);
+                    result = self.leader_session(task, &[(*name, retry)])[0].clone();
+                }
+                result
+            })
+            .collect()
+    }
+
+    fn leader_session(&self, task: &str, calls: &[(&str, Value)]) -> Vec<(bool, String)> {
         let mut requests = vec![
             json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": "2024-11-05" } }),
             json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
@@ -423,6 +482,60 @@ fn a_whole_task_from_the_plan_to_the_pull_request() {
 }
 
 #[test]
+fn exhausted_claude_uses_codex_in_the_same_lane_without_extra_approval() {
+    let world = World::new();
+    world.planned();
+    fs::create_dir_all(world.path("limits")).unwrap();
+    fs::write(world.path("limits/claude"), "100 100\n").unwrap();
+    let calls = world.leader_session("feat-x", &[
+        ("add_lane", json!({"name":"backend","files":["src/**"]})),
+        ("spawn_agent", json!({"role":"executor","lane":"backend"})),
+        ("send_order", json!({"agent":"executor-1","step":"s1","title":"Implement","text":"Build src/a.rs","plan":"p1","spec":"work","check":"true"})),
+    ]);
+    for (failed, text) in &calls {
+        assert!(!failed, "{text}");
+        assert!(!text.contains("No action was taken"), "{text}");
+    }
+    let status: Value =
+        serde_json::from_str(&world.ok(None, &["task", "status", "feat-x"], "")).unwrap();
+    let worker = status["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|agent| agent["id"] == "executor-1")
+        .unwrap();
+    assert_eq!(worker["agent"], "codex");
+    assert_eq!(worker["lane"], "backend");
+    assert_eq!(
+        worker["selected_program"]["model"], "gpt-6-luna",
+        "the floor's Codex is Luna"
+    );
+    assert_eq!(status["pending_permissions"], 0);
+    let pane = worker["pane"].as_str().unwrap();
+    world.set_state(pane, "done");
+    world.ok(None, &["watch", "feat-x", "--once"], "");
+    assert!(world.sent(pane).contains("Build src/a.rs"));
+    let stopped = world.leader_session("feat-x", &[("stop_agent", json!({"agent":"executor-1"}))]);
+    assert!(
+        !stopped[0].0 && stopped[0].1.contains("stopped"),
+        "{stopped:?}"
+    );
+    let replacement = world.leader_session(
+        "feat-x",
+        &[("spawn_agent", json!({"role":"executor","lane":"backend"}))],
+    );
+    assert!(
+        !replacement[0].0 && replacement[0].1.contains("Started executor-2"),
+        "{replacement:?}"
+    );
+    let external = world.leader_session("feat-x", &[("open_prs", json!({}))]);
+    assert!(
+        !external[0].0 && external[0].1.contains("No action was taken"),
+        "{external:?}"
+    );
+}
+
+#[test]
 fn a_rule_broken_in_the_work_fails_the_step_and_the_leader_hears_it() {
     let world = World::new();
     world.planned();
@@ -490,9 +603,13 @@ fn after_a_restart_the_leader_hears_of_the_lost_panel_and_resume_starts_it_again
 #[test]
 fn the_commands_say_what_is_wrong() {
     let world = World::new();
-    let (ok, _, error) = world.run(None, &["report", "done", "x"], "");
+    let (ok, _, error) = world.run(None, &["report", "done", "x", "--order", "missing"], "");
     assert!(!ok && error.contains("no TMUX_PANE"), "{error}");
-    let (ok, _, error) = world.run(Some("%99"), &["report", "done", "x"], "");
+    let (ok, _, error) = world.run(
+        Some("%99"),
+        &["report", "done", "x", "--order", "missing"],
+        "",
+    );
     assert!(!ok && error.contains("not the pane of an agent"), "{error}");
     let (ok, _, error) = world.run(None, &["task", "approve", "nothing"], "");
     assert!(!ok && error.contains("no task named nothing"), "{error}");
@@ -573,4 +690,81 @@ fn board_views_prioritize_work_and_keep_usage_separate() {
         );
         assert!(text.contains(&format!("[{view}]")), "{text}");
     }
+}
+
+#[test]
+fn amended_interrupted_order_resumes_and_reuses_isolated_check_evidence() {
+    let world = World::new();
+    world.planned();
+    let status: Value =
+        serde_json::from_str(&world.ok(None, &["task", "status", "feat-x"], "")).unwrap();
+    let repo = status["repos"][0]["name"].as_str().unwrap();
+    let configuration = json!({
+        "environments": {"postgres": {"values": {"DB_CONNECTION": "pgsql", "PGHOST": "fixture"}}, "sqlite": {}},
+        "checks": {
+            "postgres": {"command": "test \"$DB_CONNECTION\" = pgsql && test \"$PGHOST\" = fixture", "environment": "postgres"},
+            "sqlite": {"command": "test -z \"${PGHOST+x}${DB_CONNECTION+x}\" && printf '%s' '{\"tests\":1,\"failures\":0,\"required_skipped\":0}' > \"$DEVAGENTICS_RESULT\"", "environment": "sqlite", "test_evidence": true}
+        },
+        "selected": ["postgres", "sqlite"]
+    });
+    let results = world.leader("feat-x", &[
+        ("configure_checks", json!({"repo": repo, "configuration": configuration})),
+        ("spawn_agent", json!({"role":"executor"})),
+        ("send_order", json!({"agent":"executor-1","step":"s1","title":"Implement","text":"Create source and regression test","allowed":["src/**"],"plan":"p1"}))
+    ]);
+    assert!(results.iter().all(|result| !result.0), "{results:?}");
+    world.set_state("%8", "done");
+    world.ok(None, &["watch", "feat-x", "--once"], "");
+    let state_path = world.path("home/tasks/feat-x/state.json");
+    let state: Value = serde_json::from_str(&fs::read_to_string(&state_path).unwrap()).unwrap();
+    let order = state["orders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|order| order["step"] == "s1")
+        .unwrap();
+    let id = order["id"].as_str().unwrap();
+    let base = order["base"].clone();
+    let changed = world.leader("feat-x", &[("amend_order", json!({"order":id,"allowed":["tests/regression.rs"],"reason":"approved regression coverage"}))]);
+    assert!(!changed[0].0, "{changed:?}");
+    world.ok(None, &["watch", "feat-x", "--once"], "");
+    world.set_state("%8", "working");
+    world.ok(None, &["task", "pause", "feat-x", "--interrupt"], "");
+    assert!(world.devws_calls().contains("agent interrupt %8"));
+    world.ok(None, &["task", "resume", "feat-x"], "");
+    world.ok(None, &["watch", "feat-x", "--once"], "");
+    world.commit("src/a.rs", "source\n");
+    world.commit("tests/regression.rs", "regression\n");
+    let output = world
+        .command(Some("%8"))
+        .env("PGHOST", "parent-leak")
+        .env("DB_CONNECTION", "parent-leak")
+        .args(["check", "run", "--order", id])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let first: Value = serde_json::from_slice(&output.stdout).unwrap();
+    world.ok(
+        Some("%8"),
+        &["report", "done", "--order", id, "implemented and tested"],
+        "",
+    );
+    let state: Value = serde_json::from_str(&fs::read_to_string(&state_path).unwrap()).unwrap();
+    assert_eq!(state["check_evidence"][id]["run"], first["run"]);
+    assert_eq!(
+        state["orders"].as_array().unwrap().last().unwrap()["base"],
+        base
+    );
+    assert_eq!(
+        state["steps"].as_array().unwrap().last().unwrap()["status"],
+        "reported"
+    );
+    let reviewed = world.leader("feat-x", &[("accept_step", json!({"step":"s1"}))]);
+    assert!(!reviewed[0].0, "{reviewed:?}");
+    let missing = world.run(Some("%8"), &["report", "done", "missing identity"], "");
+    assert!(!missing.0 && missing.2.contains("--order"));
 }

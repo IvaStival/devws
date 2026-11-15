@@ -35,6 +35,22 @@ printf '%s\0' "\$@" > "$TEST_ROOT/started/$program.\$\$"
 exec sleep 600
 EOF
 done
+# The real keychain and Anthropic are never reached: `security` answers only
+# with $TEST_ROOT/keychain/<service>, and `curl` records how it was called and
+# answers $TEST_ROOT/usage.json (failing without one).
+mkdir -p "$TEST_ROOT/keychain"
+cat > "$TEST_ROOT/bin/security" <<EOF
+#!/usr/bin/env bash
+[ "\$1" = find-generic-password ] && [ "\$2" = -s ] || exit 1
+printf '%s\n' "\$3" >> "$TEST_ROOT/keychain-asked"
+cat "$TEST_ROOT/keychain/\$3" 2>/dev/null
+EOF
+cat > "$TEST_ROOT/bin/curl" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" > "$TEST_ROOT/curl-args"
+cat > "$TEST_ROOT/curl-config"
+cat "$TEST_ROOT/usage.json" 2>/dev/null
+EOF
 chmod +x "$TEST_ROOT/bin/"*
 for script in "$SCRIPTS_SRC"/*.sh "$SCRIPTS_SRC"/*.pl "$SCRIPTS_SRC"/*.json "$SCRIPTS_SRC"/*.md "$SCRIPTS_SRC"/*.tsv; do
   ln -s "$script" "$TEST_ROOT/home/.tmuxinator/$(basename "$script")"
@@ -332,7 +348,7 @@ test_limits_are_the_ones_the_header_shows() {
   tmux new-session -d -s limits -x 100 -y 30 'sleep 600'
 
   [ "$("$SCRIPTS/agent_cli.sh" limits claude)" = "- -" ] || fail "unknown Claude limits are not - -"
-  tmux set-option -g @devws_limits_claude "42 63"
+  tmux set-option -g @devws_limits_claude "42 63 $(date +%s)"
   [ "$("$SCRIPTS/agent_cli.sh" limits claude)" = "42 63" ] || fail "Claude's limits are not its status line's"
 
   [ "$("$SCRIPTS/agent_cli.sh" limits codex)" = "- -" ] || fail "Codex limits with no logs are not - -"
@@ -343,6 +359,62 @@ test_limits_are_the_ones_the_header_shows() {
 
   [ "$(status_of "$SCRIPTS/agent_cli.sh" limits nobody)" = 1 ] || fail "limits accepted an unregistered agent"
   [ "$(status_of "$SCRIPTS/agent_cli.sh" limits)" = 2 ] || fail "limits accepted no agent"
+}
+
+# A status line reading can outlive a reset (a bought one too) while no Claude
+# session runs to redraw it: it must not keep blocking the team.
+test_an_old_claude_reading_blocks_nothing() {
+  tmux new-session -d -s old-limits -x 100 -y 30 'sleep 600'
+  tmux set-option -g @devws_limits_claude "1 98 $(($(date +%s) - 1000))"
+  [ "$("$SCRIPTS/agent_cli.sh" limits claude)" = "- -" ] || fail "an old Claude reading still counts"
+  tmux set-option -g @devws_limits_claude "1 98"
+  [ "$("$SCRIPTS/agent_cli.sh" limits claude)" = "- -" ] || fail "a reading without its time still counts"
+}
+
+test_claude_limits_are_asked_of_anthropic() {
+  local now work_service five week at
+  tmux new-session -d -s live-limits -x 100 -y 30 'sleep 600'
+  printf '{"claudeAiOauth":{"accessToken":"sk-ant-oat-secret"}}' > "$TEST_ROOT/keychain/Claude Code-credentials"
+  printf '{"five_hour":{"utilization":12.7,"resets_at":"2026-11-12T20:00:00Z"},"seven_day":{"utilization":3.0}}' > "$TEST_ROOT/usage.json"
+  # Live beats the stale reading that blocked the team, and replaces it.
+  tmux set-option -g @devws_limits_claude "1 98 $(date +%s)"
+  now="$(date +%s)"
+  [ "$("$SCRIPTS/agent_cli.sh" limits claude)" = "12 3" ] || fail "Claude's live limits: $("$SCRIPTS/agent_cli.sh" limits claude)"
+  read -r five week at <<< "$(tmux show-option -gqv @devws_limits_claude)"
+  [ "$five $week" = "12 3" ] && [ "$at" -ge "$now" ] || fail "the live limits are not recorded for the header"
+  grep -q 'oauth/usage' "$TEST_ROOT/curl-args" || fail "curl did not ask the usage endpoint"
+  ! grep -q secret "$TEST_ROOT/curl-args" || fail "the token was on curl's command line"
+  grep -q 'Bearer sk-ant-oat-secret' "$TEST_ROOT/curl-config" || fail "the token did not reach curl"
+
+  # A plan without a week has none.
+  printf '{"five_hour":{"utilization":40},"seven_day":null}' > "$TEST_ROOT/usage.json"
+  [ "$("$SCRIPTS/agent_cli.sh" limits claude)" = "40 -" ] || fail "a missing week is not -"
+
+  # No answer: the recorded reading, still recent, stands in.
+  rm "$TEST_ROOT/usage.json"
+  [ "$("$SCRIPTS/agent_cli.sh" limits claude)" = "40 -" ] || fail "no fallback when Anthropic does not answer"
+  printf 'not json' > "$TEST_ROOT/usage.json"
+  [ "$("$SCRIPTS/agent_cli.sh" limits claude)" = "40 -" ] || fail "a garbled answer was taken"
+  rm "$TEST_ROOT/usage.json"
+
+  # An account with its own folder has its own keychain entry, named after
+  # the folder as Claude Code names it.
+  work_service="Claude Code-credentials-$(printf '%s' "$HOME/.claude-work" | shasum -a 256 | cut -c1-8)"
+  printf '{"claudeAiOauth":{"accessToken":"work-token"}}' > "$TEST_ROOT/keychain/$work_service"
+  printf '{"five_hour":{"utilization":5},"seven_day":{"utilization":70}}' > "$TEST_ROOT/usage.json"
+  [ "$(DEVWS_AGENT_work="claude ~/.claude-work" "$SCRIPTS/agent_cli.sh" limits work)" = "5 70" ] ||
+    fail "the work account's live limits"
+  grep -q 'Bearer work-token' "$TEST_ROOT/curl-config" || fail "the work account used another login"
+  [ "$(tmux show-option -gqv @devws_limits_work | cut -d' ' -f1-2)" = "5 70" ] || fail "the work account's limits are not recorded"
+
+  # Without a keychain login, the folder's .credentials.json (Linux).
+  rm "$TEST_ROOT/keychain/$work_service"
+  mkdir -p "$HOME/.claude-work"
+  printf '{"claudeAiOauth":{"accessToken":"file-token"}}' > "$HOME/.claude-work/.credentials.json"
+  DEVWS_AGENT_work="claude ~/.claude-work" "$SCRIPTS/agent_cli.sh" limits work >/dev/null
+  grep -q 'Bearer file-token' "$TEST_ROOT/curl-config" || fail "the credentials file is not read"
+  rm -rf "$HOME/.claude-work" "$TEST_ROOT/usage.json" "$TEST_ROOT/keychain/Claude Code-credentials"
+  tmux set-option -gu @devws_limits_work
 }
 
 # The keys of the sidebar's rows, in order: a record starts with its key.
@@ -652,6 +724,8 @@ test_spawn_adds_an_agent_beside_a_pane_without_taking_the_focus
 test_run_replaces_the_agent_in_its_pane
 test_kind_names_the_program_an_agent_runs
 test_limits_are_the_ones_the_header_shows
+test_an_old_claude_reading_blocks_nothing
+test_claude_limits_are_asked_of_anthropic
 test_usage_is_what_the_panes_conversation_used
 test_the_sidebar_groups_a_tasks_workspaces
 test_sidebar_models_on_secondary_lines

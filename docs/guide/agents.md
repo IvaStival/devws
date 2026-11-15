@@ -53,16 +53,20 @@ folder set, even `DEVWS_AGENT_claude="claude ~/.claude"`.
 | Working | `⠋` (turning) | From your prompt until its turn ends |
 | Needs you | yellow `● needs you` | A permission prompt or a question waits |
 | Done | green `✓ done` | Its turn ended; until your next prompt |
-| Idle | nothing | Just started or restarted |
+| Idle | nothing | Just started or restarted, or its turn was interrupted |
 
 It shows in the agent's header, the minimized strip, the status bar and the
-sidebar, for every workspace.
+sidebar, for every workspace. Interrupting a turn (Esc) sends no "turn ended"
+event, so devws reads it from the agent's transcript: within about 10 seconds
+the agent turns idle.
 
 - **! Go to waiting agent** (`C-b a`) goes to the workspace whose agent has
   waited longest and focuses it (restoring it when minimized); again for the
   next. With none waiting, it goes to one that is done.
 - When an agent in a workspace you are not looking at needs you or is done,
-  macOS notifies you (workspace, branch, agent). Clicking it goes there.
+  macOS notifies you (workspace, branch, agent). Clicking it goes there. An
+  agent team's agents only notify when they need you; the team notifies once
+  when it stops ([Agent teams](agentic.md)).
   `DEVWS_NOTIFY=waiting` keeps only needs-you, `0` none. Clicking needs
   `terminal-notifier` (`./install.sh --deps`).
 - Codex asks once to review devws's hooks; approve them, or its state
