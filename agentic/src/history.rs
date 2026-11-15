@@ -8,11 +8,10 @@ use crate::log::Kind;
 use crate::specs;
 use crate::state::{Step, StepStatus};
 use crate::task::Task;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Where histories live in a repo; the work check leaves this folder out.
 pub const FOLDER: &str = ".devagentics/history";
@@ -22,6 +21,14 @@ struct History {
     task: String,
     branch: String,
     approved: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    application: Option<crate::execution::Application>,
+    #[serde(default)]
+    reviews: Vec<crate::reviews::Review>,
+    #[serde(default)]
+    integrations: std::collections::BTreeMap<String, crate::integration::Journal>,
+    #[serde(default)]
+    next_id: u64,
     /// Accepted steps, in the order they were first ordered.
     steps: Vec<Done>,
 }
@@ -42,20 +49,7 @@ fn folder(worktree: &Path, task_id: &str) -> PathBuf {
 }
 
 fn git(worktree: &Path, arguments: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(worktree)
-        .args(arguments)
-        .output()
-        .context("running git")?;
-    if !output.status.success() {
-        bail!(
-            "git {}: {}",
-            arguments.first().unwrap_or(&""),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    crate::runner::safe_git(worktree, arguments)
 }
 
 /// Copies every `*.md` of `from` into `to`; nothing when `from` is missing.
@@ -90,6 +84,14 @@ pub fn save(task: &Task, step: Option<&str>) -> Result<bool> {
         .worktree;
     let versions = specs::versions(&state.steps);
     let version_of = |step: &Step| {
+        if state.workflow == crate::execution::Workflow::Reviewed {
+            return state
+                .application
+                .items
+                .get(&step.id)
+                .map(|item| item.scope.clone())
+                .unwrap_or_else(|| "planning".into());
+        }
         let spec = specs::spec_of(step);
         versions
             .iter()
@@ -100,6 +102,41 @@ pub fn save(task: &Task, step: Option<&str>) -> Result<bool> {
         task: config.id.clone(),
         branch: config.branch.clone(),
         approved: state.approved,
+        application: if state.workflow == crate::execution::Workflow::Reviewed {
+            Some(state.application.clone())
+        } else {
+            None
+        },
+        reviews: if state.workflow == crate::execution::Workflow::Reviewed {
+            state
+                .reviews
+                .iter()
+                .filter(|review| {
+                    state
+                        .integrations
+                        .values()
+                        .any(|journal| journal.accepted && journal.review == review.id)
+                })
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        },
+        integrations: if state.workflow == crate::execution::Workflow::Reviewed {
+            state
+                .integrations
+                .iter()
+                .filter(|(_, journal)| journal.accepted)
+                .map(|(id, journal)| (id.clone(), journal.clone()))
+                .collect()
+        } else {
+            Default::default()
+        },
+        next_id: if state.workflow == crate::execution::Workflow::Reviewed {
+            state.next_id
+        } else {
+            0
+        },
         steps: state
             .steps
             .iter()
@@ -137,10 +174,14 @@ pub fn save(task: &Task, step: Option<&str>) -> Result<bool> {
     }
     let subject = match step.and_then(|step| state.steps.iter().find(|found| found.id == step)) {
         Some(found) => {
-            let number = specs::step_versions(&state.steps)
-                .get(&found.id)
-                .cloned()
-                .unwrap_or_else(|| found.id.clone());
+            let number = if state.workflow == crate::execution::Workflow::Reviewed {
+                found.id.clone()
+            } else {
+                specs::step_versions(&state.steps)
+                    .get(&found.id)
+                    .cloned()
+                    .unwrap_or_else(|| found.id.clone())
+            };
             format!("chore(team): record {number} {}", found.title)
         }
         None => "chore(team): record the team history".to_string(),
@@ -174,6 +215,13 @@ pub fn load(task: &Task, worktree: &Path) -> Result<Option<usize>> {
     let count = history.steps.len();
     task.transaction(|tx| {
         tx.state.approved = history.approved;
+        if let Some(application) = &history.application {
+            application.validate()?;
+            tx.state.application = application.clone();
+            tx.state.reviews = history.reviews.clone();
+            tx.state.integrations = history.integrations.clone();
+            tx.state.next_id = tx.state.next_id.max(history.next_id);
+        }
         for done in &history.steps {
             if tx.state.steps.iter().any(|step| step.id == done.id) {
                 continue;

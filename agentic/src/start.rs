@@ -109,13 +109,26 @@ pub fn write_leader_args(
     };
     agent_args::write_mcp_config(&mcp)?;
     let first_message = opening(leader, &config, "the leader", &config.repos[0], first);
-    let arguments = agent_args::arguments(&Launch {
-        role: leader,
-        kind,
-        first_message: &first_message,
-        mcp: Some(&mcp),
-        writable: Vec::new(),
-    });
+    let arguments = if task.state()?.workflow == crate::execution::Workflow::Reviewed {
+        anyhow::ensure!(
+            kind == crate::agent_args::Kind::Claude,
+            "reviewed coordinator requires the verified Claude MCP-only adapter; unsafe provider switching is blocked"
+        );
+        crate::worker_tools::leader_arguments(
+            &mcp.config_file,
+            &first_message,
+            leader.model.as_deref(),
+            leader.effort.as_deref(),
+        )
+    } else {
+        agent_args::arguments(&Launch {
+            role: leader,
+            kind,
+            first_message: &first_message,
+            mcp: Some(&mcp),
+            writable: Vec::new(),
+        })
+    };
     let args_file = task.dir().join("leader.args");
     agent_args::write_args_file(&args_file, &arguments)?;
     Ok(args_file)
@@ -167,6 +180,24 @@ pub fn start_task(
     command: &str,
     leader: Option<&str>,
 ) -> Result<Started> {
+    start_task_with_workflow(
+        home,
+        devws,
+        folder,
+        command,
+        leader,
+        crate::execution::Workflow::Legacy,
+    )
+}
+
+pub fn start_task_with_workflow(
+    home: &Home,
+    devws: &dyn Devws,
+    folder: &Path,
+    command: &str,
+    leader: Option<&str>,
+    workflow: crate::execution::Workflow,
+) -> Result<Started> {
     let folder = folder
         .canonicalize()
         .with_context(|| format!("{} is not a folder", folder.display()))?;
@@ -216,6 +247,15 @@ pub fn start_task(
                     Ok(())
                 })?;
                 crate::history::load(&task, &folder)?;
+                if workflow == crate::execution::Workflow::Reviewed {
+                    crate::roles::provision_specialists(home)?;
+                    task.transaction(|tx| {
+                        tx.state.workflow=workflow;
+                        tx.state.approved=tx.state.application.approved();
+                        tx.log(Kind::Plan,None,None,"Reviewed workflow: interview and baseline approval required; unsupported runner capabilities remain blocked");
+                        Ok(())
+                    })?;
+                }
                 break task;
             }
         }
@@ -227,15 +267,25 @@ pub fn start_task(
         Some(agent) => Some(agent.to_string()),
         None => task.state()?.leader_pick,
     };
-    let (leader, why) = match (&pick, leader) {
+    let (mut leader, mut why) = match (&pick, leader) {
         (Some(agent), Some(_)) => (leader::led_by(role, agent, devws)?, None),
         // Its account may have run out: then its fallback leads (leader.rs).
         (Some(agent), None) => leader::choose(&leader::led_by(role, agent, devws)?, devws)?,
         (None, _) => leader::choose(role, devws)?,
     };
+    if task.state()?.workflow == crate::execution::Workflow::Reviewed
+        && pick.is_none()
+        && devws.agent_kind(&leader.agent)? != crate::agent_args::Kind::Claude
+        && devws.agent_kind(&role.agent)? == crate::agent_args::Kind::Claude
+    {
+        leader = role.clone();
+        why=Some("unsupported automatic coordinator fallback blocked; retained the supported MCP-only adapter".into());
+    }
     // Carrying on: the steps it has came from the repo's history, or from
     // earlier in this home; either way the leader catches up first.
-    let first = if task.state()?.steps.is_empty() {
+    let first = if task.state()?.workflow == crate::execution::Workflow::Reviewed {
+        "This task uses reviewed planning. Call application_workflow with action=status. Interview the user and prepare an application baseline; use stable scope/step IDs and milestone release versions. Confirm shared understanding, then record explicit approval for the exact baseline revision. Configure and verify a local source-only container image through the exact-call external permission flow before starting specialists. Use leader_inbox and inbox_ack instead of terminal capture/delivery. Do not bypass missing capabilities with direct shell, task-state edits or a legacy restart."
+    } else if task.state()?.steps.is_empty() {
         LEADER_FIRST
     } else {
         LEADER_CONTINUES

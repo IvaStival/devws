@@ -42,12 +42,12 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
                 } else {
                     "provider-managed"
                 },
-                "approval_mode": effective.approvals.as_deref().unwrap_or(match crate::agent_args::Kind::parse(&effective.agent) {
+                "approval_mode": if state.workflow==crate::execution::Workflow::Reviewed {"scoped_mcp_only"} else {effective.approvals.as_deref().unwrap_or(match crate::agent_args::Kind::parse(&effective.agent) {
                     Some(crate::agent_args::Kind::Claude) if role.writes => "acceptEdits",
                     Some(crate::agent_args::Kind::Claude) => "default",
                     Some(crate::agent_args::Kind::Codex) => "on-request",
                     None => "provider-default",
-                }),
+                })},
                 "description": role.description,
                 "startup_candidates": if role.name == "leader" { None } else {
                     devws.agent_kind(&role.agent).ok().map(|kind| role.worker_candidates(kind))
@@ -110,6 +110,7 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
     let versions = crate::specs::step_versions(&state.steps);
 
     Ok(json!({
+        "reviewed_workflow": crate::workflow::status(task)?,
         "recovery": state.recovery,
         "amendments": state.amendments,
         "permissions": state.permissions,
@@ -132,9 +133,9 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
         "lanes": config.lanes.iter().map(|lane| json!({ "name": lane.name, "repo": lane.repo, "files": lane.globs, "branch": lane.branch, "worktree": lane.worktree })).collect::<Vec<_>>(),
         "roles": roles,
         "agents": agents,
-        "steps": state.steps.iter().map(|step| json!({ "id": step.id, "version": versions.get(&step.id), "title": step.title, "status": step.status, "attempts": step.attempts })).collect::<Vec<_>>(),
+        "steps": state.steps.iter().map(|step| json!({ "id": step.id, "version": if state.workflow==crate::execution::Workflow::Reviewed {None}else{versions.get(&step.id)}, "title": step.title, "status": step.status, "attempts": step.attempts })).collect::<Vec<_>>(),
         // What a new plan part is named; its steps are next_version.1, .2…
-        "next_version": crate::specs::next_version(&state.steps),
+        "next_version": if state.workflow==crate::execution::Workflow::Reviewed {None}else{Some(crate::specs::next_version(&state.steps))},
         "execution_plans": state.plans.iter().map(|plan| json!({ "step": plan.step, "author": plan.author })).collect::<Vec<_>>(),
         "open_questions": state.questions.iter().filter(|question| question.answer.is_none()).map(|question| json!({ "id": question.id, "from": question.from, "to": question.to, "text": question.text })).collect::<Vec<_>>(),
         "waiting_for_you": usize::from(state.usage_limit_approval == crate::state::UsageApproval::Pending) + state.queue.iter().filter(|message| message.to == LEADER).count()

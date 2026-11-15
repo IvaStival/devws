@@ -40,14 +40,38 @@ pub struct OrderRequest {
 
 /// Gives an agent an order: records it, and queues the message that tells the
 /// agent (the dispatcher types it in when the agent can take it).
-pub fn send_order(task: &Task, request: OrderRequest) -> Result<String> {
+pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
     let _control = task.control_lock()?;
+    crate::workflow::block_unverified_runner(task)?;
     let agent = task
         .state()?
         .agent(&request.agent)
         .filter(|agent| agent.live)
         .cloned()
         .with_context(|| format!("there is no live agent {}", request.agent))?;
+    let reviewed = task.state()?.workflow == crate::execution::Workflow::Reviewed;
+    let contract = if reviewed && agent.writes {
+        let state = task.state()?;
+        let item = state.application.ready(&request.step, &state)?.clone();
+        ensure_contract(task, &agent, &item)?;
+        anyhow::ensure!(
+            request.check.is_none(),
+            "reviewed assignments use named checks from the accepted contract"
+        );
+        anyhow::ensure!(
+            request.allowed.is_empty() || request.allowed == item.allowed,
+            "assignment scope differs from accepted contract"
+        );
+        anyhow::ensure!(
+            request.profiles.is_empty() || request.profiles == item.profiles,
+            "assignment check profiles differ from accepted contract"
+        );
+        request.allowed = item.allowed.clone();
+        request.profiles = item.profiles.clone();
+        Some(item)
+    } else {
+        None
+    };
     // A lane's agent: its lane takes the other lanes' accepted work first,
     // and its files are the lane's unless the order narrows them.
     let lane = agent
@@ -61,6 +85,9 @@ pub fn send_order(task: &Task, request: OrderRequest) -> Result<String> {
         crate::lanes::catch_up(task, lane)?;
     }
     let repo = crate::lanes::workplace(task, &agent)?;
+    if contract.is_some() {
+        crate::runner::preflight(task, &request.step, &repo.worktree)?;
+    }
     let base = checks::head(&repo.worktree)?;
     let mut profiles = task
         .config()?
@@ -82,7 +109,7 @@ pub fn send_order(task: &Task, request: OrderRequest) -> Result<String> {
     };
 
     task.transaction(|tx| {
-        if agent.group() == Group::Floor {
+        if agent.group() == Group::Floor && !reviewed {
             let plan = request.plan.as_deref().with_context(|| {
                 format!(
                     "{} is on the factory floor: it only runs a senior's accepted plan (send_order with plan = the senior's step)",
@@ -171,6 +198,7 @@ pub fn send_order(task: &Task, request: OrderRequest) -> Result<String> {
             &request.text,
         );
         tx.state.order_profiles.insert(id.clone(), profiles.selected.clone());
+        if let Some(contract)=contract {tx.state.contract_bindings.insert(id.clone(),contract);}
         tx.state.orders.push(order);
         Ok(id)
     })
@@ -219,24 +247,8 @@ pub fn amend(
             .as_ref()
             .and_then(|name| config.lanes.iter().find(|lane| &lane.name == name))
         {
-            let ceiling = checks::glob_set(&lane.globs)?;
             for addition in &additions {
-                let safe = if addition.contains(['*', '?', '[', '{']) || addition.ends_with('/') {
-                    lane.globs.iter().any(|pattern| {
-                        pattern == addition || {
-                            let prefix = pattern
-                                .strip_suffix("/**")
-                                .or_else(|| pattern.strip_suffix('/'));
-                            prefix.is_some_and(|prefix| {
-                                !prefix.contains(['*', '?', '[', '{'])
-                                    && addition.starts_with(&format!("{prefix}/"))
-                                    && !addition.split('/').any(|part| part == "..")
-                            })
-                        }
-                    })
-                } else {
-                    ceiling.is_match(addition)
-                };
+                let safe = checks::within(&lane.globs, addition)?;
                 if !safe {
                     bail!("cannot prove {addition} is within lane {}", lane.name);
                 }
@@ -629,6 +641,11 @@ fn result_message(
 /// A step done in a lane merges into the task's branch first; a clash leaves
 /// it waiting for a review, with the files named.
 pub fn accept_step(task: &Task, step: &str) -> Result<()> {
+    let _control = task.control_lock()?;
+    if crate::integration::recover(task, step)? {
+        return Ok(());
+    }
+    crate::reviews::require_approval(task, step)?;
     let state = task.state()?;
     let reported = state
         .steps
@@ -656,6 +673,9 @@ pub fn accept_step(task: &Task, step: &str) -> Result<()> {
             );
         }
         found.set_status(StepStatus::Accepted, crate::log::now());
+        if let Some(journal) = tx.state.integrations.get_mut(step) {
+            journal.accepted = true;
+        }
         tx.log(Kind::Review, None, Some(step), "accepted");
         Ok(())
     })?;
@@ -697,6 +717,49 @@ pub fn reject_step(task: &Task, step: &str, reason: &str) -> Result<()> {
         );
         Ok(())
     })
+}
+
+pub(crate) fn ensure_contract(
+    task: &Task,
+    agent: &crate::state::Agent,
+    item: &crate::execution::Contract,
+) -> Result<()> {
+    anyhow::ensure!(
+        item.role == agent.role
+            && item.repo == agent.repo
+            && agent.lane.as_deref() == Some(item.lane.as_str()),
+        "specialist/repository/lane does not match accepted contract"
+    );
+    let lane = crate::lanes::get(task, &item.lane)?;
+    let runner = task
+        .state()?
+        .runner
+        .context("isolated runner not configured")?;
+    for path in item.allowed.iter().chain(&item.supporting_files) {
+        anyhow::ensure!(
+            checks::within(&runner.source_paths, path)?,
+            "planned source path is unavailable in the isolated runner"
+        );
+    }
+    for path in item.allowed.iter().chain(&item.supporting_files) {
+        anyhow::ensure!(
+            checks::within(&lane.globs, path)?,
+            "planned file scope exceeds lane"
+        );
+    }
+    let profiles = task
+        .config()?
+        .check_profiles
+        .get(&item.repo)
+        .cloned()
+        .context("configure named check profiles before dispatch")?;
+    for name in &item.profiles {
+        anyhow::ensure!(
+            profiles.checks.contains_key(name),
+            "unknown contract check {name}"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

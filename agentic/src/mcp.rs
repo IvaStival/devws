@@ -43,6 +43,12 @@ fn tools() -> Vec<Value> {
         |what: &str| json!({ "type": "array", "items": { "type": "string" }, "description": what });
     let mut tools = vec![
         tool(
+            "application_workflow",
+            "Project application planning. Actions: status, propose, answer, confirm, approve, milestones, preview_adoption, adopt, review_request, provision_roles, runner_configure, recover_turn, validate_milestone, leader_inbox, inbox_ack, runner_images, project_overview, preflight_retry. provision_roles changes managed storage outside the project and requires exact-call external authorization. Only record confirm/approve after the user's explicit answer for that exact revision. Material proposals never inherit approval. Preview is read-only; runner enforcement may block adoption.",
+            json!({"action":text("Workflow action"),"input":{"type":"object"}}),
+            &["action"],
+        ),
+        tool(
             "pause_task",
             "Pause deliveries; optionally interrupt active turns without closing panes.",
             json!({"interrupt": {"type":"boolean"}}),
@@ -217,6 +223,7 @@ fn tools() -> Vec<Value> {
 /// Only actions crossing the project boundary require separate authorization.
 fn effect(name: &str) -> Option<Effect> {
     match name {
+        "application_workflow" => Some(Effect::System),
         "add_repo" | "open_prs" => Some(Effect::External),
         "stop_agent" => Some(Effect::System),
         "set_usage_limit_approval"
@@ -350,6 +357,14 @@ impl Server<'_> {
             return self.authorize_action(arguments);
         }
         validate_required(name, arguments)?;
+        if name == "application_workflow"
+            && matches!(
+                arguments["action"].as_str(),
+                Some("provision_roles" | "runner_configure")
+            )
+        {
+            return self.authorized_call(name, arguments, Effect::External);
+        }
         if let Some(effect) = effect(name) {
             if effect != Effect::System {
                 return self.authorized_call(name, arguments, effect);
@@ -461,6 +476,11 @@ impl Server<'_> {
 
     fn call_inner(&self, name: &str, arguments: &Value) -> Result<String> {
         match name {
+            "application_workflow" => Ok(serde_json::to_string_pretty(&crate::workflow::call(
+                self.task,
+                &string(arguments, "action")?,
+                arguments.get("input").unwrap_or(&json!({})),
+            )?)?),
             "task_status" => Ok(serde_json::to_string_pretty(&status::summary(
                 self.task, self.devws, self.home,
             )?)?),
@@ -769,6 +789,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "application_workflow",
                 "pause_task",
                 "resume_task",
                 "configure_checks",

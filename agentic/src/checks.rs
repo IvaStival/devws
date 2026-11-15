@@ -17,6 +17,12 @@ pub(crate) fn git(worktree: &Path, arguments: &[&str]) -> Result<String> {
         .env("GIT_OPTIONAL_LOCKS", "0")
         .arg("-C")
         .arg(worktree)
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
         .args(arguments)
         .output()
         .context("running git")?;
@@ -77,6 +83,25 @@ pub(crate) fn glob_set(patterns: &[String]) -> Result<GlobSet> {
         builder.add(glob);
     }
     builder.build().context("building the globs")
+}
+
+/// Prove glob containment conservatively; arbitrary overlapping globs are not proof.
+pub(crate) fn within(patterns: &[String], addition: &str) -> Result<bool> {
+    if addition.contains(['*', '?', '[', '{']) || addition.ends_with('/') {
+        Ok(patterns.iter().any(|pattern| {
+            pattern == addition
+                || pattern
+                    .strip_suffix("/**")
+                    .or_else(|| pattern.strip_suffix('/'))
+                    .is_some_and(|prefix| {
+                        !prefix.contains(['*', '?', '[', '{'])
+                            && addition.starts_with(&format!("{prefix}/"))
+                            && !addition.split('/').any(|part| part == "..")
+                    })
+        }))
+    } else {
+        Ok(glob_set(patterns)?.is_match(addition))
+    }
 }
 
 /// What an agent's work looks like.

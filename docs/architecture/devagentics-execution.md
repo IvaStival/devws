@@ -189,3 +189,63 @@ Explicit resume rebuilds candidate selection with the existing worker scope,
 rechecking plan approval, capacity and writer ownership. Revocation changes
 future launches, not live workers. `task_status.usage_limit_approval` exposes the
 state, evidence and next action to a restarted leader.
+
+## Reviewed execution boundary
+
+`execution` stores versioned baseline proposals separately from approved state.
+Decision prerequisites define the interview frontier. Contracts carry specialist,
+lane, file/interface/test definitions and pinned check configuration. Approval
+is revision-bound; material amendments invalidate affected work and evidence.
+Stable work IDs are independent of milestone application versions. Old task state
+still defaults to legacy mode and is not automatically adopted.
+
+Reviewed coordinators have only the leader MCP catalog. Workers run as managed,
+noninteractive Claude turns with native tools and other MCP configurations
+disabled. The worker MCP server binds identity to a private runtime session and
+exposes no leader approval, external-action or merge capabilities. Healthy turns
+resume the same conversation; uncertain turns retain durable intent and require
+explicit recovery. Unsupported provider adapters fail closed. This application
+boundary does not claim isolation from hostile same-user processes controlling
+runtime files or a compromised Docker daemon.
+
+`runner` exports tracked source into disposable generations, excluding protected
+data, credentials and Git metadata. Only these generations enter non-networked,
+non-root containers with a read-only root filesystem, dropped capabilities,
+resource limits and no host socket/home mounts. Source allowlists and protected
+paths are explicit configuration; do not classify live data directories as source.
+A dedicated per-phase result directory carries structured test counts, without
+exposing the surrounding task metadata. Checkpoint import validates scope,
+source identity, links and executable modes, then commits only the permitted paths.
+Git hooks, filters and fsmonitor callbacks cannot execute source-controlled code
+during reviewed operations.
+
+Named profile prerequisites run before dispatch in an independent generation.
+Unchanged environment failures are cached until relevant inputs change or an
+operator requests a retry. Reviewed validation never reads parent secret sources
+or falls back to inherited host-shell checks. Evidence includes the immutable
+runner configuration; changed source, order, baseline checks or environment
+invalidates reuse. Final milestone checks validate the integrated application.
+
+`reviews` binds independent identities and authoritative evidence to immutable
+source/target commits and an `integration` candidate tree/commit. Reviewers see a
+dedicated candidate checkout exported read-only to their tool container. Acceptance
+revalidates inputs under the control lock, journals intent, then fast-forwards to
+the approved candidate. Recovery acknowledges only that candidate, optionally
+followed by metadata-only history; unrelated changes require operator inspection.
+Lane catch-up propagates accepted code by fast-forward and blocks divergent
+integration instead of creating unreviewed resolution code.
+
+`milestones` stores combined-state evidence against code fingerprints, required
+contracts, check definitions and runner configuration. History-only commits do
+not change that code fingerprint. Missing/stale/failed evidence blocks readiness
+and draft PR publication. This feature does not add release/tag/deployment effects.
+Exports preserve approved planning and accepted review provenance, not worker
+credentials, runner policy or machine-specific environment evidence.
+
+`performance` incrementally reads bounded log data and records actual check,
+queue and worker-turn intervals. Aggregate phase time is distinguished from the
+union of elapsed intervals, and unavailable historical timing remains unknown.
+`Task::state` takes a shared read lock without rewriting the state file; source
+fingerprints use in-process SHA-256 rather than per-file Git processes. Readiness,
+capacity and review details are available through status and the leader's board
+dialog. No automatic staffing change or fixed speed claim follows from a snapshot.

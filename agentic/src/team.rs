@@ -117,6 +117,7 @@ impl Team<'_> {
         lane_name: Option<&str>,
     ) -> Result<Agent> {
         let _control = self.task.control_lock()?;
+        crate::workflow::block_unverified_runner(self.task)?;
         let config = self.task.config()?;
         let lane = lane_name
             .map(|name| lanes::get(self.task, name))
@@ -418,17 +419,41 @@ impl Team<'_> {
         id: &str,
     ) -> Result<(String, String)> {
         let kind = self.devws.agent_kind(&role.agent)?;
+        let reviewed = self.task.state()?.workflow == crate::execution::Workflow::Reviewed;
+        if reviewed && kind != Program::Claude {
+            return Err(StartupFailure {scope:FailureScope::Model,reason:"reviewed execution requires the verified Claude MCP-only adapter; native Codex tools are not an isolation boundary".into()}.into());
+        }
         let first_message = opening(role, config, id, repo, AGENT_FIRST);
-        let arguments = agent_args::arguments(&Launch {
-            role,
-            kind,
-            first_message: &first_message,
-            mcp: None,
-            writable: [self.home.root().to_path_buf()]
-                .into_iter()
-                .chain(crate::checks::git_data(&repo.worktree).unwrap_or_default())
-                .collect(),
-        });
+        let arguments = if reviewed {
+            let state = self.task.state()?;
+            let review_source = crate::reviews::pending(&state, id)
+                .map(|review| crate::reviews::checkout(self.task, review));
+            let source = review_source.as_deref().unwrap_or(&repo.worktree);
+            let identity = crate::runner::prepare(self.task, id, source, !role.writes)?;
+            let mut args = vec![
+                "--devagentics-worker".into(),
+                std::env::current_exe()?.to_string_lossy().into_owned(),
+                config.id.clone(),
+                id.into(),
+                "--identity".into(),
+                identity.to_string_lossy().into_owned(),
+            ];
+            if let Some(model) = &role.model {
+                args.extend(["--model".into(), model.clone()]);
+            }
+            args
+        } else {
+            agent_args::arguments(&Launch {
+                role,
+                kind,
+                first_message: &first_message,
+                mcp: None,
+                writable: [self.home.root().to_path_buf()]
+                    .into_iter()
+                    .chain(crate::checks::git_data(&repo.worktree).unwrap_or_default())
+                    .collect(),
+            })
+        };
         let directory = self.task.dir().join("agents");
         std::fs::create_dir_all(&directory)?;
         let args_file = directory.join(format!("{id}.args"));
@@ -529,6 +554,10 @@ impl Team<'_> {
 
     /// The user approves the plan: agents that write may start.
     pub fn approve(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.task.state()?.workflow == crate::execution::Workflow::Legacy,
+            "reviewed workflow requires confirmation and approval of an exact application baseline revision"
+        );
         let plan = std::fs::read_to_string(self.task.dir().join("plan.md")).unwrap_or_default();
         if plan.trim().is_empty() {
             bail!(
@@ -611,6 +640,7 @@ impl Team<'_> {
     /// Returns their ids.
     pub fn resume(&self) -> Result<Vec<String>> {
         let _control = self.task.control_lock()?;
+        crate::workflow::block_unverified_runner(self.task)?;
         let config = self.task.config()?;
         self.task.transaction(|tx| {
             tx.state.paused = true;
@@ -722,6 +752,9 @@ impl Team<'_> {
                         open.delivered = false;
                         open.stalled = false;
                     }
+                }
+                if let Some(message) = crate::reviews::resumption(&tx.state, &agent.id) {
+                    tx.state.say(&agent.id, message);
                 }
                 let restarted = tx
                     .state
