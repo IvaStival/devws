@@ -75,6 +75,28 @@ wait_for_workspace() {
   [ -n "$(terminal_pane "$session")" ]
 }
 
+# A workspace from a template starts whole from it: the system workspace
+# (system.yml, whose log pane reads the log it followed: system_panel.sh), an
+# empty workspace or one of your own templates (workspace_template.sh). It
+# has no agent to resume or terminal to find; it is ready once its sidebar
+# names itself.
+#   start_template_workspace <command…>
+start_template_workspace() {
+  local attempt=0
+
+  tmux has-session -t "=$pending_session" 2>/dev/null && return 0
+  "$@" </dev/null >/dev/null 2>&1
+  while [ -z "$(picker_pane "$pending_session")" ]; do
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge 300 ]; then
+      printf 'devws restore: %s did not finish starting\n' "$pending_session" >&2
+      return 0
+    fi
+    sleep 0.1
+  done
+  restored="${restored}${pending_session}"$'\n'
+}
+
 pending_session=""
 pending_root=""
 pending_picker=1
@@ -92,10 +114,28 @@ start_workspace() {
   pending_skip=1
   [ -n "$pending_session" ] || return 0
 
+  if [ "$pending_template" = system ]; then
+    start_template_workspace tmuxinator start --no-attach system
+    return 0
+  fi
+  if [ -n "$pending_template" ] && "$script_dir/workspace_template.sh" is-template "$pending_template"; then
+    if [ ! -d "$pending_root" ]; then
+      printf 'devws restore: skipped %s: folder is gone: %s\n' "$pending_session" "$pending_root" >&2
+      return 0
+    fi
+    start_template_workspace "$script_dir/workspace_template.sh" start "$pending_template" \
+      "$pending_root" "$pending_session" --no-attach
+    return 0
+  fi
+
   # An agent team's leader and agents are devAgentics's to restart.
-  if [ -n "$pending_template" ]; then
+  if [ "$pending_template" = agentic ]; then
     printf 'devws restore: skipped %s: an agent team (task %s); devagentics brings it back\n' \
       "$pending_session" "${pending_task:-none}" >&2
+    return 0
+  fi
+  if [ -n "$pending_template" ]; then
+    printf 'devws restore: skipped %s: its template %s is gone\n' "$pending_session" "$pending_template" >&2
     return 0
   fi
 

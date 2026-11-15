@@ -17,6 +17,9 @@
 # DEVWS_TOKENS_NOW (epoch seconds) replaces the current time, for tests.
 
 set -u
+# Dollars and token counts print with a "." whatever the locale: awk follows
+# LC_NUMERIC on Linux, and "$4,00" would not read as dollars.
+export LC_NUMERIC=C
 
 scripts_dir="$(cd "$(dirname "$0")" && pwd)"
 # The agents and their folders (DEVWS_AGENTS, DEVWS_AGENT_<name>) are in .env,
@@ -35,10 +38,12 @@ cache_dir="${cache_dir%/}/devws-usage-$(id -u)"
 tab="$(printf '\t')"
 
 # Every log under <folder>, with its size and modification time (it changed
-# when they did): "<size>:<mtime><TAB><path>". One stat for them all.
+# when they did): "<size>:<mtime><TAB><path>". One stat for them all. GNU
+# stat (Linux) first: its -f is about the filesystem and would print that
+# before failing; BSD's (macOS) has no -c and prints nothing.
 fingerprints() {
-  find "$1" -name '*.jsonl' -exec stat -f "%z:%m$tab%N" {} + 2>/dev/null ||
-    find "$1" -name '*.jsonl' -exec stat -c "%s:%Y$tab%n" {} +
+  find "$1" -name '*.jsonl' -exec stat -c "%s:%Y$tab%n" {} + 2>/dev/null ||
+    find "$1" -name '*.jsonl' -exec stat -f "%z:%m$tab%N" {} +
 }
 
 # <log> <fingerprint> <entry>: the log's cache entry, its fingerprint, its

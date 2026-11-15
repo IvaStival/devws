@@ -113,7 +113,10 @@ continue_recorded() {
   [ -n "$pids" ] || return 0
   start_times "$pids" |
     awk 'NR == FNR { alive[$0] = 1; next } $0 in alive { print $1 }' - "$file" |
-    tail -r | xargs kill -CONT 2>/dev/null
+    # Last recorded first, without tail -r: GNU tail (Linux) has no -r, and
+    # nothing would be continued.
+    awk '{ pids[NR] = $0 } END { for (line = NR; line > 0; line--) print pids[line] }' |
+    xargs kill -CONT 2>/dev/null
   return 0
 }
 

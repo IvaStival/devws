@@ -30,8 +30,9 @@ printf 'id = "feat-x"\n[[repos]]\nworktree = "%s"\n[[lanes]]\nworktree = "%s"\n'
   "$WORK/app-feat-x" "$TASKS/feat-x/lanes/back" > "$TASKS/feat-x/task.toml"
 
 # Noon today, local, so "today" and the days before are never off by one.
-NOW="$(date -j -f '%Y-%m-%d %H:%M:%S' "$(date +%F) 12:00:00" +%s)"
-iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%S.000Z; }
+# BSD date (macOS) first, else GNU's (Linux).
+NOW="$(date -j -f '%Y-%m-%d %H:%M:%S' "$(date +%F) 12:00:00" +%s 2>/dev/null || date -d "$(date +%F) 12:00:00" +%s)"
+iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -u -d "@$1" +%Y-%m-%dT%H:%M:%S.000Z; }
 TODAY="$(iso "$NOW")"
 TEN_DAYS="$(iso $((NOW - 10 * 86400)))"
 FORTY_DAYS="$(iso $((NOW - 40 * 86400)))"
@@ -91,7 +92,8 @@ test_an_unchanged_log_is_not_read_again() {
   [ ! -s "$metrics" ] || fail "unchanged logs were read again: $(cat "$metrics")"
   claude_message "$WORK/app" "$TODAY" msg_more >> "$HOME/.claude/projects/-app/one.jsonl"
   # A second later, so the changed log's modification time differs.
-  touch -t "$(date -r $(($(date +%s) + 2)) +%Y%m%d%H%M.%S)" "$HOME/.claude/projects/-app/one.jsonl"
+  local later=$(($(date +%s) + 2))
+  touch -t "$(date -r "$later" +%Y%m%d%H%M.%S 2>/dev/null || date -d "@$later" +%Y%m%d%H%M.%S)" "$HOME/.claude/projects/-app/one.jsonl"
   local output
   output="$(DEVWS_TOKEN_CACHE_METRICS="$metrics" history)"
   [ "$(grep -c parse "$metrics")" = 1 ] || fail "the changed log was not read again once: $(cat "$metrics")"

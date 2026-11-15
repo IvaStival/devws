@@ -37,6 +37,7 @@ Core dependencies:
 - Neovim 0.11.2 or newer, set up with [LazyVim](https://www.lazyvim.org)
 - ripgrep, fd, and the tree-sitter CLI (used by LazyVim)
 - `tree`
+- btop and lazydocker, for the system monitor workspace
 - Ruby (used by tmuxinator)
 - one AI agent: [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
   or [Codex](https://developers.openai.com/codex/)
@@ -88,6 +89,13 @@ Clone the repository, then run:
 ./install.sh --deps
 source ~/.zshrc
 ```
+
+The installer prints one line per step (`✓ Configuration links`), with any
+warning indented under its step, and asks its questions on the terminal. What
+the tools themselves print (brew, cargo, uv, git, the reload) goes to
+`~/.devws-state/install.log`, rewritten on every run. A failed step is marked
+`✗` and followed by the end of that log. `./install.sh --verbose` shows
+everything instead.
 
 `fzf` is required for the workspace picker and is checked on every install. If
 it is missing, the installer asks permission before installing it with

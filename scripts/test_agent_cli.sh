@@ -420,7 +420,7 @@ test_claude_limits_are_asked_of_anthropic() {
 # The keys of the sidebar's rows, in order: a record starts with its key.
 sidebar_keys() {
   DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --rows | tr '\0' '\n' |
-    grep -E '^(workspace|task|group|agent):' | cut -f1
+    grep -E '^(section|workspace|task|group|agent):' | cut -f1
 }
 
 # A group's workspace of dev-t1-api's team, with one agent: its pane.
@@ -437,9 +437,16 @@ team_group() {
 
 test_the_sidebar_groups_a_tasks_workspaces() {
   local session expected peeked senior agent rows record display leader normal_agent original_width long_agent_id row_limit
-  for session in dev-plain-a dev-t1-api dev-t1-web dev-plain-b dev-t2-x; do
+  for session in dev-plain-a dev-t1-api dev-t1-web dev-plain-b dev-t2-x dev-system; do
     tmux new-session -d -s "$session" 'sleep 600'
   done
+  # The system monitor (system.yml): no agent or editor to show, but the log
+  # it follows (system_panel.sh's saved command).
+  tmux set-option -t =dev-system: @devws_template system
+  tmux set-option -t =dev-system: @devws_agent system
+  tmux set-option -t =dev-system: @devws_editor monitor
+  mkdir -p "$HOME/.devws-state"
+  printf 'tail -n 200 -F /var/log/system-sentinel.log\n' > "$HOME/.devws-state/system-log-command"
   tmux set-option -t =dev-t1-api: @devws_task team-1
   tmux set-option -t =dev-t1-api: @devws_template agentic
   tmux set-option -t =dev-t1-api: @devws_root "$TEST_ROOT/projects/api"
@@ -472,18 +479,24 @@ test_the_sidebar_groups_a_tasks_workspaces() {
 
   export DEVWS_PICKER_CURRENT=dev-t1-api
   export TMUX_PANE="$(tmux display-message -p -t =dev-t1-api: '#{pane_id}')"
-  expected="workspace:dev-plain-a
+  # A section each: the system monitor first, then the dev workspaces (a
+  # program's task among them), then the agent teams.
+  expected="section:system
+workspace:dev-system
+section:workspaces
+workspace:dev-plain-a
 workspace:dev-plain-b
+task:team-2
+workspace:dev-t2-x
+section:teams
 workspace:dev-t1-api
 agent:$peeked
 group:dev-t1-api-seniors
 agent:$senior
 group:dev-t1-api-floor
 agent:$agent
-workspace:dev-t1-web
-task:team-2
-workspace:dev-t2-x"
-  [ "$(sidebar_keys)" = "$expected" ] || fail "the sidebar's rows are not grouped by task: $(sidebar_keys | tr '\n' ' ')"
+workspace:dev-t1-web"
+  [ "$(sidebar_keys)" = "$expected" ] || fail "the sidebar's rows are not grouped by section and task: $(sidebar_keys | tr '\n' ' ')"
 
   # Team rows keep name/status above a dim model line; normal workspaces keep
   # branch/agent/editor details with a model below when known. No metadata leaks.
@@ -493,6 +506,9 @@ workspace:dev-t2-x"
     display="${record#*$'\t'}"
     [[ "$display" != *$'\t'* ]] || fail "a sidebar record leaks hidden metadata: $record"
     case "$record" in
+      section:system$'\t'*) expected_lines=0 ;;
+      section:*) expected_lines=1 ;;
+      workspace:dev-system$'\t'*) expected_lines=1 ;;
       task:*|group:*|agent:$peeked$'\t'*) expected_lines=0 ;;
       agent:*) expected_lines=1 ;;
       workspace:dev-t1-api$'\t'*) expected_lines=2 ;;
@@ -510,6 +526,12 @@ workspace:dev-t2-x"
 
   # Without their colors.
   rows="$(DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --rows | tr '\0' '\n' | sed $'s/\033\\[[0-9;]*m//g')"
+  grep -qx 'section:system	SYSTEM' <<<"$rows" || fail "the system section's heading: $rows"
+  grep -A1 '^section:workspaces' <<<"$rows" | tail -1 | grep -qx 'WORKSPACES' || fail "the workspaces section's heading: $rows"
+  grep -A1 '^section:teams' <<<"$rows" | tail -1 | grep -qx 'TEAMS' || fail "the teams section's heading: $rows"
+  grep -A1 '^workspace:dev-system' <<<"$rows" | tail -1 | grep -q 'tail -n 200 -F /var/log/system-sentinel.log' ||
+    fail "the system workspace does not show its log: $(grep -A1 '^workspace:dev-system' <<<"$rows")"
+  ! grep -q 'system · monitor' <<<"$rows" || fail "the system workspace shows an agent and editor: $rows"
   grep -q "^agent:$peeked.*◦ planner-2" <<<"$rows" || fail "the peeked agent's row: $rows"
   grep '^workspace:dev-t1-api' <<<"$rows" | grep -q 'dev-t1-api' && grep -q '^ *root-runtime-model' <<<"$rows" || fail "the team root lost its current model"
   grep -A1 "^agent:$agent" <<<"$rows" | tail -1 | grep -q 'floor-runtime-model' || fail "an agent's runtime model is not displayed"
@@ -573,11 +595,11 @@ workspace:dev-t2-x"
 
   # fzf is asked to put the cursor on an item by its place among all of them,
   # the headings included.
-  [ "$(DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --position dev-t1-web)" = 9 ] ||
-    fail "the cursor position ignores the task headings and the agents"
-  [ "$(DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --position dev-t1-api-floor)" = 7 ] ||
+  [ "$(DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --position dev-t1-web)" = 15 ] ||
+    fail "the cursor position ignores the section and task headings and the agents"
+  [ "$(DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --position dev-t1-api-floor)" = 13 ] ||
     fail "the cursor is not put on the group you are in"
-  [ "$(DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --position dev-plain-b)" = 2 ] ||
+  [ "$(DEVWS_PICKER_ROWS="$TEST_ROOT/rows" "$SCRIPTS/session_picker.sh" --position dev-plain-b)" = 5 ] ||
     fail "the position of a workspace without a task changed"
 
   # Collapsing persists across redraws, and summaries retain hidden activity.

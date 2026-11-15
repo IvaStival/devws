@@ -26,11 +26,17 @@ script="$HOME/.tmuxinator/devws_menu.sh"
 # arguments[|when: see shown]
 actions='workspace|github|⎇ Open or start a workspace||new_github_workspace
 workspace|agentic|◈ Open an agent team||open_agentic_team
+workspace|system|▤ System monitor||open_system_workspace
 workspace|new|+ New folder workspace||new_workspace
 workspace|worktree|⑂ New worktree workspace||new_worktree_workspace
 workspace|open-folder|⌂ Open folder in…||open_folder
 workspace|close|× Close workspace||close_workspace
 workspace|detach|⏏ Detach (workspaces keep running)|C-b d|detach_client
+templates|new-empty|□ New empty workspace||new_empty_workspace
+templates|save-template|⤓ Save as template||save_workspace_template
+templates|open-template|▶ Open a template||open_workspace_template
+templates|edit-template|✎ Edit a template||edit_workspace_template
+templates|delete-template|× Delete a template||delete_workspace_template
 layout|toggle-layout|▥ Toggle layout|C-b \|toggle_layout|editor
 layout|minimize|▁ Minimize agent and terminal|C-b _|minimize_agents|editor
 layout|header|▔ Hide or show the header|C-b C-s|toggle_header
@@ -102,7 +108,7 @@ session() {
 team_workspace="$(tmux show-options -qv -t "=$(session):" @devws_team_of 2>/dev/null)"
 team_workspace="${team_workspace:-$(session)}"
 team_task="$(tmux show-options -qv -t "=$team_workspace:" @devws_task 2>/dev/null)"
-tabs=(workspace layout agent)
+tabs=(workspace templates layout agent)
 if [ -n "$team_task" ]; then
   tabs+=(team)
 fi
@@ -264,7 +270,7 @@ run_action() {
 open_popup() {
   local client="${1:-}"
   # Room for the full tab bar, including Team, and the actions' questions.
-  tmux display-popup ${client:+-c "$client"} -E -w 78 -h 18 -T ' devws ' "$script"
+  tmux display-popup ${client:+-c "$client"} -E -w 90 -h 18 -T ' devws ' "$script"
 }
 
 # One action alone in the menu's popup: what its key (C-b e, C-b g…) opens.

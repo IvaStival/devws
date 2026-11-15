@@ -35,9 +35,13 @@ fail() {
 ok() { printf 'ok  %s\n' "$*"; }
 
 mkdir -p "$ROOT/bin" "$ROOT/home/.tmuxinator" "$ROOT/started" "$ROOT/repo"
+# The panes' shells are not login shells: with the test's empty HOME, a login
+# shell gets only /etc/profile's PATH (on Linux, no Homebrew tmux and none of
+# the stubs). A plain one keeps the PATH of whoever started the server.
+printf 'set -g default-command "exec bash --noprofile --norc"\n' > "$ROOT/tmux.conf"
 cat > "$ROOT/bin/tmux" <<EOF
 #!/usr/bin/env bash
-exec "$REAL_TMUX" -L "$SOCKET" -f /dev/null "\$@"
+exec "$REAL_TMUX" -L "$SOCKET" -f "$ROOT/tmux.conf" "\$@"
 EOF
 for program in claude codex nvim fzf; do
   cat > "$ROOT/bin/$program" <<EOF
@@ -138,7 +142,7 @@ case "$reply" in *"queued for planner-1"*) ;; *) fail "send_order: $reply" ;; es
 typed_in() { tmux capture-pane -p -J -t "$pane" | grep -q "$1"; }
 wait_until typed_in 'ORDER o1' || fail "the order did not reach the pane: $(tmux capture-pane -p -t "$pane")"
 wait_until typed_in 'Write the plan' || fail "the order's text is missing in the pane"
-wait_until typed_in 'devagentics report done' || fail "the order's report instruction is missing in the pane"
+wait_until typed_in 'devagentics report done --order o1' || fail "the order's report instruction is missing in the pane"
 ok "the order was typed into the planner's real pane, whole"
 
 # 5. The senior's execution plan, accepted by the CTO; a hammer gets a step of
@@ -149,7 +153,13 @@ leader_calls() {
 }
 printf '1. s1: create a.txt\n' | TMUX_PANE="$pane" devagentics plan write | grep -q 'Execution plan of step plan' ||
   fail "the senior's execution plan was not stored"
-TMUX_PANE="$pane" devagentics report done "planned" >/dev/null || fail "the senior's report"
+# The dispatcher records the delivery once devws's send returns, a moment
+# after the text shows in the pane: a report before that is refused.
+order_delivered() {
+  devagentics task status feat-x | jq -e '[.. | objects | select(.id? == "o1" and has("delivered"))][0].delivered' >/dev/null
+}
+wait_until order_delivered || fail "the dispatcher did not record the order as delivered"
+TMUX_PANE="$pane" devagentics report done --order o1 "planned" >/dev/null || fail "the senior's report"
 reply="$(leader_calls \
   '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"accept_step","arguments":{"step":"plan"}}}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"spawn_agent","arguments":{"role":"executor"}}}' | tail -1)"

@@ -21,7 +21,15 @@ fail() {
 
 export HOME="$TEST_ROOT/home"
 mkdir -p "$HOME"
-CONFIG="$HOME/Library/Application Support/com.mitchellh.ghostty/config.ghostty"
+# Where ghostty_theme.sh puts the config: Application Support on macOS, the
+# XDG folder elsewhere. Relative to HOME, as the backups keep it.
+unset XDG_CONFIG_HOME
+if [ "$(uname -s)" = Darwin ]; then
+  CONFIG_IN_HOME="Library/Application Support/com.mitchellh.ghostty/config.ghostty"
+else
+  CONFIG_IN_HOME=".config/ghostty/config.ghostty"
+fi
+CONFIG="$HOME/$CONFIG_IN_HOME"
 THEMES="$HOME/.config/ghostty/themes"
 
 linked_to() {
@@ -50,7 +58,7 @@ test_a_different_config_is_backed_up() {
   printf '%s\n' "$HOME/.devws-backups/earlier" > "$HOME/.devws-state/backup-root"
   DEVWS_ROOT="$ROOT" "$THEME" apply >"$TEST_ROOT/out" 2>&1 || fail "apply failed: $(cat "$TEST_ROOT/out")"
   linked_to "$CONFIG" "$ROOT/config/ghostty/config.ghostty" || fail "the user's config was not replaced"
-  [ "$(cat "$HOME/.devws-backups/earlier/Library/Application Support/com.mitchellh.ghostty/config.ghostty")" = 'font-size = 20' ] ||
+  [ "$(cat "$HOME/.devws-backups/earlier/$CONFIG_IN_HOME")" = 'font-size = 20' ] ||
     fail "the user's config was not backed up where delete.sh looks"
   [ ! -e "$HOME/.devws-backups/earlier/.config/ghostty/themes/glofi-dark" ] ||
     fail "a theme identical to devws's was backed up"
@@ -64,7 +72,7 @@ test_a_backup_folder_is_made_and_recorded_when_there_is_none() {
   DEVWS_ROOT="$ROOT" "$THEME" apply >/dev/null 2>&1 || fail "apply failed"
   local root
   root="$(cat "$HOME/.devws-state/backup-root" 2>/dev/null)" || fail "no backup folder was recorded"
-  [ -f "$root/Library/Application Support/com.mitchellh.ghostty/config.ghostty" ] || fail "the config is not in $root"
+  [ -f "$root/$CONFIG_IN_HOME" ] || fail "the config is not in $root"
 }
 
 test_apply_links_the_config_and_the_themes

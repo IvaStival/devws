@@ -165,10 +165,13 @@ group_order() {
       }' | LC_ALL=C sort -t "$tab" -k1,1 -k2,2n -k3,3 -k4,4 | cut -f1,4
 }
 
-# The workspaces and task headings; a group's workspace is not one of them
-# while its team's is open (row_order lists it under the team). A task with an
-# agent team has no heading of its own: the team's workspace leads it (place
-# "heading"), so the project is not listed twice.
+# The workspaces and task headings, in a section each ("section<TAB><name>",
+# shown only with something in it): the system monitor (system.yml), the dev
+# workspaces with the tasks a program grouped, then the agent teams. A
+# group's workspace is not listed here while its team's is open (row_order
+# lists it under the team). A task with an agent team has no heading of its
+# own: the team's workspace leads it (place "heading"), so the project is not
+# listed twice.
 workspace_order() {
   printf '%s\n' "$session_snapshot" |
     awk -F '\t' '
@@ -177,7 +180,7 @@ workspace_order() {
         for (row = 1; row <= NR; row++) {
           split(rows[row], field, "\t")
           if (field[3] != "" && (field[3] in open)) continue
-          print field[1] "\t" field[2]
+          print field[1] "\t" field[2] "\t" field[6]
         }
       }' |
     teams="$team_snapshot" awk -F '\t' '
@@ -186,20 +189,30 @@ workspace_order() {
         for (i = 1; i <= count; i++) team[team_list[i]] = 1
       }
       $1 !~ /^dev-/ { next }
+      $3 == "system" { systems[++system_count] = $1; next }
+      $2 == "" && ($1 in team) { lone_teams[++lone_team_count] = $1; next }
       $2 == "" { plain[++plains] = $1; next }
       {
         if (!seen[$2]++) order[++tasks] = $2
         if (($1 in team) && !($2 in leader)) leader[$2] = $1
         else members[$2] = members[$2] $1 "\t"
       }
+      function task_rows(t,    n, i, list) {
+        if (order[t] in leader) print "workspace\t" leader[order[t]] "\theading"
+        else print "task\t" order[t]
+        n = split(members[order[t]], list, "\t")
+        for (i = 1; i < n; i++) print "workspace\t" list[i]
+      }
       END {
+        if (system_count) print "section\tsystem"
+        for (i = 1; i <= system_count; i++) print "workspace\t" systems[i]
+        for (t = 1; t <= tasks; t++) if (!(order[t] in leader)) led_by_program++
+        if (plains || led_by_program) print "section\tworkspaces"
         for (i = 1; i <= plains; i++) print "workspace\t" plain[i]
-        for (t = 1; t <= tasks; t++) {
-          if (order[t] in leader) print "workspace\t" leader[order[t]] "\theading"
-          else print "task\t" order[t]
-          n = split(members[order[t]], list, "\t")
-          for (i = 1; i < n; i++) print "workspace\t" list[i]
-        }
+        for (t = 1; t <= tasks; t++) if (!(order[t] in leader)) task_rows(t)
+        if (lone_team_count || tasks > led_by_program) print "section\tteams"
+        for (i = 1; i <= lone_team_count; i++) print "workspace\t" lone_teams[i]
+        for (t = 1; t <= tasks; t++) if (order[t] in leader) task_rows(t)
       }'
 }
 
@@ -368,6 +381,41 @@ task_row() {
     "$(truncate_label "$project" "$((row_width - 2))")" "$(truncate_label "$task" "$((row_width - 2))")"
 }
 
+# A section's heading, dim capitals; a blank line above every one but the
+# first sets the sections apart. Enter on it does nothing (go_to).
+section_row() {
+  local section="$1" is_first="$2" title
+  case "$section" in
+    system) title=SYSTEM ;;
+    workspaces) title=WORKSPACES ;;
+    teams) title=TEAMS ;;
+    *) title="$(printf '%s' "$section" | tr '[:lower:]' '[:upper:]')" ;;
+  esac
+  printf 'section:%s\t' "$section"
+  [ "$is_first" = 1 ] || printf '\n'
+  printf '\033[2m%s\033[0m\t\0' "$title"
+}
+
+# The system monitor (system.yml): its name and, dim below, the log command
+# its log pane follows (system_panel.sh keeps it); no branch, agent or editor.
+system_workspace_row() {
+  local session="$1" current="$2" row_width="$3" command
+  command="$(head -n 1 "$HOME/.devws-state/system-log-command" 2>/dev/null)"
+  command="$(truncate_label "${command:-no log chosen}" "$((row_width - 4))")"
+  printf 'workspace:%s\t' "$session"
+  if [ "$session" = "$current" ]; then
+    print_padded_row '\033[1;37;48;5;238m' "$row_width" "≡  $session"
+    printf '\n'
+    print_padded_row '\033[2;37;48;5;238m' "$row_width" "    $command"
+  else
+    printf '≡  %s\n    \033[2m%s\033[0m' "$session" "$command"
+  fi
+}
+
+is_system_workspace() {
+  printf '%s\n' "$session_snapshot" | awk -F '\t' -v session="$1" '$1 == session && $6 == "system" { found = 1 } END { exit !found }'
+}
+
 is_team_workspace() {
   [ -n "$2" ] || grep -qxF "$1" <<<"$team_snapshot"
 }
@@ -386,7 +434,18 @@ workspace_rows() {
   # of the label budget so model names never push status behind its ellipsis.
   (( row_width > 4 )) && row_width=$((row_width - 4))
 
+  local sections_shown=0
   while IFS="$tab" read -r kind session place; do
+    if [ "$kind" = section ]; then
+      section_row "$session" "$([ "$sections_shown" = 0 ] && echo 1 || echo 0)"
+      sections_shown=$((sections_shown + 1))
+      continue
+    fi
+    if [ "$kind" = workspace ] && is_system_workspace "$session"; then
+      system_workspace_row "$session" "$current" "$row_width"
+      printf '\t%s\0' "$(search_text "$session")"
+      continue
+    fi
     if [ "$kind" = task ]; then
       task_row "$session" "$row_width"
       while IFS="$tab" read -r _ member; do
@@ -692,7 +751,7 @@ while tmux list-sessions >/dev/null 2>&1; do
       --bind="start:transform:[ -e '$rows_file.stale' ] && printf 'reload-sync(%q --rows)' '$picker_script'" \
       --bind="click-header:transform:
         [ \"\$FZF_CLICK_HEADER_LINE\" = 1 ] && printf '%s\\n' \"execute-silent('$picker_script' --go menu >/dev/null 2>&1 &)\"" \
-      --header=$'\033[36m☰ Menu\033[0m  \033[2mC-b Space\033[0m\n\n\033[2mOPEN WORKSPACES\033[0m' \
+      --header=$'\033[36m☰ Menu\033[0m  \033[2mC-b Space\033[0m\n' \
       --prompt='Find › ' --footer='← collapse · → expand' \
       --info=hidden --no-separator --border=none --margin=0 --padding=0 \
       < "$rows_file" >/dev/null

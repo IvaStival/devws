@@ -223,6 +223,11 @@ pub mod tests {
     pub fn repo() -> TempDir {
         let dir = TempDir::new().unwrap();
         run(dir.path(), &["init", "-q", "-b", "main"]);
+        // Its own identity, for the commits the code under test makes (a
+        // lane's merge) and its worktrees: a machine with no global one
+        // could not merge.
+        run(dir.path(), &["config", "user.name", "t"]);
+        run(dir.path(), &["config", "user.email", "t@t"]);
         commit_file(dir.path(), "README.md", "hello\n", "first");
         dir
     }
@@ -236,6 +241,31 @@ pub mod tests {
             .status()
             .unwrap();
         assert!(status.success(), "git {arguments:?} failed");
+    }
+
+    /// An executable script at `path`, written by `sh` rather than by this
+    /// process: a file open here for writing, even for an instant, is
+    /// inherited by a child another test thread forks, and running the
+    /// script then fails on Linux with "Text file busy" (ETXTBSY).
+    pub fn write_script(path: &Path, text: &str) {
+        use std::io::Write;
+        let mut writer = Command::new("sh")
+            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        writer
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(text.as_bytes())
+            .unwrap();
+        assert!(
+            writer.wait().unwrap().success(),
+            "could not write {}",
+            path.display()
+        );
     }
 
     pub fn commit_file(dir: &Path, path: &str, text: &str, message: &str) {

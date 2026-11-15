@@ -18,6 +18,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Runs a command on a terminal of its own: util-linux's script (Linux) takes
+# the command with -c, BSD's (macOS) after the transcript file.
+on_a_terminal() {
+  if script --version >/dev/null 2>&1; then
+    script -q -e -c "$(printf '%q ' "$@")" /dev/null
+  else
+    script -q /dev/null "$@"
+  fi
+}
+
 fail() {
   printf 'Team alert test failed: %s\n' "$*" >&2
   exit 1
@@ -176,7 +186,7 @@ test_no_alert_while_a_team_workspace_is_on_screen_or_turned_off() {
   reset
   task_state false 0
   pane_states done done
-  TMUX='' script -q /dev/null "$REAL_TMUX" -L "$SOCKET" attach -t dev-app-feat-x-floor >/dev/null 2>&1 &
+  TMUX='' on_a_terminal "$REAL_TMUX" -L "$SOCKET" attach -t dev-app-feat-x-floor >/dev/null 2>&1 &
   local attempt
   for attempt in $(seq 1 30); do
     [ -n "$(tmux list-clients 2>/dev/null)" ] && break

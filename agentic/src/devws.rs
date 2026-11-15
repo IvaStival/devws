@@ -739,8 +739,8 @@ pub mod fake {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::tests::write_script;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     /// A `devws` and a `tmux` that record how they were called and answer from
@@ -748,9 +748,9 @@ mod tests {
     fn command_devws(dir: &TempDir) -> (CommandDevws, PathBuf) {
         let log = dir.path().join("calls");
         let devws = dir.path().join("devws");
-        fs::write(
+        write_script(
             &devws,
-            format!(
+            &format!(
                 r#"#!/bin/sh
 echo "devws $*" >> "{log}"
 case "$1 $2" in
@@ -767,12 +767,11 @@ esac
 "#,
                 log = log.display()
             ),
-        )
-        .unwrap();
+        );
         let tmux = dir.path().join("tmux");
-        fs::write(
+        write_script(
             &tmux,
-            format!(
+            &format!(
                 r#"#!/bin/sh
 echo "tmux $*" >> "{log}"
 case "$1" in
@@ -781,11 +780,7 @@ esac
 "#,
                 log = log.display()
             ),
-        )
-        .unwrap();
-        for script in [&devws, &tmux] {
-            fs::set_permissions(script, fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        );
         (
             CommandDevws::new(devws.display().to_string(), tmux.display().to_string()),
             log,
@@ -806,7 +801,10 @@ esac
         let (devws, _) = command_devws(&dir);
         let tmux = dir.path().join("tmux");
         // Keep the leading empty transcript field: a missing binary has no transcript.
-        fs::write(&tmux, "#!/bin/sh\nprintf '\\n%s\\n' '{\"type\":\"error\",\"error\":{\"code\":\"provider_unavailable\"}}'\n").unwrap();
+        write_script(
+            &tmux,
+            "#!/bin/sh\nprintf '\\n%s\\n' '{\"type\":\"error\",\"error\":{\"code\":\"provider_unavailable\"}}'\n",
+        );
         assert_eq!(
             devws.startup_failure("%7").unwrap().unwrap().scope,
             crate::worker::FailureScope::Account
@@ -817,7 +815,13 @@ esac
             "{\"type\":\"assistant\",\"isApiErrorMessage\":true,\"error\":\"model_not_found\"}\n",
         )
         .unwrap();
-        fs::write(&tmux, format!("#!/bin/sh\nprintf '%s\\n%s\\n' '{}' '{{\"type\":\"error\",\"error\":{{\"code\":\"provider_exit\"}}}}'\n", transcript.display())).unwrap();
+        write_script(
+            &tmux,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n%s\\n' '{}' '{{\"type\":\"error\",\"error\":{{\"code\":\"provider_exit\"}}}}'\n",
+                transcript.display()
+            ),
+        );
         assert_eq!(
             devws.startup_failure("%7").unwrap().unwrap().scope,
             crate::worker::FailureScope::Model

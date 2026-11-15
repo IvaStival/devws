@@ -25,9 +25,13 @@ fail() {
 # Every tmux call goes to an isolated server. The agents and Neovim are stubs
 # that record their arguments, NUL-separated, and wait; fzf is one too.
 mkdir -p "$TEST_ROOT/bin" "$TEST_ROOT/home/.tmuxinator" "$TEST_ROOT/project" "$TEST_ROOT/started"
+# The panes' shells are not login shells: with the test's empty HOME, a login
+# shell gets only /etc/profile's PATH (on Linux, no Homebrew tmux and none of
+# the stubs). A plain one keeps the PATH of whoever started the server.
+printf 'set -g default-command "exec bash --noprofile --norc"\n' > "$TEST_ROOT/tmux.conf"
 cat > "$TEST_ROOT/bin/tmux" <<EOF
 #!/usr/bin/env bash
-exec "$REAL_TMUX" -L "$SOCKET" -f /dev/null "\$@"
+exec "$REAL_TMUX" -L "$SOCKET" -f "$TEST_ROOT/tmux.conf" "\$@"
 EOF
 for program in claude codex nvim; do
   cat > "$TEST_ROOT/bin/$program" <<EOF
@@ -82,6 +86,16 @@ wait_until() {
 
 field() {
   tmux display-message -p -t "$1" "#{$2}"
+}
+
+# Runs a command on a terminal of its own: util-linux's script (Linux) takes
+# the command with -c, BSD's (macOS) after the transcript file.
+on_a_terminal() {
+  if script --version >/dev/null 2>&1; then
+    script -q -e -c "$(printf '%q ' "$@")" /dev/null
+  else
+    script -q /dev/null "$@"
+  fi
 }
 
 RS=$'\036'
@@ -324,7 +338,7 @@ test_agentic_starts_the_team_with_the_leader_chosen() {
   printf 'claude\n' > "$TEST_ROOT/fzf.answer"
   # A terminal (script), inside a tmux with no client: switching to the
   # workspace fails, which is not what is tested.
-  TMUX=test script -q /dev/null devws agentic "$folder" >/dev/null 2>&1 </dev/null || true
+  TMUX=test on_a_terminal devws agentic "$folder" >/dev/null 2>&1 </dev/null || true
   rm -f "$TEST_ROOT/fzf.answer"
   [ "$(started_args devagentics-task)" = "task${RS}start${RS}$folder${RS}--leader${RS}claude$RS" ] ||
     fail "task start after asking got: $(started_args devagentics-task)"

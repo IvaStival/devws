@@ -1,0 +1,29 @@
+# The system workspace (devws menu › System monitor): the sidebar, btop
+# across the top, and under it a log pane (an editable tail -F of the file
+# chosen in it) beside lazydocker (system_panel.sh). From the menu
+# (choose=1) the log pane asks for the log in a box inside it, while the
+# other panels run; restored, it follows the log it had. The log pane has the
+# focus (startup_pane), so the answer is typed there. One for the machine, dev-system, in your home folder; no agent and
+# no editor. The sidebar lists
+# it as "system · monitor" (its @devws_agent and @devws_editor), which also
+# keeps every field of its saved line (save_state.sh reads them tab-separated).
+name: dev-system
+root: <%= ENV["HOME"] %>
+
+# Single-quoted, as dev.yml's: YAML would read " #{E:..." as a comment.
+pre_window: 'tmux set-option status-position top; tmux set-option status-left-length 40; tmux set-option status-left "[#{s/^dev-//:session_name}]"; tmux set-option @devws_agent system; tmux set-option @devws_editor monitor; tmux set-option @devws_template system; tmux set-option @devws_root "$PWD"; tmux set-option -w pane-border-indicators off; tmux set-option -w pane-border-status top; tmux set-option -w @devws_main 1; clear'
+
+# The log pane: the sidebar is 1, btop 2 (pane-base-index 1, tmux.conf).
+startup_pane: 3
+
+windows:
+  - workspace:
+      # The sidebar at 25 columns; btop across the rest of the width; under
+      # it, the log and lazydocker side by side (dev.yml's shape). The panes
+      # fill it in order. Checksummed as tmux computes it.
+      layout: "1812,200x50,0,0{25x50,0,0,0,174x50,26,0[174x24,26,0,1,174x25,26,25{86x25,26,25,2,87x25,113,25,3}]}"
+      panes:
+        - picker: ~/.tmuxinator/session_picker.sh
+        - top: ~/.tmuxinator/system_panel.sh top
+        - log: ~/.tmuxinator/system_panel.sh log<%= " --choose" if @settings["choose"] == "1" %>
+        - docker: ~/.tmuxinator/system_panel.sh docker

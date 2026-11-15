@@ -30,9 +30,18 @@ fail() {
 # scripts. claude, nvim and fzf are stubs that just wait, as the real ones do
 # when nothing happens. TMPDIR keeps the list of frozen processes apart.
 mkdir -p "$TEST_ROOT/bin" "$TEST_ROOT/home/.tmuxinator" "$TEST_ROOT/tmp"
+# The panes' shells are not login shells: with the test's empty HOME, a login
+# shell gets only /etc/profile's PATH (on Linux, no Homebrew tmux and none of
+# the stubs). A plain one keeps the PATH of whoever started the server. The
+# default shell too, which a reopened pane asks for as a login one (-l).
+# tmux also runs a pane's command through it (-c <command>): only -l goes.
+printf '#!/usr/bin/env bash\n[ "${1:-}" = -l ] && shift\nexec bash --noprofile --norc "$@"\n' > "$TEST_ROOT/bin/test-shell"
+chmod +x "$TEST_ROOT/bin/test-shell"
+printf 'set -g default-shell "%s"\nset -g default-command "exec bash --noprofile --norc"\n' \
+  "$TEST_ROOT/bin/test-shell" > "$TEST_ROOT/tmux.conf"
 cat > "$TEST_ROOT/bin/tmux" <<EOF
 #!/usr/bin/env bash
-exec "$REAL_TMUX" -L "$SOCKET" -f /dev/null "\$@"
+exec "$REAL_TMUX" -L "$SOCKET" -f "$TEST_ROOT/tmux.conf" "\$@"
 EOF
 for program in claude nvim fzf; do
   printf '#!/usr/bin/env bash\nexec sleep 600\n' > "$TEST_ROOT/bin/$program"
@@ -40,9 +49,11 @@ done
 # With STUB_JOB set, the agent leaves a job running in a shell, as Claude's
 # background commands do; with STUB_BUSY, it runs a task with no shell
 # around it (a build it started directly), which keeps a core busy.
-# (An "if" so the task is the stub's own child, not a subshell's.) Its
+# (An "if" so the task is the stub's own child, not a subshell's; and so
+# that, without them, no subshell is left as a zombie under the exec'd
+# sleep, which Linux's pgrep would list as the program.) Its
 # arguments go to claude.args.
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "%s/claude.args"\n[ -n "${STUB_JOB:-}" ] && sh -c "sleep 600; :" &\nif [ -n "${STUB_BUSY:-}" ]; then yes > /dev/null & fi\nexec sleep 600\n' \
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "%s/claude.args"\nif [ -n "${STUB_JOB:-}" ]; then sh -c "sleep 600; :" & fi\nif [ -n "${STUB_BUSY:-}" ]; then yes > /dev/null & fi\nexec sleep 600\n' \
   "$TEST_ROOT" > "$TEST_ROOT/bin/claude"
 # Neovim started with --listen answers through that socket with its pid and
 # how many buffers are modified (nvim.modified, 0 unless a test says

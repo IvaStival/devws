@@ -19,7 +19,7 @@ parallel="${DEVWS_CHECK_JOBS:-4}"
 
 # The suites --quick runs: no tmux server, no waiting on real time.
 quick_suites="test_clipboard test_picker test_recent test_shared_files test_worktree test_github_repo
-  test_jungleforge test_link_scripts test_tidy test_memory test_guide test_rust_tools test_network"
+  test_jungleforge test_link_scripts test_tidy test_memory test_guide test_rust_tools test_network test_tmux_remote"
 
 shell_scripts=(
   "$ROOT/install.sh" "$ROOT/delete.sh"
@@ -78,6 +78,34 @@ ruby -rerb -ryaml -e '
   abort "agentic.yml: the leader lost its arguments file" unless panes.find { |pane| pane.include?("agent_runner.sh") }.end_with?("codex --args-file \x27/tmp/it\x27\\\x27\x27s/args\x27")
   abort "agentic.yml: the board pane does not run the board of the task" unless panes.last.end_with?("\x27devagentics\x27 board team-1")
 ' "$ROOT/config/tmuxinator/agentic.yml"
+
+# The system workspace's template: whole pre_window, and its three panels;
+# from the menu (choose=1) the log pane asks for the log first.
+ruby -rerb -ryaml -e '
+  render = lambda do |settings|
+    context = Object.new
+    context.instance_variable_set(:@settings, settings)
+    YAML.safe_load(ERB.new(File.read(ARGV[0])).result(context.instance_eval { binding }), aliases: true)
+  end
+  config = render.call({})
+  abort "system.yml: pre_window was cut short" unless config["pre_window"].end_with?("; clear")
+  panes = config["windows"][0]["workspace"]["panes"].map { |pane| pane.values.first }
+  %w[top docker log].each do |panel|
+    abort "system.yml: no #{panel} panel" unless panes.include?("~/.tmuxinator/system_panel.sh #{panel}")
+  end
+  chosen = render.call({ "choose" => "1" })["windows"][0]["workspace"]["panes"].map { |pane| pane.values.first }
+  abort "system.yml: from the menu the log pane does not ask" unless chosen.include?("~/.tmuxinator/system_panel.sh log --choose")
+' "$ROOT/config/tmuxinator/system.yml"
+
+# The empty workspace's template: whole pre_window, on the folder and under
+# the name given.
+ruby -rerb -ryaml -e '
+  context = Object.new
+  context.instance_variable_set(:@settings, { "root" => "/tmp/some folder", "name" => "dev-play" })
+  config = YAML.safe_load(ERB.new(File.read(ARGV[0])).result(context.instance_eval { binding }), aliases: true)
+  abort "blank.yml: pre_window was cut short" unless config["pre_window"].end_with?("; clear")
+  abort "blank.yml: not on the folder and name given" unless config["root"] == "/tmp/some folder" && config["name"] == "dev-play"
+' "$ROOT/config/tmuxinator/blank.yml"
 
 if command -v luac >/dev/null 2>&1; then
   while IFS= read -r -d '' lua_file; do

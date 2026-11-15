@@ -181,9 +181,10 @@ test_the_bar() {
 # ---------------------------------------------------------------- tokens
 
 # A Wednesday noon: Monday and last week are both before it.
-NOW="$(date -j -f '%Y-%m-%d %H:%M:%S' '2026-10-14 12:00:00' +%s)"
+# BSD date (macOS) first, else GNU's (Linux).
+NOW="$(date -j -f '%Y-%m-%d %H:%M:%S' '2026-10-14 12:00:00' +%s 2>/dev/null || date -d '2026-10-14 12:00:00' +%s)"
 iso() {
-  date -u -r "$1" +%Y-%m-%dT%H:%M:%S.000Z
+  date -u -r "$1" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -u -d "@$1" +%Y-%m-%dT%H:%M:%S.000Z
 }
 TODAY="$(iso $((NOW - 3600)))"
 MONDAY="$(iso $((NOW - 2 * 86400)))"

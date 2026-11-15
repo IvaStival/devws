@@ -37,7 +37,9 @@ cat > "$TEST_ROOT/bin/fzf" <<EOF
 [ -e "$TEST_ROOT/devws-popup-$(id -u)" ] && echo open > "$TEST_ROOT/calls/popup" || echo closed > "$TEST_ROOT/calls/popup"
 cat > "$TEST_ROOT/calls/fzf.input"
 answer="\$(head -n 1 "$TEST_ROOT/fzf.answers")"
-sed -i '' 1d "$TEST_ROOT/fzf.answers"
+# Portable: BSD sed needs -i '', GNU sed reads that '' as a file.
+tail -n +2 "$TEST_ROOT/fzf.answers" > "$TEST_ROOT/fzf.answers.next"
+mv "$TEST_ROOT/fzf.answers.next" "$TEST_ROOT/fzf.answers"
 case " \$* " in *" --print-query "*) printf '\\n' ;; esac
 [ -n "\$answer" ] || exit 130
 printf '%s\\n' "\$answer"
@@ -61,6 +63,16 @@ printf '%s\n' "\$*" > "$TEST_ROOT/calls/$script"
 EOF
   chmod +x "$TEST_ROOT/home/.tmuxinator/$script"
 done
+# workspace_template.sh has one saved template, watch, and logs the rest.
+cat > "$TEST_ROOT/home/.tmuxinator/workspace_template.sh" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+  list) printf 'watch\n' ;;
+  file) printf '%s\n' "$TEST_ROOT/watch.yml" ;;
+  *) printf '%s\n' "\$*" >> "$TEST_ROOT/calls/workspace_template.sh" ;;
+esac
+EOF
+chmod +x "$TEST_ROOT/home/.tmuxinator/workspace_template.sh"
 # jungleforge.sh answers its questions from jf.<question> files and logs the
 # rest (run, stop…), one call per line; it is set up unless jf.missing exists.
 cat > "$TEST_ROOT/home/.tmuxinator/jungleforge.sh" <<EOF
@@ -107,8 +119,10 @@ actions_of() {
 }
 
 test_tabs_list_their_actions() {
-  [ "$(actions_of workspace)" = "github agentic new worktree open-folder close detach" ] ||
+  [ "$(actions_of workspace)" = "github agentic system new worktree open-folder close detach" ] ||
     fail "Workspace tab: $(actions_of workspace)"
+  [ "$(actions_of templates)" = "new-empty save-template open-template edit-template delete-template" ] ||
+    fail "Templates tab: $(actions_of templates)"
   [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor ghostty-theme" ] ||
     fail "Layout tab: $(actions_of layout)"
   [ "$(actions_of agent)" = "jump switch-agent restart-agent follow-mode initialize-agent register-agent agent-folder remove-agent team-roles" ] ||
@@ -116,7 +130,7 @@ test_tabs_list_their_actions() {
   [ "$(actions_of git)" = "commit commit-manual push tidy" ] || fail "Git tab: $(actions_of git)"
   [ "$(actions_of jungleForge)" = "run-here switch-run stop-run services migrate shell logs info settings register-jungleforge" ] ||
     fail "JungleForge tab: $(actions_of jungleForge)"
-  [ "$(actions_of tools)" = "open-database database-folder job-log network-devices" ] ||
+  [ "$(actions_of tools)" = "open-database database-folder job-log network-devices usage-history" ] ||
     fail "Tools tab: $(actions_of tools)"
   [ "$(actions_of help)" = "guide guide-shortcuts guide-workspaces guide-layout guide-agents guide-agentic guide-git guide-app guide-commands guide-configuration" ] ||
     fail "Help tab: $(actions_of help)"
@@ -127,8 +141,8 @@ test_tabs_list_their_actions() {
 test_an_agent_team_has_no_editor_items() {
   tmux set-option -p -t "$PANE" @devws_role agent
   [ "$(actions_of layout)" = "header new-panel move-panel ghostty-theme" ] || fail "Layout tab of an agent team: $(actions_of layout)"
-  ! grep -qE 'open-database|database-folder' <<<"$(actions_of app)" || fail "an agent team is offered the database: $(actions_of app)"
-  grep -q 'job-log' <<<"$(actions_of app)" || fail "an agent team lost the job log"
+  ! grep -qE 'open-database|database-folder' <<<"$(actions_of tools)" || fail "an agent team is offered the database: $(actions_of tools)"
+  grep -q 'job-log' <<<"$(actions_of tools)" || fail "an agent team lost the job log"
   tmux set-option -p -t "$PANE" @devws_role editor
   [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor ghostty-theme" ] ||
     fail "Layout tab of a normal workspace: $(actions_of layout)"
@@ -306,7 +320,7 @@ test_the_jungleforge_tab_follows_setup() {
   : > "$TEST_ROOT/jf.missing"
   [ "$(actions_of jungleForge)" = "setup-jungleforge" ] ||
     fail "JungleForge tab before setup: $(actions_of jungleForge)"
-  [ "$(actions_of tools)" = "open-database database-folder job-log network-devices" ] ||
+  [ "$(actions_of tools)" = "open-database database-folder job-log network-devices usage-history" ] ||
     fail "Tools tab before setup: $(actions_of tools)"
   rm "$TEST_ROOT/jf.missing"
 }
@@ -323,7 +337,7 @@ test_typing_searches_every_tab() {
   grep -q $'^run-here\tJungleForge · ▶ Run this branch' <<<"$all" || fail "search lost JungleForge"
   grep -q $'^network-devices\tTools · ' <<<"$all" || fail "search lost network discovery"
   # Every action shown in a tab, once.
-  [ "$(grep -c . <<<"$all")" -eq "$(for tab in workspace layout agent team git jungleForge tools help; do menu --items "$tab"; done | grep -c .)" ] ||
+  [ "$(grep -c . <<<"$all")" -eq "$(for tab in workspace templates layout agent team git jungleForge tools help; do menu --items "$tab"; done | grep -c .)" ] ||
     fail "a search does not list every action once"
 }
 
@@ -345,27 +359,27 @@ test_switching_tabs() {
   tmux set-option -t dev-menu -u @devws_menu_tab
   [ "$(menu --tab)" = "workspace" ] || fail "the menu does not start on Workspace"
   [[ "$(menu --switch next)" == *"reload("*"--items-for {q})"* ]] || fail "next did not reload the items"
-  [ "$(menu --tab)" = "layout" ] || fail "next did not move to Layout"
+  [ "$(menu --tab)" = "templates" ] || fail "next did not move to Templates"
   menu --switch prev >/dev/null
   menu --switch prev >/dev/null
   [ "$(menu --tab)" = "help" ] || fail "prev did not wrap around to Help"
   menu --switch next >/dev/null
   [ "$(menu --tab)" = "workspace" ] || fail "next did not wrap around to Workspace"
   # Tab clicks use the displayed column, including the full JungleForge title.
-  [[ "$(menu --switch-at 23)" == *transform-header* ]] || fail "a tab click did not change the header"
-  [ "$(menu --tab)" = "agent" ] || fail "clicking Agent (column 23) did not open it"
+  [[ "$(menu --switch-at 35)" == *transform-header* ]] || fail "a tab click did not change the header"
+  [ "$(menu --tab)" = "agent" ] || fail "clicking Agent (column 35) did not open it"
   menu --switch-at 1 >/dev/null
   [ "$(menu --tab)" = "workspace" ] || fail "clicking Workspace (column 1) did not open it"
-  menu --switch-at 39 >/dev/null
-  [ "$(menu --tab)" = "jungleForge" ] || fail "clicking JungleForge (column 39) did not open it"
+  menu --switch-at 51 >/dev/null
+  [ "$(menu --tab)" = "jungleForge" ] || fail "clicking JungleForge (column 51) did not open it"
   menu --switch-at 12 >/dev/null
   [ "$(menu --tab)" = "jungleForge" ] || fail "a click between tabs changed the tab"
-  menu --switch-at 75 >/dev/null
+  menu --switch-at 87 >/dev/null
   [ "$(menu --tab)" = "jungleForge" ] || fail "a click beside the tabs changed the tab"
-  menu --switch-at 50 >/dev/null
-  [ "$(menu --tab)" = "tools" ] || fail "clicking Tools (column 50) did not open it"
-  menu --switch-at 58 >/dev/null
-  [ "$(menu --tab)" = "help" ] || fail "clicking Help (column 58) did not open it"
+  menu --switch-at 62 >/dev/null
+  [ "$(menu --tab)" = "tools" ] || fail "clicking Tools (column 62) did not open it"
+  menu --switch-at 70 >/dev/null
+  [ "$(menu --tab)" = "help" ] || fail "clicking Help (column 70) did not open it"
   menu --switch Layout >/dev/null
 }
 
@@ -470,7 +484,7 @@ EOF
 
   [ "$(cat "$TEST_ROOT/calls/ui.args")" = "$(printf '%s\n' menu --tab jungleForge)" ] ||
     fail "devws-ui was given: $(cat "$TEST_ROOT/calls/ui.args")"
-  expected="$(for tab in workspace layout agent git jungleForge tools help; do
+  expected="$(for tab in workspace templates layout agent git jungleForge tools help; do
     menu --items "$tab" | cut -f1 | sed "s/^/$tab\t/"
   done)"
   [ "$(cut -f1,2 "$TEST_ROOT/calls/ui.input")" = "$expected" ] ||
@@ -817,9 +831,55 @@ test_closing_the_running_branch_switches_back_to_main() {
   rm -f "$TEST_ROOT/jf.running"
 }
 
+# System monitor opens the system workspace at once, its log pane asking
+# for the log there (choose=1); it asks nothing in the menu.
+test_system_monitor_opens_at_once() {
+  rm -f "$TEST_ROOT/calls/tmuxinator"
+  : > "$TEST_ROOT/fzf.answers"
+  menu --run system </dev/null >/dev/null 2>&1 || true
+  grep -qx 'start system choose=1' "$TEST_ROOT/calls/tmuxinator" 2>/dev/null ||
+    fail "System monitor did not start the system workspace: $(cat "$TEST_ROOT/calls/tmuxinator" 2>/dev/null)"
+}
+
+# Templates: an empty workspace on a folder, under the name asked for; the
+# current workspace saved; a saved template opened on a folder, or deleted.
+test_templates_tab_actions() {
+  local folder="$TEST_ROOT/scratch" calls="$TEST_ROOT/calls/workspace_template.sh"
+  mkdir -p "$folder"
+  rm -f "$calls"
+  # New empty workspace asks nothing: the home folder, a name of its own.
+  menu --run new-empty </dev/null >/dev/null 2>&1 || true
+  grep -qx "start blank $HOME dev-empty" "$calls" 2>/dev/null ||
+    fail "New empty workspace did not start blank: $(cat "$calls" 2>/dev/null)"
+  rm -f "$calls"
+  tmux new-session -d -s dev-empty
+  menu --run new-empty </dev/null >/dev/null 2>&1 || true
+  tmux kill-session -t =dev-empty
+  grep -qx "start blank $HOME dev-empty-2" "$calls" 2>/dev/null ||
+    fail "a second empty workspace took the first one's name: $(cat "$calls" 2>/dev/null)"
+
+  rm -f "$calls"
+  printf 'mine\n\n' | menu --run save-template >/dev/null 2>&1 || true
+  grep -qx "save dev-menu mine" "$calls" 2>/dev/null || fail "Save as template did not save: $(cat "$calls" 2>/dev/null)"
+
+  rm -f "$calls"
+  printf 'watch\n' > "$TEST_ROOT/fzf.answers"
+  printf '%s\nagain\n' "$folder" | menu --run open-template >/dev/null 2>&1 || true
+  grep -qx "start watch $folder dev-again" "$calls" 2>/dev/null ||
+    fail "Open a template did not open it: $(cat "$calls" 2>/dev/null)"
+
+  rm -f "$calls"
+  printf 'watch\nKeep it\n' > "$TEST_ROOT/fzf.answers"
+  menu --run delete-template </dev/null >/dev/null 2>&1 || true
+  [ ! -e "$calls" ] || fail "Keep it still deleted the template"
+  printf 'watch\nDelete it\n' > "$TEST_ROOT/fzf.answers"
+  menu --run delete-template </dev/null >/dev/null 2>&1 || true
+  grep -qx "delete watch" "$calls" 2>/dev/null || fail "Delete a template did not delete it: $(cat "$calls" 2>/dev/null)"
+}
+
 test_every_action_has_a_function() {
   local tab action function
-  for tab in workspace layout agent team git jungleForge tools help; do
+  for tab in workspace templates layout agent team git jungleForge tools help; do
     for action in $(actions_of "$tab"); do
       function="$(menu --function "$action")" || fail "no function for $action"
       function="${function%% *}"
@@ -937,6 +997,8 @@ test_running_an_unregistered_repo_offers_registering
 test_esc_on_the_apps_goes_back_to_the_branches
 test_switch_marks_the_running_branch_and_runs_the_chosen_one
 test_closing_the_running_branch_switches_back_to_main
+test_system_monitor_opens_at_once
+test_templates_tab_actions
 test_every_action_has_a_function
 test_help_opens_the_guide_page
 test_sidebar_opens_the_menu

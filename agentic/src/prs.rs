@@ -123,12 +123,11 @@ pub fn open_prs(task: &Task, gh: &str) -> Result<Vec<(String, String)>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::checks::tests::{commit_file, repo, run as git};
+    use crate::checks::tests::{commit_file, repo, run as git, write_script};
     use crate::home::Home;
     use crate::state::Step;
     use crate::task::{Repo, TaskConfig};
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     /// A repo on feat/x with its own bare "origin" and a commit to push.
@@ -154,9 +153,9 @@ mod tests {
     /// and answers with a URL named after the folder it runs in.
     fn stub_gh(dir: &Path) -> String {
         let path = dir.join("gh");
-        fs::write(
+        write_script(
             &path,
-            format!(
+            &format!(
                 r#"#!/bin/sh
 name=$(basename "$PWD")
 echo "$name: $*" | tr '\n' ' ' >> "{log}"; echo >> "{log}"
@@ -173,9 +172,7 @@ esac
                 log = dir.join("gh.log").display(),
                 dir = dir.display()
             ),
-        )
-        .unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         path.display().to_string()
     }
 

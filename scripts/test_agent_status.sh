@@ -563,7 +563,7 @@ working_row() {
 }
 
 test_the_sidebar_shows_each_workspace_state() {
-  local first fzf_before picker_socket
+  local first fzf_before picker_socket other_position
   new_workspace dev-other
   tmux set-option -t dev-work @devws_template agentic
   tmux set-option -p -t "$AGENT_PANE" @devws_model team-live-model
@@ -583,7 +583,9 @@ test_the_sidebar_shows_each_workspace_state() {
   listening() { [ -S "$(tmux show-option -pqv -t "$sidebar_test_pane" @devws_picker_socket)" ]; }
   wait_until listening || fail "the sidebar did not publish its socket"
   picker_socket="$(tmux show-option -pqv -t "$sidebar_test_pane" @devws_picker_socket)"
-  curl -s --max-time 2 --unix-socket "$picker_socket" http://localhost -d 'pos(1)' >/dev/null
+  # dev-other's place among the rows, the section headings included.
+  other_position="$(TMUX_PANE="$sidebar_test_pane" "$SCRIPTS/session_picker.sh" --position dev-other)"
+  curl -s --max-time 2 --unix-socket "$picker_socket" http://localhost -d "pos($other_position)" >/dev/null
   focused_other() {
     curl -s --max-time 2 --unix-socket "$picker_socket" http://localhost |
       jq -e '.current.text | startswith("workspace:dev-other\t")' >/dev/null
@@ -592,7 +594,8 @@ test_the_sidebar_shows_each_workspace_state() {
   curl -s --max-time 2 --unix-socket "$picker_socket" http://localhost |
     jq -e '.current.text | split("\t") | length == 2' >/dev/null ||
     fail "the fzf input includes hidden search metadata"
-  curl -s --max-time 2 --unix-socket "$picker_socket" http://localhost -d 'pos(2)' >/dev/null
+  curl -s --max-time 2 --unix-socket "$picker_socket" http://localhost \
+    -d "pos($(TMUX_PANE="$sidebar_test_pane" "$SCRIPTS/session_picker.sh" --position dev-work))" >/dev/null
   focused_team() {
     curl -s --max-time 2 --unix-socket "$picker_socket" http://localhost |
       jq -e '.current.text | startswith("workspace:dev-work\t")' >/dev/null
@@ -611,7 +614,7 @@ test_the_sidebar_shows_each_workspace_state() {
   }
   wait_until expanded_team || fail "Right did not expand the team workspace"
   wait_until focused_team || fail "expanding moved the selection: $(sidebar)"
-  curl -s --max-time 2 --unix-socket "$picker_socket" http://localhost -d 'pos(1)' >/dev/null
+  curl -s --max-time 2 --unix-socket "$picker_socket" http://localhost -d "pos($other_position)" >/dev/null
   wait_until focused_other || fail "could not refocus the normal workspace"
 
   # The state changes reach it; a sidebar on screen turns its spinner with the

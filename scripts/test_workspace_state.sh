@@ -472,6 +472,33 @@ test_an_agent_team_is_saved_but_left_to_devagentics() {
   ! grep -qx 'dev-team' "$TEST_ROOT/restore.out" || fail "restore reported the team as restored"
 }
 
+# The system workspace has no agent or editor: restore starts its template
+# again, and its log pane follows the log it had (system_panel.sh's own state).
+test_the_system_workspace_is_restored() {
+  local home="$TEST_ROOT/home"
+  setup
+  printf 'dev-system\t%s\tsystem\tmonitor\t-\tsystem\n' "$home" > "$TEST_ROOT/sessions"
+  write_panes dev-system \
+    "%picker-system|0||devws-picker|$home" \
+    "%top-system|1|system-top||$home" \
+    "%docker-system|2|system-docker||$home" \
+    "%log-system|3|system-log||$home"
+  FIXTURE_SESSIONS="$TEST_ROOT/sessions"
+  FIXTURE_LAYOUT="LAYOUT"
+  run_save
+  grep -q "^W${TAB}dev-system${TAB}$home${TAB}system${TAB}monitor${TAB}[01]${TAB}LAYOUT${TAB}-${TAB}system$" "$(state_file)" ||
+    fail "the system workspace was not saved with its template: $(cat "$(state_file)")"
+
+  : > "$TEST_ROOT/tmuxinator.log"
+  run_restore
+  grep -qx 'start --no-attach system' "$TEST_ROOT/tmuxinator.log" ||
+    fail "restore did not start the system template: $(cat "$TEST_ROOT/tmuxinator.log")"
+  ! grep -q 'start --no-attach dev' "$TEST_ROOT/tmuxinator.log" ||
+    fail "restore rebuilt the system workspace as a dev one"
+  grep -qx 'dev-system' "$TEST_ROOT/restore.out" ||
+    fail "restore did not report the system workspace: $(cat "$TEST_ROOT/restore.out") $(cat "$TEST_ROOT/restore.err")"
+}
+
 # With an agent team's tabs, the tab on screen is not the workspace: the save
 # reads the window named "workspace".
 test_save_reads_the_workspace_window_not_the_active_tab() {
@@ -505,5 +532,6 @@ test_save_records_minimized_database
 test_restore_closes_picker
 test_tasks_and_team_panels_survive_a_restore
 test_an_agent_team_is_saved_but_left_to_devagentics
+test_the_system_workspace_is_restored
 
 printf 'Workspace state tests passed.\n'

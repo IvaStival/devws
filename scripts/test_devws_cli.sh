@@ -37,9 +37,13 @@ command -v zsh >/dev/null 2>&1 || {
 # that record their arguments, NUL-separated, and wait; fzf is one too, for
 # the sidebar.
 mkdir -p "$TEST_ROOT/bin" "$TEST_ROOT/home/.tmuxinator" "$TEST_ROOT/projects" "$TEST_ROOT/started"
+# The panes' shells are not login shells: with the test's empty HOME, a login
+# shell gets only /etc/profile's PATH (on Linux, no Homebrew tmux and none of
+# the stubs). A plain one keeps the PATH of whoever started the server.
+printf 'set -g default-command "exec bash --noprofile --norc"\n' > "$TEST_ROOT/tmux.conf"
 cat > "$TEST_ROOT/bin/tmux" <<EOF
 #!/usr/bin/env bash
-exec "$REAL_TMUX" -L "$SOCKET" -f /dev/null "\$@"
+exec "$REAL_TMUX" -L "$SOCKET" -f "$TEST_ROOT/tmux.conf" "\$@"
 EOF
 for program in claude codex nvim fzf; do
   cat > "$TEST_ROOT/bin/$program" <<EOF
@@ -188,7 +192,7 @@ test_devws_alone_joins_the_first_running_workspace() {
   cat > "$attach_tmux" <<EOF
 #!/usr/bin/env bash
 [ "\$1" = attach-session ] && { printf '%s\n' "\$*" > "$TEST_ROOT/attached"; exit 0; }
-exec "$REAL_TMUX" -L "$socket" -f /dev/null "\$@"
+exec "$REAL_TMUX" -L "$socket" -f "$TEST_ROOT/tmux.conf" "\$@"
 EOF
   chmod +x "$attach_tmux"
   rm "$start_screen"

@@ -94,7 +94,8 @@ link_rows() {
   printf '%s · %s\n' "${address:-no address}" "${ping:+ping $ping ms}"
 }
 
-link_age=$((now - $(stat -f %m "$link_file" 2>/dev/null || echo 0)))
+# GNU stat (Linux) first: its -f is about the filesystem; BSD's has no -c.
+link_age=$((now - $(stat -c %Y "$link_file" 2>/dev/null || stat -f %m "$link_file" 2>/dev/null || echo 0)))
 if [ "$link_age" -ge "$link_interval" ]; then
   link_rows > "$link_file.new" && mv "$link_file.new" "$link_file"
 fi

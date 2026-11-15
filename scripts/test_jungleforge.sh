@@ -236,7 +236,7 @@ test_register_adds_then_replaces_the_line() {
     fail "the line was not replaced: $(cat "$DEVWS_JUNGLEFORGE/.env")"
   grep -qx 'REGISTRY=ghcr.io/acme' "$DEVWS_JUNGLEFORGE/.env" || fail "another line was lost"
   ! jungleforge register 'Bad_Name' "$folder" 2>/dev/null || fail "an invalid name was registered"
-  sed -i '' '/^SHOP_PATH=/d' "$DEVWS_JUNGLEFORGE/.env"
+  sed -i.bak '/^SHOP_PATH=/d' "$DEVWS_JUNGLEFORGE/.env" && rm -f "$DEVWS_JUNGLEFORGE/.env.bak"
 }
 
 # Settings: the app's .docker-env in the folder given, and the shared .env
@@ -276,7 +276,7 @@ test_set_changes_the_line_and_checks_ports() {
   chmod 600 "$DEVWS_JUNGLEFORGE/.env"
   jungleforge set shared POSTGRES_PORT 5433 || fail "set shared failed"
   grep -qx 'POSTGRES_PORT=5433    # postgres' "$DEVWS_JUNGLEFORGE/.env" || fail "the shared line: $(cat "$DEVWS_JUNGLEFORGE/.env")"
-  [ "$(stat -f %Lp "$DEVWS_JUNGLEFORGE/.env")" = 600 ] || fail ".env lost its mode"
+  [ "$(stat -c %a "$DEVWS_JUNGLEFORGE/.env" 2>/dev/null || stat -f %Lp "$DEVWS_JUNGLEFORGE/.env")" = 600 ] || fail ".env lost its mode"
 
   jungleforge set "$WORKTREE" phi-planner PHP_CONTAINER phi-feat || fail "set on the branch failed"
   grep -qx 'PHP_CONTAINER=phi-feat' "$WORKTREE/backend/deploy/.docker-env" &&
