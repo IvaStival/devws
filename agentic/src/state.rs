@@ -11,6 +11,23 @@ pub const LEADER: &str = "leader";
 pub struct State {
     /// The user has approved the plan: agents that write may start.
     pub approved: bool,
+    pub workflow: crate::execution::Workflow,
+    pub application: crate::execution::Application,
+    pub application_proposal: Option<crate::execution::Application>,
+    pub application_revisions: Vec<crate::execution::Revision>,
+    pub milestone_evidence: std::collections::BTreeMap<String, crate::milestones::Evidence>,
+    pub integrations: std::collections::BTreeMap<String, crate::integration::Journal>,
+    pub reviews: Vec<crate::reviews::Review>,
+    pub timing: crate::performance::Timing,
+    pub runner: Option<crate::runner::Configuration>,
+    pub runner_workspaces: std::collections::BTreeMap<String, crate::runner::Workspace>,
+    pub contract_bindings: std::collections::BTreeMap<String, crate::execution::Contract>,
+    pub environment_preflight: std::collections::BTreeMap<String, crate::runner::Preflight>,
+    pub message_created: std::collections::BTreeMap<u64, u64>,
+    pub worker_turns: std::collections::BTreeMap<String, Message>,
+    pub runner_identities: std::collections::BTreeMap<String, std::path::PathBuf>,
+    pub usage_limit_approval: UsageApproval,
+    pub usage_limit_blocks: Vec<crate::worker::PercentageBlock>,
     pub order_profiles: std::collections::BTreeMap<String, Vec<String>>,
     pub order_revisions: std::collections::BTreeMap<String, u64>,
     pub amendments: Vec<Amendment>,
@@ -242,6 +259,7 @@ impl State {
     /// The message that gives an order.
     pub fn say_about(&mut self, to: &str, text: String, order: Option<String>) {
         let id = self.next_number();
+        self.message_created.insert(id, crate::log::now());
         self.queue.push(Message {
             id,
             to: to.to_string(),
@@ -385,5 +403,29 @@ mod tests {
             serde_json::from_str(r#"{"id":"ph","title":"plan","status":"reported","attempts":2}"#)
                 .unwrap();
         assert_eq!(loaded.review_since, None);
+    }
+}
+
+/// Consent is local to this task and independent of plan approval.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageApproval {
+    #[default]
+    NotRequested,
+    Pending,
+    Approved,
+    Denied,
+}
+
+#[cfg(test)]
+mod usage_approval_tests {
+    #[test]
+    fn older_state_does_not_grant_usage_consent() {
+        let state: super::State = serde_json::from_str(r#"{"approved":true}"#).unwrap();
+        assert_eq!(
+            state.usage_limit_approval,
+            super::UsageApproval::NotRequested
+        );
+        assert!(state.usage_limit_blocks.is_empty());
     }
 }

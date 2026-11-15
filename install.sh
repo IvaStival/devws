@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WITH_DEPS=0
+WITH_DEPS=1
 WITH_ITERM_KEYS=0
 WITH_AI_MEMORY=0
 WITH_JUNGLEFORGE=0
@@ -11,12 +11,15 @@ WITH_VERBOSE=0
 state_root="$HOME/.devws-state"
 dependency_state="$state_root/installed-dependencies"
 install_log="$state_root/install.log"
+initial_path="$PATH"
+PATH="$HOME/.local/bin:$PATH"
 
 usage() {
   cat <<'EOF'
-Usage: ./install.sh [--deps] [--iterm-keys] [--ai-memory] [--jungleforge] [--verbose]
+Usage: ./install.sh [--deps | --no-deps] [--iterm-keys] [--ai-memory] [--jungleforge] [--verbose]
 
-  --deps        Install Homebrew packages, devdb and tmux plugin manager.
+  --deps        Install dependencies (the default; kept for compatibility).
+  --no-deps     Skip Homebrew packages, devdb and tmux plugin manager.
   --iterm-keys  Map Shift+Enter to a newline in iTerm2 (quit iTerm2 first).
   --ai-memory   Offer ai-memory (long-term memory for agents) again after a no.
   --jungleforge Offer jungleforge (runs branches in Docker) again after a no.
@@ -27,6 +30,7 @@ EOF
 for arg in "$@"; do
   case "$arg" in
     --deps) WITH_DEPS=1 ;;
+    --no-deps) WITH_DEPS=0 ;;
     --iterm-keys) WITH_ITERM_KEYS=1 ;;
     --ai-memory) WITH_AI_MEMORY=1 ;;
     --jungleforge) WITH_JUNGLEFORGE=1 ;;
@@ -166,35 +170,6 @@ ensure_fzf() {
   ok "Installed fzf"
 }
 
-# GitHub workspaces (`devws` with no folder) list repos and PRs through gh,
-# which needs a login once per machine. Declining only skips GitHub
-# workspaces; local folders work without it.
-ensure_github_login() {
-  local reply
-
-  if ! command -v gh >/dev/null 2>&1; then
-    warn "gh is missing, so devws cannot open GitHub workspaces; run ./install.sh --deps"
-    return
-  fi
-  gh auth status >/dev/null 2>&1 && return
-
-  if ! ask 'Log in to GitHub now, for GitHub workspaces (gh auth login)? [Y/n] '; then
-    printf '\n' >&3
-    warn "Not logged in to GitHub; run gh auth login before using devws with no folder"
-    return
-  fi
-  case "$reply" in
-    n|N|no|NO|No)
-      warn "Not logged in to GitHub; run gh auth login before using devws with no folder"
-      return
-      ;;
-  esac
-  # gh asks which protocol devws clones with: SSH uses your key, HTTPS has
-  # gh log git in as well.
-  on_terminal gh auth login ||
-    warn "GitHub login failed; run gh auth login before using devws with no folder"
-}
-
 # ai-memory (github.com/akitaonrails/ai-memory) gives the agents long-term
 # memory. Offered, never installed silently: yes runs its official installer
 # (which checks its own download) and `ai-memory setup` (which shows its plan
@@ -267,16 +242,21 @@ ensure_jungleforge() {
 
 # devws's Rust programs (devagentics for agent teams, devws-ui for the menu
 # and pickers) are rebuilt on every install (rust_tools.sh, which devws
-# agentic also uses). Installing or updating Rust is asked, and only with
-# someone at the terminal; devws works without them (fzf asks instead of
-# devws-ui). What it installs is recorded for delete.sh, never a program or a
-# Rust the user had.
+# agentic also uses). A normal install prepares Rust as a required dependency
+# and a failed build stops it; --no-deps keeps the optional prompt. What it
+# installs is recorded for delete.sh, never a program or a Rust the user had.
 build_rust_tools() {
   local input=/dev/null
+  local arguments=(install --rebuild)
 
   [[ -t 0 ]] && input=/dev/stdin
-  DEVWS_ROOT="$ROOT" "$ROOT/config/tmuxinator/rust_tools.sh" install --rebuild <"$input" ||
-    warn "devws agentic will not work until devagentics builds: devws agentic offers it again, or run ./install.sh in a terminal"
+  [[ "$WITH_DEPS" == 1 ]] && arguments+=(--yes)
+  DEVWS_ROOT="$ROOT" "$ROOT/config/tmuxinator/rust_tools.sh" "${arguments[@]}" <"$input" && return
+  if [[ "$WITH_DEPS" == 1 ]]; then
+    printf 'Rust programs did not build; resolve the error above and rerun ./install.sh\n' >&2
+    return 1
+  fi
+  warn "devws agentic will not work until devagentics builds: devws agentic offers it again, or run ./install.sh in a terminal"
 }
 
 # A rebuild alone asks nothing, so its compiler output is only logged.
@@ -310,16 +290,24 @@ upgrade_tmuxinator_if_needed() {
 require_homebrew() {
   command -v brew >/dev/null 2>&1 && return
   stop 'Homebrew is required for automatic dependency installation.' \
-    'Install it from https://brew.sh, then rerun ./install.sh --deps'
+    'Install it from https://brew.sh, then rerun ./install.sh'
 }
 
 install_homebrew_packages() {
-  local glow_was_installed=0
+  local glow_was_installed=0 fzf_was_installed=0
 
   command -v glow >/dev/null 2>&1 && glow_was_installed=1
+  command -v fzf >/dev/null 2>&1 && fzf_was_installed=1
 
   info "Installing core packages from Brewfile"
   brew bundle --file="$ROOT/Brewfile"
+  if ! command -v fzf >/dev/null 2>&1; then
+    printf 'fzf installation failed or fzf is unavailable on PATH.\n' >&2
+    exit 1
+  fi
+  if [[ "$fzf_was_installed" == 0 ]]; then
+    record_installed_dependency "fzf"
+  fi
   if ! command -v glow >/dev/null 2>&1; then
     printf 'Glow installation failed or Glow is unavailable on PATH.\n' >&2
     exit 1
@@ -329,25 +317,35 @@ install_homebrew_packages() {
   fi
 }
 
-# devdb (the database pane) lives in its own repository and is installed
-# with uv from that checkout.
+# devdb (the database pane) lives in its own repository. The user's checkout
+# is preferred, but a fresh machine needs no sibling repo: it comes from
+# GitHub.
 install_devdb() {
   local devdb_source="${DEVWS_DEVDB_SOURCE:-$HOME/Projects/devdb}"
 
   command -v devdb >/dev/null 2>&1 && return
   if [[ ! -f "$devdb_source/pyproject.toml" ]]; then
-    warn "devdb was not found at $devdb_source; set DEVWS_DEVDB_SOURCE to its checkout"
-    return
+    if [[ -n "${DEVWS_DEVDB_SOURCE:-}" ]]; then
+      printf 'devdb was not found at %s; set DEVWS_DEVDB_SOURCE to its checkout\n' "$devdb_source" >&2
+      exit 1
+    fi
+    devdb_source="git+https://github.com/IvaStival/devdb.git"
   fi
   command -v uv >/dev/null 2>&1 || brew install uv
   if ! command -v uv >/dev/null 2>&1; then
-    warn "uv is unavailable, so devdb was not installed"
-    return
+    printf 'uv installation failed or uv is unavailable on PATH.\n' >&2
+    exit 1
   fi
-  info "Installing devdb"
-  # Compiled now rather than on the first launch, which would take seconds longer.
-  uv tool install --compile-bytecode "$devdb_source" ||
-    warn "devdb installation failed; the database pane will not open"
+  info "Installing devdb from $devdb_source"
+  # Compile now so the first database launch does not pay this cost.
+  if ! uv tool install --compile-bytecode "$devdb_source"; then
+    printf 'devdb installation failed; resolve the error above and rerun ./install.sh\n' >&2
+    exit 1
+  fi
+  if ! command -v devdb >/dev/null 2>&1; then
+    printf 'devdb was installed but is unavailable on PATH; check uv tool dir --bin\n' >&2
+    exit 1
+  fi
 }
 
 install_tmux_plugin_manager() {
@@ -367,8 +365,17 @@ mkdir -p "$state_root"
 [[ "$WITH_VERBOSE" == 1 ]] || : > "$install_log"
 printf '\033[1mdevws install\033[0m\n' >&3
 
+# Dependencies and the Rust programs come before any configuration changes,
+# so a failure leaves the machine as it was.
+if [[ "$WITH_DEPS" == 1 ]]; then
+  require_homebrew
+  step "Homebrew packages" install_homebrew_packages
+  step "devdb" install_devdb
+  step "tmux plugin manager" install_tmux_plugin_manager
+fi
 step "fzf" ensure_fzf
 step "tmuxinator" upgrade_tmuxinator_if_needed
+step "devagentics and devws-ui" ensure_rust_tools
 
 if [[ -f "$backup_state" ]]; then
   IFS= read -r backup_root < "$backup_state"
@@ -453,7 +460,7 @@ link_configuration() {
   # The devws command, on PATH: an executable, so open shells run the current
   # version.
   link_file "$ROOT/bin/devws" "$HOME/.local/bin/devws"
-  case ":$PATH:" in
+  case ":$initial_path:" in
     *":$HOME/.local/bin:"*) ;;
     *) warn "~/.local/bin is not on PATH; add it to run devws (export PATH=\"\$HOME/.local/bin:\$PATH\")" ;;
   esac
@@ -508,7 +515,7 @@ add_shell_integration() {
 }
 
 # The system monitor's panes (system.yml): the Brewfile has both tools, so
-# only --deps installs them.
+# only an install with dependencies (not --no-deps) installs them.
 check_system_monitor_tools() {
   local tool missing=()
   for tool in btop lazydocker; do
@@ -516,18 +523,18 @@ check_system_monitor_tools() {
   done
   case "${#missing[@]}" in
     0) ;;
-    1) warn "${missing[0]} (system monitor) is missing; run ./install.sh --deps" ;;
-    *) warn "${missing[0]} and ${missing[1]} (system monitor) are missing; run ./install.sh --deps" ;;
+    1) warn "${missing[0]} (system monitor) is missing; run ./install.sh" ;;
+    *) warn "${missing[0]} and ${missing[1]} (system monitor) are missing; run ./install.sh" ;;
   esac
 }
 
 check_missing_tools() {
   [[ -d "$HOME/.tmux/plugins/tpm" ]] ||
-    warn "tmux plugin manager is missing; run ./install.sh --deps"
+    warn "tmux plugin manager is missing; run ./install.sh"
   command -v nvim >/dev/null 2>&1 ||
-    warn "Neovim is missing; run ./install.sh --deps"
+    warn "Neovim is missing; run ./install.sh"
   command -v devdb >/dev/null 2>&1 ||
-    warn "devdb (database pane) is missing; run ./install.sh --deps"
+    warn "devdb (database pane) is missing; run ./install.sh"
   check_system_monitor_tools
   if ! command -v claude >/dev/null 2>&1 &&
       ! command -v codex >/dev/null 2>&1; then
@@ -549,20 +556,11 @@ reload_open_workspaces() {
   step_label="Open workspaces reloaded ($(tail -n 1 <<<"$output" | sed 's/^devws: //'))"
 }
 
-if [[ "$WITH_DEPS" == 1 ]]; then
-  require_homebrew
-  step "Homebrew packages" install_homebrew_packages
-  step "devdb" install_devdb
-  step "tmux plugin manager" install_tmux_plugin_manager
-fi
-
 step "Configuration links" link_configuration
-step "devagentics and devws-ui" ensure_rust_tools
 if [[ "$(uname -s)" == "Darwin" ]] && [[ -d /Applications/iTerm.app ]]; then
   step "iTerm2 Shift+Enter" setup_iterm_keys
 fi
 step "Shell integration (~/.zshrc)" add_shell_integration
-step "GitHub login" ensure_github_login
 step "ai-memory" ensure_ai_memory
 step "jungleforge" ensure_jungleforge
 step "Checks" check_missing_tools
@@ -585,3 +583,4 @@ printf '\033[1;33mReload your shell before using devws:\033[0m\n' >&3
 printf '\033[1;36m  source ~/.zshrc\033[0m\n' >&3
 printf '\n' >&3
 printf 'Start a workspace: devws (a GitHub repo) or devws /path/to/project\n' >&3
+printf 'GitHub workspaces: use Menu → Git → GitHub login (or gh auth login) when ready\n' >&3

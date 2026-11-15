@@ -203,6 +203,11 @@ pub fn request_switch(
     let Some((now, other)) = now_and_other(&role, &task.state()?) else {
         bail!("the leader's role has no [fallback]: there is no other program to move to");
     };
+    anyhow::ensure!(
+        task.state()?.workflow != crate::execution::Workflow::Reviewed
+            || devws.agent_kind(&other.agent)? == crate::agent_args::Kind::Claude,
+        "reviewed coordinator switching requires a supported MCP-only adapter; Codex is not enabled for this workflow"
+    );
     if let Some(out) = run_out(devws, &other.agent)? {
         bail!(
             "{} has used {out}: the leader stays on {}",
@@ -273,6 +278,11 @@ pub fn hand_over(
     let Some((now, other)) = now_and_other(&role, &state) else {
         return Ok(None);
     };
+    if state.workflow == crate::execution::Workflow::Reviewed
+        && devws.agent_kind(&other.agent)? != crate::agent_args::Kind::Claude
+    {
+        return Ok(None);
+    }
     let why = match &state.leader_switch {
         Some(asked) => asked.clone(),
         None => {

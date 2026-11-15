@@ -264,6 +264,29 @@ description = "Writes the tests"   # optional: the board's line for the role
 You write the tests for the step you are given…
 ```
 
+### The team's history in the repo
+
+A task's state lives in `~/.devagentics/tasks/<task>/`, on the machine that
+runs it. So that the work can go on elsewhere, every accepted step also
+writes the team's history into the repo and commits it on the task's
+branch: `.devagentics/history/<task>/` with `history.json` (the accepted
+steps, in order, with their spec's release version; whether the plan was
+approved), `plan.md` and the seniors' execution plans in `plans/`. The
+commit (`chore(team): record 1.83.2 …`) takes only those files, so an
+agent's work in progress in the same worktree is left alone, and the work
+check ignores that folder. When saving fails, the step stays accepted and
+the log says why.
+
+Push the branch, start the team on it on another machine (`devws agentic`),
+and the new task loads that history: Done and its release versions are as
+they were, `next_version` goes on from the highest, the plan is still
+approved, and the execution plans are back. The leader is told it continues,
+reads `task_status` and the plan, and tells you what is done and what comes
+next. Agents and open orders do not carry over: the leader starts new ones.
+
+`devagentics history save <task>` writes and commits the history at any time,
+for example before you push the branch to carry on elsewhere.
+
 The factory floor runs on Claude Sonnet or Codex Luna only (`gpt-6-luna`):
 a floor role's model, and its alternatives' when the account runs out, stay
 only when they are a Sonnet or a Luna; anything else (Opus, Claude's
@@ -338,3 +361,13 @@ in a new conversation.
 ## Reliable execution
 
 See the [order, recovery and isolated-check guide](../../docs/user/devagentics-execution.md) for required report IDs, audited amendments, interrupt/resume, named check configuration and result formats.
+
+## Worker usage-limit approval
+
+When both worker accounts reach the local 85% guard, the leader asks for your
+explicit approval to continue above it for this task. It records the answer with
+`set_usage_limit_approval`, then calls `resume_task` after approval to restart
+existing blocked workers. Approval survives restarts until revoked and applies
+only to this task. Tell the leader to revoke it to guard future launches again;
+running workers are left in place. Denial is not repeatedly prompted. Provider
+quota errors remain enforced. See the [usage-limit guide](../../docs/user/devagentics-execution.md#continue-above-the-worker-percentage-threshold).

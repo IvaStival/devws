@@ -157,6 +157,7 @@ fn merge(worktree: &Path, branch: &str, what: &str) -> Result<()> {
 /// A lane that already has the task's branch is left as it is: a step being
 /// redone keeps its uncommitted edits.
 pub fn catch_up(task: &Task, lane: &Lane) -> Result<()> {
+    crate::workflow::block_unverified_runner(task)?;
     let branch = task.config()?.branch;
     if git(
         &lane.worktree,
@@ -165,6 +166,15 @@ pub fn catch_up(task: &Task, lane: &Lane) -> Result<()> {
     .is_ok()
     {
         return Ok(());
+    }
+    if task.state()?.workflow == crate::execution::Workflow::Reviewed {
+        anyhow::ensure!(
+            checks::inspect(&lane.worktree, "HEAD", &[], &[])?
+                .uncommitted
+                .is_empty(),
+            "lane has uncommitted changes"
+        );
+        return git(&lane.worktree,&["merge","--ff-only","--no-edit",&branch]).map(|_|()).context("divergent lane requires a separately reviewed integration; no automatic conflict-resolution code was merged");
     }
     merge(
         &lane.worktree,
@@ -175,12 +185,40 @@ pub fn catch_up(task: &Task, lane: &Lane) -> Result<()> {
 
 /// An accepted step: the lane's work goes into the task's branch.
 pub fn merge_into_task(task: &Task, lane: &Lane) -> Result<()> {
+    crate::workflow::block_unverified_runner(task)?;
     let config = task.config()?;
     let repo = config
         .repos
         .iter()
         .find(|repo| repo.name == lane.repo)
         .with_context(|| format!("the task has no repo {}", lane.repo))?;
+    if task.state()?.workflow == crate::execution::Workflow::Reviewed {
+        let state = task.state()?;
+        let order = state
+            .orders
+            .iter()
+            .rev()
+            .find(|order| {
+                state
+                    .agent(&order.agent)
+                    .is_some_and(|agent| agent.lane.as_deref() == Some(&lane.name))
+                    && state.steps.iter().any(|step| {
+                        step.id == order.step && step.status == crate::state::StepStatus::Reported
+                    })
+            })
+            .context("no reported implementation for lane integration")?;
+        let review = state
+            .reviews
+            .iter()
+            .rev()
+            .find(|review| review.order == order.id)
+            .context("independent review required")?;
+        anyhow::ensure!(
+            review.verdict == Some(crate::reviews::Verdict::Approved),
+            "independent review not approved"
+        );
+        return crate::integration::merge(task, lane, &order.step, review);
+    }
     merge(
         &repo.worktree,
         &lane.branch,

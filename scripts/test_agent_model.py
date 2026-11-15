@@ -17,7 +17,7 @@ class AgentModelTests(unittest.TestCase):
         self.scripts.mkdir()
         source = Path(__file__).resolve().parents[1] / "config/tmuxinator"
         for name in ["agent_model.sh", "agent_runner.sh", "agent_state.sh", "agent_statusline.sh",
-                     "header_tokens.sh", "agents.sh", "token_cache.pl", "agent_editor_prompt.md"]:
+                     "agent_usage_bar.sh", "header_tokens.sh", "agents.sh", "token_cache.pl", "agent_editor_prompt.md"]:
             shutil.copy(source / name, self.scripts / name)
         self.bin = self.root / "bin"
         self.bin.mkdir()

@@ -71,7 +71,9 @@ recordings() { ls "$ROOT/started/$1".* 2>/dev/null | wc -l | tr -d ' '; }
 at_least() { [ "$(recordings "$1")" -ge "$2" ]; }
 args_of() { tr '\0' '\036' < "$(ls -t "$ROOT/started/$1".* | head -1)"; }
 
-# 1. devws agentic, with the real devagentics.
+# 1. Exercise the legacy execution flow explicitly; reviewed mode has separate boundary tests.
+devagentics task start --legacy "$ROOT/repo" >/dev/null
+# devws reopens this existing task without changing its workflow.
 session="$(devws agentic "$ROOT/repo" </dev/null | tail -1)"
 [ "$session" = dev-repo ] || fail "devws agentic printed '$session'"
 ok "devws agentic opened $session"
@@ -153,12 +155,11 @@ leader_calls() {
 }
 printf '1. s1: create a.txt\n' | TMUX_PANE="$pane" devagentics plan write | grep -q 'Execution plan of step plan' ||
   fail "the senior's execution plan was not stored"
-# The dispatcher records the delivery once devws's send returns, a moment
-# after the text shows in the pane: a report before that is refused.
-order_delivered() {
-  devagentics task status feat-x | jq -e '[.. | objects | select(.id? == "o1" and has("delivered"))][0].delivered' >/dev/null
+# Terminal text can appear before the dispatcher persists its delivery receipt.
+planner_order_delivered() {
+  python3 -c 'import json,sys; state=json.load(open(sys.argv[1])); sys.exit(not any(order["id"] == "o1" and order.get("delivered", False) for order in state["orders"]))' "$ROOT/da/tasks/feat-x/state.json"
 }
-wait_until order_delivered || fail "the dispatcher did not record the order as delivered"
+wait_until planner_order_delivered || fail "the planner order was not acknowledged as delivered"
 TMUX_PANE="$pane" devagentics report done --order o1 "planned" >/dev/null || fail "the senior's report"
 reply="$(leader_calls \
   '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"accept_step","arguments":{"step":"plan"}}}' \

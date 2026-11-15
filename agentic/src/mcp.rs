@@ -43,6 +43,12 @@ fn tools() -> Vec<Value> {
         |what: &str| json!({ "type": "array", "items": { "type": "string" }, "description": what });
     let mut tools = vec![
         tool(
+            "application_workflow",
+            "Project application planning. Actions: status, propose, answer, confirm, approve, milestones, preview_adoption, adopt, review_request, provision_roles, runner_configure, recover_turn, validate_milestone, leader_inbox, inbox_ack, runner_images, project_overview, preflight_retry. provision_roles changes managed storage outside the project and requires exact-call external authorization. Only record confirm/approve after the user's explicit answer for that exact revision. Material proposals never inherit approval. Preview is read-only; runner enforcement may block adoption.",
+            json!({"action":text("Workflow action"),"input":{"type":"object"}}),
+            &["action"],
+        ),
+        tool(
             "pause_task",
             "Pause deliveries; optionally interrupt active turns without closing panes.",
             json!({"interrupt": {"type":"boolean"}}),
@@ -83,6 +89,12 @@ fn tools() -> Vec<Value> {
             "Record that the user approved the plan, so agents that write may start. Call it only after the user said yes to the plan in this conversation; never on your own.",
             json!({}),
             &[],
+        ),
+        tool(
+            "set_usage_limit_approval",
+            "Record the user's explicit approval, denial or revocation of a pending worker percentage-limit override. Never infer consent from plan approval. Applies to this task until revoked; provider quota errors still apply. After approval call resume_task to restart existing blocked workers, not spawn_agent. Reconsider a denied request only when the user explicitly asks.",
+            json!({"approved": {"type":"boolean"}}),
+            &["approved"],
         ),
         tool(
             "authorize_action",
@@ -211,12 +223,29 @@ fn tools() -> Vec<Value> {
 /// Only actions crossing the project boundary require separate authorization.
 fn effect(name: &str) -> Option<Effect> {
     match name {
+        "application_workflow" => Some(Effect::System),
         "add_repo" | "open_prs" => Some(Effect::External),
         "stop_agent" => Some(Effect::System),
-        "spawn_agent" | "pause_task" | "resume_task" | "configure_checks" | "run_check"
-        | "amend_order" | "task_status" | "approve_plan" | "add_lane" | "send_order"
-        | "read_plan" | "answer_question" | "accept_step" | "reject_step" | "set_check"
-        | "read_log" | "escalate" | "switch_leader" | "authorize_action" => Some(Effect::System),
+        "set_usage_limit_approval"
+        | "spawn_agent"
+        | "pause_task"
+        | "resume_task"
+        | "configure_checks"
+        | "run_check"
+        | "amend_order"
+        | "task_status"
+        | "approve_plan"
+        | "add_lane"
+        | "send_order"
+        | "read_plan"
+        | "answer_question"
+        | "accept_step"
+        | "reject_step"
+        | "set_check"
+        | "read_log"
+        | "escalate"
+        | "switch_leader"
+        | "authorize_action" => Some(Effect::System),
         _ => None,
     }
 }
@@ -328,6 +357,14 @@ impl Server<'_> {
             return self.authorize_action(arguments);
         }
         validate_required(name, arguments)?;
+        if name == "application_workflow"
+            && matches!(
+                arguments["action"].as_str(),
+                Some("provision_roles" | "runner_configure")
+            )
+        {
+            return self.authorized_call(name, arguments, Effect::External);
+        }
         if let Some(effect) = effect(name) {
             if effect != Effect::System {
                 return self.authorized_call(name, arguments, effect);
@@ -439,6 +476,11 @@ impl Server<'_> {
 
     fn call_inner(&self, name: &str, arguments: &Value) -> Result<String> {
         match name {
+            "application_workflow" => Ok(serde_json::to_string_pretty(&crate::workflow::call(
+                self.task,
+                &string(arguments, "action")?,
+                arguments.get("input").unwrap_or(&json!({})),
+            )?)?),
             "task_status" => Ok(serde_json::to_string_pretty(&status::summary(
                 self.task, self.devws, self.home,
             )?)?),
@@ -462,6 +504,17 @@ impl Server<'_> {
                     lane.branch,
                     lane.name
                 ))
+            }
+            "set_usage_limit_approval" => {
+                let approved = arguments["approved"]
+                    .as_bool()
+                    .context("approved must be a boolean")?;
+                self.team().set_usage_limit_approval(approved)?;
+                Ok(if approved {
+                    "Worker percentage override approved for this task until revoked. Call resume_task for existing blocked workers; provider errors remain enforced."
+                } else {
+                    "Worker percentage override denied or revoked. Do not ask again unless the user requests reconsideration."
+                }.into())
             }
             "spawn_agent" => {
                 let agent = self.team().spawn_agent_in(
@@ -736,6 +789,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "application_workflow",
                 "pause_task",
                 "resume_task",
                 "configure_checks",
@@ -743,6 +797,7 @@ mod tests {
                 "amend_order",
                 "task_status",
                 "approve_plan",
+                "set_usage_limit_approval",
                 "authorize_action",
                 "spawn_agent",
                 "add_lane",
@@ -845,6 +900,56 @@ mod tests {
             json!({ "agent": "x", "step": "s", "title": "t", "text": "t", "allowed": "src/**" }),
         );
         assert!(failed && text.contains("list of strings"), "{text}");
+    }
+
+    #[test]
+    fn usage_approval_is_separate_from_plan_approval_and_validated() {
+        let mut f = fixture();
+        f.devws = f.devws.with_kind("codex", Program::Codex);
+        assert!(f.call("set_usage_limit_approval", json!({})).0);
+        assert!(
+            f.call("set_usage_limit_approval", json!({"approved":"yes"}))
+                .0
+        );
+        assert!(
+            f.call("set_usage_limit_approval", json!({"approved":true}))
+                .0
+        );
+        for account in ["claude", "codex"] {
+            f.devws.set_limits(
+                account,
+                crate::devws::Limits {
+                    week: None,
+                    five_hour: Some(85),
+                },
+            );
+        }
+        assert!(f.call("spawn_agent", json!({"role":"planner"})).0);
+        let (_, status) = f.call("task_status", json!({}));
+        let status: Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(status["usage_limit_approval"]["status"], "pending");
+        assert_eq!(
+            status["usage_limit_approval"]["blocked_accounts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            !f.call("set_usage_limit_approval", json!({"approved":true}))
+                .0
+        );
+        assert!(!f.task.state().unwrap().approved);
+        assert!(!f.call("resume_task", json!({})).0);
+        assert!(f.task.state().unwrap().agents[0].live);
+        assert!(
+            !f.call("set_usage_limit_approval", json!({"approved":false}))
+                .0
+        );
+        assert_eq!(
+            f.task.state().unwrap().usage_limit_approval,
+            crate::state::UsageApproval::Denied
+        );
     }
 
     #[test]

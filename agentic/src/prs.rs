@@ -38,6 +38,20 @@ fn succeed(program: &str, worktree: &Path, arguments: &[&str]) -> Result<String>
 /// A pull request for each repo of the task, as (repo, url). Only when every
 /// step is accepted and every worktree is clean.
 pub fn open_prs(task: &Task, gh: &str) -> Result<Vec<(String, String)>> {
+    crate::workflow::block_unverified_runner(task)?;
+    if task.state()?.workflow == crate::execution::Workflow::Reviewed {
+        let state = task.state()?;
+        anyhow::ensure!(
+            !state.application.milestones.is_empty(),
+            "application milestone baseline required"
+        );
+        for id in state.application.milestones.keys() {
+            anyhow::ensure!(
+                crate::milestones::ready(task, id)?,
+                "milestone {id} requires passing current integrated validation before publication"
+            );
+        }
+    }
     let config = task.config()?;
     let state = task.state()?;
     if state.steps.is_empty() {

@@ -70,6 +70,14 @@ fi
 # The status line records this agent's limits under its name.
 export DEVWS_AGENT="$agent"
 
+# Reviewed panels use a supervisor with piped provider input, never keystroke delivery.
+if [ "${extra_args[0]:-}" = --devagentics-worker ]; then
+  [ "$extra" != --extra ] || tmux set-option -p -t "$TMUX_PANE" @devws_role extra-agent
+  tmux set-option -p -t "$TMUX_PANE" @devws_agent "$agent"
+  executable="${extra_args[1]}"
+  exec "$executable" worker-panel "${extra_args[@]:2}"
+fi
+
 # Codex stops at "Trust this folder?" in a folder its config does not trust,
 # and every task gets new lane folders: trust the folders devAgentics made for
 # its tasks, as answering the question would, and no others. Trusting the
@@ -148,6 +156,11 @@ case "$kind" in
     for event in SessionStart PermissionRequest Stop SessionEnd; do
       state_hooks+=(-c "hooks.$event=[$state_hook]")
     done
+    # Codex runs no status line command: its own items show what devws's
+    # Claude bar does (agent_usage_bar.sh), unless the account chose its own.
+    status_line_args=()
+    grep -q '^[[:space:]]*status_line[[:space:]]*=' "${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null ||
+      status_line_args=(-c 'tui.status_line=["model-with-reasoning","git-branch","five-hour-limit","weekly-limit","context-used"]')
     resume_args=()
     [ -n "$resume" ] && resume_args=(resume --last)
     codex ${resume_args[@]+"${resume_args[@]}"} \
@@ -155,6 +168,7 @@ case "$kind" in
       -c "hooks.PreToolUse=[$(follow_hook pre),$state_hook]" \
       -c "hooks.PostToolUse=[$(follow_hook),$state_hook]" \
       "${state_hooks[@]}" \
+      ${status_line_args[@]+"${status_line_args[@]}"} \
       -c "developer_instructions=$(jq -n --arg prompt "$prompt" '$prompt')" \
       ${extra_args[@]+"${extra_args[@]}"}
     ;;

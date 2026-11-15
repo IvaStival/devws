@@ -34,7 +34,7 @@ These are read from the environment only (the installer, the checks and the pick
 
 | Variable | Default | What it does |
 | -------- | ------- | ------------ |
-| `DEVWS_DEVDB_SOURCE` | `~/Projects/devdb` | The devdb checkout the installer installs the database pane from |
+| `DEVWS_DEVDB_SOURCE` | `~/Projects/devdb` if present, otherwise GitHub | Explicit local devdb checkout for installation; a missing explicit path fails rather than choosing another source |
 | `DEVWS_CHECK_JOBS` | `4` | How many test suites `scripts/check.sh` runs at once |
 | `DEVWS_UI` | `~/.cargo/bin/devws-ui` | The program that draws the menu and the pickers; when it is not there, fzf asks instead |
 | `DEVWS_CLAUDE_USAGE_URL` | `https://api.anthropic.com/api/oauth/usage` | Where an [agent team](agentic.md) reads a Claude account's plan limits before it starts an agent (the endpoint Claude Code's `/usage` asks); without an answer it falls back on the status line's reading |

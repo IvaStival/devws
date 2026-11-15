@@ -305,6 +305,10 @@ test_no_settings_opens_the_connection_setup() {
   local session="dev-empty"
   local project="$TEST_ROOT/no-database"
   mkdir -p "$project"
+  # uv installs here, outside the PATH of a tmux server started earlier.
+  mkdir -p "$HOME/.local/bin"
+  mv "$TEST_ROOT/bin/devdb" "$HOME/.local/bin/devdb"
+  tmux set-environment -g PATH "$TEST_ROOT/bin:/usr/bin:/bin"
   rm -f "$CLIENT_LOG_DIR"/*
   create_workspace "$session"
   tmux set-option -t "$session" @devws_root "$project"
@@ -314,6 +318,8 @@ test_no_settings_opens_the_connection_setup() {
   [[ "$(tr '\n' ' ' < "$(client_log).args")" == "--project $project " ]] ||
     fail "devdb was not asked to set up the project's connection: $(cat "$(client_log).args")"
   [[ -z "$(cat "$(client_log).url")" ]] || fail "a connection URL was passed for a project without one"
+  mv "$HOME/.local/bin/devdb" "$TEST_ROOT/bin/devdb"
+  tmux set-environment -g PATH "$PATH"
 }
 
 test_runner_asks_between_several_databases() {

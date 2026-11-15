@@ -544,7 +544,21 @@ test_agents_start_with_the_link() {
     fail "codex's prompts do not clear the marks"
   grep -q '^developer_instructions=.*editor_open.sh' "$TEST_ROOT/agents/codex.args" ||
     fail "codex was not told about the editor"
+  grep -qx 'tui.status_line=\["model-with-reasoning","git-branch","five-hour-limit","weekly-limit","context-used"\]' \
+    "$TEST_ROOT/agents/codex.args" || fail "codex got no usage status line"
   tmux kill-pane -t "$pane"
+
+  # A status line of the user's own wins.
+  rm "$TEST_ROOT/agents/codex.args"
+  mkdir -p "$HOME/.codex"
+  printf '[tui]\nstatus_line = ["model-name"]\n' > "$HOME/.codex/config.toml"
+  pane="$(tmux split-window -t work: -P -F '#{pane_id}' -c "$TEST_ROOT/project" \
+    "$SCRIPTS/agent_runner.sh codex")"
+  wait_until test -s "$TEST_ROOT/agents/codex.args" || fail "codex did not start again"
+  ! grep -q '^tui.status_line=' "$TEST_ROOT/agents/codex.args" ||
+    fail "devws's status line replaced the user's own"
+  tmux kill-pane -t "$pane"
+  rm "$HOME/.codex/config.toml"
 }
 
 test_follow_skips_repository_work_without_a_consumer() {

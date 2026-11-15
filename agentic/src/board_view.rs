@@ -566,6 +566,10 @@ fn leader_detail(board: &Board) -> String {
             ));
         }
     }
+    if let Some(workflow) = board.details.get("workflow") {
+        text.push_str("\n\nReviewed execution, readiness and measurements:\n");
+        text.push_str(workflow);
+    }
     text
 }
 

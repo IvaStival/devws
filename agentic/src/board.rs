@@ -372,7 +372,27 @@ impl Board {
             .filter(|step| step.status == StepStatus::Accepted)
             .map(step_row)
             .collect();
-        let done_specs = finished_specs(&state.steps, step_row);
+        let done_specs = if state.workflow == crate::execution::Workflow::Reviewed {
+            let mut milestones = Vec::new();
+            for (id, milestone) in &state.application.milestones {
+                if crate::milestones::ready(task, id)? {
+                    milestones.push(SpecRow {
+                        id: id.clone(),
+                        version: milestone.version.clone(),
+                        title: format!("Milestone ready: {}", milestone.title),
+                        steps: state
+                            .steps
+                            .iter()
+                            .filter(|step| milestone.required.contains(&step.id))
+                            .map(step_row)
+                            .collect(),
+                    });
+                }
+            }
+            milestones
+        } else {
+            finished_specs(&state.steps, step_row)
+        };
         let queue = state
             .queue
             .iter()
@@ -434,6 +454,20 @@ impl Board {
         }
 
         let mut details = BTreeMap::new();
+        if state.workflow == crate::execution::Workflow::Reviewed {
+            details.insert(
+                "workflow".into(),
+                serde_json::to_string_pretty(&crate::workflow::status(task)?)?,
+            );
+            summary.push(format!(
+                "{} pending independent reviews.",
+                state
+                    .reviews
+                    .iter()
+                    .filter(|review| review.verdict.is_none())
+                    .count()
+            ));
+        }
         for agent in state.agents.iter().filter(|agent| agent.live) {
             let order = state.open_order_of(&agent.id);
             let mut text = format!(
@@ -492,11 +526,14 @@ impl Board {
             Some(reason) => format!("{leader_program} · handover pending: {reason}"),
             None => leader_program,
         };
-        let leader_permissions = rows
+        let mut leader_permissions = rows
             .iter()
             .find(|row| row.name == "leader")
             .map(|row| row.permissions.clone())
             .unwrap_or_else(|| "unknown".into());
+        if state.workflow == crate::execution::Workflow::Reviewed {
+            leader_permissions="MCP-only coordinator; project tools are autonomous, external/destructive actions require exact user approval".into();
+        }
         let leader_fallback = roles.get("leader").and_then(|role| {
             let fallback = role.on_fallback()?;
             let active = state.leader_agent.as_deref() == Some(fallback.agent.as_str())

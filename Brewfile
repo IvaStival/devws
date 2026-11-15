@@ -13,6 +13,7 @@ brew "tmux"
 brew "tmuxinator"
 brew "tree"
 brew "tree-sitter-cli"
+brew "uv"
 brew "zsh"
 
 if OS.mac?

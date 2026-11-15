@@ -6,17 +6,24 @@ mod board_view;
 mod check_profiles;
 mod checks;
 mod devws;
+mod execution;
+mod history;
 mod home;
+mod integration;
 mod lanes;
 mod leader;
 mod log;
 mod mcp;
+mod milestones;
 mod orders;
+mod performance;
 mod plans;
 mod prs;
 mod questions;
 mod recovery;
+mod reviews;
 mod roles;
+mod runner;
 mod specs;
 mod start;
 mod state;
@@ -25,6 +32,8 @@ mod task;
 mod team;
 mod watch;
 mod worker;
+mod worker_tools;
+mod workflow;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -49,10 +58,47 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    WorkerMcp {
+        task: String,
+        agent: String,
+        #[arg(long)]
+        identity: PathBuf,
+    },
+    WorkerPanel {
+        task: String,
+        agent: String,
+        #[arg(long)]
+        identity: PathBuf,
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// Structured application planning and independent review controls
+    Workflow {
+        task: String,
+        action: String,
+        /// JSON arguments (defaults to an empty object)
+        #[arg(long, default_value = "{}", conflicts_with = "input_file")]
+        input: String,
+        /// Read the JSON object from a file instead of a command argument
+        #[arg(long)]
+        input_file: Option<PathBuf>,
+    },
+    /// Submit a review from its assigned read-only reviewer pane
+    ReviewSubmit {
+        task: String,
+        review: String,
+        #[arg(long)]
+        input: String,
+    },
     /// A task: one branch, one team
     Task {
         #[command(subcommand)]
         action: TaskAction,
+    },
+    /// The team's history in the repo (.devagentics/history/<task>/)
+    History {
+        #[command(subcommand)]
+        action: HistoryAction,
     },
     /// Run checks for an exact delivered order
     Check {
@@ -120,6 +166,14 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum HistoryAction {
+    /// Write what the task accepted, its plan and execution plans into the
+    /// repo and commit them on the task's branch (each accepted step does it
+    /// too)
+    Save { task: String },
+}
+
+#[derive(Subcommand)]
 enum CheckAction {
     Run {
         #[arg(long)]
@@ -148,6 +202,9 @@ enum TaskAction {
     /// agent and the leader's arguments file (what `devws agentic` calls)
     Start {
         folder: PathBuf,
+        /// Explicitly create a legacy task; existing tasks always keep their workflow
+        #[arg(long)]
+        legacy: bool,
         /// The devws agent that leads, instead of the leader role's; kept
         /// for the task
         #[arg(long)]
@@ -348,11 +405,70 @@ fn run() -> Result<()> {
     let open = |id: &str| Task::open(&home, id);
 
     match cli.command {
+        Command::WorkerMcp {
+            task,
+            agent,
+            identity,
+        } => worker_tools::mcp(&open(&task)?, &agent, &identity)?,
+        Command::WorkerPanel {
+            task,
+            agent,
+            identity,
+            model,
+        } => worker_tools::panel(&open(&task)?, &agent, &identity, model.as_deref())?,
+        Command::Workflow {
+            task,
+            action,
+            input,
+            input_file,
+        } => {
+            let task = open(&task)?;
+            let input = match input_file {
+                Some(path) => std::fs::read_to_string(path)?,
+                None => input,
+            };
+            let input: serde_json::Value = serde_json::from_str(&input)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&workflow::call(&task, &action, &input)?)?
+            );
+        }
+        Command::ReviewSubmit {
+            task,
+            review,
+            input,
+        } => {
+            let task = open(&task)?;
+            let input: serde_json::Value = serde_json::from_str(&input)?;
+            reviews::submit(
+                &task,
+                &this_pane()?,
+                &review,
+                serde_json::from_value(input["verdict"].clone())?,
+                serde_json::from_value(input["findings"].clone())?,
+                input["summary"].as_str().context("summary required")?,
+            )?;
+            println!("Review recorded; only the leader may accept and merge.");
+        }
         Command::Task { action } => match action {
-            TaskAction::Start { folder, leader } => {
+            TaskAction::Start {
+                folder,
+                leader,
+                legacy,
+            } => {
                 let command = std::env::current_exe()?.display().to_string();
-                let started =
-                    start::start_task(&home, &devws, &folder, &command, leader.as_deref())?;
+                let started = if legacy {
+                    start::start_task(&home, &devws, &folder, &command, leader.as_deref())?
+                } else {
+                    start::start_task_with_workflow(
+                        &home,
+                        &devws,
+                        &folder,
+                        &command,
+                        leader.as_deref(),
+                        execution::Workflow::Reviewed,
+                    )?
+                };
                 println!(
                     "{}\n{}\n{}",
                     started.id,
@@ -534,6 +650,19 @@ fn run() -> Result<()> {
                 "{}",
                 questions::answer(&task, questions::Answerer::Pane(&pane), &question, &answer)?
             );
+        }
+        Command::History {
+            action: HistoryAction::Save { task },
+        } => {
+            let task = open(&task)?;
+            if history::save(&task, None)? {
+                println!(
+                    "The team's history is committed on {}.",
+                    task.config()?.branch
+                );
+            } else {
+                println!("The team's history in the repo is up to date.");
+            }
         }
         Command::Check {
             action: CheckAction::Run { order, task },

@@ -1,8 +1,9 @@
 //! Named checks share one isolated runner and order-bound evidence.
 use crate::{checks, orders, state::Order, task::Task};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::{
     collections::BTreeMap,
     fs::{self, File},
@@ -179,6 +180,13 @@ pub fn configure(task: &Task, repo: &str, profiles: RepositoryChecks) -> Result<
     if repository.check.is_some() && !profiles.selected.is_empty() {
         bail!("remove the legacy repo check before selecting named profiles");
     }
+    let state = task.state()?;
+    if state.workflow == crate::execution::Workflow::Reviewed && state.application.approved() {
+        ensure!(
+            state.application.check_configuration.get(repo) == Some(&profiles),
+            "check configuration differs from the approved baseline; propose and obtain approval for the material gate change first"
+        );
+    }
     config.check_profiles.insert(repo.into(), profiles);
     task.write_config(&config)
 }
@@ -211,6 +219,13 @@ pub fn configuration(task: &Task, order: &Order) -> Result<Option<RepositoryChec
     let state = task.state()?;
     let agent = state.agent(&order.agent).context("order agent missing")?;
     let config = task.config()?;
+    if state.workflow == crate::execution::Workflow::Reviewed {
+        ensure!(
+            state.application.check_configuration.get(&agent.repo)
+                == config.check_profiles.get(&agent.repo),
+            "configured checks differ from approved baseline"
+        );
+    }
     let mut selected = config.check_profiles.get(&agent.repo).cloned();
     if let Some(names) = state.order_profiles.get(&order.id) {
         if selected.is_none() && !names.is_empty() {
@@ -248,12 +263,13 @@ pub fn run(task: &Task, id: &str, pane: Option<&str>) -> Result<Evidence> {
 
 /// Caller holds the order operation lock; report and explicit run share this path.
 pub fn execute(task: &Task, order: &Order, timeout: Duration) -> Result<Evidence> {
+    let timing_start = crate::log::now();
     let state = task.state()?;
     orders::validate_snapshot(&state, order, state.revision(&order.id))?;
     let agent = state.agent(&order.agent).context("order agent missing")?;
     let repo = crate::lanes::workplace(task, agent)?;
     let config = configuration(task, order)?;
-    let signature = serde_json::to_string(&(config.as_ref(), &order.check, baseline()))?;
+    let signature = signature(&state, config.as_ref(), order)?;
     let head = checks::head(&repo.worktree)?;
     let work = checks::inspect(
         &repo.worktree,
@@ -329,15 +345,31 @@ pub fn execute(task: &Task, order: &Order, timeout: Duration) -> Result<Evidence
         });
     } else if let Some(config) = &config {
         for (index, name) in config.selected.iter().enumerate() {
-            evidence.phases.push(run_profile(
-                name,
-                &config.checks[name],
-                &config.environments[&config.checks[name].environment],
-                &repo.worktree,
-                &folder,
-                index,
-            )?);
+            evidence
+                .phases
+                .push(if state.workflow == crate::execution::Workflow::Reviewed {
+                    run_container_profile(
+                        task,
+                        &agent.id,
+                        name,
+                        &config.checks[name],
+                        &config.environments[&config.checks[name].environment],
+                        &folder,
+                        index,
+                    )?
+                } else {
+                    run_profile(
+                        name,
+                        &config.checks[name],
+                        &config.environments[&config.checks[name].environment],
+                        &repo.worktree,
+                        &folder,
+                        index,
+                    )?
+                });
         }
+    } else if state.workflow == crate::execution::Workflow::Reviewed {
+        bail!("reviewed execution requires named checks");
     } else if let Some(command) = &order.check {
         let log = folder.join("legacy.log");
         let result = checks::run_check(command, &repo.worktree, &log, timeout);
@@ -392,6 +424,9 @@ pub fn execute(task: &Task, order: &Order, timeout: Duration) -> Result<Evidence
             bail!("check inputs changed; evidence is stale");
         }
         tx.state
+            .timing
+            .record("checks", timing_start, crate::log::now().max(timing_start))?;
+        tx.state
             .check_evidence
             .insert(order.id.clone(), evidence.clone());
         Ok(())
@@ -407,6 +442,14 @@ pub fn validate_configuration(
 ) -> Result<()> {
     let agent = state.agent(&order.agent).context("order agent missing")?;
     let config = task.config()?;
+    if state.workflow == crate::execution::Workflow::Reviewed {
+        ensure!(
+            state.application.check_configuration.get(&agent.repo)
+                == config.check_profiles.get(&agent.repo),
+            "checks no longer match approved baseline"
+        );
+    }
+
     let mut selected = config.check_profiles.get(&agent.repo).cloned();
     if let Some(config) = &mut selected
         && let Some(names) = state.order_profiles.get(&order.id)
@@ -414,11 +457,146 @@ pub fn validate_configuration(
         config.selected = names.clone();
     }
     let selected = selected.filter(|config| !config.selected.is_empty());
-    let signature = serde_json::to_string(&(selected.as_ref(), &order.check, baseline()))?;
+    let signature = signature(state, selected.as_ref(), order)?;
     if signature != evidence.configuration {
         bail!("check configuration changed; evidence is stale");
     }
     Ok(())
+}
+
+fn signature(
+    state: &crate::state::State,
+    config: Option<&RepositoryChecks>,
+    order: &Order,
+) -> Result<String> {
+    let runner = if state.workflow == crate::execution::Workflow::Reviewed {
+        state.runner.clone()
+    } else {
+        None
+    };
+    Ok(serde_json::to_string(&(
+        config,
+        &order.check,
+        baseline(),
+        runner,
+    ))?)
+}
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+pub(crate) fn run_container_profile(
+    task: &Task,
+    agent: &str,
+    name: &str,
+    profile: &Profile,
+    environment: &Environment,
+    folder: &Path,
+    index: usize,
+) -> Result<Phase> {
+    let log = folder.join(format!("phase-{index}.log"));
+    let mut phase = Phase {
+        profile: name.into(),
+        outcome: Outcome::EnvironmentFailure,
+        exit_code: None,
+        seconds: 0,
+        diagnostic: String::new(),
+        log: log.clone(),
+    };
+    if !environment.sources.is_empty() {
+        phase.diagnostic="Host environment/secret sources are not available to reviewed tool containers. Configure an isolated disposable test environment.".into();
+        fs::write(&log, &phase.diagnostic)?;
+        return Ok(phase);
+    }
+    crate::runner::assert_checkpointed(task, agent)?;
+    let mut prefix = String::new();
+    for (key, value) in &environment.values {
+        if key.is_empty()
+            || !key
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        {
+            bail!("invalid isolated environment key");
+        }
+        prefix.push_str(&format!("export {key}={};", shell_quote(value)));
+        prefix.push('\n');
+    }
+    let started = Instant::now();
+    for (command, preflight) in profile
+        .requires
+        .iter()
+        .map(|command| (command, true))
+        .chain(std::iter::once((&profile.command, false)))
+    {
+        let artifacts = folder.join(format!("results-{index}"));
+        fs::create_dir_all(&artifacts)?;
+        let result_path = artifacts.join("result.json");
+        if result_path.symlink_metadata().is_ok() {
+            crate::runner::result_bytes(&result_path)?;
+            fs::remove_file(&result_path)?;
+        }
+        let command = format!(
+            r#"{prefix}export DEVAGENTICS_RESULT=/artifacts/result.json
+{command}
+"#
+        );
+        let state = task.state()?;
+        let workspace = state
+            .runner_workspaces
+            .get(agent)
+            .context("isolated check source missing")?;
+        let mut runner = state.runner.clone().context("runner missing")?;
+        runner.timeout_seconds = runner.timeout_seconds.min(profile.timeout_seconds);
+        let result = crate::runner::run_container_artifacts(
+            &runner,
+            &workspace.snapshot,
+            false,
+            &command,
+            Some(&artifacts),
+        )?;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)?;
+        writeln!(file, "{}\n{}", result.stdout, result.stderr)?;
+        if !result.success {
+            phase.outcome = if result.timed_out {
+                Outcome::Timeout
+            } else if preflight {
+                Outcome::EnvironmentFailure
+            } else {
+                Outcome::TestFailure
+            };
+            phase.diagnostic = if preflight {
+                "Required capability unavailable in isolated runner"
+            } else {
+                "Isolated test command failed"
+            }
+            .into();
+            phase.exit_code = Some(1);
+            phase.seconds = started.elapsed().as_secs();
+            return Ok(phase);
+        }
+        if !preflight && profile.test_evidence {
+            let counts = crate::runner::result_bytes(&result_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<TestEvidence>(&bytes).ok());
+            if !counts.is_some_and(|counts| {
+                counts.tests > 0 && counts.failures == 0 && counts.required_skipped == 0
+            }) {
+                phase.outcome = Outcome::RequiredTestsSkipped;
+                phase.diagnostic =
+                    "Required test-count evidence missing or required tests skipped".into();
+                phase.seconds = started.elapsed().as_secs();
+                return Ok(phase);
+            }
+        }
+    }
+    crate::runner::assert_checkpointed(task, agent)?;
+    phase.outcome = Outcome::Passed;
+    phase.exit_code = Some(0);
+    phase.seconds = started.elapsed().as_secs();
+    phase.diagnostic = "Named check passed in source-only, non-networked container".into();
+    Ok(phase)
 }
 
 fn baseline() -> BTreeMap<String, String> {

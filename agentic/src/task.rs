@@ -176,7 +176,19 @@ impl Task {
     }
 
     pub fn state(&self) -> Result<State> {
-        self.transaction(|tx| Ok(tx.state.clone()))
+        // Status polling must not rewrite the entire task or contend as a writer.
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.dir.join("state.lock"))?;
+        fs2::FileExt::lock_shared(&lock)?;
+        match fs::read_to_string(self.dir.join("state.json")) {
+            Ok(text) => serde_json::from_str(&text).context("reading task state"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
+            Err(error) => Err(error).context("reading task state"),
+        }
     }
 
     pub fn log_lines(&self) -> Result<Vec<String>> {
@@ -216,6 +228,21 @@ mod tests {
                 check: Some("make test".to_string()),
             }],
         }
+    }
+
+    #[test]
+    fn status_reads_leave_persisted_state_untouched() {
+        let directory = TempDir::new().unwrap();
+        let home = Home::at(directory.path().into());
+        let task = Task::create(&home, &config("readonly-state")).unwrap();
+        let path = task.dir().join("state.json");
+        let before = fs::metadata(&path).unwrap().modified().unwrap();
+        let contents = fs::read(&path).unwrap();
+        for _ in 0..10 {
+            assert!(!task.state().unwrap().approved);
+        }
+        assert_eq!(fs::read(&path).unwrap(), contents);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
     }
 
     #[test]

@@ -125,6 +125,8 @@ pub fn queue_resumption(task: &Task, devws: &dyn Devws) -> Result<()> {
                     current.delivered = false;
                     current.stalled = false;
                 }
+            } else if let Some(message) = crate::reviews::resumption(&tx.state, id) {
+                tx.state.say(id, message);
             } else {
                 tx.state.recovery.remove(id);
             }

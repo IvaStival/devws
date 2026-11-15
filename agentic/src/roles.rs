@@ -468,6 +468,68 @@ fn with_setting(text: &str, key: &str, value: &str) -> String {
     changed
 }
 
+/// Install portable opt-in specialist templates without overwriting user roles.
+pub fn provision_specialists(home: &Home) -> Result<()> {
+    use std::io::Write;
+    let folder = home.roles_dir();
+    fs::create_dir_all(&folder)?;
+    let reviewer_standards = format!(
+        "{}\n{}",
+        include_str!("../roles/standards/frontend.md"),
+        include_str!("../roles/standards/backend.md")
+    );
+    for (name, template, domain) in [
+        ("planner", include_str!("../roles/samples/planner.md"), ""),
+        (
+            "backend-data",
+            include_str!("../roles/samples/backend-data.md"),
+            include_str!("../roles/standards/backend.md"),
+        ),
+        (
+            "api-integration",
+            include_str!("../roles/samples/api-integration.md"),
+            include_str!("../roles/standards/backend.md"),
+        ),
+        (
+            "frontend-ui",
+            include_str!("../roles/samples/frontend-ui.md"),
+            include_str!("../roles/standards/frontend.md"),
+        ),
+        (
+            "documentation",
+            include_str!("../roles/samples/documentation.md"),
+            "",
+        ),
+        (
+            "code-reviewer",
+            include_str!("../roles/samples/code-reviewer.md"),
+            reviewer_standards.as_str(),
+        ),
+    ] {
+        let path = folder.join(format!("{name}.md"));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(
+                    format!(
+                        "{template}\n{}\n{domain}",
+                        include_str!("../roles/standards/shared.md")
+                    )
+                    .as_bytes(),
+                )?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("installing role {}", path.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

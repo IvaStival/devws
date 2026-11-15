@@ -84,6 +84,10 @@ esac
 
         git(origin.path(), &["init", "-q", "--bare", "-b", "main"]);
         git(repo.path(), &["init", "-q", "-b", "main"]);
+        // Its own identity, for the commits devagentics makes there (the team
+        // history): a machine with no global one could not commit it.
+        git(repo.path(), &["config", "user.name", "t"]);
+        git(repo.path(), &["config", "user.email", "t@t"]);
         fs::write(repo.path().join("README.md"), "hello\n").unwrap();
         git(repo.path(), &["add", "-A"]);
         git(repo.path(), &["commit", "-q", "-m", "first"]);
@@ -251,7 +255,12 @@ esac
     fn planned(&self) {
         self.ok(
             None,
-            &["task", "start", &self.repo.path().display().to_string()],
+            &[
+                "task",
+                "start",
+                "--legacy",
+                &self.repo.path().display().to_string(),
+            ],
             "",
         );
         self.leader("feat-x", &[("spawn_agent", json!({ "role": "planner" }))]);
@@ -294,7 +303,12 @@ fn a_whole_task_from_the_plan_to_the_pull_request() {
     // `devws agentic` starts the task and gets the leader's arguments.
     let started = world.ok(
         None,
-        &["task", "start", &world.repo.path().display().to_string()],
+        &[
+            "task",
+            "start",
+            "--legacy",
+            &world.repo.path().display().to_string(),
+        ],
         "",
     );
     let lines: Vec<_> = started.lines().collect();
@@ -577,7 +591,12 @@ fn after_a_restart_the_leader_hears_of_the_lost_panel_and_resume_starts_it_again
     let world = World::new();
     world.ok(
         None,
-        &["task", "start", &world.repo.path().display().to_string()],
+        &[
+            "task",
+            "start",
+            "--legacy",
+            &world.repo.path().display().to_string(),
+        ],
         "",
     );
     world.leader("feat-x", &[("spawn_agent", json!({ "role": "planner" }))]);
@@ -616,7 +635,12 @@ fn the_commands_say_what_is_wrong() {
 
     world.ok(
         None,
-        &["task", "start", &world.repo.path().display().to_string()],
+        &[
+            "task",
+            "start",
+            "--legacy",
+            &world.repo.path().display().to_string(),
+        ],
         "",
     );
     let (ok, _, error) = world.run(None, &["task", "approve", "feat-x"], "");
@@ -640,7 +664,12 @@ fn board_views_prioritize_work_and_keep_usage_separate() {
     let world = World::new();
     world.ok(
         None,
-        &["task", "start", &world.repo.path().display().to_string()],
+        &[
+            "task",
+            "start",
+            "--legacy",
+            &world.repo.path().display().to_string(),
+        ],
         "",
     );
     let roles = world.path("home").join("roles");
@@ -767,4 +796,46 @@ fn amended_interrupted_order_resumes_and_reuses_isolated_check_evidence() {
     assert!(!reviewed[0].0, "{reviewed:?}");
     let missing = world.run(Some("%8"), &["report", "done", "missing identity"], "");
     assert!(!missing.0 && missing.2.contains("--order"));
+}
+
+#[test]
+fn reviewed_tasks_preserve_the_boundary_without_changing_existing_teams() {
+    let world = World::new();
+    world.ok(
+        None,
+        &["task", "start", &world.repo.path().display().to_string()],
+        "",
+    );
+    let output = world.ok(None, &["workflow", "feat-x", "status"], "");
+    let status: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(status["workflow"], "reviewed");
+    assert_eq!(status["runner"]["available"], false);
+    let started =
+        world.leader_session("feat-x", &[("spawn_agent", json!({"role":"backend-data"}))]);
+    assert!(started[0].0 && started[0].1.contains("runner"));
+    let config = fs::read(world.path("home/tasks/feat-x/task.toml")).unwrap();
+    let adoption = world.run(None, &["workflow", "feat-x", "adopt"], "");
+    assert!(!adoption.0);
+    assert_eq!(
+        fs::read(world.path("home/tasks/feat-x/task.toml")).unwrap(),
+        config
+    );
+    // Reopening with a legacy flag cannot downgrade an existing reviewed task.
+    world.ok(
+        None,
+        &[
+            "task",
+            "start",
+            "--legacy",
+            &world.repo.path().display().to_string(),
+        ],
+        "",
+    );
+    let output = world.ok(None, &["workflow", "feat-x", "status"], "");
+    assert_eq!(
+        serde_json::from_str::<Value>(&output).unwrap()["workflow"],
+        "reviewed"
+    );
+    let pane_calls = fs::read_to_string(world.path("devws.calls")).unwrap_or_default();
+    assert!(!pane_calls.contains("agent spawn"));
 }
