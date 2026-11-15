@@ -30,6 +30,8 @@ pub struct State {
     pub usage_limit_blocks: Vec<crate::worker::PercentageBlock>,
     pub order_profiles: std::collections::BTreeMap<String, Vec<String>>,
     pub order_revisions: std::collections::BTreeMap<String, u64>,
+    /// Steps the user allowed more attempts than the task's `max_attempts`.
+    pub attempt_limits: std::collections::BTreeMap<String, u32>,
     pub amendments: Vec<Amendment>,
     pub check_evidence: std::collections::BTreeMap<String, crate::check_profiles::Evidence>,
     pub recovery: std::collections::BTreeMap<String, Recovery>,

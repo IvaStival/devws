@@ -197,6 +197,7 @@ esac
             branch: "feat/x".into(),
             workspace: "dev-a".into(),
             max_agents: 3,
+            max_attempts: crate::task::DEFAULT_MAX_ATTEMPTS,
             check_profiles: Default::default(),
             lanes: Vec::new(),
             repos: repos

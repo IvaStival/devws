@@ -227,6 +227,13 @@ enum TaskAction {
     Resume { task: String },
     /// Stop every agent (the worktrees stay)
     Cancel { task: String },
+    /// You allow a step more attempts than the task's limit (orders and
+    /// reviews asking for changes): `limit` in all. The leader cannot.
+    Attempts {
+        task: String,
+        step: String,
+        limit: u32,
+    },
     /// The tasks
     List,
 }
@@ -523,6 +530,10 @@ fn run() -> Result<()> {
                 }
                 .cancel()?;
                 println!("Every agent is stopped; the worktrees stay.");
+            }
+            TaskAction::Attempts { task, step, limit } => {
+                orders::allow_attempts(&open(&task)?, &step, limit)?;
+                println!("Step {step} may have {limit} attempts in all.");
             }
             TaskAction::List => println!("{}", task_list(&home)?),
         },

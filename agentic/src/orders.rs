@@ -6,7 +6,7 @@
 use crate::checks::{self, CheckRun, Work};
 use crate::log::Kind;
 use crate::roles::Group;
-use crate::state::{LEADER, Order, OrderStatus, Step, StepStatus};
+use crate::state::{LEADER, Order, OrderStatus, State, Step, StepStatus};
 use crate::task::{Repo, Task};
 use anyhow::{Context, Result, bail};
 use std::time::Duration;
@@ -38,6 +38,52 @@ pub struct OrderRequest {
     pub spec: Option<String>,
 }
 
+/// The attempts a step gets: the task's, or what the user allowed it.
+pub fn attempt_limit(state: &State, step: &str, max_attempts: u32) -> u32 {
+    state
+        .attempt_limits
+        .get(step)
+        .copied()
+        .unwrap_or(max_attempts)
+}
+
+/// Refuses another try at a step that has had `used` of its attempts: the
+/// leader escalates instead, and only the user allows more.
+pub fn ensure_attempt_left(state: &State, used: u32, step: &str, max_attempts: u32) -> Result<()> {
+    let limit = attempt_limit(state, step, max_attempts);
+    if used >= limit {
+        bail!(
+            "step {step} has had {used} attempts, the most it is allowed: escalate it to the user \
+             (they can allow more with `devagentics task attempts <task> {step} <limit>`)"
+        );
+    }
+    Ok(())
+}
+
+/// The user allows a step `limit` attempts in all, more than it has had.
+pub fn allow_attempts(task: &Task, step: &str, limit: u32) -> Result<()> {
+    task.transaction(|tx| {
+        let used = tx
+            .state
+            .steps
+            .iter()
+            .find(|found| found.id == step)
+            .with_context(|| format!("there is no step {step}"))?
+            .attempts;
+        if limit <= used {
+            bail!("step {step} has had {used} attempts already: allow more than that");
+        }
+        tx.state.attempt_limits.insert(step.to_string(), limit);
+        tx.log(
+            Kind::Review,
+            None,
+            Some(step),
+            &format!("the user allowed {limit} attempts"),
+        );
+        Ok(())
+    })
+}
+
 /// Gives an agent an order: records it, and queues the message that tells the
 /// agent (the dispatcher types it in when the agent can take it).
 pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
@@ -49,6 +95,7 @@ pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
         .filter(|agent| agent.live)
         .cloned()
         .with_context(|| format!("there is no live agent {}", request.agent))?;
+    let max_attempts = task.config()?.max_attempts;
     let reviewed = task.state()?.workflow == crate::execution::Workflow::Reviewed;
     let contract = if reviewed && agent.writes {
         let state = task.state()?;
@@ -146,6 +193,9 @@ pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
                 bail!("step {} is already accepted", step.id)
             }
             _ => {}
+        }
+        if let Some(step) = tx.state.steps.iter().find(|step| step.id == request.step) {
+            ensure_attempt_left(&tx.state, step.attempts, &step.id, max_attempts)?;
         }
         match tx.state.step_mut(&request.step) {
             Some(step) => {
@@ -789,6 +839,7 @@ mod tests {
             branch: "feat/x".to_string(),
             workspace: "dev-app".to_string(),
             max_agents: 3,
+            max_attempts: 3,
             check_profiles: Default::default(),
             lanes: Vec::new(),
             repos: vec![Repo {
@@ -1361,6 +1412,46 @@ mod tests {
                 .to_string()
                 .contains("no open order")
         );
+    }
+
+    /// Reports s1 done and sends it back, as a leader does with work it
+    /// does not accept.
+    fn send_back(f: &Fixture, file: &str) {
+        commit_file(f.repo.path(), file, "x\n", file);
+        delivered_report(&f.task, "%5", Outcome::Done, "done", SHORT).unwrap();
+        reject_step(&f.task, "s1", "not yet").unwrap();
+    }
+
+    #[test]
+    fn a_step_gets_at_most_the_tasks_attempts_until_the_user_allows_more() {
+        let f = fixture(None);
+        for (attempt, file) in ["src/a.rs", "src/b.rs", "src/c.rs"].iter().enumerate() {
+            send_order(&f.task, request("s1")).unwrap();
+            assert_eq!(status(&f, "s1"), StepStatus::Ordered, "attempt {attempt}");
+            send_back(&f, file);
+        }
+
+        let error = send_order(&f.task, request("s1")).unwrap_err().to_string();
+        assert!(
+            error.contains("3 attempts") && error.contains("devagentics task attempts"),
+            "{error}"
+        );
+        assert_eq!(
+            status(&f, "s1"),
+            StepStatus::Rejected,
+            "a refused order leaves the step as it was"
+        );
+
+        assert!(
+            allow_attempts(&f.task, "s1", 3).is_err(),
+            "a limit the step already reached allows nothing"
+        );
+        allow_attempts(&f.task, "s1", 4).unwrap();
+        send_order(&f.task, request("s1")).unwrap();
+        assert_eq!(f.task.state().unwrap().steps[1].attempts, 4);
+        send_back(&f, "src/d.rs");
+        assert!(send_order(&f.task, request("s1")).is_err());
+        assert!(allow_attempts(&f.task, "nope", 9).is_err());
     }
 
     #[test]

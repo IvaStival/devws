@@ -133,7 +133,7 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
         "lanes": config.lanes.iter().map(|lane| json!({ "name": lane.name, "repo": lane.repo, "files": lane.globs, "branch": lane.branch, "worktree": lane.worktree })).collect::<Vec<_>>(),
         "roles": roles,
         "agents": agents,
-        "steps": state.steps.iter().map(|step| json!({ "id": step.id, "version": if state.workflow==crate::execution::Workflow::Reviewed {None}else{versions.get(&step.id)}, "title": step.title, "status": step.status, "attempts": step.attempts })).collect::<Vec<_>>(),
+        "steps": state.steps.iter().map(|step| json!({ "id": step.id, "version": if state.workflow==crate::execution::Workflow::Reviewed {None}else{versions.get(&step.id)}, "title": step.title, "status": step.status, "attempts": step.attempts, "attempt_limit": crate::orders::attempt_limit(&state, &step.id, config.max_attempts) })).collect::<Vec<_>>(),
         // What a new plan part is named; its steps are next_version.1, .2…
         "next_version": if state.workflow==crate::execution::Workflow::Reviewed {None}else{Some(crate::specs::next_version(&state.steps))},
         "execution_plans": state.plans.iter().map(|plan| json!({ "step": plan.step, "author": plan.author })).collect::<Vec<_>>(),

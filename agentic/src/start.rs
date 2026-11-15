@@ -232,6 +232,7 @@ pub fn start_task_with_workflow(
                     branch: branch.clone(),
                     workspace: session_name(&folder),
                     max_agents: 3,
+                    max_attempts: crate::task::DEFAULT_MAX_ATTEMPTS,
                     check_profiles: Default::default(),
                     repos: vec![repo.clone()],
                     lanes: Vec::new(),

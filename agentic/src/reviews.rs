@@ -20,7 +20,7 @@ pub struct Finding {
     pub rationale: String,
     pub resolution: Option<String>,
 }
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Review {
     pub id: String,
@@ -95,6 +95,23 @@ fn evidence(task: &Task, order: &str) -> Result<String> {
     ensure!(stored == *evidence, "persisted check artifact changed");
     crate::runner::content_hash(&serde_json::to_vec(evidence)?)
 }
+/// The reviews that sent a step's work back: each correction round counts
+/// against the step's attempts, like another order does.
+pub fn changes_requested(state: &crate::state::State, step: &str) -> u32 {
+    let rounds = state
+        .reviews
+        .iter()
+        .filter(|review| review.verdict == Some(Verdict::ChangesRequested))
+        .filter(|review| {
+            state
+                .orders
+                .iter()
+                .any(|order| order.id == review.order && order.step == step)
+        })
+        .count();
+    u32::try_from(rounds).unwrap_or(u32::MAX)
+}
+
 pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
     let _control = task.control_lock()?;
     let state = task.state()?;
@@ -110,6 +127,12 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
             .any(|step| step.id == order.step && step.status == StepStatus::Reported),
         "implementation must report passing checks first"
     );
+    crate::orders::ensure_attempt_left(
+        &state,
+        changes_requested(&state, &order.step),
+        &order.step,
+        task.config()?.max_attempts,
+    )?;
     ensure!(
         order.agent != reviewer,
         "reviewer cannot review own implementation"
@@ -418,6 +441,68 @@ mod tests {
         assert_eq!(task.state().unwrap().steps[0].status, StepStatus::Reported);
         assert!(request(&task, "o-review", &author.id).is_err());
     }
+    #[test]
+    fn review_rounds_asking_for_changes_count_against_the_steps_attempts() {
+        let root = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, repo) = crate::board::tests::started(&root);
+        let head = checks::head(repo.path()).unwrap();
+        task.transaction(|tx| {
+            tx.state.workflow = Workflow::Reviewed;
+            tx.state.steps.push(crate::state::Step {
+                id: "S01-B01".into(),
+                title: "Implementation".into(),
+                status: StepStatus::Reported,
+                attempts: 1,
+                spec: None,
+                review_since: None,
+            });
+            tx.state.orders.push(crate::state::Order {
+                id: "o1".into(),
+                step: "S01-B01".into(),
+                agent: "executor-1".into(),
+                text: "work".into(),
+                allowed: vec![],
+                forbidden: vec![],
+                check: None,
+                base: head.clone(),
+                status: crate::state::OrderStatus::Closed,
+                delivered: true,
+                stalled: false,
+                plan: None,
+            });
+            for (number, verdict) in [
+                Verdict::ChangesRequested,
+                Verdict::ChangesRequested,
+                Verdict::Blocked,
+                Verdict::ChangesRequested,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                tx.state.reviews.push(Review {
+                    id: format!("r{number}"),
+                    order: "o1".into(),
+                    verdict: Some(verdict),
+                    ..Review::default()
+                });
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(changes_requested(&task.state().unwrap(), "S01-B01"), 3);
+        assert_eq!(changes_requested(&task.state().unwrap(), "other"), 0);
+
+        let error = request(&task, "o1", "reviewer-1").unwrap_err().to_string();
+        assert!(error.contains("3 attempts"), "{error}");
+
+        crate::orders::allow_attempts(&task, "S01-B01", 4).unwrap();
+        let error = request(&task, "o1", "reviewer-1").unwrap_err().to_string();
+        assert!(
+            !error.contains("attempts"),
+            "the user's limit lets the next review through: {error}"
+        );
+    }
+
     #[test]
     fn foreign_reviewer_cannot_submit_or_forge_an_approval() {
         let root = tempfile::TempDir::new().unwrap();

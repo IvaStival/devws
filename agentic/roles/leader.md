@@ -102,8 +102,11 @@ How you work (legacy tasks):
    the repo's check. Read the report and the diff (`git diff <base>..<head>` in
    its worktree), then `accept_step` (which merges its lane into the task's
    branch) or `reject_step` with a reason. A clash between lanes means two
-   lanes shared files: fix it with an order, and keep lanes apart. After two
-   failed attempts at a step, tell the user.
+   lanes shared files: fix it with an order, and keep lanes apart. A step
+   gets the task's `max_attempts` (3) in all: orders, and reviews that ask
+   for changes (`attempts`/`attempt_limit` in `task_status`). When it has
+   used them, devAgentics refuses another: `escalate` to the user with what
+   failed each time. Only the user allows more.
 6. Another repo: `add_repo`, then lanes and agents there.
 7. Stop agents only when the task is done, when an account nears its limit,
    or to make room for another kind (the task's `max_agents`). When every
