@@ -17,6 +17,12 @@ pub(crate) fn git(worktree: &Path, arguments: &[&str]) -> Result<String> {
         .env("GIT_OPTIONAL_LOCKS", "0")
         .arg("-C")
         .arg(worktree)
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
         .args(arguments)
         .output()
         .context("running git")?;
@@ -79,6 +85,25 @@ pub(crate) fn glob_set(patterns: &[String]) -> Result<GlobSet> {
     builder.build().context("building the globs")
 }
 
+/// Prove glob containment conservatively; arbitrary overlapping globs are not proof.
+pub(crate) fn within(patterns: &[String], addition: &str) -> Result<bool> {
+    if addition.contains(['*', '?', '[', '{']) || addition.ends_with('/') {
+        Ok(patterns.iter().any(|pattern| {
+            pattern == addition
+                || pattern
+                    .strip_suffix("/**")
+                    .or_else(|| pattern.strip_suffix('/'))
+                    .is_some_and(|prefix| {
+                        !prefix.contains(['*', '?', '[', '{'])
+                            && addition.starts_with(&format!("{prefix}/"))
+                            && !addition.split('/').any(|part| part == "..")
+                    })
+        }))
+    } else {
+        Ok(glob_set(patterns)?.is_match(addition))
+    }
+}
+
 /// What an agent's work looks like.
 #[derive(Debug, Default, PartialEq)]
 pub struct Work {
@@ -118,8 +143,12 @@ pub fn inspect(
     .lines()
     .map(|line| line.get(3..).unwrap_or(line).to_string())
     .collect();
+    // The team's own record (history.rs) is committed by devAgentics, also
+    // while an order is open: it is no agent's work.
+    let history = format!("{}/", crate::history::FOLDER);
     let changed: Vec<String> = git(worktree, &["diff", "--name-only", &range])?
         .lines()
+        .filter(|path| !path.starts_with(&history))
         .map(str::to_string)
         .collect();
 

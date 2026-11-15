@@ -31,7 +31,7 @@ effort; the default Claude alternative uses its default model at high effort.
 Fallback keeps the worker's role, lane and queued assignment.
 
 Accounts at 85% or more of their week or five-hour allowance receive no new
-workers. Explicit provider or model rejection during the opening turn also
+workers unless you explicitly approve the task override described below. Explicit provider or model rejection during the opening turn also
 tries an alternative. A worker already doing an order is not automatically
 interrupted or moved.
 
@@ -180,3 +180,189 @@ Done reports use the same runner. Passing named evidence can be reused only for 
 
 - [Team usage](../../agentic/docs/usage.md)
 - [Execution architecture](../architecture/devagentics-execution.md)
+
+## Continue above the worker percentage threshold
+
+When both compatible accounts reach 85% of their weekly or five-hour allowance,
+the leader shows their usage and asks whether it may continue using workers for
+this task. Say yes to allow workers above that threshold, or no to keep the guard.
+Approving the plan does not grant this separate permission.
+
+After your explicit answer the leader records it with
+`set_usage_limit_approval` (`approved: true` or `false`). After approval it calls
+`resume_task` to start the existing blocked workers with their original IDs and
+assignments. Approval lasts for this task, survives restarts and does not apply
+to other tasks. To revoke it, tell the leader to stop allowing workers above the
+threshold; it records `approved: false`. This affects future launches, leaving
+running workers in place. After denial the leader asks again only if you request
+reconsideration. Workers can still start normally after usage falls below the guard.
+
+Provider-enforced quota errors and unavailable models still prevent startup.
+Plan approval, worker capacity and worktree ownership rules still apply. The
+leader's separate 95% switching policy is unchanged. `task_status` shows the
+consent state, affected accounts and next action.
+
+## Reviewed application planning and execution
+
+New tasks use reviewed mode. Reopening an existing task preserves its mode;
+`task start --legacy <folder>` deliberately creates a legacy task and never
+downgrades an existing reviewed task. The current application team is not
+automatically migrated.
+
+The verified reviewed adapter is Claude with native tools disabled and only the
+scoped devAgentics MCP catalog enabled. Codex remains available for legacy teams;
+reviewed startup skips unsupported worker adapters and tries compatible
+alternatives. An unsupported coordinator switch is refused.
+
+### Prepare the isolated tool environment
+
+Inspect available local images and project facts through the leader's
+`application_workflow` tool (`runner_images` and `project_overview`). Select a
+local image containing the required runtimes and offline dependencies. Images
+are pinned by their full `sha256:` ID; the runner never pulls an image or changes
+the Docker daemon configuration automatically.
+
+Configure the image, source paths, protected paths and timeout using a JSON file:
+
+```json
+{
+  "configuration": {
+    "image": "sha256:<64 hexadecimal characters from the local image ID>",
+    "source_paths": ["src/**", "tests/**", "package.json", "package-lock.json", "AGENTS.md", "CLAUDE.md"],
+    "protected_paths": ["data/**", "database/**"],
+    "timeout_seconds": 300
+  }
+}
+```
+
+```bash
+devagentics workflow <task> runner_configure --input-file runner.json
+```
+
+Through MCP, `runner_configure` is an external action requiring the exact-call
+approval flow. The configuration is checked with a disposable container before
+it becomes active. Declare narrow source roots appropriate to your project;
+broad whole-project globs are rejected. Use explicit migration source paths when
+needed while keeping existing database files protected.
+
+Tools operate on disposable copies of tracked source. No live project directory,
+Git metadata, Docker socket, host home or database volume is mounted. Containers
+have no external network, a read-only root filesystem, a non-root identity,
+dropped capabilities and resource/time limits. Secret/configuration directories,
+`.env` files, database files and declared protected paths are omitted. Symlinks
+and hardlinks cannot be imported as source.
+
+A specialist may modify or delete source/artifacts within its assigned scope.
+Its checkpoint validates the assignment, source generation and every changed
+path before importing and committing source changes in the implementation lane.
+It cannot delete database data or mutate another project. Such actions remain
+leader-only after explicit approval; this runner does not expose an arbitrary
+host/database shell to either workers or the reviewed coordinator.
+
+### Plan the whole application with the planner
+
+Have the planner interview you in grilling rounds: currently answerable questions,
+recommendations, recorded answers and unresolved dependencies. Its scoped tools
+include `plan_proposal` and `ask_user`; only the leader records your approval.
+The baseline covers the known application before implementation staffing:
+scopes, applicable backend/frontend/data work, interfaces, dependencies, tests,
+acceptance criteria, required check definitions and milestones.
+
+Inspect or submit the baseline through CLI or the equivalent leader tool:
+
+```bash
+devagentics workflow <task> status
+devagentics workflow <task> propose --input-file baseline-proposal.json
+devagentics workflow <task> answer --input '{"question":"Q1","answer":"Use milestone releases"}'
+devagentics workflow <task> confirm --input '{"revision":1}'
+devagentics workflow <task> approve --input '{"revision":1}'
+```
+
+The proposal file contains `application` and `reason`. Every implementation item
+specifies its scope, specialist, repository, lane, dependencies, file scope,
+reuse references, interfaces, behavior/errors, tests, named profiles, acceptance,
+open questions, data effects and standards version (`1`). Required profile
+definitions are captured in `check_configuration` for your review. Missing fields,
+path escapes, unresolved decisions and cyclic dependencies cannot become ready.
+
+One approval authorizes execution of that exact baseline. Material changes use a
+new proposal and explicit approval; an unapproved proposal does not overwrite
+the approved baseline. Approval of an amendment invalidates affected work and
+checks while preserving independent unchanged steps and stable identifiers.
+Changing an approved check definition also requires baseline approval. Routine
+corrections within approved scope do not add user approval stages.
+
+### Execute, review and integrate
+
+Allocate specialists and disjoint lanes from the approved dependency graph.
+Starter roles cover backend/data, API/integration, frontend/UI, documentation,
+planning and independent code review. Existing custom roles are not overwritten.
+Their shared standards include SOLID, Object Calisthenics applied idiomatically,
+TDD, security, reuse and project/data boundaries; frontend/backend guidance is
+adapted from orbit-front and maestro without requiring those repos on the server.
+
+Writing orders must match the accepted specialist/lane/files/profiles contract.
+Prerequisites run in a separate source snapshot before assignment. Missing
+capabilities block that work, leave the gate outstanding and retain a reason;
+unchanged failures are not automatically rerun. After correcting the environment,
+use `preflight_retry` with `item` to request another attempt.
+
+Managed worker panels have no editable model prompt. A supervisor consumes their
+queued messages through piped provider turns and retains conversation context
+between healthy turns. Source commands, checkpoints, authoritative checks and
+reports use the worker-only tools. Read-only reviewers cannot checkpoint code,
+authorize actions or merge.
+
+The leader reads `leader_inbox` and acknowledges handled IDs with `inbox_ack`.
+Reviewed coordination never pastes a message into your prompt. Existing legacy
+terminal delivery is unchanged until explicit adoption.
+
+After the specialist reports passing checks, request independent review with
+`review_request` (`order`, `reviewer`). The reviewer receives an immutable copy of
+the proposed integration context. Blocking findings require correction and a
+fresh review. A passing verdict binds the exact source/target commits and check
+evidence; changed inputs invalidate it. Only leader acceptance integrates the
+approved candidate. Divergent lane catch-up is blocked rather than inventing
+unreviewed conflict-resolution code. Resolve it through a reviewed assignment.
+
+Required checks run in the isolated source environment. Use image-local runtimes
+and dependencies; network downloads and host secret sources are unavailable.
+Database tests must use explicitly disposable data in the isolated environment,
+not an existing host/service database. The runner does not silently skip a
+required test or substitute a weaker gate. Matching authoritative evidence is
+reused when reporting unchanged work. Structured test counts use a separate
+bounded artifact, so large console logs cannot hide required skipped tests.
+
+### Milestones, recovery and existing tasks
+
+Use IDs such as `S01-B01` and `S01-F01` for work, and `M01` → `1.1.0` for a
+milestone. Reordering and retries do not allocate application patch releases.
+The board's completed milestone rows represent integration readiness, not a
+published release. Validate the combined code after all required reviewed steps:
+
+```bash
+devagentics workflow <task> validate_milestone --input '{"milestone":"M01"}'
+devagentics workflow <task> milestones
+```
+
+Missing/stale/failed integration evidence blocks publication readiness. Reserving
+a number, accepting a step or opening a draft PR never tags, publishes or deploys.
+Draft PR publication retains its separate external approval.
+
+Inspect `preview_adoption` before adopting a legacy task. Adoption requires a
+verified runner, a paused task, no active legacy agents and no open legacy orders.
+It preserves historical acceptance without inventing past review verdicts.
+Repository history exports retain approved application plans and completed review
+provenance; runner credentials, local configuration and environment evidence are
+not transferred. Reconfigure the local runner and revalidate final integration on
+a new server.
+
+Uncertain managed turns are retained for inspection, not automatically replayed.
+Use `recover_turn` with the stopped/lost agent and `resend_confirmed: true` only
+after deciding a resend is safe, then resume. Merge recovery recognizes an exact
+approved integration candidate rather than arbitrary branch advancement.
+
+Workflow status and leader board details expose ready work, staffing/capacity,
+review state and measured delays. Aggregate check/turn seconds are separate from
+elapsed intervals; missing historical timing remains unknown. No fixed speed-up
+is promised by these measurements.

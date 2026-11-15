@@ -70,6 +70,14 @@ fi
 # The status line records this agent's limits under its name.
 export DEVWS_AGENT="$agent"
 
+# Reviewed panels use a supervisor with piped provider input, never keystroke delivery.
+if [ "${extra_args[0]:-}" = --devagentics-worker ]; then
+  [ "$extra" != --extra ] || tmux set-option -p -t "$TMUX_PANE" @devws_role extra-agent
+  tmux set-option -p -t "$TMUX_PANE" @devws_agent "$agent"
+  executable="${extra_args[1]}"
+  exec "$executable" worker-panel "${extra_args[@]:2}"
+fi
+
 # Codex stops at "Trust this folder?" in a folder its config does not trust,
 # and every task gets new lane folders: trust the folders devAgentics made for
 # its tasks, as answering the question would, and no others. Trusting the

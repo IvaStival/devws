@@ -84,6 +84,9 @@ impl<'a> Dispatcher<'a> {
             if !ready || state.paused || !matches!(pane_state, PaneState::Done | PaneState::Idle) {
                 continue;
             }
+            if state.workflow == crate::execution::Workflow::Reviewed {
+                continue;
+            }
             if let Some(message) = state.queue.iter().find(|message| message.to == agent.id) {
                 match self.devws.send(&agent.pane, &message.text)? {
                     Delivery::Delivered => {
@@ -94,7 +97,7 @@ impl<'a> Dispatcher<'a> {
                 }
             }
         }
-        if !state.paused {
+        if !state.paused && state.workflow == crate::execution::Workflow::Legacy {
             self.tell_the_leader()?;
         }
         Ok(())
