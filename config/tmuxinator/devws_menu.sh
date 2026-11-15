@@ -62,6 +62,7 @@ git|commit|✓ Commit (agent)|C-b g|commit_with_agent
 git|commit-manual|✎ Commit manually||commit_by_hand
 git|push|↑ Push / PR|C-b G|push_branch
 git|tidy|⌫ Tidy up merged branches||tidy_up
+git|github-login|⎇ GitHub login||login_github
 jungleForge|setup-jungleforge|⚒ Set up JungleForge||setup_jungleforge|no-jungleforge
 jungleForge|run-here|▶ Run this branch|C-b e|run_this_branch|jungleforge
 jungleForge|switch-run|⇄ Switch running branch|C-b E|switch_running_branch|jungleforge

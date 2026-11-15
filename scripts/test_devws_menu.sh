@@ -113,7 +113,7 @@ test_tabs_list_their_actions() {
     fail "Layout tab: $(actions_of layout)"
   [ "$(actions_of agent)" = "jump switch-agent restart-agent follow-mode initialize-agent register-agent agent-folder remove-agent team-roles" ] ||
     fail "Agent tab: $(actions_of agent)"
-  [ "$(actions_of git)" = "commit commit-manual push tidy" ] || fail "Git tab: $(actions_of git)"
+  [ "$(actions_of git)" = "commit commit-manual push tidy github-login" ] || fail "Git tab: $(actions_of git)"
   [ "$(actions_of jungleForge)" = "run-here switch-run stop-run services migrate shell logs info settings register-jungleforge" ] ||
     fail "JungleForge tab: $(actions_of jungleForge)"
   [ "$(actions_of tools)" = "open-database database-folder job-log network-devices" ] ||
@@ -902,7 +902,23 @@ EOF
 }
 
 test_agent_actions_reopen_a_closed_panel
+test_github_login_runs_interactively_and_preserves_failures() {
+  cat > "$TEST_ROOT/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$HOME/gh.log"
+exit "${GH_LOGIN_STATUS:-0}"
+EOF
+  chmod +x "$TEST_ROOT/bin/gh"
+  menu --run github-login </dev/null >/dev/null 2>&1 || fail "GitHub login action failed"
+  grep -qx 'auth login' "$HOME/gh.log" || fail "menu did not run GitHub authentication"
+  if GH_LOGIN_STATUS=1 menu --run github-login </dev/null >/dev/null 2>&1; then
+    fail "failed GitHub login was reported as success"
+  fi
+  rm "$TEST_ROOT/bin/gh"
+}
+
 test_tabs_list_their_actions
+test_github_login_runs_interactively_and_preserves_failures
 test_an_agent_team_has_no_editor_items
 test_open_an_agent_team_runs_devws_agentic
 test_an_agent_team_switches_its_leaders_model

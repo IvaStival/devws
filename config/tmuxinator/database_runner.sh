@@ -6,13 +6,16 @@
 
 set -u
 
+# uv's tool directory may have been added after this tmux server started.
+PATH="$HOME/.local/bin:$PATH"
+
 script_dir="$(dirname "$0")"
 root="${1:-$PWD}"
 
 tmux set-option -p -t "$TMUX_PANE" @devws_role database
 
 if ! command -v devdb >/dev/null 2>&1; then
-  printf 'devdb is not installed; run ./install.sh --deps.\nPress Enter to close.'
+  printf 'devdb is not installed; run ./install.sh.\nPress Enter to close.'
   read -r
   exit 127
 fi
