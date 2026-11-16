@@ -275,6 +275,8 @@ devws-workspace() {
     return 2
   fi
 
+  "$HOME/.tmuxinator/start_server.sh" || return
+
   # After a reboot or a crash there is no tmux server: rebuild the saved
   # workspaces before adding the requested one. A no-op while a server is
   # running, so a workspace that was deliberately closed is never resurrected.
@@ -293,6 +295,7 @@ devws-workspace() {
   [[ -z "$task" ]] || start_settings+=(task="$task")
   start_settings+=("${extra_settings[@]}")
   tmuxinator start ${start_options[@]} "$template" "${start_settings[@]}"
+  tmux set-option -g exit-empty on 2>/dev/null
 
   # tmux writes . and : of the folder's name as _.
   local session="dev-${project_root:t}"
