@@ -92,7 +92,7 @@ fn dispatch(
         return;
     };
     let mut dispatcher = Dispatcher::new(task, devws, home, watch::STALL_GRACE);
-    let command = std::env::current_exe()
+    let command = crate::executable::own()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| "devagentics".to_string());
     let mut leader_seen: Option<Instant> = None;

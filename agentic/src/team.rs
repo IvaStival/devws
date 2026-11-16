@@ -434,7 +434,7 @@ impl Team<'_> {
             let identity = crate::runner::prepare(self.task, id, source, !role.writes)?;
             let mut args = vec![
                 "--devagentics-worker".into(),
-                std::env::current_exe()?.to_string_lossy().into_owned(),
+                crate::executable::own()?.to_string_lossy().into_owned(),
                 config.id.clone(),
                 id.into(),
                 "--identity".into(),

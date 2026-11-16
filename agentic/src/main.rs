@@ -7,6 +7,7 @@ mod board_view;
 mod check_profiles;
 mod checks;
 mod devws;
+mod executable;
 mod execution;
 mod graph;
 mod history;
@@ -503,7 +504,7 @@ fn run() -> Result<()> {
                 leader,
                 legacy,
             } => {
-                let command = std::env::current_exe()?.display().to_string();
+                let command = executable::own()?.display().to_string();
                 let started = if legacy {
                     start::start_task(&home, &devws, &folder, &command, leader.as_deref())?
                 } else {

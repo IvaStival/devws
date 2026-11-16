@@ -164,7 +164,7 @@ fn codex_turn(
         .context("a Codex worker needs its runner snapshot")?;
     let (snapshot, writes) = (workspace.snapshot.clone(), !workspace.readonly);
     let thread = state.worker_sessions.get(agent).cloned();
-    let executable = std::env::current_exe()?;
+    let executable = crate::executable::own()?;
     let task_id = task.config()?.id;
     let mut child = Command::new("codex")
         .args(codex_arguments(&CodexTurn {
@@ -553,7 +553,7 @@ pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> 
     let pane = std::env::var("TMUX_PANE").context("managed worker requires a pane")?;
     let directory = task.dir().join("workers").join(agent).join("control");
     std::fs::create_dir_all(&directory)?;
-    let executable = std::env::current_exe()?;
+    let executable = crate::executable::own()?;
     let config = directory.join("mcp.json");
     std::fs::write(
         &config,
