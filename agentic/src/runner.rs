@@ -259,7 +259,8 @@ pub fn configure(task: &Task, config: Configuration) -> Result<()> {
         &config,
         &root,
         true,
-        "test ! -e /var/run/docker.sock && test ! -e /host && test ! -e /root/.ssh && test ! -w /etc && test -r /proc/net/route",
+        // A real write: `test -w` answers yes for uid 0 whatever the mount.
+        "test ! -e /var/run/docker.sock && test ! -e /host && test ! -e /root/.ssh && ! touch /etc/.devagentics-probe 2>/dev/null && test -r /proc/net/route",
     )?;
     ensure!(
         result.success,
@@ -714,13 +715,11 @@ fn docker_arguments(
         "type=bind,src={source},dst=/workspace{}",
         if readonly { ",readonly" } else { "" }
     );
-    let uid = unsafe { libc::geteuid() };
-    let gid = unsafe { libc::getegid() };
-    let user = if uid == 0 {
-        "65534:65534".into()
-    } else {
-        format!("{uid}:{gid}")
-    };
+    // The daemon is rootless (`probe` refuses any other): its container root
+    // is the user who owns the snapshot, without capabilities or a way to
+    // gain any. A container uid of the user's own would map to one of their
+    // subordinate ids instead, which cannot write the snapshot.
+    let user = "0:0".to_string();
     Ok(vec![
         "run".into(),
         "--rm".into(),
@@ -1116,6 +1115,16 @@ mod tests {
                 .any(|argument| argument.ends_with("dst=/workspace,readonly"))
         );
         assert_eq!(args.last().unwrap(), "echo --privileged --network host");
+        let user = args
+            .iter()
+            .position(|argument| argument == "--user")
+            .unwrap();
+        assert_eq!(
+            args[user + 1],
+            "0:0",
+            "on a rootless daemon the container's root is the user, unprivileged"
+        );
+        assert!(args.contains(&"--cap-drop=ALL".into()));
     }
     #[test]
     fn symlinks_never_cross_snapshot_or_project_roots() {

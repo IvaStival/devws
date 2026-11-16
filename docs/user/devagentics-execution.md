@@ -246,8 +246,19 @@ Every Docker command it runs goes to that socket whatever `DOCKER_HOST` or your
 current Docker context say, and configuring or using the runner is refused when
 the daemon there does not report itself as rootless. Set one up with
 `dockerd-rootless-setuptool.sh install`. Its containers need the systemd
-cgroup driver with your user's cpu, memory, pids (and io) controllers delegated,
-so the runner's resource limits are enforced.
+cgroup driver with your user's cpu, memory, pids and io controllers delegated,
+so the runner's resource limits are enforced (once, as root, a
+`/etc/systemd/system/user@.service.d/delegate.conf` with
+`Delegate=cpu io memory pids`, then `systemctl daemon-reload` and a restart of
+your `user@<uid>.service`). Containers run as the rootless daemon's root, which
+is you on the host, without capabilities.
+
+If every container fails with "Interactive authentication required", runc did
+not learn your host user: it reads the `OwnerUID=` line of `busctl --user
+--no-pager status`, which some systemd versions (Debian 12's 252) do not
+print, and then asks the system manager instead. A `busctl` wrapper ahead of
+it in `docker.service`'s `PATH` (a user drop-in) that adds
+`OwnerUID=$ROOTLESSKIT_PARENT_EUID` to that one query fixes it.
 
 Configure the image, source paths, protected paths and timeout using a JSON file:
 
