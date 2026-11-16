@@ -2,7 +2,7 @@
 
 - **Date:** 15-11-2026
 - **Branch:** feat/graphify-pilot (off feat/team-delivery-gates)
-- **Status:** In progress — steps 1–3 done; step 4 (measurement) next
+- **Status:** In progress — steps 1–3 done; step 4 round 1 paused (continues 16-11-2026)
 - **Authorization:** The user approved the pilot as proposed in chat ("yes").
 
 ## Context
@@ -111,3 +111,21 @@ the pilot is kept only if `devagentics bench` shows it helps.
   mentions it only when the graph is on.
 - Tests use a stub Graphify; an ignored test runs the pinned install (offline
   build, `explain formatTime` names its caller, nothing in its `HOME`).
+
+### Step 4 (15-11-2026, paused)
+
+- Fixture `publisher-gaps` (publisherProvider at `113e846` + acceptance tests;
+  `scripts/bench_team.sh` / `scripts/bench_setup.sh`), 3+3 runs, the user's
+  answers from a fixed script (`bench-script.txt`: the standing answers; a
+  standard "Check your inbox and continue." whenever a leader is idle with
+  inbox messages; approval of the exact baseline revision).
+- Two bugs found starting the runs, fixed with regression tests: managed
+  workers died on their first message (`devws agent mark` refused
+  `working`), and agents opened outside their group workspace when it had
+  only its sidebar left.
+- Round 1 (off-1 `bench-reviewed-20261115-230059`, on-1
+  `bench-reviewed-20261115-230210`) paused during planning at the Claude
+  account's 5-hour limit (~62%). Resume both with `devagentics task resume
+  <task>` once the window resets; rounds 2 and 3 follow.
+- The live publisherProvider team now runs on Codex (`task codex-team`) with
+  the graph on; it is not part of the measurement.
