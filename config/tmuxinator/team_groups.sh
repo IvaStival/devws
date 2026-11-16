@@ -145,6 +145,10 @@ open() {
   if [ -n "$session" ]; then
     largest="$(tmux list-panes -t "=$session:" -F '#{pane_id} #{pane_width} #{pane_height} #{@devws_sidebar}' |
       awk '$4 != 1 && $2 * $3 > best { best = $2 * $3; id = $1 } END { print id }')"
+    # Its agents gone before it was tidied, only the sidebar is left: split
+    # that. An empty target would put the agent wherever the caller is.
+    [ -n "$largest" ] || largest="$(sidebar_of "$session")"
+    [ -n "$largest" ] || fail "the workspace $session has no pane to open $group in"
     pane="$(tmux split-window -d -t "$largest" -c "$folder" -P -F '#{pane_id}' ${command:+"$command"})" ||
       fail "could not open a panel in $group"
   else
@@ -171,7 +175,12 @@ place() {
   [ "$(tmux show-option -qv -t "$(pane_session "$pane")" @devws_group 2>/dev/null)" = "$group" ] && return 0
   session="$(group_with_room "$team" "$group")"
   if [ -n "$session" ]; then
-    tmux join-pane -d -s "$pane" -t "$(agents_of "$session" | head -n 1)" ||
+    local target
+    # As in open: a workspace with only its sidebar left takes it there.
+    target="$(agents_of "$session" | head -n 1)"
+    [ -n "$target" ] || target="$(sidebar_of "$session")"
+    [ -n "$target" ] || fail "the workspace $session has no pane to move $pane to"
+    tmux join-pane -d -s "$pane" -t "$target" ||
       fail "could not move $pane to $group"
   else
     # A workspace is made around a placeholder, which the pane then replaces.
