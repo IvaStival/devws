@@ -6,7 +6,8 @@ use crate::board_usage::{LEADER_NAME, TeamUsage};
 use crate::devws::{Devws, PaneState, Usage};
 use crate::roles::{Group, Role, Roles};
 use crate::state::LEADER;
-use crate::state::{Effect, PermissionStatus, Step, StepStatus};
+use crate::log::Kind;
+use crate::state::{Effect, LeaderWait, PermissionStatus, Step, StepStatus};
 use crate::task::Task;
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,15 +36,20 @@ pub struct Board {
     /// Full context keyed by stable row identity; presentation never truncates this.
     pub details: BTreeMap<String, String>,
     pub accounts: Vec<Account>,
+    /// Every registered account, and whether this task may start agents on
+    /// it (the ACCOUNTS card).
+    pub switches: Vec<AccountSwitch>,
     /// Every role there is, running or not, by group: the CTO, the seniors,
     /// the factory floor.
     pub roles: Vec<RoleRow>,
     /// Questions not answered yet: `q7 executor-1 → planner-1: …`.
     pub questions: Vec<String>,
+    /// What the leader asked the user and is still waiting on.
+    pub leader_question: Option<String>,
     /// Steps the leader is acting on: reported, failed, blocked or sent back.
     pub leader_review: Vec<StepRow>,
     /// Steps the leader left: waiting longer than `STALE_REVIEW_SECS` while it
-    /// is not working. These need you, to tell the leader.
+    /// is not working: the LEADER BACKLOG card.
     pub stale_review: Vec<StaleReview>,
     /// Orders waiting to be typed into an agent.
     pub queue: Vec<QueueRow>,
@@ -69,6 +75,16 @@ pub struct Account {
     pub name: String,
     pub five_hour: Option<u32>,
     pub week: Option<u32>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct AccountSwitch {
+    pub name: String,
+    pub enabled: bool,
+    pub five_hour: Option<u32>,
+    pub week: Option<u32>,
+    /// The leader runs on it now.
+    pub leader_on: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -355,13 +371,33 @@ impl Board {
                     .or_else(|| roles.get("leader").map(|role| role.agent.clone())),
             )
             .collect();
+        let leader_account = state
+            .leader_agent
+            .clone()
+            .or_else(|| roles.get("leader").map(|role| role.agent.clone()));
+        let mut limits = std::collections::BTreeMap::new();
         let mut account_rows = Vec::new();
         for name in accounts {
             let used = devws.limits(&name)?;
+            limits.insert(name.clone(), used);
             account_rows.push(Account {
                 name,
                 five_hour: used.five_hour,
                 week: used.week,
+            });
+        }
+        let mut switches = Vec::new();
+        for (name, _) in devws.accounts()? {
+            let used = match limits.get(&name) {
+                Some(used) => *used,
+                None => devws.limits(&name)?,
+            };
+            switches.push(AccountSwitch {
+                enabled: crate::accounts::is_enabled(&state, &name),
+                leader_on: leader_account.as_deref() == Some(name.as_str()),
+                five_hour: used.five_hour,
+                week: used.week,
+                name,
             });
         }
 
@@ -585,8 +621,10 @@ impl Board {
             branch: config.branch,
             summary: summary.join(" "),
             accounts: account_rows,
+            switches,
             roles: rows,
             questions,
+            leader_question: leader_question(&task.log_lines()?, state.leader_wait),
             leader_review,
             stale_review,
             queue,
@@ -604,6 +642,27 @@ fn step_row(step: &crate::state::Step) -> StepRow {
         status: step.status,
         attempts: step.attempts,
     }
+}
+
+/// The leader's latest escalation while it waits on the user, but not a
+/// permission request: those have rows of their own.
+fn leader_question(log_lines: &[String], wait: LeaderWait) -> Option<String> {
+    if wait == LeaderWait::No {
+        return None;
+    }
+    log_lines
+        .iter()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<crate::log::Entry>(line).ok())
+        .filter(|entry| entry.kind == Kind::Escalate && entry.agent.as_deref() == Some(LEADER))
+        .find(|entry| !is_permission_request(&entry.text))
+        .map(|entry| entry.text)
+}
+
+/// `Permission p148 requested for …`, as `mcp.rs` logs a permission request.
+fn is_permission_request(text: &str) -> bool {
+    text.strip_prefix("Permission p")
+        .is_some_and(|rest| rest.contains(" requested for "))
 }
 
 /// The steps waiting for the leader, split into those it is on and those it
@@ -794,6 +853,26 @@ pub(crate) mod tests {
             review_since: since,
             spec: None,
         }
+    }
+
+    #[test]
+    fn the_leader_question_is_its_latest_escalation_but_a_permission() {
+        let line = |kind: &str, agent: &str, text: &str| {
+            serde_json::json!({"at": 1, "kind": kind, "agent": agent, "text": text}).to_string()
+        };
+        let lines = vec![
+            line("escalate", "leader", "old question"),
+            line("escalate", "leader", "Which runner, A or B?"),
+            line("report", "hammer-1", "done"),
+            line("escalate", "leader", "Permission p148 requested for application_workflow (external)"),
+            "not json".to_string(),
+        ];
+        assert_eq!(
+            leader_question(&lines, LeaderWait::Shown).as_deref(),
+            Some("Which runner, A or B?")
+        );
+        assert_eq!(leader_question(&lines, LeaderWait::No), None, "answered");
+        assert_eq!(leader_question(&lines[2..], LeaderWait::Asked), None, "only a permission");
     }
 
     #[test]

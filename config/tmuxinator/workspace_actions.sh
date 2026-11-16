@@ -1293,20 +1293,52 @@ detach_client() {
   tmux detach-client
 }
 
+# "<group workspace><TAB><team><TAB><group>" for each agent team's group
+# workspace (team_groups.sh marks them @devws_team_of / @devws_group).
+team_group_sessions() {
+  tmux list-sessions -F "#{session_name}$(printf '\t')#{@devws_team_of}$(printf '\t')#{@devws_group}" 2>/dev/null |
+    awk -F '\t' '$2 != ""'
+}
+
+# The workspaces to offer for closing: a team's groups go with the team, so
+# they are not offered on their own; the team says which go with it.
+closable_workspaces() {
+  local current="$1" groups
+  groups="$(team_group_sessions)"
+  dev_sessions | while IFS= read -r session; do
+    awk -F '\t' -v session="$session" '$1 == session { found = 1 } END { exit !found }' <<<"$groups" && continue
+    local with
+    # Seniors first, then the Floor's, as the sidebar lists them.
+    with="$(awk -F '\t' -v team="$session" '$2 == team {
+        rank = tolower($3) == "seniors" ? 1 : (tolower($3) ~ /^floor/ ? 2 : 3)
+        print rank "\t" $3
+      }' <<<"$groups" | LC_ALL=C sort -t "$(printf '\t')" -k1,1n -k2,2 | cut -f2 | paste -sd ',' - | sed 's/,/, /g')"
+    printf '%s %s%s\n' "$([ "$session" = "$current" ] && printf '*' || printf ' ')" "$session" \
+      "${with:+  (team: $with)}"
+  done
+}
+
 close_workspace() {
   local current selected target quoted_target root quoted_root remove_worktree="" move_apps="" move_clients
+  local group closing="" kill_groups=""
   # Set by ask_to_remove_worktree when the untracked files go too.
   local remove_untracked=""
   current="$(tmux display-message -p '#S' 2>/dev/null)"
   selected="$(
-    dev_sessions |
-      awk -v cur="$current" '{ print ($0 == cur ? "* " : "  ") $0 }' |
-      pick Close 'Close a workspace (* the one you are in)' --height=100%
+    closable_workspaces "$current" |
+      pick Close 'Close a workspace (* the one you are in; a team closes with its groups)' --height=100%
   )"
   [ -n "$selected" ] || return
 
   target="${selected#??}"
+  target="${target%% *}"
   printf -v quoted_target '%q' "$target"
+  # A team's group workspaces close with it, before it: their agents are its.
+  while IFS="$(printf '\t')" read -r group _ _; do
+    printf -v group '%q' "$group"
+    closing="$closing --closing $group"
+    kill_groups="$kill_groups tmux kill-session -t $group;"
+  done < <(team_group_sessions | awk -F '\t' -v team="$target" '$2 == team')
   # Asked before closing, while this pane is sure to be there to ask; the
   # folder goes once the workspace no longer runs in it, and git still refuses
   # if changes appeared meanwhile.
@@ -1328,5 +1360,5 @@ close_workspace() {
   # Run through the tmux server so closing the workspace containing this
   # sidebar does not terminate the refresh command along with the pane.
   tmux run-shell -b \
-    "$move_clients '$HOME/.tmuxinator/save_state.sh' --closing $quoted_target; tmux kill-session -t $quoted_target; $move_apps $remove_worktree '$HOME/.tmuxinator/save_state.sh'; '$HOME/.tmuxinator/refresh_devws_pickers.sh'"
+    "$move_clients '$HOME/.tmuxinator/save_state.sh' --closing $quoted_target$closing;$kill_groups tmux kill-session -t $quoted_target; $move_apps $remove_worktree '$HOME/.tmuxinator/save_state.sh'; '$HOME/.tmuxinator/refresh_devws_pickers.sh'"
 }

@@ -37,8 +37,11 @@ pub fn claude_arguments(
         "dontAsk".into(),
         "--allowedTools".into(),
         "mcp__devagentics_worker__worker".into(),
+        // Every message and tool call as it happens, for the panel; `json`
+        // would print one blob when the turn is over.
         "--output-format".into(),
-        "json".into(),
+        "stream-json".into(),
+        "--verbose".into(),
     ];
     if let Some(model) = model {
         args.extend(["--model".into(), model.into()]);
@@ -156,7 +159,8 @@ fn codex_turn(
     prompt: &str,
     model: Option<&str>,
     effort: Option<&str>,
-) -> Result<std::process::ExitStatus> {
+    raw: &Path,
+) -> Result<(std::process::ExitStatus, Option<crate::panel_view::Usage>)> {
     let state = task.state()?;
     let workspace = state
         .runner_workspaces
@@ -185,15 +189,12 @@ fn codex_turn(
         .context("starting codex")?;
     let mut started = None;
     let output = child.stdout.take().context("codex output")?;
-    for line in std::io::BufReader::new(output).lines() {
-        let line = line?;
-        if let Some(text) = readable(&line) {
-            println!("{text}");
-        }
+    let usage = show_turn(output, raw, |line| {
         if started.is_none() {
-            started = thread_id(&line);
+            started = thread_id(line);
         }
-    }
+        crate::panel_view::codex_events(line)
+    })?;
     let status = child.wait()?;
     if let (None, Some(started)) = (thread, started) {
         task.transaction(|tx| {
@@ -203,68 +204,65 @@ fn codex_turn(
             Ok(())
         })?;
     }
-    Ok(status)
+    Ok((status, usage))
 }
 
-/// What a line of `codex exec --json` output shows in the worker's pane: its
-/// messages, tool calls, commands, errors and the turn's tokens; nothing for
-/// the protocol's bookkeeping; a line that is not an event, as it is.
-pub fn readable(line: &str) -> Option<String> {
-    let Ok(event) = serde_json::from_str::<Value>(line) else {
-        return Some(line.to_string());
-    };
-    let item = &event["item"];
-    match (event["type"].as_str(), item["type"].as_str()) {
-        (Some("item.completed"), Some("agent_message")) => Some(
-            item["text"]
-                .as_str()
-                .unwrap_or_default()
-                .trim_end()
-                .to_string(),
-        ),
-        (Some("item.completed"), Some("mcp_tool_call")) => {
-            let action = item["arguments"]["action"].as_str().unwrap_or("");
-            let mut text = format!("• {} {action}", item["tool"].as_str().unwrap_or("tool"))
-                .trim_end()
-                .to_string();
-            if item["status"] == "failed" {
-                let why = item["error"]["message"]
-                    .as_str()
-                    .unwrap_or("no reason given");
-                text.push_str(&format!(": failed ({why})"));
+/// A Claude worker's turn, its events drawn in the pane as they come.
+fn claude_turn(
+    arguments: Vec<String>,
+    directory: &Path,
+    raw: &Path,
+) -> Result<(std::process::ExitStatus, Option<crate::panel_view::Usage>)> {
+    let mut child = Command::new("claude")
+        .args(arguments)
+        .current_dir(directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("starting claude")?;
+    let output = child.stdout.take().context("claude output")?;
+    let mut stream = crate::panel_view::ClaudeStream::default();
+    let usage = show_turn(output, raw, |line| stream.events(line))?;
+    Ok((child.wait()?, usage))
+}
+
+/// Draws a turn's provider output in the pane and keeps each raw line in
+/// `raw`, to check what the provider really sent; returns what it used.
+fn show_turn(
+    output: impl std::io::Read,
+    raw: &Path,
+    mut events: impl FnMut(&str) -> Vec<crate::panel_view::Event>,
+) -> Result<Option<crate::panel_view::Usage>> {
+    let mut log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(raw)?;
+    let width = crate::panel_view::width();
+    let mut usage = None;
+    for line in std::io::BufReader::new(output).lines() {
+        let line = line?;
+        writeln!(log, "{line}")?;
+        for event in events(&line) {
+            if let crate::panel_view::Event::TurnDone(used) = event {
+                usage = Some(used);
+            } else if let Some(text) = crate::panel_view::render(&event, width) {
+                println!("{text}");
             }
-            Some(text)
         }
-        (Some("item.completed"), Some("command_execution")) => {
-            let command = item["command"].as_str().unwrap_or_default();
-            // Codex wraps each command in a login shell; show the command.
-            let command = command
-                .strip_prefix("/bin/bash -lc '")
-                .and_then(|inner| inner.strip_suffix('\''))
-                .unwrap_or(command);
-            Some(match item["exit_code"].as_i64() {
-                Some(0) | None => format!("$ {command}"),
-                Some(code) => format!("$ {command}  (exit {code})"),
-            })
-        }
-        (Some("turn.completed"), _) => {
-            let usage = &event["usage"];
-            Some(format!(
-                "── turn done · {} in ({} cached) · {} out",
-                usage["input_tokens"].as_u64().unwrap_or(0),
-                usage["cached_input_tokens"].as_u64().unwrap_or(0),
-                usage["output_tokens"].as_u64().unwrap_or(0)
-            ))
-        }
-        (Some("error" | "turn.failed"), _) => Some(format!(
-            "! {}",
-            event["message"]
-                .as_str()
-                .or(event["error"]["message"].as_str())
-                .unwrap_or("Codex reported an error")
-        )),
-        _ => None,
     }
+    Ok(usage)
+}
+
+/// The raw provider lines a worker's turns sent: the latest, plus the
+/// previous file once it passes `RAW_LIMIT`.
+const RAW_LIMIT: u64 = 2 * 1024 * 1024;
+
+fn raw_turns(directory: &Path) -> Result<std::path::PathBuf> {
+    let raw = directory.join("turns.jsonl");
+    if std::fs::metadata(&raw).is_ok_and(|metadata| metadata.len() > RAW_LIMIT) {
+        std::fs::rename(&raw, directory.join("turns.old.jsonl"))?;
+    }
+    Ok(raw)
 }
 
 /// The conversation id in a line of `codex exec --json` output.
@@ -372,7 +370,7 @@ pub fn mcp(task: &Task, agent: &str, identity: &Path) -> Result<()> {
                 json!({"protocolVersion":request["params"]["protocolVersion"].as_str().unwrap_or("2024-11-05"),"capabilities":{"tools":{}},"serverInfo":{"name":"devagentics_worker","version":env!("CARGO_PKG_VERSION")}})
             }
             "tools/list" => {
-                json!({"tools":[{"name":"worker","description":"Scoped worker tools. action=status, execute, checkpoint, check, report, plan_proposal, ask_user, review_diff, review_submit, graph, ask or answer. Execute runs only inside the isolated source container. No leader, database or external-action permissions.","inputSchema":{"type":"object","properties":{"action":{"type":"string"},"input":{"type":"object"}},"required":["action"]}}]})
+                json!({"tools":[{"name":"worker","description":"Scoped worker tools. action=status, execute, checkpoint, check, report, plan_proposal (input.application: the whole next revision), plan_amend (input.changes: only what changes in the next revision, by id, null removes; input.reason), application_read (the baseline as an outline; input.items [ids]: their full contracts; input.proposal true: the pending proposal), plan_write (input.plan: the execution plan of your order's step, markdown), plan_read (the plan your order follows, or input.step), ask_user, review_diff, review_submit, graph, ask or answer. Execute runs only inside the isolated source container. No leader, database or external-action permissions.","inputSchema":{"type":"object","properties":{"action":{"type":"string"},"input":{"type":"object"}},"required":["action"]}}]})
             }
             "tools/call" => {
                 let result = (|| {
@@ -418,6 +416,35 @@ pub fn mcp(task: &Task, agent: &str, identity: &Path) -> Result<()> {
     }
     Ok(())
 }
+/// What a review looks at: everything the step brings to the branch it
+/// merges into, not only the last order. A step can take several orders,
+/// and the work committed under an earlier one is the base of the next, so
+/// `base..source` of the last one can be empty.
+fn review_range(review: &crate::reviews::Review) -> String {
+    format!("{}...{}", review.target, review.source)
+}
+
+/// The accepted contracts of the steps a reviewer was asked to review: its
+/// own role has none, and it reviews against them.
+fn reviewed_contracts(
+    state: &crate::state::State,
+    reviewer: &str,
+) -> std::collections::BTreeMap<String, crate::execution::Contract> {
+    state
+        .reviews
+        .iter()
+        .filter(|review| review.reviewer == reviewer && review.verdict.is_none())
+        .filter_map(|review| state.orders.iter().find(|order| order.id == review.order))
+        .filter_map(|order| {
+            state
+                .application
+                .items
+                .get(&order.step)
+                .map(|item| (order.step.clone(), item.clone()))
+        })
+        .collect()
+}
+
 fn field<'a>(input: &'a Value, name: &str) -> Result<&'a str> {
     input[name]
         .as_str()
@@ -430,18 +457,58 @@ pub fn call(task: &Task, agent: &str, action: &str, input: &Value) -> Result<Val
     let pane = &worker.pane;
     match action {
         "status" => Ok(
-            json!({"agent":agent,"role":worker.role,"order":state.open_order_of(agent),"application_revision":state.application.revision,"planning_proposal":if !worker.writes{state.application_proposal.clone()}else{None},"contracts":state.application.items.iter().filter(|(_,item)|item.role==worker.role && item.repo==worker.repo).collect::<std::collections::BTreeMap<_,_>>(),"questions":state.questions.iter().filter(|question|question.to==agent||question.from==agent).collect::<Vec<_>>(),"reviews":state.reviews.iter().filter(|review|review.reviewer==agent).collect::<Vec<_>>()}),
+            json!({"agent":agent,"role":worker.role,"order":state.open_order_of(agent),"application_revision":state.application.revision,"planning_proposal":if !worker.writes{state.application_proposal.as_ref().map(crate::execution::outline)}else{None},"contracts":state.application.items.iter().filter(|(_,item)|item.role==worker.role && item.repo==worker.repo).collect::<std::collections::BTreeMap<_,_>>(),"questions":state.questions.iter().filter(|question|question.to==agent||question.from==agent).collect::<Vec<_>>(),"reviews":state.reviews.iter().filter(|review|review.reviewer==agent).collect::<Vec<_>>(),"reviewed_contracts":reviewed_contracts(&state,agent)}),
         ),
-        "plan_proposal" => {
+        "plan_proposal" | "plan_amend" => {
             ensure!(
                 !worker.writes && worker.role != "code-reviewer",
                 "only a planning specialist proposes a baseline"
             );
-            let application = serde_json::from_value(input["application"].clone())?;
-            let affected = crate::execution::store(task, application, field(input, "reason")?)?;
+            let reason = field(input, "reason")?;
+            let affected = if action == "plan_amend" {
+                let changes = serde_json::from_value(input["changes"].clone())?;
+                crate::execution::amend(task, changes, reason)?
+            } else {
+                let application = serde_json::from_value(input["application"].clone())?;
+                crate::execution::store(task, application, reason)?
+            };
             task.transaction(|tx|{if let Some(order)=tx.state.open_order_of(agent).cloned(){if let Some(step)=tx.state.step_mut(&order.step){step.set_status(crate::state::StepStatus::Reported,crate::log::now());}
                 if let Some(order)=tx.state.orders.iter_mut().find(|assignment|assignment.id==order.id){order.status=crate::state::OrderStatus::Closed;}}tx.state.say(crate::state::LEADER,format!("Planner {agent} proposed an application baseline. Inspect application_workflow status, interview the user and obtain explicit confirmation and approval before implementation."));Ok(())})?;
             Ok(json!({"proposed":true,"affected":affected}))
+        }
+        "application_read" => {
+            ensure!(!worker.writes, "only a read-only specialist reads the baseline");
+            let application = if input["proposal"].as_bool() == Some(true) {
+                state
+                    .application_proposal
+                    .as_ref()
+                    .context("no baseline proposal awaiting decision")?
+            } else {
+                &state.application
+            };
+            match input.get("items") {
+                Some(ids) => crate::execution::items(application, &serde_json::from_value::<Vec<String>>(ids.clone())?),
+                None => Ok(crate::execution::outline(application)),
+            }
+        }
+        "plan_read" => {
+            // The plan its order follows, unless it names another step.
+            let step = match input["step"].as_str() {
+                Some(step) => step.to_string(),
+                None => state
+                    .open_order_of(agent)
+                    .and_then(|order| order.plan.clone())
+                    .context("your order follows no plan: name the step")?,
+            };
+            Ok(json!({"step":step,"plan":crate::plans::read(task,&step)?}))
+        }
+        "plan_write" => {
+            ensure!(
+                !worker.writes && worker.role != "code-reviewer",
+                "only a planning specialist writes an execution plan"
+            );
+            let step = crate::plans::store_execution(task, agent, field(input, "plan")?)?;
+            Ok(json!({"stored":true,"step":step,"next":"report the order done; the leader reads it with read_plan"}))
         }
         "ask_user" => {
             ensure!(
@@ -471,8 +538,8 @@ pub fn call(task: &Task, agent: &str, action: &str, input: &Value) -> Result<Val
         }
         "report" => {
             ensure!(
-                worker.writes,
-                "planning and review use their scoped result tools"
+                worker.role != "code-reviewer",
+                "a reviewer answers with review_submit"
             );
             let order = state.open_order_of(agent).context("no assignment")?;
             let outcome = match field(input, "outcome")? {
@@ -480,6 +547,9 @@ pub fn call(task: &Task, agent: &str, action: &str, input: &Value) -> Result<Val
                 "blocked" => crate::orders::Outcome::Blocked,
                 _ => bail!("outcome must be done or blocked"),
             };
+            if !worker.writes {
+                return Ok(json!({"result":crate::orders::report_findings(task,agent,&order.id,outcome,field(input,"summary")?)?}));
+            }
             Ok(
                 json!({"result":crate::orders::report(task,pane,&order.id,outcome,field(input,"summary")?,crate::orders::check_timeout())?}),
             )
@@ -497,7 +567,7 @@ pub fn call(task: &Task, agent: &str, action: &str, input: &Value) -> Result<Val
             let author = state.agent(&review.author).context("unknown author")?;
             let repo = crate::lanes::workplace(task, author)?;
             Ok(
-                json!({"review":review,"diff":crate::checks::git(&repo.worktree,&["diff","--no-ext-diff","--no-textconv",&format!("{}..{}",review.base,review.source)])?}),
+                json!({"review":review,"diff":crate::checks::git(&repo.worktree,&["diff","--no-ext-diff","--no-textconv",&review_range(review)])?}),
             )
         }
         "graph" => {
@@ -547,12 +617,33 @@ fn graph_source(
     Ok((repo, head))
 }
 
+/// The picker reads an agent's model from its pane. An interactive agent's
+/// runner sets it; a managed panel has no runner, so it sets its own.
+fn show_model(devws: &dyn Devws, pane: &str, model: Option<&str>) -> Result<()> {
+    let model = model.unwrap_or("default model");
+    devws.set_pane_option(pane, "@devws_model", model)?;
+    devws.set_pane_option(pane, "@devws_model_configured", model)
+}
+
 /// The panel remains a supervisor, never an interactive editable model prompt.
 pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> Result<()> {
     let devws = CommandDevws::from_env();
     let pane = std::env::var("TMUX_PANE").context("managed worker requires a pane")?;
+    show_model(&devws, &pane, model)?;
     let directory = task.dir().join("workers").join(agent).join("control");
     std::fs::create_dir_all(&directory)?;
+    let program_name = |program| match program {
+        crate::agent_args::Kind::Codex => "codex",
+        _ => "claude",
+    };
+    if let Some(worker) = task.state()?.agent(agent) {
+        println!(
+            "{} · {} · {} · waiting for its first order",
+            agent,
+            program_name(devws.agent_kind(&worker.agent)?),
+            model.unwrap_or("default model")
+        );
+    }
     let executable = crate::executable::own()?;
     let config = directory.join("mcp.json");
     std::fs::write(
@@ -676,20 +767,50 @@ pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> 
             .get(agent)
             .and_then(|launch| launch.selected.as_ref())
             .and_then(|program| program.effort.clone());
-        let status = if program == crate::agent_args::Kind::Codex {
-            codex_turn(task, agent, identity, &prompt, model, effort.as_deref())?
+        let order = message.order.as_ref().map(|id| {
+            let step = task
+                .state()
+                .ok()
+                .and_then(|state| state.orders.iter().find(|order| order.id == *id).map(|order| order.step.clone()))
+                .unwrap_or_default();
+            format!("{id} ({step})")
+        });
+        let width = crate::panel_view::width();
+        println!(
+            "\n{}",
+            crate::panel_view::header(
+                &crate::panel_view::Turn {
+                    agent,
+                    program: program_name(program),
+                    model,
+                    effort: effort.as_deref(),
+                    order,
+                },
+                &chrono::Local::now().format("%H:%M").to_string(),
+                width,
+            )
+        );
+        let raw = raw_turns(&directory)?;
+        let (status, usage) = if program == crate::agent_args::Kind::Codex {
+            codex_turn(task, agent, identity, &prompt, model, effort.as_deref(), &raw)?
         } else {
             let mut arguments = claude_arguments(&config, &prompt, model, &session, resumed);
             if let Some(effort) = effort {
                 let position = arguments.len() - 1;
                 arguments.splice(position..position, ["--effort".into(), effort]);
             }
-            Command::new("claude")
-                .args(arguments)
-                .current_dir(&directory)
-                .stdin(Stdio::null())
-                .status()?
+            claude_turn(arguments, &directory, &raw)?
         };
+        let failure = (!status.success()).then(|| status.to_string());
+        println!(
+            "{}",
+            crate::panel_view::footer(
+                crate::log::now().saturating_sub(turn_start),
+                usage,
+                failure.as_deref(),
+                width,
+            )
+        );
         task.transaction(|tx| {
             tx.state.timing.record("worker_turn",turn_start,crate::log::now().max(turn_start))?;
             if status.success(){tx.state.worker_turns.remove(agent);}else{tx.state.say(crate::state::LEADER,format!("Managed worker {agent} failed. Its claimed message is retained for explicit recovery; do not resend automatically."));}
@@ -707,6 +828,32 @@ pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_review_shows_the_whole_step_even_after_several_orders() {
+        let review = crate::reviews::Review {
+            base: "49b4c48".into(),
+            source: "49b4c48".into(),
+            target: "113e846".into(),
+            ..Default::default()
+        };
+        // The last order started from the work an earlier one committed.
+        assert_eq!(review_range(&review), "113e846...49b4c48");
+    }
+
+    #[test]
+    fn a_managed_panel_shows_its_model_in_the_picker() {
+        let folder = tempfile::tempdir().unwrap();
+        let devws = crate::devws::fake::FakeDevws::new(folder.path());
+        show_model(&devws, "%7", Some("gpt-6.1-sol")).unwrap();
+        assert_eq!(devws.option("%7", "@devws_model").as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(
+            devws.option("%7", "@devws_model_configured").as_deref(),
+            Some("gpt-6.1-sol")
+        );
+        show_model(&devws, "%8", None).unwrap();
+        assert_eq!(devws.option("%8", "@devws_model").as_deref(), Some("default model"));
+    }
     #[test]
     fn native_tools_and_other_mcp_configs_are_disabled() {
         let args = claude_arguments(
@@ -716,6 +863,9 @@ mod tests {
             "uuid",
             false,
         );
+        let position = args.iter().position(|arg| arg == "--output-format").unwrap();
+        assert_eq!(args[position + 1], "stream-json", "the panel draws events as they come");
+        assert!(args.contains(&"--verbose".to_string()), "stream-json needs --verbose with --print");
         for flag in [
             "--print",
             "--restricted",
@@ -853,65 +1003,6 @@ mod tests {
                 .any(|arg| arg.contains("danger") || arg == "--approve-for-me")
         );
         assert_eq!(args.last().unwrap(), "lead");
-    }
-
-    #[test]
-    fn a_codex_turn_shows_as_readable_lines_not_raw_events() {
-        let shown = |event: &str| readable(event);
-        assert_eq!(
-            shown(
-                r#"{"type":"item.completed","item":{"type":"agent_message","text":"I will check the status.\n"}}"#
-            ),
-            Some("I will check the status.".into())
-        );
-        assert_eq!(
-            shown(
-                r#"{"type":"item.completed","item":{"type":"mcp_tool_call","server":"devagentics_worker","tool":"worker","arguments":{"action":"status"},"status":"completed"}}"#
-            ),
-            Some("• worker status".into())
-        );
-        assert_eq!(
-            shown(
-                r#"{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"worker","arguments":{"action":"check"},"error":{"message":"denied"},"status":"failed"}}"#
-            ),
-            Some("• worker check: failed (denied)".into())
-        );
-        assert_eq!(
-            shown(
-                r#"{"type":"item.completed","item":{"type":"command_execution","command":"/bin/bash -lc 'ls src'","exit_code":0}}"#
-            ),
-            Some("$ ls src".into())
-        );
-        assert_eq!(
-            shown(
-                r#"{"type":"item.completed","item":{"type":"command_execution","command":"/bin/bash -lc 'touch x'","exit_code":1}}"#
-            ),
-            Some("$ touch x  (exit 1)".into())
-        );
-        assert_eq!(
-            shown(
-                r#"{"type":"turn.completed","usage":{"input_tokens":61062,"cached_input_tokens":54400,"output_tokens":127}}"#
-            ),
-            Some("── turn done · 61062 in (54400 cached) · 127 out".into())
-        );
-        assert_eq!(
-            shown(r#"{"type":"error","message":"rate limited"}"#),
-            Some("! rate limited".into())
-        );
-        assert_eq!(
-            shown(r#"{"type":"turn.started"}"#),
-            None,
-            "bookkeeping is not shown"
-        );
-        assert_eq!(
-            shown(r#"{"type":"item.started","item":{"type":"command_execution"}}"#),
-            None
-        );
-        assert_eq!(
-            shown("not json"),
-            Some("not json".into()),
-            "anything else as it is"
-        );
     }
 
     #[test]

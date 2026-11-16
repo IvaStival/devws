@@ -90,11 +90,13 @@ cache tokens (every agent the task has had), and a row per account with its
 panes keep the 5-hour bar). A pane too short for the frame keeps its top row.
 
 The default **Overview** is one list of sections, each after a blank line and
-left out when empty: **Needs you** (unanswered questions, leader calls
+left out when empty: **Needs you**, only what you must act on (the leader's
+question to you, `● leader asks: …`, unanswered questions, leader calls
 waiting for your approval — `⚠ p7 open_prs · external · {…}`, with the
-exact arguments you approve — steps the leader left, agents waiting or gone,
+exact arguments you approve — failed steps, agents waiting or gone,
 a dispatcher problem); **CTO**; **Leader reviewing** (steps reported,
-failed, blocked or sent back, which the leader acts on); **Seniors** and
+failed, blocked or sent back, which the leader acts on); **Leader backlog**
+(the steps it left); **Seniors** and
 **Floor**, each with what its running agents cost and their tokens in all, and
 each agent with its program (and lane), state, cost and tokens in columns,
 over a dim line with its current step, the steps it got accepted and its
@@ -113,8 +115,9 @@ is the CTO's first row; Enter on it shows its pane and state, effective
 permissions, fallback (active or standby), whether the plan is approved and
 the task paused, and its pending permission requests. A step the leader has
 left, waiting more than 10 minutes while the leader is not working, moves to
-Needs you as `leader hasn't reviewed <step>` with how long it has waited:
-tell the leader to accept or reject it. The
+the **Leader backlog** card under the CTO, with how long it has waited. It is
+the leader's work, not yours, so it stays out of Needs you; to remind the
+leader, press `m` in its details. The
 frames use the devws menu's muted blue accent, while green marks successful
 states. Selection skips section titles, second lines and blank lines, and the wheel
 scrolls the whole list, down to the oldest done step. Panes under 60 columns
@@ -164,6 +167,22 @@ details, with known models below the agent line. The current team opens
 its tree; Right/Left expands or collapses it. Working and
 attention counts remain visible on collapsed teams. Search includes hidden
 agents and reveals their team path without replacing manual expansion choices.
+
+The **ACCOUNTS** card, under the leader, has a switch for every account
+registered in devws (`devws agent accounts`): `[━━● on ]` or `[○━━ off]`, with
+its 5-hour and weekly use. Select one and press **Space** to turn it on or off
+for this task. No new agent starts on an account that is off: a role falls
+through to its next program that is on, and the leader never moves to one.
+Agents already running keep running (a leader on an account you turned off
+says `leader still on it`). The last account that is on stays on. The leader
+hears every change and sees the switches in `task_status` (`accounts`).
+
+The details of every NEEDS YOU row (a permission, a question, an agent that
+needs you, a step the leader left), of a step, and of the leader have a **To the
+leader** box: press **m** to write in it, **Enter** sends, **Esc** cancels. The
+leader gets it with what it is about (the permission's call and status, the
+question, the step's status and attempts) and is woken to read it; a leader
+waiting for you takes it as your answer.
 
 `devagentics board <task> --once` prints an overview without a dispatcher;
 `--view overview|agents|steps|activity|usage` selects another view, and
@@ -362,9 +381,12 @@ in a new conversation.
 
 See the [order, recovery and isolated-check guide](../../docs/user/devagentics-execution.md) for required report IDs, audited amendments, interrupt/resume, named check configuration and result formats.
 
-A step gets the task's `max_attempts` (3, in `task.toml`): orders, and reviews
-asking for changes. Past it the leader escalates to you; `devagentics task
-attempts <task> <step> <limit>` allows that step more. In reviewed tasks,
+A step gets the task's `max_attempts` (5, in `task.toml`): orders, and reviews
+asking for changes. When they are used, devAgentics waits 15 minutes and gives
+the step one more attempt on its own; if that fails too, the step shows a red
+✕ "failed" under NEEDS YOU and the leader escalates to you. `devagentics task
+attempts <task> <step> <limit>` allows that step more (and starts the retry
+over). In reviewed tasks,
 candidate checks test each merge candidate before its review, protected tests
 cannot be changed by the work they judge, and `devagentics task
 codex-reviewers <task> on` lets Codex run the read-only reviewers.

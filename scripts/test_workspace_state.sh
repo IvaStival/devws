@@ -219,6 +219,14 @@ test_save_leaves_out_a_closing_workspace() {
   grep -q "^W${TAB}dev-two${TAB}" "$(state_file)" || fail "the workspace left open was not saved"
 }
 
+test_save_leaves_out_every_workspace_a_team_close_closes() {
+  setup
+  two_workspace_fixture
+  run_devws_script save_state.sh --closing dev-one --closing dev-two
+
+  ! grep -q "^W" "$(state_file)" || fail "a closing workspace was saved: $(cat "$(state_file)")"
+}
+
 test_closing_the_last_workspace_leaves_nothing_to_restore() {
   setup
   local one="$TEST_ROOT/project-one"
@@ -522,6 +530,7 @@ test_save_adopts_terminal_in_legacy_workspace
 test_save_is_idempotent
 test_save_skips_during_restore
 test_save_leaves_out_a_closing_workspace
+test_save_leaves_out_every_workspace_a_team_close_closes
 test_closing_the_last_workspace_leaves_nothing_to_restore
 test_restore_replays_workspaces
 test_new_panels_are_saved_and_restored

@@ -86,6 +86,9 @@ impl Usage {
 
 pub trait Devws: Send + Sync {
     fn agent_kind(&self, agent: &str) -> Result<Kind>;
+    /// Every registered agent account and the program it runs, in the
+    /// registry's order (`DEVWS_AGENTS`).
+    fn accounts(&self) -> Result<Vec<(String, Kind)>>;
     /// The folder of the branch's worktree of a repo (`owner/repo`, a URL or a
     /// folder), made when needed. Opens nothing.
     fn ensure_worktree(&self, repo: &str, branch: &str) -> Result<PathBuf>;
@@ -214,6 +217,17 @@ impl Devws for CommandDevws {
         let name = self.devws(&["agent", "kind", agent])?;
         Kind::parse(&name)
             .with_context(|| format!("devAgentics does not run {name} agents yet ({agent})"))
+    }
+
+    fn accounts(&self) -> Result<Vec<(String, Kind)>> {
+        Ok(self
+            .devws(&["agent", "accounts"])?
+            .lines()
+            .filter_map(|line| {
+                let (name, kind) = line.split_once(' ')?;
+                Some((name.to_string(), Kind::parse(kind)?))
+            })
+            .collect())
     }
 
     fn ensure_worktree(&self, repo: &str, branch: &str) -> Result<PathBuf> {
@@ -550,6 +564,17 @@ pub mod fake {
     }
 
     impl Devws for FakeDevws {
+        fn accounts(&self) -> Result<Vec<(String, Kind)>> {
+            let inner = self.record("accounts".into());
+            let mut accounts: Vec<_> = inner
+                .kinds
+                .iter()
+                .map(|(name, kind)| (name.clone(), *kind))
+                .collect();
+            accounts.sort_by(|left, right| left.0.cmp(&right.0));
+            Ok(accounts)
+        }
+
         fn agent_kind(&self, agent: &str) -> Result<Kind> {
             let inner = self.record(format!("kind {agent}"));
             inner

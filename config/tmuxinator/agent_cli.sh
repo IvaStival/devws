@@ -235,6 +235,17 @@ kind() {
   agent_kind "$1" 2>/dev/null || fail "unknown agent: $1 (register it in the devws menu)"
 }
 
+# "<name> <kind>" for each registered agent, in the registry's order; a name
+# with no program is left out.
+accounts() {
+  [ "$#" -eq 0 ] || usage_fail "usage: devws agent accounts"
+  local name kind
+  for name in ${DEVWS_AGENTS:-claude codex}; do
+    kind="$(agent_kind "$name" 2>/dev/null)" || continue
+    printf '%s %s\n' "$name" "$kind"
+  done
+}
+
 # How long a Claude status line's reading stands in when Anthropic cannot be
 # asked: an older one may be from before a reset (one bought early, too), and
 # a stale "used up" blocks the team until a Claude session happens to run.
@@ -338,9 +349,10 @@ case "$command" in
   limits) limits "$@" ;;
   usage) usage "$@" ;;
   kind) kind "$@" ;;
+  accounts) accounts "$@" ;;
   go | peek)
     [ "$#" -eq 1 ] || usage_fail "usage: devws agent $command <pane>"
     exec "$script_dir/team_groups.sh" "$command" "$1"
     ;;
-  *) usage_fail "usage: devws agent state|send|mark|stop|interrupt|spawn|run|limits|usage|kind|go|peek …" ;;
+  *) usage_fail "usage: devws agent state|send|mark|stop|interrupt|spawn|run|limits|usage|kind|accounts|go|peek …" ;;
 esac

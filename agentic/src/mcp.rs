@@ -44,7 +44,7 @@ fn tools() -> Vec<Value> {
     let mut tools = vec![
         tool(
             "application_workflow",
-            "Project application planning. Actions: status, propose, answer, confirm, approve, milestones, preview_adoption, adopt, review_request, provision_roles, runner_configure, recover_turn, validate_milestone, leader_inbox, inbox_ack, runner_images, project_overview, preflight_retry. provision_roles changes managed storage outside the project and requires exact-call external authorization. Only record confirm/approve after the user's explicit answer for that exact revision. Material proposals never inherit approval. Preview is read-only; runner enforcement may block adoption.",
+            "Project application planning. Actions: status (an outline; input.section for one part in full, e.g. runner; section application or proposal with input.items [ids] for those full contracts), propose (input.application: the whole next revision), amend (input.changes: only what changes in the next revision, by id, null removes; input.reason), answer, confirm, approve, milestones, preview_adoption, adopt, review_request, provision_roles, runner_configure, recover_turn, validate_milestone, leader_inbox, inbox_ack, runner_images, project_overview, preflight_retry. provision_roles changes managed storage outside the project and requires exact-call external authorization. Only record confirm/approve after the user's explicit answer for that exact revision. Material proposals never inherit approval. Preview is read-only; runner enforcement may block adoption.",
             json!({"action":text("Workflow action"),"input":{"type":"object"}}),
             &["action"],
         ),
@@ -564,7 +564,9 @@ impl Server<'_> {
                 Ok("Paused.".into())
             }
             "resume_task" => {
-                let restarted = self.team().resume()?;
+                let restarted = self
+                    .team()
+                    .resume_from(std::env::var("TMUX_PANE").ok().as_deref())?;
                 Ok(format!("Resumed; restarted: {}", restarted.join(", ")))
             }
             "configure_checks" => {
@@ -713,6 +715,7 @@ impl Server<'_> {
     fn escalate(&self, question: &str) -> Result<String> {
         self.task.transaction(|tx| {
             tx.log(Kind::Escalate, Some(LEADER), None, question);
+            tx.state.leader_wait = crate::state::LeaderWait::Asked;
             Ok(())
         })?;
         if let Some(pane) = self
@@ -1160,6 +1163,11 @@ mod tests {
             "{text}"
         );
         assert!(f.devws.calls().contains(&"mark %1 waiting".to_string()));
+        assert_eq!(
+            f.task.state().unwrap().leader_wait,
+            crate::state::LeaderWait::Asked,
+            "the mark would not outlive the leader's turn"
+        );
         assert!(f.task.log_lines().unwrap().iter().any(
             |line| line.contains("\"kind\":\"escalate\"") && line.contains("Keep the old API?")
         ));

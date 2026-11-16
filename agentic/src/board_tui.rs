@@ -176,6 +176,13 @@ enum Action {
     Zoom,
     Leader,
     Visit { pane: String, peek: bool },
+    /// Turn this account on or off for the task.
+    ToggleAccount(String),
+    /// What the user wrote to the leader in a dialog, about a step or not.
+    TellLeader {
+        about: crate::leader::About,
+        text: String,
+    },
 }
 
 struct Interaction {
@@ -186,7 +193,7 @@ struct Interaction {
     map: ScreenMap,
 }
 
-const HELP: &str = "Board navigation\n\nTab / Shift-Tab: next / previous view\nj/k or arrows: select row; scroll details\nPgUp/PgDn: move a page\ng/G or Home/End: first / last\nEnter: full details\nClick: select a row; click it again for details\nClick a view's name: show that view\nClick outside details: close them\nEsc: close details or cancel peek\no: go to selected agent\nv: peek selected agent\n1–9: go to numbered agent\np then 1–9: peek numbered agent\nL: return to leader\nl: toggle Activity\nc: toggle completed steps or inactive role catalog\nr: refresh\nz: zoom\n?: help\nq: close details, or quit board (dispatcher stops)";
+const HELP: &str = "Board navigation\n\nTab / Shift-Tab: next / previous view\nj/k or arrows: select row; scroll details\nPgUp/PgDn: move a page\ng/G or Home/End: first / last\nEnter: full details\nm in the details of a NEEDS YOU row, a step or the leader: write to the leader in its box (Enter send, Esc cancel)\nSpace on an account: turn it on/off for this task\nClick: select a row; click it again for details\nClick a view's name: show that view\nClick outside details: close them\nEsc: close details or cancel peek\no: go to selected agent\nv: peek selected agent\n1–9: go to numbered agent\np then 1–9: peek numbered agent\nL: return to leader\nl: toggle Activity\nc: toggle completed steps or inactive role catalog\nr: refresh\nz: zoom\n?: help\nq: close details, or quit board (dispatcher stops)";
 
 impl Interaction {
     /// One event from the terminal: a key, or the wheel, which moves `WHEEL`
@@ -200,7 +207,7 @@ impl Interaction {
     ) -> Action {
         self.clamp_scroll(entries, size);
         let page = if let Some(content) = self.dialog_content(entries) {
-            board_view::dialog_body(content, size.width, size.height).height
+            board_view::dialog_body(content, size.width, size.height, self.dialog_input(entries)).height
         } else {
             size.height.saturating_sub(
                 board_view::header_rows(board, &self.nav, size.width, size.height) + 1,
@@ -233,6 +240,16 @@ impl Interaction {
     }
 
     /// What the open dialog shows: the help, or the selected row's details.
+    /// Whether the open dialog has the input box: the details of a row a
+    /// message to the leader can be about.
+    fn dialog_input(&self, entries: &[board_view::Entry]) -> bool {
+        !self.help
+            && self.nav.detail
+            && entries
+                .get(self.nav.index)
+                .is_some_and(|entry| board_view::message_about(&entry.id).is_some())
+    }
+
     fn dialog_content<'a>(&self, entries: &'a [board_view::Entry]) -> Option<&'a str> {
         if self.help {
             Some(HELP)
@@ -283,6 +300,7 @@ impl Interaction {
                 content,
                 size.width,
                 size.height,
+                self.dialog_input(entries),
             ));
         }
     }
@@ -304,6 +322,7 @@ impl Interaction {
                 HELP,
                 self.nav.detail_scroll,
                 None,
+                board_view::Message::None,
             ));
         }
         (screen, map)
@@ -325,7 +344,38 @@ impl Interaction {
         entries: &[board_view::Entry],
         page: u16,
     ) -> Action {
+        self.nav.sent = false;
+        if let Some(text) = self.nav.compose.as_mut() {
+            // Writing to the leader: every key is text, but these.
+            match code {
+                KeyCode::Char(character) => text.push(character),
+                KeyCode::Backspace => {
+                    text.pop();
+                }
+                KeyCode::Esc => self.nav.compose = None,
+                KeyCode::Enter if !text.trim().is_empty() => {
+                    let text = text.trim().to_string();
+                    self.nav.compose = None;
+                    let about = entries
+                        .get(self.nav.index)
+                        .and_then(|entry| board_view::message_about(&entry.id))
+                        .unwrap_or(crate::leader::About::General);
+                    return Action::TellLeader { about, text };
+                }
+                _ => {}
+            }
+            return Action::None;
+        }
         match code {
+            KeyCode::Char('m')
+                if self.nav.detail
+                    && !self.help
+                    && entries
+                        .get(self.nav.index)
+                        .is_some_and(|entry| board_view::message_about(&entry.id).is_some()) =>
+            {
+                self.nav.compose = Some(String::new());
+            }
             KeyCode::Esc | KeyCode::Char('q') if self.help || self.nav.detail => {
                 self.help = false;
                 self.nav.detail = false;
@@ -360,6 +410,17 @@ impl Interaction {
             KeyCode::Enter if !self.help && self.nav.selected.is_some() => {
                 self.nav.detail = true;
                 self.nav.detail_scroll = 0;
+            }
+            KeyCode::Char(' ') if !self.help && !self.nav.detail => {
+                if let Some(account) = self
+                    .nav
+                    .selected
+                    .as_deref()
+                    .and_then(|id| id.strip_prefix("account:"))
+                {
+                    return Action::ToggleAccount(account.to_string());
+                }
+                self.nav.move_by(entries, page as isize);
             }
             KeyCode::Char('p') => self.peeking = true,
             KeyCode::Char(digit @ '1'..='9') => {
@@ -648,9 +709,31 @@ fn screen_loop(
                             devws.go(&pane)
                         }
                     }
+                    Action::TellLeader { about, text } => {
+                        crate::leader::tell(task, &about, &text).map(|()| {
+                            ui.nav.sent = true;
+                        })
+                    }
+                    Action::ToggleAccount(account) => {
+                        let enabled = board
+                            .switches
+                            .iter()
+                            .any(|switch| switch.name == account && switch.enabled);
+                        crate::accounts::set_enabled(task, devws, &account, !enabled).map(|()| {
+                            // Shown at once: the reload asks every account for its
+                            // limits, and a switch that lags gets pressed twice.
+                            if let Some(switch) =
+                                board.switches.iter_mut().find(|switch| switch.name == account)
+                            {
+                                switch.enabled = !enabled;
+                            }
+                            loader.refresh();
+                            refreshed = Instant::now() - REFRESH;
+                        })
+                    }
                 };
                 if let Err(error) = outcome {
-                    local_problem = Some(format!("Navigation failed: {error:#}"));
+                    local_problem = Some(format!("Board action failed: {error:#}"));
                 }
             }
         }
@@ -725,10 +808,10 @@ mod tests {
         ui.apply(key(KeyCode::PageDown), &board, &entries, size);
         assert_eq!(
             ui.nav.detail_scroll,
-            board_view::dialog_body(&entries[0].detail, 30, 16).height
+            board_view::dialog_body(&entries[0].detail, 30, 16, false).height
         );
         ui.apply(key(KeyCode::End), &board, &entries, size);
-        let maximum = board_view::dialog_scroll_max(&entries[0].detail, 30, 16);
+        let maximum = board_view::dialog_scroll_max(&entries[0].detail, 30, 16, false);
         assert_eq!(ui.nav.detail_scroll, maximum);
         ui.apply(key(KeyCode::Up), &board, &entries, size);
         assert_eq!(
@@ -757,6 +840,70 @@ mod tests {
         ui.apply(key(KeyCode::Esc), &board, &entries, size);
         assert!(!ui.nav.detail);
         assert_eq!(ui.nav.selected.as_deref(), Some("long"));
+    }
+
+    #[test]
+    fn m_in_a_steps_details_writes_to_the_leader_and_keys_become_text() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (home, devws, task, _repo) = crate::board::tests::started(&dir);
+        let board = load(&task, &devws, &home, &mut UsageReader::new(Duration::ZERO)).unwrap();
+        let row = |id: &str| board_view::Entry::text(id.into(), id.into(), "details".into(), true);
+        let entries = vec![row("step:B1-1-AT"), row("agent:hammer-3")];
+        let mut ui = Interaction::new(View::Overview);
+        ui.nav.reconcile(&entries);
+        let press = |ui: &mut Interaction, code| ui.key(code, &board, &entries, 10);
+
+        press(&mut ui, KeyCode::Enter);
+        press(&mut ui, KeyCode::Char('m'));
+        assert_eq!(ui.nav.compose.as_deref(), Some(""));
+        for character in "ok qj".chars() {
+            press(&mut ui, KeyCode::Char(character));
+        }
+        press(&mut ui, KeyCode::Backspace);
+        assert_eq!(ui.nav.compose.as_deref(), Some("ok q"), "q and j are text while writing");
+        assert!(ui.nav.detail, "q did not close the details");
+        assert_eq!(
+            press(&mut ui, KeyCode::Enter),
+            Action::TellLeader {
+                about: crate::leader::About::Step("B1-1-AT".into()),
+                text: "ok q".into()
+            }
+        );
+        assert_eq!(ui.nav.compose, None);
+        assert!(ui.nav.detail, "the details stay open");
+
+        press(&mut ui, KeyCode::Char('m'));
+        press(&mut ui, KeyCode::Char('x'));
+        press(&mut ui, KeyCode::Esc);
+        assert_eq!(ui.nav.compose, None);
+        assert!(ui.nav.detail, "Esc cancels the message only");
+
+        press(&mut ui, KeyCode::Esc);
+        press(&mut ui, KeyCode::Char('j'));
+        press(&mut ui, KeyCode::Enter);
+        press(&mut ui, KeyCode::Char('m'));
+        assert_eq!(ui.nav.compose, None, "an agent's details take no message");
+    }
+
+    #[test]
+    fn space_switches_the_selected_account_and_pages_anywhere_else() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (home, devws, task, _repo) = crate::board::tests::started(&dir);
+        let board = load(&task, &devws, &home, &mut UsageReader::new(Duration::ZERO)).unwrap();
+        let row = |id: &str| board_view::Entry::text(id.into(), id.into(), String::new(), false);
+        let entries = vec![row("leader"), row("account:claude"), row("agent:1")];
+        let mut ui = Interaction::new(View::Overview);
+        ui.nav.reconcile(&entries);
+        ui.key(KeyCode::Char('j'), &board, &entries, 10);
+        assert_eq!(ui.nav.selected.as_deref(), Some("account:claude"));
+        assert_eq!(
+            ui.key(KeyCode::Char(' '), &board, &entries, 10),
+            Action::ToggleAccount("claude".into())
+        );
+        assert_eq!(ui.nav.selected.as_deref(), Some("account:claude"), "it stays put");
+        ui.key(KeyCode::Char('k'), &board, &entries, 10);
+        assert_eq!(ui.key(KeyCode::Char(' '), &board, &entries, 1), Action::None);
+        assert_ne!(ui.nav.selected.as_deref(), Some("leader"), "Space still pages");
     }
 
     #[test]

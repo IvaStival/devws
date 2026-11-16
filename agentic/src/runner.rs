@@ -590,6 +590,105 @@ pub fn assert_checkpointed(task: &Task, agent: &str) -> Result<()> {
     Ok(())
 }
 
+/// Copies a checkpoint's files from the snapshot into the source and commits
+/// them, or leaves the source as it was: a half-done checkpoint (files copied,
+/// the commit refused) would block every retry with edits it did not make.
+fn write_checkpoint(
+    source: &Path,
+    snapshot: &Path,
+    changed: &[String],
+    files: &BTreeMap<String, Vec<u8>>,
+    subject: &str,
+) -> Result<()> {
+    if changed.is_empty() {
+        return Ok(());
+    }
+    ensure!(
+        safe_git(source, &["var", "GIT_AUTHOR_IDENT"]).is_ok(),
+        "no git author for {}: set user.name and user.email (git config --global) on this host",
+        source.display()
+    );
+    let written = copy_and_commit(source, snapshot, changed, files, subject);
+    if written.is_err() {
+        undo_copy(source, changed)?;
+    }
+    written
+}
+
+fn copy_and_commit(
+    source: &Path,
+    snapshot: &Path,
+    changed: &[String],
+    files: &BTreeMap<String, Vec<u8>>,
+    subject: &str,
+) -> Result<()> {
+    for path in changed {
+        let destination = regular(source, path)?;
+        if let Some(content) = files.get(path) {
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = fs::metadata(&destination)
+                    .map(|metadata| metadata.permissions().mode() & 0o666)
+                    .unwrap_or(0o644);
+                let executable = fs::metadata(regular(snapshot, path)?)?
+                    .permissions()
+                    .mode()
+                    & 0o111
+                    != 0;
+                fs::write(&destination, content)?;
+                fs::set_permissions(
+                    &destination,
+                    fs::Permissions::from_mode(
+                        mode | if executable { (mode & 0o444) >> 2 } else { 0 },
+                    ),
+                )?;
+            }
+            #[cfg(not(unix))]
+            fs::write(destination, content)?;
+        } else {
+            fs::remove_file(destination)?;
+        }
+    }
+    let mut arguments = vec!["add", "--"];
+    arguments.extend(changed.iter().map(String::as_str));
+    safe_git(source, &arguments)?;
+    let mut arguments = vec![
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "--only",
+        "-m",
+        subject,
+        "--",
+    ];
+    arguments.extend(changed.iter().map(String::as_str));
+    safe_git(source, &arguments)?;
+    Ok(())
+}
+
+/// Puts the checkpoint's paths back to the source's HEAD (the checkpoint's
+/// base): files it had are restored, files it added are removed.
+fn undo_copy(source: &Path, changed: &[String]) -> Result<()> {
+    let mut arguments = vec!["reset", "-q", "--"];
+    arguments.extend(changed.iter().map(String::as_str));
+    safe_git(source, &arguments)?;
+    for path in changed {
+        if safe_git(source, &["cat-file", "-e", &format!("HEAD:{path}")]).is_ok() {
+            safe_git(source, &["checkout", "HEAD", "--", path])?;
+        } else {
+            let destination = regular(source, path)?;
+            if destination.exists() {
+                fs::remove_file(destination)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn checkpoint(task: &Task, agent: &str, summary: &str) -> Result<Vec<String>> {
     let _control = task.control_lock()?;
     let state = task.state()?;
@@ -636,11 +735,16 @@ pub fn checkpoint(task: &Task, agent: &str, summary: &str) -> Result<Vec<String>
     let forbidden = checks::glob_set(&order.forbidden)?;
     let mut files = BTreeMap::new();
     collect(&worker.snapshot, &worker.snapshot, &mut files, &mut 0)?;
+    let build_output = ignored(
+        &worker.source,
+        files.keys().filter(|path| !worker.original.contains_key(*path)),
+    )?;
     let mut changed = Vec::new();
     for path in worker
         .original
         .keys()
         .chain(files.keys())
+        .filter(|path| !build_output.contains(*path))
         .collect::<std::collections::BTreeSet<_>>()
     {
         let new_hash = files
@@ -681,58 +785,17 @@ pub fn checkpoint(task: &Task, agent: &str, summary: &str) -> Result<Vec<String>
         !summary.trim().is_empty() && summary.len() <= 500,
         "checkpoint summary required (maximum 500 characters)"
     );
-    for path in &changed {
-        let destination = regular(&worker.source, path)?;
-        if let Some(content) = files.get(path) {
-            if let Some(parent) = destination.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mode = fs::metadata(&destination)
-                    .map(|metadata| metadata.permissions().mode() & 0o666)
-                    .unwrap_or(0o644);
-                let executable = fs::metadata(regular(&worker.snapshot, path)?)?
-                    .permissions()
-                    .mode()
-                    & 0o111
-                    != 0;
-                fs::write(&destination, content)?;
-                fs::set_permissions(
-                    &destination,
-                    fs::Permissions::from_mode(
-                        mode | if executable { (mode & 0o444) >> 2 } else { 0 },
-                    ),
-                )?;
-            }
-            #[cfg(not(unix))]
-            fs::write(destination, content)?;
-        } else {
-            fs::remove_file(destination)?;
-        }
-    }
-    if !changed.is_empty() {
-        let mut arguments = vec!["add", "--"];
-        arguments.extend(changed.iter().map(String::as_str));
-        safe_git(&worker.source, &arguments)?;
-        let subject = format!("feat: implement {}", order.step);
-        let mut arguments = vec![
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--only",
-            "-m",
-            &subject,
-            "--",
-        ];
-        arguments.extend(changed.iter().map(String::as_str));
-        safe_git(&worker.source, &arguments)?;
-    }
+    write_checkpoint(
+        &worker.source,
+        &worker.snapshot,
+        &changed,
+        &files,
+        &format!("feat: implement {}", order.step),
+    )?;
     let new_base = checks::head(&worker.source)?;
     let mut original = BTreeMap::new();
     for (path, content) in files {
-        if source_path(&path, config)? {
+        if source_path(&path, config)? && !build_output.contains(&path) {
             original.insert(path, content_hash(&content)?);
         }
     }
@@ -933,7 +996,7 @@ pub fn execute(task: &Task, agent: &str, command: &str) -> Result<Output> {
 }
 
 /// Git plumbing must not execute repository hooks, filters or fsmonitor programs.
-pub(crate) fn safe_git(root: &Path, args: &[&str]) -> Result<String> {
+fn safe_git_output(root: &Path, args: &[&str]) -> Result<std::process::Output> {
     let configured = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -967,13 +1030,40 @@ pub(crate) fn safe_git(root: &Path, args: &[&str]) -> Result<String> {
         };
         command.args(["-c", &format!("{key}={value}")]);
     }
-    let result = command.args(args).output()?;
+    Ok(command.args(args).output()?)
+}
+
+pub(crate) fn safe_git(root: &Path, args: &[&str]) -> Result<String> {
+    let result = safe_git_output(root, args)?;
     ensure!(
         result.status.success(),
         "controlled Git operation failed: {}",
         String::from_utf8_lossy(&result.stderr)
     );
     Ok(String::from_utf8(result.stdout)?.trim().into())
+}
+
+/// The new snapshot files the source repository ignores (build output such
+/// as `web/.next/`): a worker's checks make them, and they are never source.
+fn ignored<'a>(
+    source: &Path,
+    paths: impl Iterator<Item = &'a String>,
+) -> Result<std::collections::BTreeSet<String>> {
+    let paths: Vec<&str> = paths.map(String::as_str).collect();
+    let mut found = std::collections::BTreeSet::new();
+    for chunk in paths.chunks(200) {
+        let mut arguments = vec!["check-ignore", "--"];
+        arguments.extend(chunk);
+        let result = safe_git_output(source, &arguments)?;
+        // 1: none of them is ignored.
+        ensure!(
+            matches!(result.status.code(), Some(0 | 1)),
+            "controlled Git operation failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        found.extend(String::from_utf8(result.stdout)?.lines().map(str::to_string));
+    }
+    Ok(found)
 }
 
 /// Prerequisites run before dispatch in their own source generation, never the worker's edits.
@@ -1699,6 +1789,82 @@ mod policy_regressions {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
+    #[test]
+    fn a_checkpoint_that_cannot_commit_leaves_the_source_as_it_was() {
+        let source = crate::checks::tests::repo();
+        let snapshot = tempfile::TempDir::new().unwrap();
+        // No author: the commit must fail, as on a host without a git identity.
+        crate::checks::tests::run(source.path(), &["config", "user.name", ""]);
+        fs::write(snapshot.path().join("README.md"), "changed\n").unwrap();
+        fs::write(snapshot.path().join("new.txt"), "new\n").unwrap();
+        let changed = vec!["README.md".to_string(), "new.txt".to_string()];
+        let files = BTreeMap::from([
+            ("README.md".to_string(), b"changed\n".to_vec()),
+            ("new.txt".to_string(), b"new\n".to_vec()),
+        ]);
+
+        let error = write_checkpoint(source.path(), snapshot.path(), &changed, &files, "feat: x")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("user.name"), "{error}");
+        assert!(
+            checks::inspect(source.path(), "HEAD", &[], &[])
+                .unwrap()
+                .uncommitted
+                .is_empty(),
+            "the failed checkpoint left edits behind"
+        );
+        assert_eq!(
+            fs::read_to_string(source.path().join("README.md")).unwrap(),
+            "hello\n"
+        );
+        assert!(!source.path().join("new.txt").exists());
+    }
+
+    #[test]
+    fn build_output_the_repository_ignores_is_not_part_of_a_checkpoint() {
+        let source = crate::checks::tests::repo();
+        fs::create_dir_all(source.path().join("web")).unwrap();
+        fs::write(source.path().join("web/.gitignore"), "/.next/\n").unwrap();
+        let paths = [
+            "web/.next/types/cache-life.d.ts".to_string(),
+            "web/src/new.test.ts".to_string(),
+        ];
+        assert_eq!(
+            ignored(source.path(), paths.iter()).unwrap(),
+            std::collections::BTreeSet::from(["web/.next/types/cache-life.d.ts".to_string()])
+        );
+        assert!(
+            ignored(source.path(), paths[1..].iter()).unwrap().is_empty(),
+            "nothing ignored is not an error"
+        );
+    }
+
+    #[test]
+    fn undoing_a_copied_checkpoint_restores_changed_files_and_removes_new_ones() {
+        let source = crate::checks::tests::repo();
+        fs::write(source.path().join("README.md"), "changed\n").unwrap();
+        fs::create_dir_all(source.path().join("web/src")).unwrap();
+        fs::write(source.path().join("web/src/new.ts"), "new\n").unwrap();
+        let changed = vec!["README.md".to_string(), "web/src/new.ts".to_string()];
+        safe_git(source.path(), &["add", "--", "README.md", "web/src/new.ts"]).unwrap();
+
+        undo_copy(source.path(), &changed).unwrap();
+
+        assert!(
+            checks::inspect(source.path(), "HEAD", &[], &[])
+                .unwrap()
+                .uncommitted
+                .is_empty()
+        );
+        assert_eq!(
+            fs::read_to_string(source.path().join("README.md")).unwrap(),
+            "hello\n"
+        );
+        assert!(!source.path().join("web/src/new.ts").exists());
+    }
+
     #[test]
     fn checkpoints_do_not_execute_source_controlled_git_filters() {
         let repo = crate::checks::tests::repo();

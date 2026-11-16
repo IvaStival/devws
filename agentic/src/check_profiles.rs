@@ -511,10 +511,34 @@ pub fn validate_configuration(
     }
     let selected = selected.filter(|config| !config.selected.is_empty());
     let signature = signature(state, selected.as_ref(), order)?;
-    if signature != evidence.configuration {
+    if !same_configuration(state.workflow, &signature, &evidence.configuration)? {
         bail!("check configuration changed; evidence is stale");
     }
     Ok(())
+}
+
+/// Whether evidence was made under the configuration checks have now. A
+/// reviewed check runs in the runner's container, its environment set by the
+/// runner configuration (part of the signature): the host process's own
+/// PATH and temp folders do not count. Under Codex each process has its own
+/// (a random `codex-arg0…` folder), so the worker's evidence would be stale
+/// to the leader at once.
+fn same_configuration(
+    workflow: crate::execution::Workflow,
+    current: &str,
+    recorded: &str,
+) -> Result<bool> {
+    if workflow != crate::execution::Workflow::Reviewed {
+        return Ok(current == recorded);
+    }
+    let parts = |signature: &str| -> Result<Vec<serde_json::Value>> {
+        let mut parts: Vec<serde_json::Value> = serde_json::from_str(signature)?;
+        // (profiles, check, host environment, runner): leave the host out.
+        ensure!(parts.len() == 4, "unreadable check configuration signature");
+        parts.remove(2);
+        Ok(parts)
+    };
+    Ok(parts(current)? == parts(recorded)?)
 }
 
 fn signature(
@@ -832,6 +856,22 @@ fn run_profile(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_reviewed_check_does_not_go_stale_in_another_process() {
+        use crate::execution::Workflow;
+        let worker = r#"[{"selected":["lint"]},null,{"PATH":"/codex/arg0-AAA:/usr/bin"},{"image":"node"}]"#;
+        let leader = r#"[{"selected":["lint"]},null,{"PATH":"/codex/arg0-BBB:/usr/bin"},{"image":"node"}]"#;
+        assert!(same_configuration(Workflow::Reviewed, leader, worker).unwrap());
+        let other_profiles = r#"[{"selected":["test"]},null,{"PATH":"/usr/bin"},{"image":"node"}]"#;
+        assert!(!same_configuration(Workflow::Reviewed, other_profiles, worker).unwrap());
+        let other_runner = r#"[{"selected":["lint"]},null,{"PATH":"/codex/arg0-AAA:/usr/bin"},{"image":"python"}]"#;
+        assert!(!same_configuration(Workflow::Reviewed, other_runner, worker).unwrap());
+        assert!(
+            !same_configuration(Workflow::Legacy, leader, worker).unwrap(),
+            "legacy checks run on the host: its environment counts"
+        );
+    }
+
     use super::*;
     use tempfile::TempDir;
 

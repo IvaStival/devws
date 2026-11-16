@@ -107,9 +107,67 @@ pub fn status(task: &Task) -> Result<Value> {
         })
         .collect();
     Ok(
-        json!({"workflow":state.workflow,"candidate_checks":candidate_checks,"application":state.application,"proposal":state.application_proposal,"interview_frontier":execution::question_frontier(state.application_proposal.as_ref().unwrap_or(&state.application)),"ready_work":items,"reviews":state.reviews,"performance":performance::update(task)?,"capacity":{"limit":config.max_agents,"live":state.agents.iter().filter(|agent|agent.live).count()},"runner":{"configured":state.runner.is_some(),"available":state.runner.is_some(),"adapter":"claude_mcp_only","reviewer_adapter":if state.codex_reviewers {"codex_read_only_sandbox: cannot write; its shell can read host files"} else {"claude_mcp_only"},"network":"none","live_project_mounts":false,"configuration":state.runner}}),
+        json!({"workflow":state.workflow,"candidate_checks":candidate_checks,"application":state.application,"proposal":state.application_proposal,"interview_frontier":execution::question_frontier(state.application_proposal.as_ref().unwrap_or(&state.application)),"ready_work":items,"reviews":state.reviews,"performance":performance::update(task)?,"capacity":{"limit":config.max_agents,"live":state.agents.iter().filter(|agent|agent.live).count()},"runner":{"configured":state.runner.is_some(),"available":state.runner.is_some(),"adapter":if state.codex_team {"claude_mcp_only or codex_sandbox: the user put the whole team on Codex (task codex-team); Codex workers write only their snapshot, without network"} else {"claude_mcp_only"},"worker_programs":if state.codex_team {vec!["claude","codex"]} else {vec!["claude"]},"reviewer_adapter":if state.codex_reviewers || state.codex_team {"codex_read_only_sandbox: cannot write; its shell can read host files"} else {"claude_mcp_only"},"network":"none","live_project_mounts":false,"configuration":state.runner}}),
     )
 }
+/// The status small enough to come back in one call: the baseline and the
+/// proposal as outlines, and how to read the rest.
+pub fn compact(task: &Task) -> Result<Value> {
+    let mut status = status(task)?;
+    let state = task.state()?;
+    status["application"] = execution::outline(&state.application);
+    if let Some(proposal) = &state.application_proposal {
+        status["proposal"] = execution::outline(proposal);
+    }
+    status["read_more"] = json!(
+        "status {section}: one part in full (runner, ready_work, reviews, …); section application or proposal with items [ids]: those items' full contracts"
+    );
+    Ok(status)
+}
+
+/// The status inside `task_status`, which carries much else: of the baseline
+/// and the proposal only their revisions and size.
+pub fn brief(task: &Task) -> Result<Value> {
+    let mut status = status(task)?;
+    let state = task.state()?;
+    let size = |application: &execution::Application| {
+        json!({"revision":application.revision,"confirmed_revision":application.confirmed_revision,"approved_revision":application.approved_revision,"items":application.items.len()})
+    };
+    status["application"] = size(&state.application);
+    if let Some(proposal) = &state.application_proposal {
+        status["proposal"] = size(proposal);
+    }
+    status["read_more"] = json!("application_workflow status: the baseline's outline; section and items for the rest");
+    Ok(status)
+}
+
+/// One part of the status. The baseline and the proposal are outlines, or
+/// the full contracts of `items`.
+fn section(task: &Task, section: &str, input: &Value) -> Result<Value> {
+    let state = task.state()?;
+    let application = match section {
+        "application" => Some(&state.application),
+        "proposal" => Some(
+            state
+                .application_proposal
+                .as_ref()
+                .context("no baseline proposal awaiting decision")?,
+        ),
+        _ => None,
+    };
+    if let Some(application) = application {
+        return match input.get("items") {
+            Some(ids) => execution::items(application, &serde_json::from_value::<Vec<String>>(ids.clone())?),
+            None => Ok(execution::outline(application)),
+        };
+    }
+    let status = status(task)?;
+    let part = status
+        .get(section)
+        .with_context(|| format!("status has no section {section}"))?;
+    Ok(json!({ section: part }))
+}
+
 pub fn adoption(task: &Task) -> Result<Value> {
     let state = task.state()?;
     let config = task.config()?;
@@ -126,7 +184,10 @@ pub fn adoption(task: &Task) -> Result<Value> {
 /// Caller must be the leader/user. Worker tools never expose this catalog.
 pub fn call(task: &Task, action: &str, input: &Value) -> Result<Value> {
     match action {
-        "status" => status(task),
+        "status" => match input["section"].as_str() {
+            Some(name) => section(task, name, input),
+            None => compact(task),
+        },
         "runner_images" => crate::runner::images(),
         "project_overview" => crate::runner::overview(task),
         "preflight_retry" => {
@@ -182,7 +243,7 @@ pub fn call(task: &Task, action: &str, input: &Value) -> Result<Value> {
                 serde_json::from_value(input["configuration"].clone())?,
             )?;
             Ok(
-                json!({"configured":true,"adapter":"claude_mcp_only","network":"none","live_project_mounts":false}),
+                json!({"configured":true,"adapter":if task.state()?.codex_team {"claude_mcp_only or codex_sandbox"} else {"claude_mcp_only"},"network":"none","live_project_mounts":false}),
             )
         }
         "recover_turn" => {
@@ -273,6 +334,22 @@ pub fn call(task: &Task, action: &str, input: &Value) -> Result<Value> {
                 json!({"affected":affected,"next":"Planner interview/confirmation, then explicit baseline approval"}),
             )
         }
+        "amend" => {
+            let changes = serde_json::from_value(
+                input
+                    .get("changes")
+                    .context("changes required")?
+                    .clone(),
+            )?;
+            let affected = execution::amend(
+                task,
+                changes,
+                input["reason"].as_str().context("reason required")?,
+            )?;
+            Ok(
+                json!({"affected":affected,"next":"Planner interview/confirmation, then explicit baseline approval"}),
+            )
+        }
         "confirm" | "approve" => {
             execution::confirm(
                 task,
@@ -333,6 +410,74 @@ pub fn block_unverified_runner(task: &Task) -> Result<()> {
 mod tests {
     use super::*;
     use crate::execution::tests::baseline;
+    #[test]
+    fn status_comes_in_outlines_and_sections_small_enough_to_read() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        crate::execution::store(&task, baseline(), "first").unwrap();
+        let read = |input: Value| call(&task, "status", &input).unwrap();
+
+        let whole = read(json!({}));
+        assert_eq!(whole["proposal"]["items"]["S01-B01"]["title"], "Token service");
+        assert!(whole["proposal"]["items"]["S01-B01"].get("acceptance").is_none());
+        assert!(whole["read_more"].as_str().unwrap().contains("items"));
+        let brief = brief(&task).unwrap();
+        assert_eq!(brief["proposal"]["items"], 1, "only its size inside task_status");
+        assert_eq!(brief["proposal"]["revision"], 1);
+
+        let runner = read(json!({"section":"runner"}));
+        assert_eq!(runner.as_object().unwrap().keys().collect::<Vec<_>>(), ["runner"]);
+        let contracts = read(json!({"section":"proposal","items":["S01-B01"]}));
+        assert_eq!(contracts["items"]["S01-B01"]["acceptance"][0], "Service contract passes");
+        assert!(call(&task, "status", &json!({"section":"nothing"})).is_err());
+        assert!(call(&task, "status", &json!({"section":"proposal","items":["S9"]})).is_err());
+    }
+
+    #[test]
+    fn the_leader_amends_the_baseline_with_only_the_changes() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        crate::execution::store(&task, baseline(), "first").unwrap();
+        crate::execution::confirm(&task, 1, false).unwrap();
+        crate::execution::confirm(&task, 1, true).unwrap();
+        let mut item = baseline().items["S01-B01"].clone();
+        item.title = "Token refresh".into();
+        let result = call(
+            &task,
+            "amend",
+            &json!({"reason":"refresh tokens","changes":{
+                "items":{"S01-B02":item},
+                "milestones":{"M01":{"version":"1.1.0","title":"Accounts ready","required":["S01-B01","S01-B02"]}}
+            }}),
+        )
+        .unwrap();
+        assert_eq!(result["affected"], json!(["S01-B02"]));
+        let proposal = task.state().unwrap().application_proposal.unwrap();
+        assert_eq!(proposal.revision, 2);
+        assert_eq!(proposal.items.len(), 2);
+        assert!(call(&task, "amend", &json!({"changes":{}})).is_err(), "a reason is required");
+    }
+
+    #[test]
+    fn status_says_codex_may_plan_and_write_when_the_team_is_on_codex() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        let runner = |task: &Task| status(task).unwrap()["runner"].clone();
+        assert_eq!(runner(&task)["adapter"], "claude_mcp_only");
+        assert_eq!(runner(&task)["worker_programs"], serde_json::json!(["claude"]));
+        task.transaction(|tx| {
+            tx.state.codex_team = true;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            runner(&task)["worker_programs"],
+            serde_json::json!(["claude", "codex"]),
+            "the user put the whole team on Codex: planners, writers and reviewers"
+        );
+        assert!(runner(&task)["adapter"].as_str().unwrap().contains("codex"), "{}", runner(&task));
+    }
+
     #[test]
     fn status_warns_about_a_repo_without_a_candidate_check() {
         let directory = tempfile::TempDir::new().unwrap();

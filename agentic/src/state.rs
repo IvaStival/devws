@@ -47,6 +47,12 @@ pub struct State {
     pub order_revisions: std::collections::BTreeMap<String, u64>,
     /// Steps the user allowed more attempts than the task's `max_attempts`.
     pub attempt_limits: std::collections::BTreeMap<String, u32>,
+    /// Steps that used their attempts, and where devAgentics's one retry of
+    /// each stands.
+    pub step_retries: std::collections::BTreeMap<String, StepRetry>,
+    /// Accounts the user turned off for this task (the board's ACCOUNTS):
+    /// no new agent starts on them.
+    pub disabled_accounts: std::collections::BTreeSet<String>,
     pub amendments: Vec<Amendment>,
     pub check_evidence: std::collections::BTreeMap<String, crate::check_profiles::Evidence>,
     pub recovery: std::collections::BTreeMap<String, Recovery>,
@@ -64,6 +70,12 @@ pub struct State {
     /// What waits to be typed into an agent's pane (the dispatcher does it
     /// when the agent is done or idle).
     pub queue: Vec<Message>,
+    /// The newest leader message a reviewed leader was nudged about: it is
+    /// nudged again only when a newer one arrives.
+    pub leader_nudged: u64,
+    /// The leader escalated a decision to the user: its pane keeps the
+    /// "needs you" mark past the end of that turn, until the user answers.
+    pub leader_wait: LeaderWait,
     /// The seniors' execution plans, one per step they were ordered.
     pub plans: Vec<ExecutionPlan>,
     pub questions: Vec<Question>,
@@ -146,6 +158,19 @@ pub enum StepStatus {
     /// The leader sent it back.
     Rejected,
     Accepted,
+    /// It used every attempt, and the one retry devAgentics gave it after a
+    /// wait: it needs the user.
+    Exhausted,
+}
+
+/// devAgentics's own retry of a step that used its attempts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepRetry {
+    /// It gets one more attempt at `at` (epoch seconds).
+    Waiting { at: u64 },
+    /// The one more attempt was given.
+    Granted,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -284,6 +309,18 @@ impl State {
             order,
         });
     }
+}
+
+/// Where a leader's question to the user stands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaderWait {
+    #[default]
+    No,
+    /// Escalated; the turn that asked may still be running.
+    Asked,
+    /// The turn is over and the pane is marked as needing the user.
+    Shown,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

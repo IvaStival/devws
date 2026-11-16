@@ -74,6 +74,7 @@ pub fn allow_attempts(task: &Task, step: &str, limit: u32) -> Result<()> {
             bail!("step {step} has had {used} attempts already: allow more than that");
         }
         tx.state.attempt_limits.insert(step.to_string(), limit);
+        tx.state.step_retries.remove(step);
         tx.log(
             Kind::Review,
             None,
@@ -380,8 +381,8 @@ pub(crate) fn order_message(order: &Order, title: &str, profiles: &[String]) -> 
     };
     let plan = order.plan.as_ref().map_or_else(String::new, |plan| {
         format!(
-            "Follow the plan of step {plan}: `devagentics plan show {plan}`. \
-             If something in it is unclear, ask: `devagentics ask \"<your question>\"`, then end your turn and wait for the answer.\n\n"
+            "Follow the plan of step {plan}: `devagentics plan show {plan}` (in an isolated team: worker action=plan_read). \
+             If something in it is unclear, ask: `devagentics ask \"<your question>\"` (worker action=ask), then end your turn and wait for the answer.\n\n"
         )
     });
     let files = if order.forbidden.iter().any(|glob| glob == "**") {
@@ -590,6 +591,33 @@ pub(crate) fn validate_snapshot(
     Ok(())
 }
 
+/// A read-only adviser's (a planner's) answer to its order: it wrote no code,
+/// so there is nothing to check; the order closes and the leader hears it.
+/// Without this, an order that asked for findings, not a baseline, ended in
+/// a stall and the findings were lost.
+pub fn report_findings(
+    task: &Task,
+    agent: &str,
+    order_id: &str,
+    outcome: Outcome,
+    summary: &str,
+) -> Result<String> {
+    task.transaction(|tx| {
+        let order = authoritative(&tx.state, agent, order_id)?.clone();
+        let (status, verb) = match outcome {
+            Outcome::Done => (StepStatus::Reported, "reports"),
+            Outcome::Blocked => (StepStatus::Blocked, "is blocked"),
+        };
+        close(tx, &order, status);
+        tx.state.say(
+            LEADER,
+            format!("{agent} {verb} on step {} (order {}): {summary}", order.step, order.id),
+        );
+        tx.log(Kind::Report, Some(agent), Some(&order.step), summary);
+        Ok("Reported to the leader. Wait for the next order.".to_string())
+    })
+}
+
 fn close(tx: &mut crate::task::Tx, order: &Order, step_status: StepStatus) {
     if let Some(open) = tx
         .state
@@ -770,6 +798,19 @@ pub fn reject_step(task: &Task, step: &str, reason: &str) -> Result<()> {
     })
 }
 
+/// What a contract may write stays in its lane; the files it only reads
+/// (`supporting_files`) need to be in the runner's source, not in the lane:
+/// a docs step reads the code it documents.
+fn writes_within_lane(lane: &[String], item: &crate::execution::Contract) -> Result<()> {
+    for path in &item.allowed {
+        anyhow::ensure!(
+            checks::within(lane, path)?,
+            "planned file scope exceeds lane: {path}"
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn ensure_contract(
     task: &Task,
     agent: &crate::state::Agent,
@@ -801,12 +842,7 @@ pub(crate) fn ensure_contract(
             "protected tests {path} must be runner source the implementer can read"
         );
     }
-    for path in item.allowed.iter().chain(&item.supporting_files) {
-        anyhow::ensure!(
-            checks::within(&lane.globs, path)?,
-            "planned file scope exceeds lane"
-        );
-    }
+    writes_within_lane(&lane.globs, item)?;
     let profiles = task
         .config()?
         .check_profiles
@@ -1012,6 +1048,52 @@ mod tests {
             Ok(id)
         })?;
         report(task, pane, &id, outcome, summary, timeout)
+    }
+
+    #[test]
+    fn a_planners_findings_close_its_order_and_reach_the_leader() {
+        let f = fixture(None);
+        let id = send_order(&f.task, request("s1")).unwrap();
+        let agent = f.task.state().unwrap().agent_in_pane("%5").unwrap().id.clone();
+        assert!(
+            report_findings(&f.task, &agent, &id, Outcome::Done, "early").is_err(),
+            "an undelivered order was reported"
+        );
+        f.task
+            .transaction(|tx| {
+                tx.state.orders[0].delivered = true;
+                Ok(())
+            })
+            .unwrap();
+
+        report_findings(&f.task, &agent, &id, Outcome::Done, "H1-AT fits docs/**").unwrap();
+
+        let state = f.task.state().unwrap();
+        assert_eq!(state.orders[0].status, OrderStatus::Closed);
+        assert!(state.steps.iter().any(|step| step.id == "s1" && step.status == StepStatus::Reported));
+        assert!(
+            state
+                .queue
+                .iter()
+                .any(|message| message.to == LEADER && message.text.contains("H1-AT fits docs/**")),
+            "{:?}",
+            state.queue
+        );
+        assert!(report_findings(&f.task, &agent, &id, Outcome::Done, "again").is_err());
+    }
+
+    #[test]
+    fn a_contract_writes_only_in_its_lane_but_reads_outside_it() {
+        let lane = vec!["docs/**".to_string(), "CLAUDE.md".to_string()];
+        let mut item = crate::execution::Contract {
+            allowed: vec!["docs/plans/x/acceptance/H1.md".into()],
+            supporting_files: vec!["web/src/hooks/business/observe/useReplayPlayer.ts".into()],
+            ..Default::default()
+        };
+        writes_within_lane(&lane, &item).unwrap();
+        item.allowed.push("web/src/new.ts".into());
+        let error = writes_within_lane(&lane, &item).unwrap_err().to_string();
+        assert!(error.contains("exceeds lane: web/src/new.ts"), "{error}");
     }
 
     #[test]

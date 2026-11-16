@@ -5,7 +5,7 @@
 
 use crate::devws::{Delivery, Devws, PaneState};
 use crate::log::Kind;
-use crate::state::{Agent, LEADER, OrderStatus};
+use crate::state::{Agent, LEADER, LeaderWait, OrderStatus, StepRetry, StepStatus};
 use crate::task::Task;
 use crate::team::Team;
 use anyhow::{Context, Result, bail};
@@ -21,6 +21,14 @@ pub const STALL_GRACE: Duration = Duration::from_secs(120);
 
 /// How many log lines the pane starts with.
 const BACKLOG: usize = 20;
+
+/// How long a step that used its attempts waits for its one retry: long
+/// enough for a passing problem (a limit, a service, a fix being installed)
+/// to clear.
+pub const RETRY_AFTER_SECS: u64 = 15 * 60;
+
+/// What wakes a reviewed leader when its inbox has news.
+pub const LEADER_NUDGE: &str = "Check your inbox and continue.";
 
 pub struct Dispatcher<'a> {
     task: &'a Task,
@@ -97,10 +105,150 @@ impl<'a> Dispatcher<'a> {
                 }
             }
         }
-        if !state.paused && state.workflow == crate::execution::Workflow::Legacy {
-            self.tell_the_leader()?;
+        self.keep_the_leader_waiting()?;
+        if !state.paused {
+            self.retry_spent_steps(crate::log::now())?;
+        }
+        if !state.paused {
+            match state.workflow {
+                crate::execution::Workflow::Legacy => self.tell_the_leader()?,
+                crate::execution::Workflow::Reviewed => self.nudge_the_leader()?,
+            }
         }
         Ok(())
+    }
+
+    /// A reviewed leader reads its messages only through `leader_inbox`, so
+    /// nothing would start its next turn: when it is not busy and a message
+    /// arrived since the last nudge, a fixed line wakes it. No message text
+    /// is typed in.
+    fn nudge_the_leader(&self) -> Result<()> {
+        let state = self.task.state()?;
+        let Some(newest) = state
+            .queue
+            .iter()
+            .filter(|message| message.to == LEADER)
+            .map(|message| message.id)
+            .max()
+        else {
+            return Ok(());
+        };
+        // Waiting for the user: their answer starts its next turn.
+        if newest <= state.leader_nudged || state.leader_wait != LeaderWait::No {
+            return Ok(());
+        }
+        // Waiting here is only an answered escalation's mark (leader_wait is
+        // No): the leader sits at its prompt.
+        let Some(pane) = self.idle_leader_pane(true)? else {
+            return Ok(());
+        };
+        // devws types into no pane that waits for its user: the mark goes first.
+        if self.devws.pane_state(&pane)? == PaneState::Waiting {
+            self.devws.mark(&pane, "done")?;
+        }
+        if self.devws.send(&pane, LEADER_NUDGE)? == Delivery::Delivered {
+            self.task.transaction(|tx| {
+                tx.state.recovery.remove(LEADER);
+                tx.state.leader_nudged = newest;
+                tx.log(Kind::Delivered, Some(LEADER), None, "nudged to read its inbox");
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    /// A step that ended badly with every attempt used gets one more after
+    /// `RETRY_AFTER_SECS`; when that one ends badly too, it is exhausted.
+    /// The leader hears each move once.
+    pub(crate) fn retry_spent_steps(&self, now: u64) -> Result<()> {
+        let max_attempts = self.task.config()?.max_attempts;
+        self.task.transaction(|tx| {
+            for index in 0..tx.state.steps.len() {
+                let step = &tx.state.steps[index];
+                let (id, attempts) = (step.id.clone(), step.attempts);
+                let ended_badly = matches!(
+                    step.status,
+                    StepStatus::Blocked | StepStatus::Failed | StepStatus::Rejected
+                );
+                let spent = attempts
+                    >= crate::orders::attempt_limit(&tx.state, &id, max_attempts);
+                if !(ended_badly && spent) {
+                    continue;
+                }
+                match tx.state.step_retries.get(&id).copied() {
+                    None => {
+                        let at = now + RETRY_AFTER_SECS;
+                        tx.state.step_retries.insert(id.clone(), StepRetry::Waiting { at });
+                        tx.state.say(LEADER, format!(
+                            "Step {id} used its {attempts} attempts. devAgentics retries it once at {}: then send its order again.",
+                            clock(at)
+                        ));
+                    }
+                    Some(StepRetry::Waiting { at }) if now >= at => {
+                        tx.state.attempt_limits.insert(id.clone(), attempts + 1);
+                        tx.state.step_retries.insert(id.clone(), StepRetry::Granted);
+                        tx.state.say(LEADER, format!(
+                            "Step {id} has one more attempt now: send its order again."
+                        ));
+                        tx.log(Kind::Review, None, Some(&id), "devAgentics allowed one more attempt after a wait");
+                    }
+                    Some(StepRetry::Granted) => {
+                        tx.state.steps[index].set_status(StepStatus::Exhausted, now);
+                        tx.state.say(LEADER, format!(
+                            "Step {id} failed after {attempts} attempts and a retry: escalate it to the user."
+                        ));
+                        tx.log(Kind::Review, None, Some(&id), "failed: attempts and retry used");
+                    }
+                    Some(StepRetry::Waiting { .. }) => {}
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// The leader's own hooks mark it done when the turn that escalated ends:
+    /// it is marked as needing the user again, until the user's answer
+    /// starts its next turn.
+    fn keep_the_leader_waiting(&self) -> Result<()> {
+        let wait = self.task.state()?.leader_wait;
+        if wait == LeaderWait::No {
+            return Ok(());
+        }
+        let Some(pane) = self
+            .devws
+            .pane_with_role(&self.task.config()?.workspace, "agent")?
+        else {
+            return Ok(());
+        };
+        let next = match (wait, self.devws.pane_state(&pane)?) {
+            (_, PaneState::Done | PaneState::Idle) => {
+                self.devws.mark(&pane, "waiting")?;
+                LeaderWait::Shown
+            }
+            (LeaderWait::Shown, PaneState::Working) => LeaderWait::No,
+            _ => return Ok(()),
+        };
+        self.task.transaction(|tx| {
+            tx.state.leader_wait = next;
+            Ok(())
+        })
+    }
+
+    /// The leader's pane, when its turn is over (or, `waiting_is_idle`, when it
+    /// is marked as waiting for the user).
+    fn idle_leader_pane(&self, waiting_is_idle: bool) -> Result<Option<String>> {
+        let Some(pane) = self
+            .devws
+            .pane_with_role(&self.task.config()?.workspace, "agent")?
+        else {
+            return Ok(None);
+        };
+        let is_idle = match self.devws.pane_state(&pane)? {
+            PaneState::Done | PaneState::Idle => true,
+            PaneState::Waiting => waiting_is_idle,
+            _ => false,
+        };
+        Ok(is_idle.then_some(pane))
     }
 
     fn make_ready(&self, id: &str) -> Result<bool> {
@@ -124,18 +272,9 @@ impl<'a> Dispatcher<'a> {
         if waiting.is_empty() {
             return Ok(());
         }
-        let Some(pane) = self
-            .devws
-            .pane_with_role(&self.task.config()?.workspace, "agent")?
-        else {
+        let Some(pane) = self.idle_leader_pane(false)? else {
             return Ok(());
         };
-        if !matches!(
-            self.devws.pane_state(&pane)?,
-            PaneState::Done | PaneState::Idle
-        ) {
-            return Ok(());
-        }
         let text = waiting
             .iter()
             .map(|message| message.text.as_str())
@@ -302,18 +441,24 @@ pub fn lock(task: &Task) -> Result<WatchLock> {
 }
 
 /// A log line for the pane: "14:03:22 order     backend-1 s2  Write src/…".
+/// Epoch seconds as local time, in `format`.
+fn local_time(seconds: i64, format: &str) -> Option<String> {
+    chrono::DateTime::from_timestamp(seconds, 0)
+        .map(|time| time.with_timezone(&chrono::Local).format(format).to_string())
+}
+
+/// When a retry is due, for the leader: `14:05`.
+fn clock(at: u64) -> String {
+    local_time(at as i64, "%H:%M").unwrap_or_else(|| format!("{at}"))
+}
+
 pub fn format_line(line: &str) -> String {
     let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
         return line.to_string();
     };
     let at = entry["at"]
         .as_i64()
-        .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
-        .map(|time| {
-            time.with_timezone(&chrono::Local)
-                .format("%H:%M:%S")
-                .to_string()
-        })
+        .and_then(|seconds| local_time(seconds, "%H:%M:%S"))
         .unwrap_or_else(|| "--:--:--".to_string());
     let text = entry["text"]
         .as_str()
@@ -741,6 +886,189 @@ mod tests {
             sent[0]
         );
         assert!(f.task.state().unwrap().queue.is_empty());
+    }
+
+    #[test]
+    fn a_reviewed_leader_is_nudged_once_per_new_inbox_message_when_not_busy() {
+        let f = fixture();
+        f.task
+            .transaction(|tx| {
+                tx.state.workflow = crate::execution::Workflow::Reviewed;
+                Ok(())
+            })
+            .unwrap();
+        f.queue(LEADER, "Planner planner-5 proposed an application baseline.");
+        let mut dispatcher = f.dispatcher();
+
+        f.devws.set_state("%1", PaneState::Working);
+        dispatcher.tick().unwrap();
+        assert!(f.devws.sent().is_empty(), "the leader was interrupted");
+
+        f.devws.set_state("%1", PaneState::Done);
+        dispatcher.tick().unwrap();
+        assert_eq!(f.sent_to("%1"), [LEADER_NUDGE]);
+        assert_eq!(
+            f.task.state().unwrap().queue.len(),
+            1,
+            "the message stays for leader_inbox"
+        );
+
+        dispatcher.tick().unwrap();
+        assert_eq!(f.sent_to("%1").len(), 1, "nudged again for the same message");
+
+        f.devws.set_state("%1", PaneState::Done);
+        dispatcher.tick().unwrap();
+        assert_eq!(f.sent_to("%1").len(), 1, "nudged again for the same message");
+
+        f.queue(LEADER, "executor-1 reports step s1 done.");
+        dispatcher.tick().unwrap();
+        assert_eq!(f.sent_to("%1"), [LEADER_NUDGE, LEADER_NUDGE]);
+    }
+
+    #[test]
+    fn an_answered_leader_still_marked_waiting_is_nudged_and_its_recovery_ends() {
+        let f = fixture();
+        f.task
+            .transaction(|tx| {
+                tx.state.workflow = crate::execution::Workflow::Reviewed;
+                tx.state.recovery.insert(
+                    LEADER.into(),
+                    crate::state::Recovery { pane: "%98".into(), interrupted: false, error: None },
+                );
+                Ok(())
+            })
+            .unwrap();
+        f.queue(LEADER, "RESUME: Read task_status and continue.");
+        // Its mark from the escalation the user has answered (leader_wait is No).
+        f.devws.set_state("%1", PaneState::Waiting);
+        f.dispatcher().tick().unwrap();
+        assert_eq!(f.sent_to("%1"), [LEADER_NUDGE]);
+        assert!(f.task.state().unwrap().recovery.is_empty(), "the resumed leader is woken");
+    }
+
+    #[test]
+    fn a_leader_waiting_for_the_user_stays_marked_until_the_user_answers() {
+        let f = fixture();
+        f.task
+            .transaction(|tx| {
+                tx.state.workflow = crate::execution::Workflow::Reviewed;
+                tx.state.leader_wait = crate::state::LeaderWait::Asked;
+                Ok(())
+            })
+            .unwrap();
+        f.queue(LEADER, "executor-1 reports step s1 done.");
+        let mut dispatcher = f.dispatcher();
+        let wait = || f.task.state().unwrap().leader_wait;
+
+        // Still in the turn that asked: its own hooks mark it, not us.
+        f.devws.set_state("%1", PaneState::Working);
+        dispatcher.tick().unwrap();
+        assert_eq!(wait(), crate::state::LeaderWait::Asked);
+
+        // The turn ended as done: it needs the user, and is not nudged.
+        f.devws.set_state("%1", PaneState::Done);
+        dispatcher.tick().unwrap();
+        assert_eq!(f.devws.pane_state("%1").unwrap(), PaneState::Waiting);
+        assert_eq!(wait(), crate::state::LeaderWait::Shown);
+        dispatcher.tick().unwrap();
+        assert!(f.sent_to("%1").is_empty(), "nudged while waiting for the user");
+
+        // The user answered: the leader works again and the wait is over.
+        f.devws.set_state("%1", PaneState::Working);
+        dispatcher.tick().unwrap();
+        assert_eq!(wait(), crate::state::LeaderWait::No);
+    }
+
+    fn spent_step(f: &Fixture, status: crate::state::StepStatus) {
+        let limit = f.task.config().unwrap().max_attempts;
+        f.task
+            .transaction(|tx| {
+                tx.state.steps.push(crate::state::Step {
+                    id: "s9".into(),
+                    title: "Tests".into(),
+                    status,
+                    attempts: limit,
+                    spec: None,
+                    review_since: None,
+                });
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn leader_heard(f: &Fixture, text: &str) -> usize {
+        f.task
+            .state()
+            .unwrap()
+            .queue
+            .iter()
+            .filter(|message| message.to == LEADER && message.text.contains(text))
+            .count()
+    }
+
+    #[test]
+    fn a_spent_step_is_retried_once_after_a_wait_then_marked_failed() {
+        use crate::state::{StepRetry, StepStatus};
+        let f = fixture();
+        spent_step(&f, StepStatus::Blocked);
+        let dispatcher = f.dispatcher();
+        let limit = f.task.config().unwrap().max_attempts;
+
+        dispatcher.retry_spent_steps(1_000).unwrap();
+        dispatcher.retry_spent_steps(1_001).unwrap();
+        let state = f.task.state().unwrap();
+        assert_eq!(
+            state.step_retries.get("s9"),
+            Some(&StepRetry::Waiting { at: 1_000 + RETRY_AFTER_SECS })
+        );
+        assert_eq!(leader_heard(&f, "retries it once"), 1);
+
+        dispatcher.retry_spent_steps(1_000 + RETRY_AFTER_SECS - 1).unwrap();
+        assert_eq!(f.task.state().unwrap().attempt_limits.get("s9"), None);
+
+        dispatcher.retry_spent_steps(1_000 + RETRY_AFTER_SECS).unwrap();
+        let state = f.task.state().unwrap();
+        assert_eq!(state.attempt_limits.get("s9"), Some(&(limit + 1)));
+        assert_eq!(state.step_retries.get("s9"), Some(&StepRetry::Granted));
+        assert_eq!(leader_heard(&f, "one more attempt"), 1);
+
+        // The retry was blocked too.
+        f.task
+            .transaction(|tx| {
+                let step = tx.state.step_mut("s9").unwrap();
+                step.attempts = limit + 1;
+                step.status = StepStatus::Blocked;
+                Ok(())
+            })
+            .unwrap();
+        dispatcher.retry_spent_steps(5_000).unwrap();
+        dispatcher.retry_spent_steps(5_001).unwrap();
+        let state = f.task.state().unwrap();
+        assert_eq!(
+            state.steps.iter().find(|step| step.id == "s9").unwrap().status,
+            StepStatus::Exhausted
+        );
+        assert_eq!(leader_heard(&f, "failed after"), 1);
+    }
+
+    #[test]
+    fn a_step_with_attempts_left_or_accepted_is_not_retried() {
+        use crate::state::StepStatus;
+        let f = fixture();
+        spent_step(&f, StepStatus::Accepted);
+        f.dispatcher().retry_spent_steps(1_000).unwrap();
+        assert!(f.task.state().unwrap().step_retries.is_empty());
+    }
+
+    #[test]
+    fn the_user_allowing_more_attempts_starts_the_retry_over() {
+        use crate::state::StepStatus;
+        let f = fixture();
+        spent_step(&f, StepStatus::Blocked);
+        f.dispatcher().retry_spent_steps(1_000).unwrap();
+        let limit = f.task.config().unwrap().max_attempts;
+        crate::orders::allow_attempts(&f.task, "s9", limit + 2).unwrap();
+        assert!(f.task.state().unwrap().step_retries.is_empty());
     }
 
     #[test]

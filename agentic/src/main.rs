@@ -1,3 +1,4 @@
+mod accounts;
 mod agent_args;
 mod bench;
 mod board;
@@ -19,6 +20,7 @@ mod log;
 mod mcp;
 mod milestones;
 mod orders;
+mod panel_view;
 mod performance;
 mod plans;
 mod prs;

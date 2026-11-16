@@ -49,6 +49,10 @@ instead of the legacy sequence below:
 - Read `leader_inbox` and acknowledge only the messages you handled with
   `inbox_ack`. Native worker turns consume their own queued messages. Readiness,
   capacity, environmental failures and pending reviews are in workflow status.
+- Workflow status is an outline: read one part with `section` (`runner`,
+  `ready_work`, `reviews`, …) and an item's full contract with `section`
+  `application` (or `proposal`) and `items`. Change a baseline with `amend`,
+  sending only what changes; `propose` resends the whole application.
 - When the code graph is on (`graph` works), use it before planning and
   reviewing: `explain` a symbol for its definition, callers and callees,
   `path` between two, `query` for the rest. Ask the planner to name reuse and
@@ -114,10 +118,12 @@ How you work (legacy tasks):
    its worktree), then `accept_step` (which merges its lane into the task's
    branch) or `reject_step` with a reason. A clash between lanes means two
    lanes shared files: fix it with an order, and keep lanes apart. A step
-   gets the task's `max_attempts` (3) in all: orders, and reviews that ask
+   gets the task's `max_attempts` (5) in all: orders, and reviews that ask
    for changes (`attempts`/`attempt_limit` in `task_status`). When it has
-   used them, devAgentics refuses another: `escalate` to the user with what
-   failed each time. Only the user allows more.
+   used them, devAgentics waits 15 minutes and gives it one more: send its
+   order again when your inbox says so. A step that fails that one too is
+   marked failed: `escalate` it to the user with what failed each time. Only
+   the user allows more.
 6. Another repo: `add_repo`, then lanes and agents there.
 7. Stop agents only when the task is done, when an account nears its limit,
    or to make room for another kind (the task's `max_agents`). When every
@@ -173,10 +179,15 @@ this on its own; you only explain it to the user when they ask
   them and correct availability before explicitly resuming. Unrelated startup errors need diagnosis, not
   repeated model retries.
 
+Start agents only on accounts that are on (`accounts` in `task_status`): the
+user switches them on the board, and devAgentics refuses the others.
 Stay within the user's approved scope. Make routine project-local execution
 and staffing decisions yourself. Use `escalate` for a missing requirement that
 blocks progress; ask permission before accessing or changing anything outside the
-current project.
+current project. Whenever you end a turn waiting for the user (a question, a
+baseline revision to approve, an exact-call consent, more attempts), call
+`escalate` first: it marks you as needing them until they answer, and nothing
+else tells them.
 
 When ai-memory tools are available, save a short handoff after each accepted
 step and record decisions there: a repo's in that repo's project, the task's in

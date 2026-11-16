@@ -82,10 +82,20 @@ impl LaunchState {
         }
     }
 
-    pub fn next_available(&mut self, devws: &dyn Devws, approved: bool) -> Result<Role> {
+    pub fn next_available(
+        &mut self,
+        devws: &dyn Devws,
+        approved: bool,
+        disabled: &std::collections::BTreeSet<String>,
+    ) -> Result<Role> {
         self.selected = None;
         while let Some(candidate) = self.candidates.get(self.next).cloned() {
             self.next += 1;
+            if disabled.contains(&candidate.agent) {
+                self.failures
+                    .push(format!("{} is turned off for this task", candidate.agent));
+                continue;
+            }
             if self.blocked_accounts.contains(&candidate.agent) {
                 self.failures
                     .push(format!("{}: account unavailable", program_name(&candidate)));
@@ -223,6 +233,36 @@ pub fn transcript_failure(path: &Path) -> Result<Option<StartupFailure>> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_account_the_user_turned_off_is_never_chosen() {
+        let role = crate::roles::parse(
+            "planner",
+            "+++\nagent = \"claude\"\n+++\nPlan.\n",
+            crate::roles::Source::Home,
+            "test",
+        )
+        .unwrap();
+        let folder = tempfile::TempDir::new().unwrap();
+        let devws = crate::devws::fake::FakeDevws::new(folder.path())
+            .with_kind("claude", Kind::Claude)
+            .with_kind("codex", Kind::Codex);
+
+        let mut launch = LaunchState::new(&role, Kind::Claude);
+        let off = std::collections::BTreeSet::from(["claude".to_string()]);
+        let chosen = launch.next_available(&devws, false, &off).unwrap();
+        assert_eq!(chosen.agent, "codex");
+        assert!(
+            launch.failures.iter().any(|failure| failure.contains("claude is turned off for this task")),
+            "{:?}",
+            launch.failures
+        );
+
+        let mut launch = LaunchState::new(&role, Kind::Claude);
+        let all_off = std::collections::BTreeSet::from(["claude".to_string(), "codex".to_string()]);
+        let error = launch.next_available(&devws, false, &all_off).unwrap_err().to_string();
+        assert!(error.contains("codex is turned off for this task"), "{error}");
+    }
 
     #[test]
     fn only_structured_provider_errors_can_trigger_fallback() {

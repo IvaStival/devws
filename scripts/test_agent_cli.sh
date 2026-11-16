@@ -742,6 +742,16 @@ fi
 test_the_runner_appends_the_args_file
 test_the_runner_refuses_an_unreadable_args_file
 test_codex_trusts_the_task_folders_devws_made
+test_accounts_lists_every_registered_agent_and_its_kind() {
+  printf 'DEVWS_AGENTS="claude codex work"\nDEVWS_AGENT_work="claude %s"\n' "$HOME/.claude-work" > "$HOME/.tmuxinator/.env"
+  [ "$("$SCRIPTS/agent_cli.sh" accounts)" = "$(printf 'claude claude\ncodex codex\nwork claude')" ] ||
+    fail "accounts did not list the registry: $("$SCRIPTS/agent_cli.sh" accounts)"
+  printf 'DEVWS_AGENTS="claude codex nobody"\n' > "$HOME/.tmuxinator/.env"
+  [ "$("$SCRIPTS/agent_cli.sh" accounts)" = "$(printf 'claude claude\ncodex codex')" ] ||
+    fail "accounts listed a name with no program"
+  printf 'DEVWS_AGENTS="claude codex"\n' > "$HOME/.tmuxinator/.env"
+}
+
 test_state_follows_the_agent
 test_send_types_into_an_idle_agent_only
 test_mark_sets_the_state_the_sidebar_shows
@@ -749,6 +759,7 @@ test_stop_ends_the_agent_and_clears_its_state
 test_spawn_adds_an_agent_beside_a_pane_without_taking_the_focus
 test_run_replaces_the_agent_in_its_pane
 test_kind_names_the_program_an_agent_runs
+test_accounts_lists_every_registered_agent_and_its_kind
 test_limits_are_the_ones_the_header_shows
 test_an_old_claude_reading_blocks_nothing
 test_claude_limits_are_asked_of_anthropic

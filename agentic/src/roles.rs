@@ -226,7 +226,7 @@ struct FrontMatter {
 const FENCE: &str = "+++";
 
 /// A role file: a TOML block between `+++` lines, then the instructions.
-fn parse(name: &str, text: &str, source: Source, origin: &str) -> Result<Role> {
+pub(crate) fn parse(name: &str, text: &str, source: Source, origin: &str) -> Result<Role> {
     let rest = text
         .strip_prefix(FENCE)
         .and_then(|rest| rest.strip_prefix('\n'))

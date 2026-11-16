@@ -54,6 +54,7 @@ DIR="$DEVAGENTICS_TEST_DIR"
 echo "$*" >> "$DIR/devws.calls"
 case "$1 $2" in
   "agent kind") case "$3" in codex) echo codex ;; *) echo claude ;; esac ;;
+  "agent accounts") printf 'claude claude\ncodex codex\n' ;;
   "agent spawn") n=$(cat "$DIR/pane.counter" 2>/dev/null || echo 6); n=$((n+1)); echo $n > "$DIR/pane.counter"; echo "%$n" ;;
   "agent state") cat "$DIR/state/$3" 2>/dev/null || echo idle ;;
   "agent send") cat >> "$DIR/sent/$3"; echo >> "$DIR/sent/$3" ;;

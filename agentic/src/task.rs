@@ -14,9 +14,9 @@ fn default_max_agents() -> usize {
     DEFAULT_MAX_AGENTS
 }
 
-/// Orders a step may have before the user decides on more: a step that
-/// keeps failing needs a person, not another identical retry.
-pub const DEFAULT_MAX_ATTEMPTS: u32 = 3;
+/// Orders a step may have. When they are used, devAgentics waits and gives it
+/// one more (`watch::RETRY_AFTER_SECS`); a step that still fails needs a person.
+pub const DEFAULT_MAX_ATTEMPTS: u32 = 5;
 
 fn default_max_attempts() -> u32 {
     DEFAULT_MAX_ATTEMPTS

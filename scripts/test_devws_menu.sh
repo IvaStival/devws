@@ -587,6 +587,26 @@ wait_until() {
   return 1
 }
 
+test_closing_a_team_closes_its_group_workspaces_too() {
+  local group
+  mkdir -p "$TEST_ROOT/projects/team"
+  workspace_on dev-team "$TEST_ROOT/projects/team"
+  for group in Seniors Floor; do
+    workspace_on "dev-team-$(printf '%s' "$group" | tr '[:upper:]' '[:lower:]')" "$TEST_ROOT/projects/team"
+    tmux set-option -t "dev-team-$(printf '%s' "$group" | tr '[:upper:]' '[:lower:]')" @devws_team_of dev-team
+    tmux set-option -t "dev-team-$(printf '%s' "$group" | tr '[:upper:]' '[:lower:]')" @devws_group "$group"
+  done
+  printf '  dev-team  (team: Seniors, Floor)\n' > "$TEST_ROOT/fzf.answers"
+  menu --run close </dev/null >/dev/null 2>&1
+  grep -qxF '  dev-team  (team: Seniors, Floor)' "$TEST_ROOT/calls/fzf.input" ||
+    fail "the team was not offered as one: $(cat "$TEST_ROOT/calls/fzf.input")"
+  ! grep -q 'dev-team-' "$TEST_ROOT/calls/fzf.input" ||
+    fail "a team's group was offered on its own: $(cat "$TEST_ROOT/calls/fzf.input")"
+  wait_until closed dev-team || fail "the team's workspace was not closed"
+  wait_until closed dev-team-seniors || fail "the Seniors workspace was left open"
+  wait_until closed dev-team-floor || fail "the Floor workspace was left open"
+}
+
 test_closing_a_worktree_workspace_asks_before_removing_it() {
   local output folder
   make_repo_with_worktree keep
@@ -999,6 +1019,7 @@ test_move_panel_asks_which_way
 test_the_menu_marks_itself_open
 test_register_and_remove_agents
 test_closing_a_worktree_workspace_asks_before_removing_it
+test_closing_a_team_closes_its_group_workspaces_too
 test_a_worktree_with_changes_is_kept_without_asking
 test_a_worktree_with_only_untracked_files_is_deleted_when_asked
 test_closing_the_main_folder_never_asks

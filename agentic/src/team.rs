@@ -293,8 +293,9 @@ impl Team<'_> {
         launch: &mut LaunchState,
     ) -> Result<(String, String)> {
         loop {
-            let approved = self.task.state()?.usage_limit_approval == UsageApproval::Approved;
-            let candidate = launch.next_available(self.devws, approved);
+            let state = self.task.state()?;
+            let approved = state.usage_limit_approval == UsageApproval::Approved;
+            let candidate = launch.next_available(self.devws, approved, &state.disabled_accounts);
             let needs_consent = candidate
                 .as_ref()
                 .err()
@@ -641,6 +642,12 @@ impl Team<'_> {
     /// went (a restart) as new conversations, each told its open order again.
     /// Returns their ids.
     pub fn resume(&self) -> Result<Vec<String>> {
+        self.resume_from(None)
+    }
+
+    /// Resumes; `invoking` is the pane that asked (the leader calling
+    /// resume_task from its turn): it is ready, as it is the one asking.
+    pub fn resume_from(&self, invoking: Option<&str>) -> Result<Vec<String>> {
         let _control = self.task.control_lock()?;
         crate::workflow::block_unverified_runner(self.task)?;
         let config = self.task.config()?;
@@ -777,7 +784,7 @@ impl Team<'_> {
             })?;
             restarted.push(agent.id.clone());
         }
-        crate::recovery::queue_resumption(self.task, self.devws)?;
+        crate::recovery::queue_resumption(self.task, self.devws, invoking)?;
         self.task.transaction(|tx| {
             tx.state.paused = false;
             tx.log(Kind::Pause, None, None, "resumed");
@@ -1671,6 +1678,64 @@ mod tests {
 
         // Nothing to restart now.
         assert!(f.team().resume().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_restarted_leader_in_a_new_pane_can_be_resumed() {
+        let f = fixture().approved();
+        let workspace = f.task.config().unwrap().workspace;
+        f.devws.set_role(&workspace, "agent", "%2");
+        // It escalated, and waits for the user: the resume is their answer.
+        f.devws.set_state("%2", PaneState::Waiting);
+        f.devws.set_state("%98", PaneState::Gone);
+        f.task
+            .transaction(|tx| {
+                // Its old pane was interrupted, then closed with the workspace.
+                tx.state.recovery.insert(
+                    crate::state::LEADER.into(),
+                    crate::state::Recovery {
+                        pane: "%98".into(),
+                        interrupted: false,
+                        error: Some("interrupt was not acknowledged by %98".into()),
+                    },
+                );
+                tx.state.paused = true;
+                tx.state.leader_wait = crate::state::LeaderWait::Shown;
+                Ok(())
+            })
+            .unwrap();
+
+        f.team().resume().unwrap();
+        let state = f.task.state().unwrap();
+        assert!(!state.paused);
+        assert_eq!(state.leader_wait, crate::state::LeaderWait::No);
+        assert!(state.queue.iter().any(|message| message.to == crate::state::LEADER
+            && message.text.starts_with("RESUME")));
+    }
+
+    #[test]
+    fn the_leader_resuming_from_its_own_turn_is_ready() {
+        let f = fixture().approved();
+        let workspace = f.task.config().unwrap().workspace;
+        f.devws.set_role(&workspace, "agent", "%2");
+        f.devws.set_state("%2", PaneState::Working);
+        f.task
+            .transaction(|tx| {
+                tx.state.recovery.insert(
+                    crate::state::LEADER.into(),
+                    crate::state::Recovery {
+                        pane: "%98".into(),
+                        interrupted: false,
+                        error: None,
+                    },
+                );
+                tx.state.paused = true;
+                Ok(())
+            })
+            .unwrap();
+        assert!(f.team().resume().is_err(), "someone else resuming waits for its turn to end");
+        f.team().resume_from(Some("%2")).unwrap();
+        assert!(!f.task.state().unwrap().paused);
     }
 
     #[test]

@@ -7,9 +7,9 @@ Every run gets exactly these, so runs stay comparable.
 
    > This is a fixed-scope task: GOAL.md at the repo root is the complete requirement. My standing answers for the interview: (1) the scope is exactly GOAL.md, nothing more; (2) one scope and one milestone, M01, version 1.1.0, with every item in it; (3) the web lane only (web/**); (4) the acceptance tests GOAL.md names already exist and must not be changed by the implementation; (5) the runner and the check profiles are already configured and verified: keep them as they are, do not reconfigure them; (6) for any other question, use your recommendation. When the baseline is ready, show it to me and I will approve that exact revision. When the milestone is validated, stop and tell me; do not open pull requests.
 
-2. **Nudge**: whenever the leader is idle and its inbox has messages, send
-   exactly `Check your inbox and continue.` (reviewed teams never type into the
-   leader's prompt, so nothing else wakes it).
+2. **Nudge**: the board sends `Check your inbox and continue.` by itself when
+   the leader is idle with a new inbox message. Send it yourself only on a
+   build older than that, exactly that text, and log it.
 3. **Approval**: when the leader shows a baseline that implements exactly
    GOAL.md (one scope, milestone M01 1.1.0, web lane only, the acceptance tests
    unchanged), answer `I approve baseline revision <N>.` with its revision.

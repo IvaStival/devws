@@ -39,22 +39,27 @@ pub fn store(team: &Team, pane: &str, text: &str) -> Result<Stored> {
             agent.group().label().to_lowercase()
         );
     }
-    let order = state.open_order_of(&agent.id).with_context(|| {
-        format!(
-            "{} has no open order: an execution plan is for the step it was ordered",
-            agent.id
-        )
+    let step = store_execution(team.task, &agent.id, text)?;
+    Ok(Stored::Execution { step })
+}
+
+/// Stores a senior's execution plan for the step of its open order; says
+/// which step. A reviewed planner reaches it through its worker tools.
+pub fn store_execution(task: &Task, agent: &str, text: &str) -> Result<String> {
+    let state = task.state()?;
+    let order = state.open_order_of(agent).with_context(|| {
+        format!("{agent} has no open order: an execution plan is for the step it was ordered")
     })?;
     if text.trim().is_empty() {
         bail!("the plan is empty");
     }
-    let (step, author) = (order.step.clone(), agent.id.clone());
-    let file = path(team.task, &step);
+    let (step, author) = (order.step.clone(), agent.to_string());
+    let file = path(task, &step);
     std::fs::create_dir_all(file.parent().unwrap())?;
     let temporary = file.with_extension("tmp");
     std::fs::write(&temporary, text)?;
     std::fs::rename(&temporary, &file)?;
-    team.task.transaction(|tx| {
+    task.transaction(|tx| {
         tx.state.plans.retain(|plan| plan.step != step);
         tx.state.plans.push(ExecutionPlan {
             step: step.clone(),
@@ -68,7 +73,7 @@ pub fn store(team: &Team, pane: &str, text: &str) -> Result<Stored> {
         );
         Ok(())
     })?;
-    Ok(Stored::Execution { step })
+    Ok(step)
 }
 
 /// The execution plan of a step.
@@ -150,5 +155,87 @@ mod tests {
         let executor = team.spawn_agent("executor", None).unwrap();
         let error = store(&team, &executor.pane, "x").unwrap_err().to_string();
         assert!(error.contains("only a senior"), "{error}");
+    }
+
+    #[test]
+    fn a_reviewed_planner_stores_the_execution_plan_of_its_order() {
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, _repo) = started(&dir);
+        let team = Team {
+            task: &task,
+            home: &home,
+            devws: &devws,
+        };
+        let planner = team.spawn_agent("planner", None).unwrap();
+        team.write_plan("1. s1\n").unwrap();
+        team.approve().unwrap();
+        let error = store_execution(&task, &planner.id, "x").unwrap_err().to_string();
+        assert!(error.contains("no open order"), "{error}");
+        order(&task, &planner.id, "s1");
+        assert_eq!(store_execution(&task, &planner.id, "1. manifest\n").unwrap(), "s1");
+        assert_eq!(read(&task, "s1").unwrap(), "1. manifest\n");
+        assert!(store_execution(&task, &planner.id, "  ").is_err(), "an empty plan");
+    }
+
+    #[test]
+    fn a_worker_reads_the_plan_its_order_follows() {
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, _repo) = started(&dir);
+        let team = Team {
+            task: &task,
+            home: &home,
+            devws: &devws,
+        };
+        let planner = team.spawn_agent("planner", None).unwrap();
+        team.write_plan("1. s1\n").unwrap();
+        team.approve().unwrap();
+        order(&task, &planner.id, "s1");
+        store_execution(&task, &planner.id, "1. write the manifest\n").unwrap();
+        let reader = planner.id.clone();
+        let read = crate::worker_tools::call(&task, &reader, "plan_read", &serde_json::json!({"step": "s1"})).unwrap();
+        assert_eq!(read["plan"], "1. write the manifest\n");
+        let missing = crate::worker_tools::call(&task, &reader, "plan_read", &serde_json::json!({"step": "nope"}));
+        assert!(missing.unwrap_err().to_string().contains("no execution plan"));
+    }
+
+    #[test]
+    fn a_planner_reads_the_baseline_in_pieces_and_amends_it() {
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, _repo) = started(&dir);
+        let team = Team {
+            task: &task,
+            home: &home,
+            devws: &devws,
+        };
+        crate::execution::store(&task, crate::execution::tests::baseline(), "first").unwrap();
+        crate::execution::confirm(&task, 1, false).unwrap();
+        crate::execution::confirm(&task, 1, true).unwrap();
+        let planner = team.spawn_agent("planner", None).unwrap();
+        let call = |action: &str, input: serde_json::Value| {
+            crate::worker_tools::call(&task, &planner.id, action, &input)
+        };
+        let outline = call("application_read", serde_json::json!({})).unwrap();
+        assert_eq!(outline["items"]["S01-B01"]["title"], "Token service");
+        assert!(outline["items"]["S01-B01"].get("acceptance").is_none());
+        let full = call("application_read", serde_json::json!({"items": ["S01-B01"]})).unwrap();
+        assert_eq!(full["items"]["S01-B01"]["acceptance"][0], "Service contract passes");
+
+        let amended = call(
+            "plan_amend",
+            serde_json::json!({"reason": "narrow goal", "changes": {"goal": "Accounts only"}}),
+        )
+        .unwrap();
+        assert_eq!(amended["proposed"], true);
+        let proposal = task.state().unwrap().application_proposal.unwrap();
+        assert_eq!((proposal.revision, proposal.goal.as_str()), (2, "Accounts only"));
+        assert_eq!(proposal.items, crate::execution::tests::baseline().items);
+        let pending = call("application_read", serde_json::json!({"proposal": true})).unwrap();
+        assert_eq!(pending["goal"], "Accounts only");
+
+        let executor = team.spawn_agent("executor", None).unwrap();
+        for action in ["application_read", "plan_amend"] {
+            let refused = crate::worker_tools::call(&task, &executor.id, action, &serde_json::json!({"reason": "x", "changes": {}}));
+            assert!(refused.is_err(), "{action} is not a writer's");
+        }
     }
 }

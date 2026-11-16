@@ -333,7 +333,9 @@ host/database shell to either workers or the reviewed coordinator.
 
 Have the planner interview you in grilling rounds: currently answerable questions,
 recommendations, recorded answers and unresolved dependencies. Its scoped tools
-include `plan_proposal` and `ask_user`; only the leader records your approval.
+include `plan_proposal`, `plan_amend` (only the changes for the next revision),
+`application_read` (the baseline as an outline, or chosen items in full) and
+`ask_user`; only the leader records your approval.
 The baseline covers the known application before implementation staffing:
 scopes, applicable backend/frontend/data work, interfaces, dependencies, tests,
 acceptance criteria, required check definitions and milestones.
@@ -342,11 +344,23 @@ Inspect or submit the baseline through CLI or the equivalent leader tool:
 
 ```bash
 devagentics workflow <task> status
+devagentics workflow <task> status --input '{"section":"application","items":["S01-B01"]}'
 devagentics workflow <task> propose --input-file baseline-proposal.json
+devagentics workflow <task> amend --input-file changes.json
 devagentics workflow <task> answer --input '{"question":"Q1","answer":"Use milestone releases"}'
 devagentics workflow <task> confirm --input '{"revision":1}'
 devagentics workflow <task> approve --input '{"revision":1}'
 ```
+
+`status` gives the baseline and the proposal as outlines (each item's title,
+scope, role, lane and dependencies), so it stays small enough for an agent's
+tool call. `section` returns one part in full (`runner`, `ready_work`,
+`reviews`, …), and `items` the full contracts of the items named. `amend`
+takes `{"reason": …, "changes": {…}}` with only what changes, by id:
+`items`, `milestones`, `scopes` and `check_configuration` (`null` removes an
+entry), `decisions` (replacing the one with the same id), `goal` and
+`non_goals`. It builds on the pending proposal, so amendments add up, and is
+checked and approved like any proposal.
 
 The proposal file contains `application` and `reason`. Every implementation item
 specifies its scope, specialist, repository, lane, dependencies, file scope,
@@ -383,12 +397,19 @@ use `preflight_retry` with `item` to request another attempt.
 
 Managed worker panels have no editable model prompt. A supervisor consumes their
 queued messages through piped provider turns and retains conversation context
-between healthy turns. Source commands, checkpoints, authoritative checks and
+between healthy turns. The panel draws each turn for reading: a header with the
+agent, program, model, effort and order; the agent's messages as formatted
+markdown; one line per tool call with a green ✓ or a red ✕ and its reason;
+commands; and a footer with the time and tokens. Each turn's raw provider
+lines are kept in `workers/<agent>/control/turns.jsonl`. Source commands, checkpoints, authoritative checks and
 reports use the worker-only tools. Read-only reviewers cannot checkpoint code,
 authorize actions or merge.
 
 The leader reads `leader_inbox` and acknowledges handled IDs with `inbox_ack`.
-Reviewed coordination never pastes a message into your prompt. Existing legacy
+Reviewed coordination never pastes a message's text into your prompt. When the
+leader's turn is over and a message arrived since its last nudge, the board types
+the fixed line `Check your inbox and continue.` so the team keeps moving without
+you. Existing legacy
 terminal delivery is unchanged until explicit adoption.
 
 After the specialist reports passing checks, request independent review with
@@ -416,10 +437,12 @@ candidate configuration needs a fresh review. Without candidate profiles,
 `application_workflow` `status` warns that merges are first tested together at
 the milestone check.
 
-A step gets the task's `max_attempts` (3, in `task.toml`) in all: orders, and
-reviews that ask for changes. Past it, orders and review requests are refused
+A step gets the task's `max_attempts` (5, in `task.toml`) in all: orders, and
+reviews that ask for changes. When they are used, devAgentics waits 15 minutes
+and allows one more attempt on its own. If that one fails too, the step is
+**failed** (a red ✕ under NEEDS YOU), orders and review requests are refused,
 and the leader escalates to you; `devagentics task attempts <task> <step>
-<limit>` allows that step more.
+<limit>` allows that step more and starts the retry over.
 
 Required checks run in the isolated source environment. Use image-local runtimes
 and dependencies; network downloads and host secret sources are unavailable.

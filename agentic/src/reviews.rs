@@ -631,6 +631,8 @@ mod tests {
         assert_eq!(changes_requested(&task.state().unwrap(), "S01-B01"), 3);
         assert_eq!(changes_requested(&task.state().unwrap(), "other"), 0);
 
+        // Three rounds of changes use up a limit of 3, whatever the default.
+        crate::orders::allow_attempts(&task, "S01-B01", 3).unwrap();
         let error = request(&task, "o1", "reviewer-1").unwrap_err().to_string();
         assert!(error.contains("3 attempts"), "{error}");
 
