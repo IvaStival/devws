@@ -102,7 +102,8 @@ setup() {
   rm -rf "$TEST_ROOT/home" "$TEST_ROOT/panes"
   mkdir -p "$TEST_ROOT/home/.devws-state" "$TEST_ROOT/home/.tmuxinator"
   cp "$ROOT/config/tmuxinator/save_state.sh" "$ROOT/config/tmuxinator/workspace_panes.sh" \
-    "$ROOT/config/tmuxinator/restore_state.sh" "$TEST_ROOT/home/.tmuxinator/"
+    "$ROOT/config/tmuxinator/restore_state.sh" "$ROOT/config/tmuxinator/start_server.sh" \
+    "$TEST_ROOT/home/.tmuxinator/"
   cp "$ROOT/config/tmuxinator/.env" "$TEST_ROOT/home/.tmuxinator/.env"
   : > "$TEST_ROOT/tmux.log"
   : > "$TEST_ROOT/tmuxinator.log"

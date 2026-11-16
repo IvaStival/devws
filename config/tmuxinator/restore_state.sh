@@ -22,7 +22,9 @@ if ! mkdir "$lock_dir" 2>/dev/null; then
   printf 'devws restore: another restore is already running\n' >&2
   exit 1
 fi
-trap 'rmdir "$lock_dir" 2>/dev/null' EXIT
+# The server is started from $HOME, then kept up until the workspaces exist.
+"$script_dir/start_server.sh" || exit 1
+trap 'tmux set-option -g exit-empty on 2>/dev/null; rmdir "$lock_dir" 2>/dev/null' EXIT
 
 restored=""
 

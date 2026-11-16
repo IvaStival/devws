@@ -20,6 +20,23 @@
 
 set -u
 
+# A moved worktree leaves existing shells attached to its unlinked directory.
+# Recover only from explicit session metadata; never launch in an arbitrary folder.
+if ! /bin/pwd -P >/dev/null 2>&1; then
+  workspace_root=""
+  if [ -n "${TMUX_PANE:-}" ]; then
+    workspace_root="$(tmux show-options -qv -t "$TMUX_PANE" @devws_root 2>/dev/null)"
+  fi
+  case "$workspace_root" in
+    /*) [ -d "$workspace_root" ] && cd -- "$workspace_root" || workspace_root="" ;;
+    *) workspace_root="" ;;
+  esac
+  if [ -z "$workspace_root" ]; then
+    printf 'Agent working directory no longer exists. Change to the project directory and retry.\n' >&2
+    exit 2
+  fi
+fi
+
 agent="${1:-}"
 [ "$#" -eq 0 ] || shift
 extra=""
