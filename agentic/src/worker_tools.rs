@@ -242,7 +242,7 @@ pub fn mcp(task: &Task, agent: &str, identity: &Path) -> Result<()> {
                 json!({"protocolVersion":request["params"]["protocolVersion"].as_str().unwrap_or("2024-11-05"),"capabilities":{"tools":{}},"serverInfo":{"name":"devagentics_worker","version":env!("CARGO_PKG_VERSION")}})
             }
             "tools/list" => {
-                json!({"tools":[{"name":"worker","description":"Scoped worker tools. action=status, execute, checkpoint, check, report, plan_proposal, ask_user, review_diff, review_submit, ask or answer. Execute runs only inside the isolated source container. No leader, database or external-action permissions.","inputSchema":{"type":"object","properties":{"action":{"type":"string"},"input":{"type":"object"}},"required":["action"]}}]})
+                json!({"tools":[{"name":"worker","description":"Scoped worker tools. action=status, execute, checkpoint, check, report, plan_proposal, ask_user, review_diff, review_submit, graph, ask or answer. Execute runs only inside the isolated source container. No leader, database or external-action permissions.","inputSchema":{"type":"object","properties":{"action":{"type":"string"},"input":{"type":"object"}},"required":["action"]}}]})
             }
             "tools/call" => {
                 let result = (|| {
@@ -370,6 +370,16 @@ pub fn call(task: &Task, agent: &str, action: &str, input: &Value) -> Result<Val
                 json!({"review":review,"diff":crate::checks::git(&repo.worktree,&["diff","--no-ext-diff","--no-textconv",&format!("{}..{}",review.base,review.source)])?}),
             )
         }
+        "graph" => {
+            let (repo, commit) = graph_source(task, &state, agent)?;
+            Ok(json!({"answer": crate::graph::answer(
+                &crate::graph::Graphify::from_env()?,
+                task,
+                &repo,
+                &commit,
+                input,
+            )?}))
+        }
         "review_submit" => {
             let verdict = serde_json::from_value(input["verdict"].clone())?;
             let findings = serde_json::from_value(input["findings"].clone())?;
@@ -386,6 +396,27 @@ pub fn call(task: &Task, agent: &str, action: &str, input: &Value) -> Result<Val
         _ => bail!("action is not in the worker capability catalog"),
     }
 }
+/// The code an agent's graph questions are about: a reviewer's pending
+/// review candidate (the exact merge it judges), else the agent's own lane
+/// or repo at its last commit.
+fn graph_source(
+    task: &Task,
+    state: &crate::state::State,
+    agent: &str,
+) -> Result<(crate::task::Repo, String)> {
+    if let Some(review) = crate::reviews::pending(state, agent) {
+        let author = state.agent(&review.author).context("unknown author")?;
+        return Ok((
+            crate::lanes::workplace(task, author)?,
+            review.candidate.commit.clone(),
+        ));
+    }
+    let worker = state.agent(agent).context("unknown agent")?;
+    let repo = crate::lanes::workplace(task, worker)?;
+    let head = crate::checks::head(&repo.worktree)?;
+    Ok((repo, head))
+}
+
 /// The panel remains a supervisor, never an interactive editable model prompt.
 pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> Result<()> {
     let devws = CommandDevws::from_env();
@@ -499,8 +530,13 @@ pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> 
         } else {
             "Native tools are disabled. Use only devagentics_worker worker tools."
         };
+        let graph = if task.state()?.graph_enabled {
+            " A code graph of your source is on: worker action=graph with action=explain and symbol (definition, callers, callees; an ambiguous name lists candidates, retry with path::symbol), path with from and to, or query with question. Use it to find what to reuse, the real interfaces and who a change affects, before reading files one by one."
+        } else {
+            ""
+        };
         let prompt = format!(
-            "{role}\n{standards}\nYou are {agent}. {tools} Call status first. Execute commands only through the isolated execute action. Checkpoint before check/report. Do not use host paths or attempt external/database actions. Process this message, report or submit review, then finish this turn:\n{}",
+            "{role}\n{standards}\nYou are {agent}. {tools}{graph} Call status first. Execute commands only through the isolated execute action. Checkpoint before check/report. Do not use host paths or attempt external/database actions. Process this message, report or submit review, then finish this turn:\n{}",
             message.text
         );
         let turn_start = crate::log::now();

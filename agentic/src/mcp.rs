@@ -146,6 +146,19 @@ fn tools() -> Vec<Value> {
             &["agent", "step", "title", "text"],
         ),
         tool(
+            "graph",
+            "Ask the code graph (when the user turned it on for the task) about a repo at its task branch: action=explain with symbol (where it is defined, what calls it and what it calls; an ambiguous name lists its candidates: retry with path::symbol), path with from and to (how one reaches the other), or query with question (a bounded search). Use it for reuse, interfaces, callers and the impact of a change before planning or accepting work.",
+            json!({
+                "action": text("explain, path or query"),
+                "symbol": text("For explain: a name, or path::name"),
+                "from": text("For path: the first symbol"),
+                "to": text("For path: the second symbol"),
+                "question": text("For query: a question about the code"),
+                "repo": text("The repo (default: the task's first)")
+            }),
+            &["action"],
+        ),
+        tool(
             "read_plan",
             "A senior's execution plan for a step it was ordered. Read it before you accept that step: accepting it approves the plan for the factory floor.",
             json!({ "step": text("The senior's step") }),
@@ -237,6 +250,7 @@ fn effect(name: &str) -> Option<Effect> {
         | "approve_plan"
         | "add_lane"
         | "send_order"
+        | "graph"
         | "read_plan"
         | "answer_question"
         | "accept_step"
@@ -596,6 +610,22 @@ impl Server<'_> {
                 ))
             }
             "read_plan" => crate::plans::read(self.task, &string(arguments, "step")?),
+            "graph" => {
+                let config = self.task.config()?;
+                let repo = match arguments["repo"].as_str() {
+                    Some(name) => config.repos.iter().find(|repo| repo.name == name),
+                    None => config.repos.first(),
+                }
+                .context("unknown repo")?;
+                let head = crate::checks::head(&repo.worktree)?;
+                crate::graph::answer(
+                    &crate::graph::Graphify::from_env()?,
+                    self.task,
+                    repo,
+                    &head,
+                    arguments,
+                )
+            }
             "answer_question" => crate::questions::answer(
                 self.task,
                 crate::questions::Answerer::Leader,
@@ -803,6 +833,7 @@ mod tests {
                 "add_lane",
                 "add_repo",
                 "send_order",
+                "graph",
                 "read_plan",
                 "answer_question",
                 "accept_step",
@@ -884,6 +915,15 @@ mod tests {
         assert!(!failed && text.contains("approved"), "{text}");
         let (failed, text) = f.call("spawn_agent", json!({ "role": "executor" }));
         assert!(!failed && text.contains("Started"), "{text}");
+    }
+
+    #[test]
+    fn the_leader_asks_the_code_graph_only_when_the_user_turned_it_on() {
+        let f = fixture();
+        let (failed, text) = f.call("graph", json!({"action": "explain", "symbol": "app"}));
+        assert!(failed && text.contains("devagentics task graph"), "{text}");
+        let (failed, text) = f.call("graph", json!({"action": "explain", "repo": "nope"}));
+        assert!(failed && text.contains("unknown repo"), "{text}");
     }
 
     #[test]

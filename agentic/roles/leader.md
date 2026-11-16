@@ -49,6 +49,10 @@ instead of the legacy sequence below:
 - Read `leader_inbox` and acknowledge only the messages you handled with
   `inbox_ack`. Native worker turns consume their own queued messages. Readiness,
   capacity, environmental failures and pending reviews are in workflow status.
+- When the code graph is on (`graph` works), use it before planning and
+  reviewing: `explain` a symbol for its definition, callers and callees,
+  `path` between two, `query` for the rest. Ask the planner to name reuse and
+  interfaces from it, and check a change's callers in other lanes with it.
 - Have the planner give each item's acceptance tests an item of their own
   (`writes_tests`) that the implementation depends on, and name them in the
   implementation's `protected_tests`: its orders then cannot change them.

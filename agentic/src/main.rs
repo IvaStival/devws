@@ -8,6 +8,7 @@ mod check_profiles;
 mod checks;
 mod devws;
 mod execution;
+mod graph;
 mod history;
 mod home;
 mod integration;
@@ -257,6 +258,10 @@ enum TaskAction {
     /// (off). In its read-only sandbox it cannot write, but its shell can
     /// read host files; writers always run on Claude.
     CodexReviewers { task: String, switch: Switch },
+    /// You turn the code graph (Graphify, code only and offline) on or off
+    /// for this task's leader and workers: built per commit in the task
+    /// folder, never in the project
+    Graph { task: String, switch: Switch },
     /// You allow a step more attempts than the task's limit (orders and
     /// reviews asking for changes): `limit` in all. The leader cannot.
     Attempts {
@@ -583,6 +588,34 @@ fn run() -> Result<()> {
                         "Code reviewers started from now on may run on Codex (read-only)."
                     } else {
                         "Code reviewers started from now on run on Claude."
+                    }
+                );
+            }
+            TaskAction::Graph { task, switch } => {
+                let enabled = matches!(switch, Switch::On);
+                if enabled {
+                    graph::Graphify::from_env()?.available()?;
+                }
+                open(&task)?.transaction(|tx| {
+                    tx.state.graph_enabled = enabled;
+                    tx.log(
+                        log::Kind::Review,
+                        None,
+                        None,
+                        if enabled {
+                            "the user turned the code graph on"
+                        } else {
+                            "the user turned the code graph off"
+                        },
+                    );
+                    Ok(())
+                })?;
+                println!(
+                    "{}",
+                    if enabled {
+                        "The code graph is on: the leader and workers can ask it (graph)."
+                    } else {
+                        "The code graph is off."
                     }
                 );
             }

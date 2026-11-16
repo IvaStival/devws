@@ -141,7 +141,7 @@ fn protected(path: &str, config: &Configuration) -> Result<bool> {
         .any(|extension| lower.ends_with(extension))
         || checks::glob_set(&config.protected_paths)?.is_match(path))
 }
-fn source_path(path: &str, config: &Configuration) -> Result<bool> {
+pub(crate) fn source_path(path: &str, config: &Configuration) -> Result<bool> {
     Ok(!protected(path, config)? && checks::glob_set(&config.source_paths)?.is_match(path))
 }
 fn relative(path: &Path) -> Result<String> {
@@ -1101,7 +1101,7 @@ pub fn overview(task: &Task) -> Result<serde_json::Value> {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
 
     #[test]

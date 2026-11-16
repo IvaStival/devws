@@ -34,6 +34,9 @@ pub struct State {
     /// The user let Codex run the read-only code reviewers of this reviewed
     /// task (`devagentics task codex-reviewers`).
     pub codex_reviewers: bool,
+    /// The user turned on the code graph (Graphify) for this task's agents
+    /// (`devagentics task graph`).
+    pub graph_enabled: bool,
     pub runner_identities: std::collections::BTreeMap<String, std::path::PathBuf>,
     pub usage_limit_approval: UsageApproval,
     pub usage_limit_blocks: Vec<crate::worker::PercentageBlock>,

@@ -411,6 +411,32 @@ required test or substitute a weaker gate. Matching authoritative evidence is
 reused when reporting unchanged work. Structured test counts use a separate
 bounded artifact, so large console logs cannot hide required skipped tests.
 
+### Code graph (pilot)
+
+A code graph lets the leader and workers look up a symbol's definition,
+callers and callees instead of grepping, which helps plans name real
+interfaces and reviews catch callers in other lanes. It is
+[Graphify](https://github.com/Graphify-Labs/graphify), run code only: no LLM
+backend, no query log, no network (in a network namespace where the system
+allows one), with its own `HOME`. devAgentics builds the graph of a repo's
+tracked source per commit into the task folder (`graphs/<repo>/<tree>/`),
+never into the project, and with a runner, only from what the runner lets
+agents read. A graph is never reused for other code.
+
+```sh
+devagentics task graph <task> on      # off to stop
+```
+
+It is off by default. Turning it on checks that Graphify runs, from
+`DEVAGENTICS_GRAPHIFY` or the pinned install at
+`~/.local/share/devagentics/graphify` (a venv of `graphifyy`, double y; other
+`graphify*` packages are unaffiliated). The leader's `graph` tool asks about a
+repo's task branch; a worker's `graph` action asks about its lane, and a
+reviewer's about the candidate it reviews. `explain` takes a name or
+`path::name` and lists candidates for an ambiguous one; `path` takes two;
+`query` is a bounded search. `devagentics bench` counts the queries, so a
+series with the graph on can be compared with one without.
+
 ### Milestones, recovery and existing tasks
 
 Use IDs such as `S01-B01` and `S01-F01` for work, and `M01` → `1.1.0` for a

@@ -37,6 +37,8 @@ pub struct Report {
     pub unknown_historical_timing: bool,
     pub interventions: Interventions,
     pub milestones_ready: Vec<String>,
+    /// Questions agents asked the code graph.
+    pub graph_queries: u64,
     /// None when the team's usage could not be read.
     pub usage: Option<Usage>,
 }
@@ -130,6 +132,12 @@ pub fn build(
             attempt_allowances: state.attempt_limits.len() as u64,
         },
         milestones_ready,
+        graph_queries: state
+            .timing
+            .intervals
+            .iter()
+            .filter(|interval| interval.category == "graph_queries")
+            .count() as u64,
         usage,
     }
 }
@@ -224,6 +232,7 @@ fn lines(report: &Report) -> Vec<(String, String)> {
             people.permission_requests, people.attempt_allowances
         ),
     ));
+    lines.push(("graph queries".into(), report.graph_queries.to_string()));
     lines.push((
         "milestones ready".into(),
         if report.milestones_ready.is_empty() {
@@ -400,6 +409,8 @@ mod tests {
         state.timing.record("worker_turn", 100, 200).unwrap();
         state.timing.record("worker_turn", 150, 250).unwrap();
         state.timing.record("review_wait", 300, 330).unwrap();
+        state.timing.record("graph_queries", 340, 341).unwrap();
+        state.timing.record("graph_queries", 342, 342).unwrap();
         state
     }
 
@@ -422,6 +433,7 @@ mod tests {
         assert_eq!(report.first_pass_rate(), Some(1.0 / 3.0));
         assert_eq!(report.corrective_orders, 2);
         assert_eq!((report.reviews, report.reviews_asking_changes), (2, 1));
+        assert_eq!(report.graph_queries, 2);
         assert_eq!(
             report.corrections,
             BTreeMap::from([
@@ -446,8 +458,8 @@ mod tests {
         let report = build("bench-1", &state, &[], vec![], None);
         assert_eq!(report.busy_seconds["worker_turn"], 200);
         assert_eq!(
-            report.recorded_elapsed_seconds, 180,
-            "100–250 and 300–330: overlapping turns once"
+            report.recorded_elapsed_seconds, 181,
+            "100–250, 300–330 and a 1 s graph query: overlapping turns once"
         );
         assert!(!report.unknown_historical_timing);
         assert!(render(&report).contains("first pass"));

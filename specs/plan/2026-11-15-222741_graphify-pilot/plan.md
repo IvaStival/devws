@@ -2,7 +2,7 @@
 
 - **Date:** 15-11-2026
 - **Branch:** feat/graphify-pilot (off feat/team-delivery-gates)
-- **Status:** In progress — step 1 done; step 2 next
+- **Status:** In progress — steps 1–3 done; step 4 (measurement) next
 - **Authorization:** The user approved the pilot as proposed in chat ("yes").
 
 ## Context
@@ -93,3 +93,21 @@ the pilot is kept only if `devagentics bench` shows it helps.
   where grep also matched an unrelated sibling import. `query` is a fuzzy BFS
   (581 nodes, truncated to 50, noisy): the tool should favour `explain` and
   `path`, with `query` bounded.
+
+### Steps 2–3 (15-11-2026)
+
+- `graph.rs`: `graph()` exports a commit's tracked source (runner-visible files
+  only when the task has a runner) into a staging folder, runs `graphify update
+  .` there and renames it to `<task>/graphs/<repo>/<tree>/`; a tree's graph is
+  built once. Graphify runs with `GRAPHIFY_BACKEND=none`,
+  `GRAPHIFY_QUERY_LOG_DISABLE=1`, its own `HOME`, a timeout, and under `unshare
+  -rn` when available. A failed build keeps nothing.
+- `answer()` gates on `State.graph_enabled` (CLI-only `devagentics task graph
+  <task> on|off`, which first checks `graphify --version`), parses explain /
+  path / query (no option-like values), bounds answers to 16 KiB and records a
+  `graph_queries` interval; `bench` reports the count.
+- Leader MCP tool `graph` (task branch head); worker action `graph` (a
+  reviewer's pending candidate, else the agent's lane head); the worker prompt
+  mentions it only when the graph is on.
+- Tests use a stub Graphify; an ignored test runs the pinned install (offline
+  build, `explain formatTime` names its caller, nothing in its `HOME`).
