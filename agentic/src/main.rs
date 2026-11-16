@@ -5,6 +5,8 @@ mod board;
 mod board_tui;
 mod board_usage;
 mod board_view;
+mod details_view;
+mod seen;
 mod check_profiles;
 mod checks;
 mod devws;

@@ -177,6 +177,13 @@ Agents already running keep running (a leader on an account you turned off
 says `leader still on it`). The last account that is on stays on. The leader
 hears every change and sees the switches in `task_status` (`accounts`).
 
+Details are laid out for reading: `Label: value` lines with the label in
+bold, JSON arguments over indented, tinted lines, inline numbered items and
+long paragraphs one per line, and `code` and **bold** marked. A NEEDS YOU
+row turns grey once you open its details and shows `✉` once you write to
+the leader from it. The board keeps this in the task folder
+(`board-seen.json`), and a row whose text changes is new again.
+
 The details of every NEEDS YOU row (a permission, a question, an agent that
 needs you, a step the leader left), of a step, and of the leader have a **To the
 leader** box: press **m** to write in it, **Enter** sends, **Esc** cancels. The

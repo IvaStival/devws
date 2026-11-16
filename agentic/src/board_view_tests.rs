@@ -1266,3 +1266,23 @@ fn every_needs_you_row_takes_a_message_about_itself() {
     assert_eq!(message_about("agent:hammer-5"), None);
     assert_eq!(message_about("account:codex"), None);
 }
+
+#[test]
+fn a_needs_you_row_already_opened_or_answered_no_longer_calls() {
+    let draw = |seen: Seen| {
+        let mut entry = Entry::text("permission:p1".into(), "⚠ p1 runner".into(), "x".into(), true);
+        entry.seen = seen;
+        let area = Rect::new(0, 0, 30, 1);
+        let mut buffer = Buffer::empty(area);
+        entry_line(&entry, false, area, &mut buffer);
+        let text: String = (0..30).map(|x| buffer[(x, 0)].symbol().to_string()).collect();
+        (text, buffer[(4, 0)].fg)
+    };
+    let (_, new) = draw(Seen::New);
+    assert_eq!(new, Color::Yellow, "a new one calls");
+    let (_, opened) = draw(Seen::Opened);
+    assert_eq!(opened, SEEN.fg.unwrap(), "an opened one is grey");
+    let (told, color) = draw(Seen::Told);
+    assert_eq!(color, SEEN.fg.unwrap());
+    assert!(told.trim_end().ends_with("✉ told"), "{told:?}");
+}

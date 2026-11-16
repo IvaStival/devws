@@ -13,6 +13,8 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget, Wrap};
 
 const TITLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 const DIM: Style = Style::new().fg(Color::DarkGray);
+/// A NEEDS YOU row the user already opened or answered.
+const SEEN: Style = Style::new().fg(Color::Indexed(245));
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 const HEADING: Style = Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD);
 /// Every Overview card is drawn in one color, so the sections read as one
@@ -76,6 +78,19 @@ pub struct Entry {
     /// How the label is colored: consecutive runs of its characters, each in
     /// a tone. Empty means the whole label in the row's style.
     pub parts: Vec<(usize, Tone)>,
+    /// For a NEEDS YOU row: whether the user already opened or answered it.
+    pub seen: Seen,
+}
+
+/// What the user did with a NEEDS YOU row (`seen.rs` keeps it).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Seen {
+    #[default]
+    New,
+    /// Its details were opened.
+    Opened,
+    /// The user wrote to the leader from it.
+    Told,
 }
 
 /// The color of a run of a row's label, laid over the row's own style so a
@@ -104,6 +119,7 @@ impl Entry {
             kind: Kind::Row,
             tail: String::new(),
             parts: Vec::new(),
+            seen: Seen::New,
         }
     }
 
@@ -117,6 +133,7 @@ impl Entry {
             kind,
             tail: String::new(),
             parts: Vec::new(),
+            seen: Seen::New,
         }
     }
 
@@ -465,6 +482,7 @@ fn agent_entry(board: &Board, role: &RoleRow, agent: &AgentRow, label: String) -
         kind: Kind::Row,
         tail: String::new(),
         parts: Vec::new(),
+        seen: Seen::New,
     }
 }
 
@@ -1136,12 +1154,24 @@ fn entry_line(entry: &Entry, selected: bool, area: Rect, buffer: &mut Buffer) {
         Style::new()
             .bg(Color::DarkGray)
             .add_modifier(Modifier::BOLD)
-    } else if entry.attention {
+    } else if entry.attention && entry.seen == Seen::New {
         Style::new().fg(Color::Yellow)
+    } else if entry.attention {
+        // Already opened or answered: still there, no longer calling.
+        SEEN
     } else {
         Style::default()
     };
     let prefix = if selected { "▸ " } else { "  " };
+    if entry.seen == Seen::Told {
+        let mut told = entry.clone();
+        told.tail = match entry.tail.as_str() {
+            "" => "✉ told".into(),
+            tail => format!("✉ {tail}"),
+        };
+        row_line(prefix, &told, style, None, area, buffer);
+        return;
+    }
     row_line(prefix, entry, style, None, area, buffer);
 }
 
@@ -1853,7 +1883,7 @@ fn dialog_area(content: &str, width: u16, height: u16, anchor: Option<u16>, inpu
     if text_width == 0 {
         return bounds;
     }
-    let lines = Paragraph::new(content)
+    let lines = Paragraph::new(crate::details_view::text(content))
         .wrap(Wrap { trim: false })
         .line_count(text_width)
         .max(1);
@@ -1899,7 +1929,7 @@ pub fn dialog_scroll_max(content: &str, width: u16, height: u16, input: bool) ->
     if body.width == 0 || body.height == 0 {
         return 0;
     }
-    Paragraph::new(content)
+    Paragraph::new(crate::details_view::text(content))
         .wrap(Wrap { trim: false })
         .line_count(body.width)
         .saturating_sub(body.height as usize)
@@ -1933,7 +1963,7 @@ pub fn draw_dialog(
     block.render(area, buffer);
     let body = dialog_body_of(area, input);
     if !body.is_empty() {
-        Paragraph::new(content)
+        Paragraph::new(crate::details_view::text(content))
             .wrap(Wrap { trim: false })
             .scroll((scroll.min(dialog_scroll_max(content, width, height, input)), 0))
             .render(body, buffer);

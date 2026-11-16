@@ -193,7 +193,7 @@ struct Interaction {
     map: ScreenMap,
 }
 
-const HELP: &str = "Board navigation\n\nTab / Shift-Tab: next / previous view\nj/k or arrows: select row; scroll details\nPgUp/PgDn: move a page\ng/G or Home/End: first / last\nEnter: full details\nm in the details of a NEEDS YOU row, a step or the leader: write to the leader in its box (Enter send, Esc cancel)\nSpace on an account: turn it on/off for this task\nClick: select a row; click it again for details\nClick a view's name: show that view\nClick outside details: close them\nEsc: close details or cancel peek\no: go to selected agent\nv: peek selected agent\n1–9: go to numbered agent\np then 1–9: peek numbered agent\nL: return to leader\nl: toggle Activity\nc: toggle completed steps or inactive role catalog\nr: refresh\nz: zoom\n?: help\nq: close details, or quit board (dispatcher stops)";
+const HELP: &str = "Board navigation\n\nTab / Shift-Tab: next / previous view\nj/k or arrows: select row; scroll details\nPgUp/PgDn: move a page\ng/G or Home/End: first / last\nEnter: full details (JSON laid out, lists one item per line); a NEEDS YOU row you opened turns grey, one you answered shows ✉\nm in the details of a NEEDS YOU row, a step or the leader: write to the leader in its box (Enter send, Esc cancel)\nSpace on an account: turn it on/off for this task\nClick: select a row; click it again for details\nClick a view's name: show that view\nClick outside details: close them\nEsc: close details or cancel peek\no: go to selected agent\nv: peek selected agent\n1–9: go to numbered agent\np then 1–9: peek numbered agent\nL: return to leader\nl: toggle Activity\nc: toggle completed steps or inactive role catalog\nr: refresh\nz: zoom\n?: help\nq: close details, or quit board (dispatcher stops)";
 
 impl Interaction {
     /// One event from the terminal: a key, or the wheel, which moves `WHEEL`
@@ -596,6 +596,7 @@ fn screen_loop(
     let mut entries = Vec::new();
     let mut entries_dirty = true;
     let mut entries_key = None;
+    let mut marks = crate::seen::Marks::load(task.dir())?;
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
         execute!(std::io::stdout(), EnableMouseCapture)?;
@@ -646,6 +647,7 @@ fn screen_loop(
                     &activity.lines,
                     notice,
                 );
+                marks.apply(&mut entries);
                 entries_key = Some(key);
                 entries_dirty = false;
             }
@@ -709,11 +711,14 @@ fn screen_loop(
                             devws.go(&pane)
                         }
                     }
-                    Action::TellLeader { about, text } => {
-                        crate::leader::tell(task, &about, &text).map(|()| {
+                    Action::TellLeader { about, text } => crate::leader::tell(task, &about, &text)
+                        .and_then(|()| {
                             ui.nav.sent = true;
-                        })
-                    }
+                            match selected_entry(&ui.nav, &entries) {
+                                Some(entry) => marks.told(entry).map(|added| entries_dirty |= added),
+                                None => Ok(()),
+                            }
+                        }),
                     Action::ToggleAccount(account) => {
                         let enabled = board
                             .switches
@@ -736,6 +741,15 @@ fn screen_loop(
                     local_problem = Some(format!("Board action failed: {error:#}"));
                 }
             }
+            // Opening a NEEDS YOU row's details is reading it.
+            if ui.nav.detail {
+                if let Some(entry) = selected_entry(&ui.nav, &entries) {
+                    match marks.opened(entry) {
+                        Ok(added) => entries_dirty |= added,
+                        Err(error) => local_problem = Some(format!("Board action failed: {error:#}")),
+                    }
+                }
+            }
         }
     })();
     let mouse_result = execute!(std::io::stdout(), DisableMouseCapture);
@@ -743,6 +757,12 @@ fn screen_loop(
     result?;
     mouse_result?;
     Ok(())
+}
+
+/// The row the selection is on.
+fn selected_entry<'a>(nav: &Navigation, entries: &'a [board_view::Entry]) -> Option<&'a board_view::Entry> {
+    let id = nav.selected.as_deref()?;
+    entries.iter().find(|entry| entry.id == id)
 }
 
 fn pane_of(board: &Board, digit: char) -> Option<String> {
@@ -921,6 +941,7 @@ mod tests {
                 kind: board_view::Kind::Row,
                 parts: Vec::new(),
                 tail: String::new(),
+                seen: board_view::Seen::New,
             })
             .collect();
         let mut ui = Interaction::new(View::Agents);
@@ -962,6 +983,7 @@ mod tests {
                 kind: board_view::Kind::Row,
                 parts: Vec::new(),
                 tail: String::new(),
+                seen: board_view::Seen::New,
             })
             .collect();
         let mut ui = Interaction::new(View::Steps);
