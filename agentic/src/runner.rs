@@ -27,6 +27,29 @@ pub struct Configuration {
     /// or root daemon: a host's other containers stay out of reach.
     #[serde(default)]
     pub docker_host: Option<String>,
+    /// Folders of the image mounted read-only inside the workspace: the
+    /// dependencies a project keeps untracked (`node_modules`), which the
+    /// tracked-source snapshot lacks and a no-network run cannot fetch.
+    #[serde(default)]
+    pub image_mounts: Vec<ImageMount>,
+    /// Each container's memory in MiB (default 512) and CPUs (default 1).
+    /// Bounded: the runner shares the host with everything else on it.
+    #[serde(default)]
+    pub memory_mb: Option<u32>,
+    #[serde(default)]
+    pub cpus: Option<u32>,
+}
+
+const MEMORY_MB: std::ops::RangeInclusive<u32> = 128..=8192;
+const CPUS: std::ops::RangeInclusive<u32> = 1..=4;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageMount {
+    /// An absolute folder in the image (`/node_modules`).
+    pub path: String,
+    /// Where it appears, relative to the workspace (`web/node_modules`).
+    pub target: String,
 }
 
 /// The Docker endpoint of `config`: its pinned one, or the user's rootless
@@ -185,6 +208,30 @@ pub fn validate_configuration(config: &Configuration) -> Result<()> {
         (1..=900).contains(&config.timeout_seconds),
         "runner timeout must be 1–900 seconds"
     );
+    ensure!(
+        MEMORY_MB.contains(&config.memory_mb.unwrap_or(512)),
+        "runner memory must be {}–{} MiB",
+        MEMORY_MB.start(),
+        MEMORY_MB.end()
+    );
+    ensure!(
+        CPUS.contains(&config.cpus.unwrap_or(1)),
+        "runner CPUs must be {}–{}",
+        CPUS.start(),
+        CPUS.end()
+    );
+    for mount in &config.image_mounts {
+        let inside = mount
+            .path
+            .strip_prefix('/')
+            .context("an image mount's path is absolute in the image")?;
+        relative(Path::new(inside)).context("an image mount's path")?;
+        relative(Path::new(&mount.target)).context("an image mount's target")?;
+        ensure!(
+            !mount.path.contains(',') && !mount.target.contains(','),
+            "an image mount path contains a comma"
+        );
+    }
     if let Some(host) = &config.docker_host {
         ensure!(
             host.starts_with("unix://") && host.len() > "unix://".len(),
@@ -350,6 +397,19 @@ pub fn prepare(task: &Task, agent: &str, source: &Path, readonly: bool) -> Resul
             );
         }
         original.insert(path.into(), content_hash(&content)?);
+    }
+    // The image mounts need an existing folder to mount over, even in a
+    // read-only snapshot; tracked source under one would be hidden by it.
+    for dependency in &config.image_mounts {
+        let prefix = format!("{}/", dependency.target);
+        ensure!(
+            !original
+                .keys()
+                .any(|path: &String| path.starts_with(&prefix)),
+            "the image mount at {} would hide tracked source under it",
+            dependency.target
+        );
+        fs::create_dir_all(snapshot.join(&dependency.target))?;
     }
     #[cfg(unix)]
     if unsafe { libc::geteuid() } == 0 {
@@ -720,7 +780,7 @@ fn docker_arguments(
     // gain any. A container uid of the user's own would map to one of their
     // subordinate ids instead, which cannot write the snapshot.
     let user = "0:0".to_string();
-    Ok(vec![
+    let mut arguments: Vec<String> = vec![
         "run".into(),
         "--rm".into(),
         "--pull=never".into(),
@@ -731,12 +791,26 @@ fn docker_arguments(
         "--cap-drop=ALL".into(),
         "--security-opt=no-new-privileges".into(),
         "--pids-limit=128".into(),
-        "--memory=512m".into(),
-        "--cpus=1".into(),
+        format!("--memory={}m", config.memory_mb.unwrap_or(512)),
+        format!("--cpus={}", config.cpus.unwrap_or(1)),
         "--user".into(),
         user,
         "--mount".into(),
         mount,
+    ];
+    // Read-only image folders over the workspace mount, never under it.
+    for dependency in &config.image_mounts {
+        arguments.extend([
+            "--mount".into(),
+            format!(
+                "type=image,source={},target=/workspace/{},image-subpath={}",
+                config.image,
+                dependency.target,
+                dependency.path.trim_start_matches('/')
+            ),
+        ]);
+    }
+    arguments.extend([
         "--tmpfs=/tmp:rw,noexec,nosuid,size=64m".into(),
         "--workdir=/workspace".into(),
         "--env=HOME=/tmp".into(),
@@ -744,7 +818,8 @@ fn docker_arguments(
         config.image.clone(),
         "-lc".into(),
         command.into(),
-    ])
+    ]);
+    Ok(arguments)
 }
 pub fn run_container(
     config: &Configuration,
@@ -1043,6 +1118,130 @@ mod tests {
         );
     }
 
+    fn with_dependencies() -> Configuration {
+        Configuration {
+            image_mounts: vec![ImageMount {
+                path: "/node_modules".into(),
+                target: "web/node_modules".into(),
+            }],
+            ..configuration()
+        }
+    }
+
+    #[test]
+    fn the_image_provides_dependency_folders_read_only_inside_the_workspace() {
+        let root = tempfile::TempDir::new().unwrap();
+        let config = with_dependencies();
+        validate_configuration(&config).unwrap();
+        let args = docker_arguments(&config, root.path(), false, "n", "true").unwrap();
+        let workspace = args
+            .iter()
+            .position(|argument| argument.contains("dst=/workspace"))
+            .unwrap();
+        let dependencies = args
+            .iter()
+            .position(|argument| {
+                argument
+                    == &format!(
+                        "type=image,source={},target=/workspace/web/node_modules,image-subpath=node_modules",
+                        config.image
+                    )
+            })
+            .expect("an image mount of the dependencies");
+        assert!(
+            workspace < dependencies,
+            "mounted over the workspace, not under it"
+        );
+        assert_eq!(args[dependencies - 1], "--mount");
+
+        for (path, target) in [
+            ("node_modules", "web/node_modules"),
+            ("/node_modules/../etc", "web/node_modules"),
+            ("/node_modules", "../outside"),
+            ("/node_modules", "/abs"),
+            ("/node,modules", "web/node_modules"),
+        ] {
+            let config = Configuration {
+                image_mounts: vec![ImageMount {
+                    path: path.into(),
+                    target: target.into(),
+                }],
+                ..configuration()
+            };
+            assert!(
+                validate_configuration(&config).is_err(),
+                "{path} -> {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_container_gets_the_configured_memory_and_cpus_within_bounds() {
+        let root = tempfile::TempDir::new().unwrap();
+        let defaults = docker_arguments(&configuration(), root.path(), false, "n", "true").unwrap();
+        assert!(
+            defaults.contains(&"--memory=512m".into()) && defaults.contains(&"--cpus=1".into())
+        );
+        let larger = Configuration {
+            memory_mb: Some(2048),
+            cpus: Some(2),
+            ..configuration()
+        };
+        let args = docker_arguments(&larger, root.path(), false, "n", "true").unwrap();
+        assert!(args.contains(&"--memory=2048m".into()) && args.contains(&"--cpus=2".into()));
+        for (memory_mb, cpus) in [
+            (Some(64), None),
+            (Some(16_384), None),
+            (None, Some(0)),
+            (None, Some(8)),
+        ] {
+            let config = Configuration {
+                memory_mb,
+                cpus,
+                ..configuration()
+            };
+            assert!(
+                validate_configuration(&config).is_err(),
+                "{memory_mb:?} {cpus:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_snapshot_gets_the_mount_points_and_no_source_is_hidden_under_them() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, repo) = crate::board::tests::started(&directory);
+        crate::checks::tests::commit_file(repo.path(), "src/app.rs", "app\n", "app");
+        task.transaction(|tx| {
+            tx.state.runner = Some(Configuration {
+                image_mounts: vec![ImageMount {
+                    path: "/node_modules".into(),
+                    target: "src/deps".into(),
+                }],
+                ..configuration()
+            });
+            Ok(())
+        })
+        .unwrap();
+        prepare(&task, "worker-1", repo.path(), false).unwrap();
+        let snapshot = task.state().unwrap().runner_workspaces["worker-1"]
+            .snapshot
+            .clone();
+        assert!(snapshot.join("src/deps").is_dir());
+        assert!(snapshot.join("src/app.rs").is_file());
+
+        crate::checks::tests::commit_file(
+            repo.path(),
+            "src/deps/left.js",
+            "x\n",
+            "a tracked file under the mount",
+        );
+        let error = prepare(&task, "worker-2", repo.path(), false)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("src/deps"), "{error}");
+    }
+
     #[test]
     fn every_docker_command_goes_to_the_pinned_daemon() {
         let command = docker("unix:///run/user/1001/docker.sock");
@@ -1076,6 +1275,9 @@ mod tests {
             protected_paths: vec!["data/**".into()],
             timeout_seconds: 5,
             docker_host: None,
+            image_mounts: vec![],
+            memory_mb: None,
+            cpus: None,
         }
     }
     #[test]
@@ -1149,6 +1351,9 @@ mod docker_tests {
             protected_paths: vec!["data/**".into()],
             timeout_seconds: 30,
             docker_host: None,
+            image_mounts: vec![],
+            memory_mb: None,
+            cpus: None,
         }
     }
     #[test]

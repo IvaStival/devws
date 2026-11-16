@@ -253,6 +253,20 @@ so the runner's resource limits are enforced (once, as root, a
 your `user@<uid>.service`). Containers run as the rootless daemon's root, which
 is you on the host, without capabilities.
 
+Two more runner settings fit a project's toolchain:
+
+- `image_mounts` mounts folders of the image read-only inside the workspace,
+  for dependencies the project keeps untracked: the snapshot holds tracked
+  source only and the container has no network. For example
+  `[{"path": "/node_modules", "target": "web/node_modules"}]` with an image
+  that ran `npm ci` at `/`. A mount may not hide tracked source.
+- `memory_mb` (128–8192, default 512) and `cpus` (1–4, default 1) size each
+  container. A TypeScript check or a Next.js build needs about 2048 MiB.
+
+A build that fetches from the network (Next's `next/font/google`, for one)
+cannot pass in the runner; vendor what it fetches (`next/font/local`) or leave
+it out of the reviewed checks.
+
 If every container fails with "Interactive authentication required", runc did
 not learn your host user: it reads the `OwnerUID=` line of `busctl --user
 --no-pager status`, which some systemd versions (Debian 12's 252) do not
