@@ -66,7 +66,8 @@ pub struct CodexTurn<'a> {
 /// A Codex reviewer's turn. Codex cannot turn its own shell off, so this
 /// adapter is for read-only reviewers only: the read-only sandbox, no user
 /// config, rules or approval prompts, and the worker MCP server as its only
-/// configured tool server. Its shell can still read host files; it cannot
+/// configured tool server, its tools pre-approved. Verified against Codex
+/// 0.169 (read-only seccomp sandbox, thread resume). Its shell can still read host files; it cannot
 /// write them. `resume` takes no sandbox flag, so the sandbox is set as
 /// config on every turn.
 pub fn codex_arguments(turn: &CodexTurn) -> Vec<String> {
@@ -102,6 +103,14 @@ pub fn codex_arguments(turn: &CodexTurn) -> Vec<String> {
         ),
         "-c".into(),
         format!("mcp_servers.devagentics_worker.args=[{server_args}]"),
+        // With approval_policy "never" Codex refuses every MCP call that is
+        // not pre-approved. The worker server's own tools are: it checks the
+        // worker's identity on each call. Nothing else is approved.
+        "-c".into(),
+        format!(
+            "mcp_servers.devagentics_worker.default_tools_approval_mode={}",
+            toml_string("approve")
+        ),
     ]);
     if let Some(model) = turn.model {
         args.extend(["-m".into(), model.into()]);
@@ -588,6 +597,7 @@ mod tests {
         for setting in [
             "sandbox_mode=\"read-only\"",
             "approval_policy=\"never\"",
+            "mcp_servers.devagentics_worker.default_tools_approval_mode=\"approve\"",
             "model_reasoning_effort=\"high\"",
             "mcp_servers.devagentics_worker.command=\"/bin/devagentics\"",
             "mcp_servers.devagentics_worker.args=[\"worker-mcp\", \"feat-x\", \"code-reviewer-1\", \"--identity\", \"/task/workers/code-reviewer-1/identity\"]",

@@ -2,7 +2,7 @@
 
 - **Date:** 15-11-2026
 - **Branch:** feat/team-delivery-gates
-- **Status:** Executed — Steps 0–6 done; not run here: the Docker end-to-end test (no Docker access), the live Codex smoke run (needs the user's go), the benchmark series (real agent runs)
+- **Status:** Executed — Steps 0–6 done; not run here: the Docker end-to-end test (no Docker access), the benchmark series (real agent runs)
 - **Authorization:** The user approved this plan in chat (commit WIP first; all four improvements; Codex only as a read-only reviewer).
 
 ## Context
@@ -194,3 +194,17 @@ docs.
   run is the user's to start (real agents and accounts).
 - Commit at the end of each step on `feat/team-delivery-gates` (no AI credits); no push
   or PR without asking.
+
+## Execution notes
+
+- Live Codex smoke run (15-11-2026, Codex 0.169, the user's go): three
+  `codex exec` turns with the adapter's flags against a throwaway checkout and
+  a stand-in worker MCP server. Verified: the flags and config are accepted;
+  the read-only sandbox (seccomp) refuses writes; the first JSON event carries
+  `thread_id`; `exec resume <thread>` continues the conversation. Found and
+  fixed: under `approval_policy="never"` Codex refuses every MCP call, so the
+  worker server's tools are pre-approved (`default_tools_approval_mode`).
+  Network access in the read-only sandbox was not tested.
+- `orders::tests::named_evidence_reuse_requires_matching_head_revision_and_configuration`
+  is flaky on upstream too (2/10 upstream, 4/10 here, same noise): the order
+  operation lock is sometimes still held when the test retakes it. Not fixed here.

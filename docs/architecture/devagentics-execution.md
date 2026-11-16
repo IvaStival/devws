@@ -283,7 +283,10 @@ measurement shows whether they help.
   to Claude. `worker_tools::codex_turn` runs `codex exec --json` with
   `--ignore-user-config --ignore-rules`, `sandbox_mode="read-only"` and
   `approval_policy="never"` as config (resume takes no sandbox flag), the worker
-  MCP server as its only server, in the reviewer's read-only snapshot. The
+  MCP server as its only server with its tools pre-approved
+  (`default_tools_approval_mode="approve"`: under `never`, Codex refuses any
+  MCP call not pre-approved), in the reviewer's read-only snapshot. Stdin is
+  null: Codex otherwise waits for more input on an open pipe. The
   thread id from the first JSON event is kept in `State.worker_sessions`. The
   boundary is weaker than Claude's: the shell cannot write but can read host
   files, which status and docs state.
