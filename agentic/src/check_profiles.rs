@@ -248,10 +248,25 @@ pub fn operation(task: &Task, order: &str) -> Result<File> {
     let folder = task.dir().join("operations");
     fs::create_dir_all(&folder)?;
     let lock = File::create(folder.join(format!("{order}.lock")))?;
-    lock.try_lock_exclusive()
-        .context("a check or report for this order is already running")?;
-    Ok(lock)
+    let deadline = std::time::Instant::now() + OPERATION_LOCK_WAIT;
+    loop {
+        match lock.try_lock_exclusive() {
+            Ok(()) => return Ok(lock),
+            Err(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => {
+                return Err(error).context("a check or report for this order is already running");
+            }
+        }
+    }
 }
+
+/// How long `operation` waits for the order's lock before refusing. A
+/// process another thread of this program is starting holds a copy of the
+/// lock's file until it runs its program, keeping a lock just released for
+/// a moment; a real check or report holds it for seconds or minutes.
+const OPERATION_LOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 
 pub fn configuration(task: &Task, order: &Order) -> Result<Option<RepositoryChecks>> {
     let state = task.state()?;
@@ -1001,6 +1016,61 @@ mod tests {
             .values
             .insert("DEVAGENTICS_RESULT".into(), "override".into());
         assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn an_operation_waits_out_a_lock_held_for_an_instant_but_not_a_running_one() {
+        let directory = TempDir::new().unwrap();
+        let home = crate::home::Home::at(directory.path().join("home"));
+        let task = Task::create(
+            &home,
+            &crate::task::TaskConfig {
+                id: "t".into(),
+                branch: "feat/x".into(),
+                workspace: "w".into(),
+                max_agents: 3,
+                max_attempts: crate::task::DEFAULT_MAX_ATTEMPTS,
+                check_profiles: Default::default(),
+                repos: vec![],
+                lanes: vec![],
+            },
+        )
+        .unwrap();
+        task.transaction(|tx| {
+            tx.state.orders.push(Order {
+                id: "o1".into(),
+                step: "s1".into(),
+                agent: "a".into(),
+                text: String::new(),
+                allowed: vec![],
+                forbidden: vec![],
+                check: None,
+                base: String::new(),
+                status: crate::state::OrderStatus::Open,
+                delivered: true,
+                stalled: false,
+                plan: None,
+            });
+            Ok(())
+        })
+        .unwrap();
+
+        // A process another thread is starting holds a copy of the lock's
+        // file until it runs its program: a moment, not an operation.
+        let held = operation(&task, "o1").unwrap();
+        let copy = held.try_clone().unwrap();
+        drop(held);
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            drop(copy);
+        });
+        operation(&task, "o1").expect("a lock held for an instant is waited out");
+        release.join().unwrap();
+
+        let running = operation(&task, "o1").unwrap();
+        let error = operation(&task, "o1").unwrap_err().to_string();
+        assert!(error.contains("already running"), "{error}");
+        drop(running);
     }
 
     #[test]

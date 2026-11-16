@@ -206,5 +206,8 @@ docs.
   worker server's tools are pre-approved (`default_tools_approval_mode`).
   Network access in the read-only sandbox was not tested.
 - `orders::tests::named_evidence_reuse_requires_matching_head_revision_and_configuration`
-  is flaky on upstream too (2/10 upstream, 4/10 here, same noise): the order
-  operation lock is sometimes still held when the test retakes it. Not fixed here.
+  was flaky on upstream too (2/10 upstream, 4/10 here): a child process another
+  thread is starting holds a copy of the order lock's file until it execs, so a
+  lock just released still looks held. Fixed: `check_profiles::operation` waits
+  up to 500 ms for the lock before refusing (0/20 failures after; regression
+  test reproduces the held copy).
