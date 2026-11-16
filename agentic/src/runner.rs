@@ -70,7 +70,22 @@ fn user_endpoint(runtime_dir: Option<&str>) -> Result<String> {
 }
 
 fn runtime_dir() -> Option<String> {
-    std::env::var("XDG_RUNTIME_DIR").ok()
+    let uid = unsafe { libc::geteuid() };
+    runtime_dir_from(
+        std::env::var("XDG_RUNTIME_DIR").ok(),
+        Path::new(&format!("/run/user/{uid}")),
+    )
+}
+
+/// `$XDG_RUNTIME_DIR`, else the standard `/run/user/<uid>` when it exists: a
+/// process an agent's provider starts (Codex's MCP servers) may get only a
+/// few variables, without it.
+fn runtime_dir_from(variable: Option<String>, standard: &Path) -> Option<String> {
+    variable.filter(|folder| !folder.is_empty()).or_else(|| {
+        standard
+            .is_dir()
+            .then(|| standard.to_string_lossy().into_owned())
+    })
 }
 
 fn configured_endpoint(config: &Configuration) -> Result<String> {
@@ -1257,6 +1272,28 @@ pub mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("src/deps"), "{error}");
+    }
+
+    #[test]
+    fn without_xdg_runtime_dir_the_standard_user_folder_is_used() {
+        let standard = tempfile::TempDir::new().unwrap();
+        let folder = standard.path().to_string_lossy().into_owned();
+        assert_eq!(
+            runtime_dir_from(Some("/run/user/7".into()), standard.path()),
+            Some("/run/user/7".into())
+        );
+        assert_eq!(
+            runtime_dir_from(None, standard.path()),
+            Some(folder.clone())
+        );
+        assert_eq!(
+            runtime_dir_from(Some(String::new()), standard.path()),
+            Some(folder)
+        );
+        assert_eq!(
+            runtime_dir_from(None, &standard.path().join("missing")),
+            None
+        );
     }
 
     #[test]
