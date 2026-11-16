@@ -297,11 +297,21 @@ pub fn available(task: &Task) -> Result<()> {
         .context("configure and verify the approved container runner before execution")?;
     probe(&config)
 }
+/// The folders the image mounts go over: Docker cannot create them in a
+/// read-only workspace.
+fn mount_points(workspace: &Path, config: &Configuration) -> Result<()> {
+    for dependency in &config.image_mounts {
+        fs::create_dir_all(workspace.join(&dependency.target))?;
+    }
+    Ok(())
+}
+
 pub fn configure(task: &Task, config: Configuration) -> Result<()> {
     probe(&config)?;
     // Verify the isolation flags in a real disposable container before enabling.
     let root = task.dir().join("runner-probe");
     fs::create_dir_all(&root)?;
+    mount_points(&root, &config)?;
     let result = run_container(
         &config,
         &root,
@@ -398,8 +408,7 @@ pub fn prepare(task: &Task, agent: &str, source: &Path, readonly: bool) -> Resul
         }
         original.insert(path.into(), content_hash(&content)?);
     }
-    // The image mounts need an existing folder to mount over, even in a
-    // read-only snapshot; tracked source under one would be hidden by it.
+    // Tracked source under an image mount would be hidden by it.
     for dependency in &config.image_mounts {
         let prefix = format!("{}/", dependency.target);
         ensure!(
@@ -409,8 +418,8 @@ pub fn prepare(task: &Task, agent: &str, source: &Path, readonly: bool) -> Resul
             "the image mount at {} would hide tracked source under it",
             dependency.target
         );
-        fs::create_dir_all(snapshot.join(&dependency.target))?;
     }
+    mount_points(&snapshot, &config)?;
     #[cfg(unix)]
     if unsafe { libc::geteuid() } == 0 {
         fn allow_snapshot(path: &Path) -> Result<()> {
@@ -1205,6 +1214,14 @@ mod tests {
                 "{memory_mb:?} {cpus:?}"
             );
         }
+    }
+
+    #[test]
+    fn mount_points_exist_before_a_read_only_workspace_is_mounted() {
+        let root = tempfile::TempDir::new().unwrap();
+        mount_points(root.path(), &with_dependencies()).unwrap();
+        assert!(root.path().join("web/node_modules").is_dir());
+        mount_points(root.path(), &with_dependencies()).unwrap();
     }
 
     #[test]
