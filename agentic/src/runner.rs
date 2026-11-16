@@ -22,6 +22,53 @@ pub struct Configuration {
     pub source_paths: Vec<String>,
     pub protected_paths: Vec<String>,
     pub timeout_seconds: u64,
+    /// The rootless Docker daemon every container runs on (`unix://…`);
+    /// None is the user's own, `$XDG_RUNTIME_DIR/docker.sock`. Never a shared
+    /// or root daemon: a host's other containers stay out of reach.
+    #[serde(default)]
+    pub docker_host: Option<String>,
+}
+
+/// The Docker endpoint of `config`: its pinned one, or the user's rootless
+/// socket in `runtime_dir` (their `$XDG_RUNTIME_DIR`).
+pub fn endpoint(config: &Configuration, runtime_dir: Option<&str>) -> Result<String> {
+    match &config.docker_host {
+        Some(host) => Ok(host.clone()),
+        None => user_endpoint(runtime_dir),
+    }
+}
+
+/// The user's rootless Docker socket in `runtime_dir`.
+fn user_endpoint(runtime_dir: Option<&str>) -> Result<String> {
+    let runtime_dir = runtime_dir
+        .filter(|folder| !folder.is_empty())
+        .context("no XDG_RUNTIME_DIR: name the rootless Docker socket in docker_host")?;
+    Ok(format!("unix://{runtime_dir}/docker.sock"))
+}
+
+fn runtime_dir() -> Option<String> {
+    std::env::var("XDG_RUNTIME_DIR").ok()
+}
+
+fn configured_endpoint(config: &Configuration) -> Result<String> {
+    endpoint(config, runtime_dir().as_deref())
+}
+
+/// A `docker` command bound to `endpoint`, whatever the environment or the
+/// user's current Docker context would choose.
+pub fn docker(endpoint: &str) -> Command {
+    let mut command = Command::new("docker");
+    command
+        .env("DOCKER_HOST", endpoint)
+        .env_remove("DOCKER_CONTEXT");
+    command
+}
+
+/// Whether `docker info`'s security options name a rootless daemon.
+pub fn rootless(security_options: &str) -> bool {
+    security_options
+        .split([' ', '[', ']'])
+        .any(|option| option == "name=rootless")
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Workspace {
@@ -138,6 +185,12 @@ pub fn validate_configuration(config: &Configuration) -> Result<()> {
         (1..=900).contains(&config.timeout_seconds),
         "runner timeout must be 1–900 seconds"
     );
+    if let Some(host) = &config.docker_host {
+        ensure!(
+            host.starts_with("unix://") && host.len() > "unix://".len(),
+            "the runner's Docker daemon must be a local Unix socket"
+        );
+    }
     ensure!(
         !config
             .source_paths
@@ -158,28 +211,26 @@ pub fn validate_configuration(config: &Configuration) -> Result<()> {
 }
 pub fn probe(config: &Configuration) -> Result<()> {
     validate_configuration(config)?;
-    if let Ok(endpoint) = std::env::var("DOCKER_HOST") {
-        ensure!(
-            endpoint.starts_with("unix://"),
-            "reviewed execution requires a local Unix-socket Docker endpoint"
-        );
-    }
-    let endpoint = Command::new("docker")
-        .args([
-            "context",
-            "inspect",
-            "--format",
-            r#"{{(index .Endpoints "docker").Host}}"#,
-        ])
-        .output()?;
+    let endpoint = configured_endpoint(config)?;
     ensure!(
-        endpoint.status.success()
-            && String::from_utf8_lossy(&endpoint.stdout)
-                .trim()
-                .starts_with("unix://"),
-        "remote Docker contexts are not allowed for reviewed source mounts"
+        endpoint.starts_with("unix://"),
+        "reviewed execution requires a local Unix-socket Docker endpoint"
     );
-    let result = Command::new("docker")
+    // A root daemon may run other people's containers (production): reviewed
+    // source never goes there.
+    let info = docker(&endpoint)
+        .args(["info", "--format", "{{.SecurityOptions}}"])
+        .output()
+        .context("Docker must be installed")?;
+    ensure!(
+        info.status.success(),
+        "the rootless Docker daemon at {endpoint} is not running (systemctl --user start docker)"
+    );
+    ensure!(
+        rootless(&String::from_utf8_lossy(&info.stdout)),
+        "the Docker daemon at {endpoint} is not rootless: reviewed work runs only on your own rootless daemon"
+    );
+    let result = docker(&endpoint)
         .args(["image", "inspect", "--format", "{{.Id}}", &config.image])
         .output()
         .context("Docker must be installed and running")?;
@@ -732,7 +783,8 @@ pub(crate) fn run_container_artifacts(
             ],
         );
     }
-    let mut child = Command::new("docker")
+    let endpoint = configured_endpoint(config)?;
+    let mut child = docker(&endpoint)
         .args(&arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -751,7 +803,7 @@ pub(crate) fn run_container_artifacts(
         if started.elapsed() > Duration::from_secs(config.timeout_seconds) {
             timed_out = true;
             let _ = child.kill();
-            let _ = Command::new("docker")
+            let _ = docker(&endpoint)
                 .args(["rm", "--force", &name])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -922,7 +974,8 @@ pub struct Preflight {
 
 /// Coordinator discovery is read-only and never invokes project scripts.
 pub fn images() -> Result<serde_json::Value> {
-    let output = Command::new("docker")
+    let endpoint = user_endpoint(runtime_dir().as_deref())?;
+    let output = docker(&endpoint)
         .args(["image", "ls", "--no-trunc", "--format", "{{json .}} "])
         .output()?;
     ensure!(
@@ -967,12 +1020,63 @@ pub fn overview(task: &Task) -> Result<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_runner_uses_the_pinned_daemon_or_the_users_rootless_one() {
+        let mut config = configuration();
+        assert_eq!(
+            endpoint(&config, Some("/run/user/1001")).unwrap(),
+            "unix:///run/user/1001/docker.sock"
+        );
+        assert!(
+            endpoint(&config, None).is_err(),
+            "no runtime folder: no rootless socket to default to"
+        );
+        config.docker_host = Some("unix:///home/iva/docker.sock".into());
+        assert_eq!(
+            endpoint(&config, Some("/run/user/1001")).unwrap(),
+            "unix:///home/iva/docker.sock"
+        );
+        config.docker_host = Some("tcp://10.0.0.5:2375".into());
+        assert!(
+            validate_configuration(&config).is_err(),
+            "only a local socket"
+        );
+    }
+
+    #[test]
+    fn every_docker_command_goes_to_the_pinned_daemon() {
+        let command = docker("unix:///run/user/1001/docker.sock");
+        let environment: Vec<_> = command.get_envs().collect();
+        assert!(environment.contains(&(
+            std::ffi::OsStr::new("DOCKER_HOST"),
+            Some(std::ffi::OsStr::new("unix:///run/user/1001/docker.sock"))
+        )));
+        assert!(
+            environment.contains(&(std::ffi::OsStr::new("DOCKER_CONTEXT"), None)),
+            "a selected context cannot redirect it"
+        );
+        assert_eq!(command.get_program(), "docker");
+    }
+
+    #[test]
+    fn only_a_rootless_daemon_runs_reviewed_work() {
+        assert!(rootless(
+            "[name=seccomp,profile=builtin name=rootless name=cgroupns]"
+        ));
+        assert!(!rootless(
+            "[name=apparmor name=seccomp,profile=builtin name=cgroupns]"
+        ));
+        assert!(!rootless(""));
+    }
+
     pub fn configuration() -> Configuration {
         Configuration {
             image: format!("sha256:{}", "a".repeat(64)),
             source_paths: vec!["src/**".into(), "tests/**".into()],
             protected_paths: vec!["data/**".into()],
             timeout_seconds: 5,
+            docker_host: None,
         }
     }
     #[test]
@@ -1035,6 +1139,7 @@ mod docker_tests {
             source_paths: vec!["src/**".into(), "tests/**".into()],
             protected_paths: vec!["data/**".into()],
             timeout_seconds: 30,
+            docker_host: None,
         }
     }
     #[test]

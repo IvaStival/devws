@@ -238,6 +238,17 @@ local image containing the required runtimes and offline dependencies. Images
 are pinned by their full `sha256:` ID; the runner never pulls an image or changes
 the Docker daemon configuration automatically.
 
+The runner uses only a **rootless** Docker daemon of your own, never a root or
+shared one, so a host's other containers (production ones included) stay out of
+its reach. By default that is `$XDG_RUNTIME_DIR/docker.sock`; set the runner
+configuration's `docker_host` (`unix://…`) to pin another rootless socket.
+Every Docker command it runs goes to that socket whatever `DOCKER_HOST` or your
+current Docker context say, and configuring or using the runner is refused when
+the daemon there does not report itself as rootless. Set one up with
+`dockerd-rootless-setuptool.sh install`. Its containers need the systemd
+cgroup driver with your user's cpu, memory, pids (and io) controllers delegated,
+so the runner's resource limits are enforced.
+
 Configure the image, source paths, protected paths and timeout using a JSON file:
 
 ```json
