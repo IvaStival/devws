@@ -205,6 +205,7 @@ pub fn request_switch(
     };
     anyhow::ensure!(
         task.state()?.workflow != crate::execution::Workflow::Reviewed
+            || task.state()?.codex_team
             || devws.agent_kind(&other.agent)? == crate::agent_args::Kind::Claude,
         "reviewed coordinator switching requires a supported MCP-only adapter; Codex is not enabled for this workflow"
     );

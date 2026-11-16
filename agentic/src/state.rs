@@ -34,6 +34,9 @@ pub struct State {
     /// The user let Codex run the read-only code reviewers of this reviewed
     /// task (`devagentics task codex-reviewers`).
     pub codex_reviewers: bool,
+    /// The user put this reviewed task's whole team, leader included, on
+    /// Codex (`devagentics task codex-team`).
+    pub codex_team: bool,
     /// The user turned on the code graph (Graphify) for this task's agents
     /// (`devagentics task graph`).
     pub graph_enabled: bool,

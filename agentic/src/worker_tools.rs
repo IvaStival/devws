@@ -61,6 +61,8 @@ pub struct CodexTurn<'a> {
     pub effort: Option<&'a str>,
     /// The conversation to continue; None starts it.
     pub thread: Option<&'a str>,
+    /// A writer edits its snapshot (its working folder); a reviewer reads.
+    pub writes: bool,
 }
 
 /// A Codex reviewer's turn. Codex cannot turn its own shell off, so this
@@ -93,7 +95,14 @@ pub fn codex_arguments(turn: &CodexTurn) -> Vec<String> {
         "--ignore-rules".into(),
         "--skip-git-repo-check".into(),
         "-c".into(),
-        format!("sandbox_mode={}", toml_string("read-only")),
+        format!(
+            "sandbox_mode={}",
+            toml_string(if turn.writes {
+                "workspace-write"
+            } else {
+                "read-only"
+            })
+        ),
         "-c".into(),
         format!("approval_policy={}", toml_string("never")),
         "-c".into(),
@@ -112,6 +121,19 @@ pub fn codex_arguments(turn: &CodexTurn) -> Vec<String> {
             toml_string("approve")
         ),
     ]);
+    if turn.writes {
+        // Writable is the working folder (its snapshot) alone: Codex adds
+        // /tmp and $TMPDIR unless told not to (checked against Codex 0.169:
+        // writes in the home and /tmp, and the network, were all refused).
+        args.extend([
+            "-c".into(),
+            "sandbox_workspace_write.network_access=false".into(),
+            "-c".into(),
+            "sandbox_workspace_write.exclude_tmpdir_env_var=true".into(),
+            "-c".into(),
+            "sandbox_workspace_write.exclude_slash_tmp=true".into(),
+        ]);
+    }
     if let Some(model) = turn.model {
         args.extend(["-m".into(), model.into()]);
     }
@@ -136,12 +158,11 @@ fn codex_turn(
     effort: Option<&str>,
 ) -> Result<std::process::ExitStatus> {
     let state = task.state()?;
-    let snapshot = state
+    let workspace = state
         .runner_workspaces
         .get(agent)
-        .filter(|workspace| workspace.readonly)
-        .map(|workspace| workspace.snapshot.clone())
-        .context("a Codex reviewer needs its read-only review snapshot")?;
+        .context("a Codex worker needs its runner snapshot")?;
+    let (snapshot, writes) = (workspace.snapshot.clone(), !workspace.readonly);
     let thread = state.worker_sessions.get(agent).cloned();
     let executable = std::env::current_exe()?;
     let task_id = task.config()?.id;
@@ -155,6 +176,7 @@ fn codex_turn(
             model,
             effort,
             thread: thread.as_deref(),
+            writes,
         }))
         .current_dir(&snapshot)
         .stdin(Stdio::null())
@@ -189,6 +211,51 @@ pub fn thread_id(line: &str) -> Option<String> {
         .get("thread_id")?
         .as_str()
         .map(str::to_string)
+}
+
+/// A reviewed leader on Codex, for a team the user put on Codex: Codex's
+/// interactive pane in the read-only sandbox, without approval prompts, the
+/// leader catalog its only pre-approved tools. A leader never writes; its
+/// shell can still read the host, which the user accepted for the task.
+pub fn codex_leader_arguments(
+    command: &str,
+    task: &str,
+    first_message: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Vec<String> {
+    use crate::agent_args::toml_string;
+    let mut args: Vec<String> = vec!["-c".into(), "tui.animations=false".into()];
+    if let Some(model) = model {
+        args.extend(["-m".into(), model.into()]);
+    }
+    if let Some(effort) = effort {
+        args.extend([
+            "-c".into(),
+            format!("model_reasoning_effort={}", toml_string(effort)),
+        ]);
+    }
+    args.extend([
+        "-s".into(),
+        "read-only".into(),
+        "-a".into(),
+        "never".into(),
+        "-c".into(),
+        format!("mcp_servers.devagentics.command={}", toml_string(command)),
+        "-c".into(),
+        format!(
+            "mcp_servers.devagentics.args=[{}, {}]",
+            toml_string("mcp"),
+            toml_string(task)
+        ),
+        "-c".into(),
+        format!(
+            "mcp_servers.devagentics.default_tools_approval_mode={}",
+            toml_string("approve")
+        ),
+        first_message.into(),
+    ]);
+    args
 }
 
 /// Reviewed coordinators use only the leader catalog; no unmediated host shell.
@@ -526,7 +593,7 @@ pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> 
             .unwrap_or_default();
         let standards = include_str!("../roles/standards/shared.md");
         let tools = if program == crate::agent_args::Kind::Codex {
-            "Your own shell is read-only and outside the isolated runner: use it only to read the review checkout in your working directory, never other host files. Review and submit only through devagentics_worker worker tools."
+            "Your own shell runs on the host, outside the isolated runner, and can write only your working directory (your source snapshot), with no network. Read and change only files there, never other host files. Run checks and tests only through devagentics_worker worker tools (check, execute), and checkpoint before you report. Review, report and ask only through those tools."
         } else {
             "Native tools are disabled. Use only devagentics_worker worker tools."
         };
@@ -615,6 +682,7 @@ mod tests {
             model: Some("gpt-6.1-sol"),
             effort: Some("high"),
             thread,
+            writes: false,
         })
     }
 
@@ -660,6 +728,68 @@ mod tests {
         assert_eq!(&resumed[..3], ["exec", "resume", "thread-9"]);
         assert!(resumed.contains(&"sandbox_mode=\"read-only\"".to_string()));
         assert_eq!(resumed.last().unwrap(), "review r1");
+    }
+
+    #[test]
+    fn a_codex_writer_writes_only_in_its_snapshot_without_network() {
+        let args = codex_arguments(&CodexTurn {
+            executable: Path::new("/bin/devagentics"),
+            task: "feat-x",
+            agent: "backend-data-1",
+            identity: Path::new("/task/workers/backend-data-1/identity"),
+            prompt: "build it",
+            model: None,
+            effort: None,
+            thread: None,
+            writes: true,
+        });
+        for setting in [
+            "sandbox_mode=\"workspace-write\"",
+            "sandbox_workspace_write.network_access=false",
+            "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+            "sandbox_workspace_write.exclude_slash_tmp=true",
+            "approval_policy=\"never\"",
+        ] {
+            assert!(args.contains(&setting.to_string()), "{setting}: {args:?}");
+        }
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.contains("danger") || arg.contains("read-only"))
+        );
+        assert!(
+            codex(None).contains(&"sandbox_mode=\"read-only\"".to_string()),
+            "a reviewer stays read-only"
+        );
+    }
+
+    #[test]
+    fn a_codex_leader_reads_only_and_uses_only_the_leader_tools_without_prompts() {
+        let args = codex_leader_arguments(
+            "/bin/devagentics",
+            "feat-x",
+            "lead",
+            Some("gpt-6.1-sol"),
+            Some("medium"),
+        );
+        let pair = |flag: &str| args[args.iter().position(|arg| arg == flag).unwrap() + 1].clone();
+        assert_eq!(pair("-s"), "read-only");
+        assert_eq!(pair("-a"), "never");
+        assert_eq!(pair("-m"), "gpt-6.1-sol");
+        for setting in [
+            "mcp_servers.devagentics.command=\"/bin/devagentics\"",
+            "mcp_servers.devagentics.args=[\"mcp\", \"feat-x\"]",
+            "mcp_servers.devagentics.default_tools_approval_mode=\"approve\"",
+            "model_reasoning_effort=\"medium\"",
+        ] {
+            assert!(args.contains(&setting.to_string()), "{setting}: {args:?}");
+        }
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.contains("danger") || arg == "--approve-for-me")
+        );
+        assert_eq!(args.last().unwrap(), "lead");
     }
 
     #[test]

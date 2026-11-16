@@ -258,6 +258,11 @@ enum TaskAction {
     /// (off). In its read-only sandbox it cannot write, but its shell can
     /// read host files; writers always run on Claude.
     CodexReviewers { task: String, switch: Switch },
+    /// You put this reviewed task's whole team, leader included, on Codex
+    /// (on) or not (off). Codex cannot turn its shell off: a worker's writes
+    /// stay in its snapshot and nothing has network, but its shell can read
+    /// host files. Restart the leader to move it
+    CodexTeam { task: String, switch: Switch },
     /// You turn the code graph (Graphify, code only and offline) on or off
     /// for this task's leader and workers: built per commit in the task
     /// folder, never in the project
@@ -588,6 +593,32 @@ fn run() -> Result<()> {
                         "Code reviewers started from now on may run on Codex (read-only)."
                     } else {
                         "Code reviewers started from now on run on Claude."
+                    }
+                );
+            }
+            TaskAction::CodexTeam { task, switch } => {
+                let enabled = matches!(switch, Switch::On);
+                open(&task)?.transaction(|tx| {
+                    tx.state.codex_team = enabled;
+                    tx.state.codex_reviewers |= enabled;
+                    tx.log(
+                        log::Kind::Review,
+                        None,
+                        None,
+                        if enabled {
+                            "the user put the whole team on Codex (its shell can read the host)"
+                        } else {
+                            "the team's writers and leader run on Claude again"
+                        },
+                    );
+                    Ok(())
+                })?;
+                println!(
+                    "{}",
+                    if enabled {
+                        "The team runs on Codex from now on: agents started from now, and the leader once restarted."
+                    } else {
+                        "Writers and the leader run on Claude from now on; reviewers stay as codex-reviewers says."
                     }
                 );
             }

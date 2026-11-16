@@ -168,6 +168,7 @@ impl Team<'_> {
             .agent_kind(&role.agent)
             .or_else(|error| Program::parse(&role.agent).ok_or(error))?;
         let mut launch = LaunchState::new(role, kind);
+        self.prefer_codex(&mut launch.candidates)?;
 
         // The agent is reserved before it starts, so two spawns cannot both
         // pass the rules.
@@ -422,7 +423,7 @@ impl Team<'_> {
         let state = self.task.state()?;
         let reviewed = state.workflow == crate::execution::Workflow::Reviewed;
         if reviewed {
-            reviewed_adapter(kind, &role.name, role.writes, state.codex_reviewers)?;
+            reviewed_adapter(kind, &role.name, role.writes, CodexPolicy::of(&state))?;
         }
         let first_message = opening(role, config, id, repo, AGENT_FIRST);
         let arguments = if reviewed {
@@ -716,6 +717,7 @@ impl Team<'_> {
                 .agent_kind(&resumed_role.agent)
                 .or_else(|error| Program::parse(&resumed_role.agent).ok_or(error))?;
             let mut launch = LaunchState::new(&resumed_role, kind);
+            self.prefer_codex(&mut launch.candidates)?;
             // A failed cleanup is not permission to duplicate the still-live process.
             if agent.unavailable && self.devws.pane_state(&agent.pane)? != PaneState::Gone {
                 self.devws
@@ -805,11 +807,57 @@ impl Team<'_> {
 /// read-only code reviewer, and only when the user opted in: its read-only
 /// sandbox stops writes, not reads of host files. Refused as a model
 /// failure, so the worker falls back to its next candidate (Claude).
+impl Team<'_> {
+    /// A reviewed team the user put on Codex starts each worker on its
+    /// Codex candidates; the others stay, in order, behind them.
+    fn prefer_codex(&self, candidates: &mut [crate::roles::Fallback]) -> Result<()> {
+        let state = self.task.state()?;
+        if state.workflow != crate::execution::Workflow::Reviewed
+            || CodexPolicy::of(&state) != CodexPolicy::Team
+        {
+            return Ok(());
+        }
+        let mut kinds = std::collections::HashMap::new();
+        for candidate in candidates.iter() {
+            let kind = self
+                .devws
+                .agent_kind(&candidate.agent)
+                .or_else(|error| Program::parse(&candidate.agent).ok_or(error))?;
+            kinds.insert(candidate.agent.clone(), kind);
+        }
+        candidates.sort_by_key(|candidate| kinds[&candidate.agent] != Program::Codex);
+        Ok(())
+    }
+}
+
+/// What the user let Codex run in a reviewed task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodexPolicy {
+    Off,
+    /// The read-only code reviewers (`devagentics task codex-reviewers`).
+    Reviewers,
+    /// Every role and the leader (`devagentics task codex-team`): Codex's
+    /// writes stay in a worker's snapshot, but its shell reads the host.
+    Team,
+}
+
+impl CodexPolicy {
+    pub fn of(state: &crate::state::State) -> Self {
+        if state.codex_team {
+            Self::Team
+        } else if state.codex_reviewers {
+            Self::Reviewers
+        } else {
+            Self::Off
+        }
+    }
+}
+
 fn reviewed_adapter(
     kind: Program,
     role: &str,
     writes: bool,
-    codex_reviewers: bool,
+    policy: CodexPolicy,
 ) -> std::result::Result<(), StartupFailure> {
     let refuse = |reason: &str| {
         Err(StartupFailure {
@@ -819,8 +867,9 @@ fn reviewed_adapter(
     };
     match kind {
         Program::Claude => Ok(()),
+        Program::Codex if policy == CodexPolicy::Team => Ok(()),
         Program::Codex if role == "code-reviewer" && !writes => {
-            if codex_reviewers {
+            if policy == CodexPolicy::Reviewers {
                 Ok(())
             } else {
                 refuse(
@@ -840,11 +889,83 @@ mod tests {
     use crate::agent_args::Kind as Program;
 
     #[test]
+    fn a_reviewed_team_on_codex_starts_its_workers_on_codex() {
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, _repo) = crate::board::tests::started(&dir);
+        let devws = devws.with_kind("codex", Program::Codex);
+        let team = Team {
+            task: &task,
+            home: &home,
+            devws: &devws,
+        };
+        let candidate = |agent: &str| crate::roles::Fallback {
+            agent: agent.into(),
+            model: None,
+            effort: None,
+            approvals: None,
+            sandbox: None,
+        };
+        let mut candidates = vec![candidate("claude"), candidate("codex")];
+        team.prefer_codex(&mut candidates).unwrap();
+        assert_eq!(
+            candidates[0].agent, "claude",
+            "not unless reviewed and opted in"
+        );
+        task.transaction(|tx| {
+            tx.state.workflow = crate::execution::Workflow::Reviewed;
+            tx.state.codex_team = true;
+            Ok(())
+        })
+        .unwrap();
+        team.prefer_codex(&mut candidates).unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|c| c.agent.as_str())
+                .collect::<Vec<_>>(),
+            ["codex", "claude"],
+            "Codex first, Claude kept behind it"
+        );
+    }
+
+    #[test]
+    fn a_team_the_user_put_on_codex_runs_every_role_on_it() {
+        for (role, writes) in [
+            ("backend-data", true),
+            ("planner", false),
+            ("code-reviewer", false),
+        ] {
+            assert!(
+                reviewed_adapter(Program::Codex, role, writes, CodexPolicy::Team).is_ok(),
+                "{role}"
+            );
+        }
+        assert!(reviewed_adapter(Program::Claude, "planner", false, CodexPolicy::Team).is_ok());
+        let state = crate::state::State {
+            codex_team: true,
+            ..Default::default()
+        };
+        assert_eq!(CodexPolicy::of(&state), CodexPolicy::Team);
+        let state = crate::state::State {
+            codex_reviewers: true,
+            ..Default::default()
+        };
+        assert_eq!(CodexPolicy::of(&state), CodexPolicy::Reviewers);
+        assert_eq!(CodexPolicy::of(&Default::default()), CodexPolicy::Off);
+    }
+
+    #[test]
     fn codex_runs_only_an_opted_in_read_only_reviewer() {
-        assert!(reviewed_adapter(Program::Claude, "backend-data", true, false).is_ok());
-        assert!(reviewed_adapter(Program::Codex, "code-reviewer", false, true).is_ok());
-        let refused = |kind, role, writes, opted_in| {
-            reviewed_adapter(kind, role, writes, opted_in).unwrap_err()
+        let reviewers = CodexPolicy::Reviewers;
+        assert!(reviewed_adapter(Program::Claude, "backend-data", true, CodexPolicy::Off).is_ok());
+        assert!(reviewed_adapter(Program::Codex, "code-reviewer", false, reviewers).is_ok());
+        let refused = |kind, role, writes, opted_in: bool| {
+            let policy = if opted_in {
+                reviewers
+            } else {
+                CodexPolicy::Off
+            };
+            reviewed_adapter(kind, role, writes, policy).unwrap_err()
         };
         let without_opt_in = refused(Program::Codex, "code-reviewer", false, false);
         assert_eq!(

@@ -230,6 +230,24 @@ Their conversation continues across turns. Writers and the leader always run
 on Claude. Without the opt-in, a Codex reviewer falls back to Claude.
 `application_workflow` `status` shows the reviewer adapter in use.
 
+The whole team, leader included, can run on Codex too, when you accept
+weaker isolation for that task:
+
+```sh
+devagentics task codex-team <task> on     # off: writers and the leader on Claude again
+```
+
+Workers then start on their Codex candidate (Claude stays behind it as a
+fallback). A writer's `codex exec` turns run in Codex's workspace-write sandbox
+in its own runner snapshot: it can write only there (not `/tmp`, not the rest
+of your home), with no network; checks and tests still run in the isolated
+container. A reviewer's are read-only. The leader runs interactive Codex in
+the read-only sandbox without approval prompts, with the leader tools as its
+only pre-approved tools; restart it to move it (`devagentics task start
+<folder> --leader codex`, then `devws agent run <pane> codex --agent-args
+<file>`). What Codex cannot do is turn its own shell off: every Codex agent
+can read files on the host.
+
 ### Prepare the isolated tool environment
 
 Inspect available local images and project facts through the leader's
