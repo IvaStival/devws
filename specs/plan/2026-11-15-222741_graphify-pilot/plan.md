@@ -129,3 +129,26 @@ the pilot is kept only if `devagentics bench` shows it helps.
   <task>` once the window resets; rounds 2 and 3 follow.
 - The live publisherProvider team now runs on Codex (`task codex-team`) with
   the graph on; it is not part of the measurement.
+
+### To finish step 4
+
+1. Once Claude's 5-hour window has reset, resume round 1:
+   `devagentics task resume bench-reviewed-20261115-230059` (off-1, leader
+   pane `%74`, session `dev-publisher-gaps-off-1`) and
+   `devagentics task resume bench-reviewed-20261115-230210` (on-1, `%78`,
+   `dev-publisher-gaps-on-1`). Messages sent so far, besides the first: one
+   nudge to on-1 (23:06). Both were paused during planning.
+2. Drive both with `agentic/bench/fixtures/publisher-gaps/SCRIPT.md`: the
+   nudge whenever a leader is idle with inbox messages, approval of the exact
+   baseline revision, nothing else. Log each message with its time.
+3. When each milestone is validated (or a run is stuck past its attempts),
+   save `devagentics bench report <task> --json` and check the acceptance
+   tests pass on the task branch.
+4. Rounds 2 and 3: `BENCH_SOURCE=<publisherProvider repo> scripts/bench_start.sh
+   publisher-gaps off-2 off`, then `on-2 on`; then `off-3`/`on-3`. Watch the
+   Claude account (about 20 minutes of two teams moved its 5-hour window
+   ~40 points, with other work on the account).
+5. Compare with `devagentics bench compare`, per pair and over the series:
+   first pass, corrections by category (`stale_plan_interface`,
+   `scope_omission`), graph queries, elapsed, tokens and cost. Keep the graph
+   only if it lowers corrections or tokens across the series.
