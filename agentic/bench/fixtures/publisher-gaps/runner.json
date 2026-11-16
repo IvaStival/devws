@@ -1,0 +1,11 @@
+{
+  "image_tag": "devws-runner/publisherprovider:web",
+  "configuration": {
+    "source_paths": ["web/**", "docs/**", "README.md", "CLAUDE.md", "GOAL.md"],
+    "protected_paths": [],
+    "timeout_seconds": 900,
+    "image_mounts": [{"path": "/node_modules", "target": "web/node_modules"}],
+    "memory_mb": 2048,
+    "cpus": 2
+  }
+}

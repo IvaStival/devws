@@ -6,6 +6,11 @@
 #
 #   bench_team.sh <fixture> <legacy|reviewed> [folder]
 #
+# A fixture is either a small project of its own, or a real project at a
+# fixed commit (its source.commit) with acceptance tests laid over it (its
+# tests/): BENCH_SOURCE names that project's repo, so no path or project
+# name lives in devws.
+#
 # The folder defaults to ~/Projects/devws-bench/<fixture>-<mode>-<time>. When
 # the team has stopped, `devagentics bench report <task>` measures the run;
 # docs/user/devagentics-bench.md has the protocol.
@@ -13,17 +18,18 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FIXTURES="${BENCH_FIXTURES:-$ROOT/agentic/bench/fixtures}"
 
 usage() {
   printf 'Usage: %s <fixture> <legacy|reviewed> [folder]\n' "$(basename "$0")" >&2
-  printf 'Fixtures: %s\n' "$(ls "$ROOT/agentic/bench/fixtures" | tr '\n' ' ')" >&2
+  printf 'Fixtures: %s\n' "$(ls "$FIXTURES" | tr '\n' ' ')" >&2
   exit 2
 }
 
 [[ $# -ge 2 && $# -le 3 ]] || usage
 fixture="$1"
 mode="$2"
-source="$ROOT/agentic/bench/fixtures/$fixture"
+source="$FIXTURES/$fixture"
 [[ -d "$source" ]] || { printf 'No fixture %s\n' "$fixture" >&2; usage; }
 case "$mode" in
   legacy|reviewed) ;;
@@ -37,9 +43,27 @@ if [[ -e "$folder" ]]; then
 fi
 
 mkdir -p "$(dirname "$folder")"
-cp -R "$source" "$folder"
-find "$folder" -name __pycache__ -prune -exec rm -rf {} +
-printf '__pycache__/\n' > "$folder/.gitignore"
+if [[ -f "$source/source.commit" ]]; then
+  commit="$(tr -d '[:space:]' < "$source/source.commit")"
+  if [[ -z "${BENCH_SOURCE:-}" ]]; then
+    printf '%s is a project at a fixed commit: set BENCH_SOURCE to its repo\n' "$fixture" >&2
+    exit 1
+  fi
+  git -C "$BENCH_SOURCE" cat-file -e "$commit^{commit}" 2>/dev/null || {
+    printf '%s has no commit %s\n' "$BENCH_SOURCE" "$commit" >&2
+    exit 1
+  }
+  mkdir -p "$folder"
+  git -C "$BENCH_SOURCE" archive "$commit" | tar -x -C "$folder"
+  # A team's history in the project would make the run's task start from it.
+  rm -rf "$folder/.devagentics"
+  [[ -d "$source/tests" ]] && cp -R "$source/tests/." "$folder/"
+  cp "$source/GOAL.md" "$folder/GOAL.md"
+else
+  cp -R "$source" "$folder"
+  find "$folder" -name __pycache__ -prune -exec rm -rf {} +
+  printf '__pycache__/\n' > "$folder/.gitignore"
+fi
 git -C "$folder" init -q -b main
 # The team commits there too (its history): a machine without a git identity
 # of its own gets a neutral one for this repo only.

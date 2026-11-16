@@ -47,6 +47,35 @@ test_the_fixture_acceptance_fails_until_the_team_builds_it() {
   fi
 }
 
+test_a_project_fixture_is_its_source_at_the_commit_with_the_tests_over_it() {
+  local fixtures="$TEST_ROOT/fixtures" project="$TEST_ROOT/project" folder="$TEST_ROOT/project-run" commit
+  git init -q -b main "$project"
+  printf 'one\n' > "$project/app.txt"
+  printf 'dist/\n' > "$project/.gitignore"
+  mkdir -p "$project/.devagentics/history/old-task"
+  printf '{}\n' > "$project/.devagentics/history/old-task/history.json"
+  git -C "$project" add -A
+  git -C "$project" -c user.name=t -c user.email=t@t commit -q -m one
+  commit="$(git -C "$project" rev-parse HEAD)"
+  printf 'two\n' > "$project/app.txt"
+  git -C "$project" -c user.name=t -c user.email=t@t commit -q -am two
+  mkdir -p "$fixtures/gaps/tests/spec"
+  printf '%s\n' "$commit" > "$fixtures/gaps/source.commit"
+  printf '# Goal\n' > "$fixtures/gaps/GOAL.md"
+  printf 'test\n' > "$fixtures/gaps/tests/spec/acceptance.txt"
+
+  ! BENCH_FIXTURES="$fixtures" "$BENCH" gaps reviewed "$folder" >/dev/null 2>&1 ||
+    fail "a project fixture ran without BENCH_SOURCE"
+  BENCH_FIXTURES="$fixtures" BENCH_SOURCE="$project" "$BENCH" gaps reviewed "$folder" >/dev/null ||
+    fail "preparing a project fixture failed"
+  [[ "$(cat "$folder/app.txt")" == one ]] || fail "the run is not the fixture's commit"
+  [[ -f "$folder/spec/acceptance.txt" && -f "$folder/GOAL.md" ]] || fail "tests or goal missing"
+  [[ "$(cat "$folder/.gitignore")" == dist/ ]] || fail "the project's .gitignore was replaced"
+  [[ ! -e "$folder/source.commit" ]] || fail "fixture metadata leaked into the run"
+  [[ ! -e "$folder/.devagentics" ]] || fail "the project's team history would seed the run"
+  [[ -z "$(git -C "$folder" status --porcelain)" ]] || fail "the run is not committed"
+}
+
 test_bad_arguments_and_reused_folders_are_refused() {
   ! "$BENCH" notes >/dev/null 2>&1 || fail "a missing mode was accepted"
   ! "$BENCH" nope reviewed "$TEST_ROOT/x" >/dev/null 2>&1 || fail "an unknown fixture was accepted"
@@ -58,6 +87,7 @@ test_bad_arguments_and_reused_folders_are_refused() {
 test_a_run_starts_from_a_fresh_committed_copy_of_the_fixture
 test_a_legacy_run_creates_its_legacy_task_first
 test_the_fixture_acceptance_fails_until_the_team_builds_it
+test_a_project_fixture_is_its_source_at_the_commit_with_the_tests_over_it
 test_bad_arguments_and_reused_folders_are_refused
 
 printf 'Bench tests passed.\n'
