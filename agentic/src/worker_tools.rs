@@ -187,7 +187,9 @@ fn codex_turn(
     let output = child.stdout.take().context("codex output")?;
     for line in std::io::BufReader::new(output).lines() {
         let line = line?;
-        println!("{line}");
+        if let Some(text) = readable(&line) {
+            println!("{text}");
+        }
         if started.is_none() {
             started = thread_id(&line);
         }
@@ -202,6 +204,67 @@ fn codex_turn(
         })?;
     }
     Ok(status)
+}
+
+/// What a line of `codex exec --json` output shows in the worker's pane: its
+/// messages, tool calls, commands, errors and the turn's tokens; nothing for
+/// the protocol's bookkeeping; a line that is not an event, as it is.
+pub fn readable(line: &str) -> Option<String> {
+    let Ok(event) = serde_json::from_str::<Value>(line) else {
+        return Some(line.to_string());
+    };
+    let item = &event["item"];
+    match (event["type"].as_str(), item["type"].as_str()) {
+        (Some("item.completed"), Some("agent_message")) => Some(
+            item["text"]
+                .as_str()
+                .unwrap_or_default()
+                .trim_end()
+                .to_string(),
+        ),
+        (Some("item.completed"), Some("mcp_tool_call")) => {
+            let action = item["arguments"]["action"].as_str().unwrap_or("");
+            let mut text = format!("• {} {action}", item["tool"].as_str().unwrap_or("tool"))
+                .trim_end()
+                .to_string();
+            if item["status"] == "failed" {
+                let why = item["error"]["message"]
+                    .as_str()
+                    .unwrap_or("no reason given");
+                text.push_str(&format!(": failed ({why})"));
+            }
+            Some(text)
+        }
+        (Some("item.completed"), Some("command_execution")) => {
+            let command = item["command"].as_str().unwrap_or_default();
+            // Codex wraps each command in a login shell; show the command.
+            let command = command
+                .strip_prefix("/bin/bash -lc '")
+                .and_then(|inner| inner.strip_suffix('\''))
+                .unwrap_or(command);
+            Some(match item["exit_code"].as_i64() {
+                Some(0) | None => format!("$ {command}"),
+                Some(code) => format!("$ {command}  (exit {code})"),
+            })
+        }
+        (Some("turn.completed"), _) => {
+            let usage = &event["usage"];
+            Some(format!(
+                "── turn done · {} in ({} cached) · {} out",
+                usage["input_tokens"].as_u64().unwrap_or(0),
+                usage["cached_input_tokens"].as_u64().unwrap_or(0),
+                usage["output_tokens"].as_u64().unwrap_or(0)
+            ))
+        }
+        (Some("error" | "turn.failed"), _) => Some(format!(
+            "! {}",
+            event["message"]
+                .as_str()
+                .or(event["error"]["message"].as_str())
+                .unwrap_or("Codex reported an error")
+        )),
+        _ => None,
+    }
 }
 
 /// The conversation id in a line of `codex exec --json` output.
@@ -790,6 +853,65 @@ mod tests {
                 .any(|arg| arg.contains("danger") || arg == "--approve-for-me")
         );
         assert_eq!(args.last().unwrap(), "lead");
+    }
+
+    #[test]
+    fn a_codex_turn_shows_as_readable_lines_not_raw_events() {
+        let shown = |event: &str| readable(event);
+        assert_eq!(
+            shown(
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"I will check the status.\n"}}"#
+            ),
+            Some("I will check the status.".into())
+        );
+        assert_eq!(
+            shown(
+                r#"{"type":"item.completed","item":{"type":"mcp_tool_call","server":"devagentics_worker","tool":"worker","arguments":{"action":"status"},"status":"completed"}}"#
+            ),
+            Some("• worker status".into())
+        );
+        assert_eq!(
+            shown(
+                r#"{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"worker","arguments":{"action":"check"},"error":{"message":"denied"},"status":"failed"}}"#
+            ),
+            Some("• worker check: failed (denied)".into())
+        );
+        assert_eq!(
+            shown(
+                r#"{"type":"item.completed","item":{"type":"command_execution","command":"/bin/bash -lc 'ls src'","exit_code":0}}"#
+            ),
+            Some("$ ls src".into())
+        );
+        assert_eq!(
+            shown(
+                r#"{"type":"item.completed","item":{"type":"command_execution","command":"/bin/bash -lc 'touch x'","exit_code":1}}"#
+            ),
+            Some("$ touch x  (exit 1)".into())
+        );
+        assert_eq!(
+            shown(
+                r#"{"type":"turn.completed","usage":{"input_tokens":61062,"cached_input_tokens":54400,"output_tokens":127}}"#
+            ),
+            Some("── turn done · 61062 in (54400 cached) · 127 out".into())
+        );
+        assert_eq!(
+            shown(r#"{"type":"error","message":"rate limited"}"#),
+            Some("! rate limited".into())
+        );
+        assert_eq!(
+            shown(r#"{"type":"turn.started"}"#),
+            None,
+            "bookkeeping is not shown"
+        );
+        assert_eq!(
+            shown(r#"{"type":"item.started","item":{"type":"command_execution"}}"#),
+            None
+        );
+        assert_eq!(
+            shown("not json"),
+            Some("not json".into()),
+            "anything else as it is"
+        );
     }
 
     #[test]
