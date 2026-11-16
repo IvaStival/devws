@@ -14,6 +14,13 @@ pub fn own() -> Result<PathBuf> {
     usable(&std::env::current_exe()?)
 }
 
+/// The binary that replaced this running one, when a reinstall did: a
+/// long-running server hands its work to it so it never serves old code.
+pub fn replacement(running: &Path) -> Option<PathBuf> {
+    let path = installed(running);
+    (path != running && path.exists()).then_some(path)
+}
+
 fn usable(running: &Path) -> Result<PathBuf> {
     let path = installed(running);
     if !path.exists() {
@@ -44,6 +51,17 @@ mod tests {
         std::fs::write(&binary, "").unwrap();
         let running = PathBuf::from(format!("{}{DELETED}", binary.display()));
         assert_eq!(usable(&running).unwrap(), binary);
+    }
+
+    #[test]
+    fn only_a_replaced_binary_with_its_replacement_hands_over() {
+        let folder = tempfile::tempdir().unwrap();
+        let binary = folder.path().join("devagentics");
+        let replaced = PathBuf::from(format!("{}{DELETED}", binary.display()));
+        assert_eq!(replacement(&replaced), None, "nothing installed yet");
+        std::fs::write(&binary, "").unwrap();
+        assert_eq!(replacement(&replaced), Some(binary.clone()));
+        assert_eq!(replacement(&binary), None, "the running one is current");
     }
 
     #[test]

@@ -14,9 +14,11 @@ use crate::status;
 use crate::task::Task;
 use crate::team::Team;
 use crate::watch::format_line;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
+use std::ffi::OsString;
 use std::io::{BufRead, Write};
+use std::path::{Path, PathBuf};
 
 /// What a client without a preference is told.
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -305,11 +307,42 @@ fn strings(arguments: &Value, key: &str) -> Result<Vec<String>> {
 }
 
 impl Server<'_> {
-    /// Answers requests from `input` until it ends.
-    pub fn serve(&self, input: impl BufRead, mut output: impl Write) -> Result<()> {
+    /// Answers requests from `input` until it ends. Once a reinstall has
+    /// replaced this binary, the installed one answers instead, so the
+    /// leader never runs old tools until its next start.
+    pub fn serve(&self, input: impl BufRead, output: impl Write) -> Result<()> {
+        let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
+        self.serve_with(input, output, || {
+            let running = std::env::current_exe().ok()?;
+            let binary = crate::executable::replacement(&running)?;
+            Some((binary, arguments.clone()))
+        })
+    }
+
+    fn serve_with(
+        &self,
+        input: impl BufRead,
+        mut output: impl Write,
+        replacement: impl Fn() -> Option<(PathBuf, Vec<OsString>)>,
+    ) -> Result<()> {
+        let mut announced = false;
         for line in input.lines() {
             let line = line?;
             if line.trim().is_empty() {
+                continue;
+            }
+            if let Some((binary, arguments)) = replacement() {
+                if !announced {
+                    // The client reloads the tools, so it sees the new ones.
+                    writeln!(
+                        output,
+                        "{}",
+                        json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+                    )?;
+                    announced = true;
+                }
+                output.write_all(&relayed(&binary, &arguments, &line))?;
+                output.flush()?;
                 continue;
             }
             let response = match serde_json::from_str::<Value>(&line) {
@@ -333,7 +366,7 @@ impl Server<'_> {
                 id,
                 json!({
                     "protocolVersion": request["params"]["protocolVersion"].as_str().unwrap_or(PROTOCOL_VERSION),
-                    "capabilities": { "tools": {} },
+                    "capabilities": { "tools": { "listChanged": true } },
                     "serverInfo": { "name": "devagentics", "version": env!("CARGO_PKG_VERSION") },
                 }),
             ),
@@ -341,7 +374,9 @@ impl Server<'_> {
             "tools/list" => success(id, json!({ "tools": tools() })),
             "tools/call" => {
                 let name = request["params"]["name"].as_str().unwrap_or("");
-                let result = self.call(name, &request["params"]["arguments"]);
+                let result = self
+                    .call(name, &request["params"]["arguments"])
+                    .and_then(|text| fitting(name, text));
                 success(
                     id,
                     match result {
@@ -490,12 +525,12 @@ impl Server<'_> {
 
     fn call_inner(&self, name: &str, arguments: &Value) -> Result<String> {
         match name {
-            "application_workflow" => Ok(serde_json::to_string_pretty(&crate::workflow::call(
+            "application_workflow" => Ok(serde_json::to_string(&crate::workflow::call(
                 self.task,
                 &string(arguments, "action")?,
                 arguments.get("input").unwrap_or(&json!({})),
             )?)?),
-            "task_status" => Ok(serde_json::to_string_pretty(&status::summary(
+            "task_status" => Ok(serde_json::to_string(&status::summary(
                 self.task, self.devws, self.home,
             )?)?),
             "approve_plan" => {
@@ -728,6 +763,58 @@ impl Server<'_> {
     }
 }
 
+/// One request line answered by a fresh `binary` server with `arguments`:
+/// a request carries all it needs, so nothing is lost between servers. When
+/// that server cannot answer, the request gets the reason.
+fn relayed(binary: &Path, arguments: &[OsString], line: &str) -> Vec<u8> {
+    let answer = (|| -> Result<Vec<u8>> {
+        let mut child = std::process::Command::new(binary)
+            .args(arguments)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .with_context(|| format!("starting the installed devagentics at {}", binary.display()))?;
+        child
+            .stdin
+            .take()
+            .context("no input to the installed devagentics")?
+            .write_all(format!("{line}\n").as_bytes())?;
+        let output = child.wait_with_output()?;
+        ensure!(
+            output.status.success(),
+            "the installed devagentics at {} failed ({})",
+            binary.display(),
+            output.status
+        );
+        Ok(output.stdout)
+    })();
+    answer.unwrap_or_else(|error| {
+        let id = serde_json::from_str::<Value>(line)
+            .ok()
+            .and_then(|request| request.get("id").cloned());
+        match id {
+            Some(id) => format!("{}\n", failure(id, -32603, &format!("{error:#}"))).into_bytes(),
+            None => Vec::new(),
+        }
+    })
+}
+
+/// The most a tool result may hold: past it Claude Code saves the result to
+/// a file, which an MCP-only leader cannot open.
+const MAX_RESULT_CHARS: usize = 80_000;
+
+/// A result too big for the leader becomes what to ask for instead.
+fn fitting(name: &str, text: String) -> Result<String> {
+    let size = text.chars().count();
+    ensure!(
+        size <= MAX_RESULT_CHARS,
+        "{name}'s result is {} KB, more than your tools take in ({} KB). Ask for less: application_workflow status takes section (runner, ready_work, reviews, …) and, for application or proposal, items [ids].",
+        size / 1000,
+        MAX_RESULT_CHARS / 1000
+    );
+    Ok(text)
+}
+
 fn success(id: Value, result: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "result": result })
 }
@@ -790,6 +877,59 @@ mod tests {
                     .to_string(),
             )
         }
+    }
+
+    #[test]
+    fn a_replaced_server_hands_each_request_to_the_installed_binary() {
+        let f = fixture();
+        let folder = TempDir::new().unwrap();
+        let installed = folder.path().join("devagentics");
+        // The installed binary stands in as an echo: its answer is the request.
+        std::fs::write(&installed, "#!/bin/sh\ncat\n").unwrap();
+        std::fs::set_permissions(&installed, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let requests = "{\"id\":1,\"method\":\"tools/list\"}\n{\"id\":2,\"method\":\"ping\"}\n";
+        let mut output = Vec::new();
+        f.server()
+            .serve_with(Cursor::new(requests), &mut output, || {
+                Some((installed.clone(), vec!["mcp".into(), "feat-x".into()]))
+            })
+            .unwrap();
+        let lines: Vec<&str> = std::str::from_utf8(&output).unwrap().lines().collect();
+        assert_eq!(
+            lines,
+            [
+                r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#,
+                r#"{"id":1,"method":"tools/list"}"#,
+                r#"{"id":2,"method":"ping"}"#,
+            ],
+            "the tools reload once, then every answer is the installed one's"
+        );
+
+        let missing = relayed(&folder.path().join("gone"), &[], r#"{"id":5,"method":"ping"}"#);
+        let answer: Value = serde_json::from_slice(&missing).unwrap();
+        assert_eq!(answer["id"], 5);
+        assert!(answer["error"]["message"].as_str().unwrap().contains("starting the installed devagentics"));
+        assert!(relayed(&folder.path().join("gone"), &[], r#"{"method":"note"}"#).is_empty(), "a notification gets no answer");
+    }
+
+    #[test]
+    fn a_current_server_answers_itself() {
+        let f = fixture();
+        let mut output = Vec::new();
+        f.server()
+            .serve_with(Cursor::new("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}\n"), &mut output, || None)
+            .unwrap();
+        let answer: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(answer["id"], 3);
+        assert_eq!(answer["result"], json!({}));
+    }
+
+    #[test]
+    fn a_result_too_big_for_the_leader_says_what_to_ask_for() {
+        let error = fitting("task_status", "x".repeat(MAX_RESULT_CHARS + 1)).unwrap_err().to_string();
+        assert!(error.contains("80 KB"), "{error}");
+        assert!(error.contains("section"), "{error}");
+        assert_eq!(fitting("task_status", "small".into()).unwrap(), "small");
     }
 
     #[test]

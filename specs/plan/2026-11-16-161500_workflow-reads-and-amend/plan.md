@@ -1,6 +1,6 @@
 # Workflow status in pieces, and baseline amendments
 
-Status: built and installed (2026-11-16, approved by the user); live check pending
+Status: built and installed (2026-11-16, approved by the user); live check done
 
 ## Why
 

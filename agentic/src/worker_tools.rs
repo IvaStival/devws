@@ -370,7 +370,7 @@ pub fn mcp(task: &Task, agent: &str, identity: &Path) -> Result<()> {
                 json!({"protocolVersion":request["params"]["protocolVersion"].as_str().unwrap_or("2024-11-05"),"capabilities":{"tools":{}},"serverInfo":{"name":"devagentics_worker","version":env!("CARGO_PKG_VERSION")}})
             }
             "tools/list" => {
-                json!({"tools":[{"name":"worker","description":"Scoped worker tools. action=status, execute, checkpoint, check, report, plan_proposal (input.application: the whole next revision), plan_amend (input.changes: only what changes in the next revision, by id, null removes; input.reason), application_read (the baseline as an outline; input.items [ids]: their full contracts; input.proposal true: the pending proposal), plan_write (input.plan: the execution plan of your order's step, markdown), plan_read (the plan your order follows, or input.step), ask_user, review_diff, review_submit, graph, ask or answer. Execute runs only inside the isolated source container. No leader, database or external-action permissions.","inputSchema":{"type":"object","properties":{"action":{"type":"string"},"input":{"type":"object"}},"required":["action"]}}]})
+                json!({"tools":[{"name":"worker","description":"Scoped worker tools. action=status, execute, checkpoint, check, report, plan_proposal (input.application: the whole next revision), plan_amend (input.changes: only what changes in the next revision, by id, null removes; input.reason), application_read (the baseline as an outline; input.items [ids]: their full contracts; input.proposal true: the pending proposal), plan_write (input.plan: the execution plan of your order's step, markdown), plan_read (the plan your order or review follows, or input.step), ask_user, review_diff (the candidate diff, the plan it follows and its check results: profiles, exit codes, times, diagnostics), review_submit, graph, ask or answer. Execute runs only inside the isolated source container. No leader, database or external-action permissions.","inputSchema":{"type":"object","properties":{"action":{"type":"string"},"input":{"type":"object"}},"required":["action"]}}]})
             }
             "tools/call" => {
                 let result = (|| {
@@ -492,12 +492,14 @@ pub fn call(task: &Task, agent: &str, action: &str, input: &Value) -> Result<Val
             }
         }
         "plan_read" => {
-            // The plan its order follows, unless it names another step.
+            // The plan its order, or the order it reviews, follows, unless it
+            // names a step: a step planned elsewhere gives that plan.
             let step = match input["step"].as_str() {
+                Some(step) if crate::plans::read(task, step).is_err() => {
+                    plan_of_step(&state, step).unwrap_or_else(|| step.to_string())
+                }
                 Some(step) => step.to_string(),
-                None => state
-                    .open_order_of(agent)
-                    .and_then(|order| order.plan.clone())
+                None => followed_plan(&state, agent)
                     .context("your order follows no plan: name the step")?,
             };
             Ok(json!({"step":step,"plan":crate::plans::read(task,&step)?}))
@@ -567,7 +569,7 @@ pub fn call(task: &Task, agent: &str, action: &str, input: &Value) -> Result<Val
             let author = state.agent(&review.author).context("unknown author")?;
             let repo = crate::lanes::workplace(task, author)?;
             Ok(
-                json!({"review":review,"diff":crate::checks::git(&repo.worktree,&["diff","--no-ext-diff","--no-textconv",&review_range(review)])?}),
+                json!({"review":review,"diff":crate::checks::git(&repo.worktree,&["diff","--no-ext-diff","--no-textconv",&review_range(review)])?,"plan":state.orders.iter().find(|order|order.id==review.order).and_then(|order|order.plan.clone()),"checks":crate::reviews::check_results(&state,review)}),
             )
         }
         "graph" => {
@@ -596,6 +598,25 @@ pub fn call(task: &Task, agent: &str, action: &str, input: &Value) -> Result<Val
         _ => bail!("action is not in the worker capability catalog"),
     }
 }
+/// The plan an agent works by: its open order's, or the reviewed order's.
+fn followed_plan(state: &crate::state::State, agent: &str) -> Option<String> {
+    let order = state.open_order_of(agent).or_else(|| {
+        let review = crate::reviews::pending(state, agent)?;
+        state.orders.iter().find(|order| order.id == review.order)
+    })?;
+    order.plan.clone()
+}
+
+/// The plan the latest order for `step` followed (B1-1's is B1-1-plan).
+fn plan_of_step(state: &crate::state::State, step: &str) -> Option<String> {
+    state
+        .orders
+        .iter()
+        .rev()
+        .find(|order| order.step == step)
+        .and_then(|order| order.plan.clone())
+}
+
 /// The code an agent's graph questions are about: a reviewer's pending
 /// review candidate (the exact merge it judges), else the agent's own lane
 /// or repo at its last commit.
@@ -828,6 +849,38 @@ pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reviewer_reads_the_plan_of_the_order_it_reviews() {
+        let order = |id: &str, step: &str, plan: Option<&str>| crate::state::Order {
+            id: id.into(),
+            step: step.into(),
+            agent: "hammer-7".into(),
+            text: String::new(),
+            allowed: vec![],
+            forbidden: vec![],
+            check: None,
+            base: String::new(),
+            status: crate::state::OrderStatus::Closed,
+            delivered: true,
+            stalled: false,
+            plan: plan.map(str::to_string),
+        };
+        let state = crate::state::State {
+            orders: vec![order("o140", "B1-1", None), order("o161", "B1-1", Some("B1-1-plan"))],
+            reviews: vec![crate::reviews::Review {
+                id: "r171".into(),
+                order: "o161".into(),
+                reviewer: "code-reviewer-3".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(followed_plan(&state, "code-reviewer-3").as_deref(), Some("B1-1-plan"));
+        assert_eq!(followed_plan(&state, "nobody"), None);
+        assert_eq!(plan_of_step(&state, "B1-1").as_deref(), Some("B1-1-plan"));
+        assert_eq!(plan_of_step(&state, "B9"), None);
+    }
 
     #[test]
     fn a_review_shows_the_whole_step_even_after_several_orders() {

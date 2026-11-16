@@ -168,19 +168,37 @@ pub fn catch_up(task: &Task, lane: &Lane) -> Result<()> {
         return Ok(());
     }
     if task.state()?.workflow == crate::execution::Workflow::Reviewed {
-        anyhow::ensure!(
-            checks::inspect(&lane.worktree, "HEAD", &[], &[])?
-                .uncommitted
-                .is_empty(),
-            "lane has uncommitted changes"
-        );
-        return git(&lane.worktree,&["merge","--ff-only","--no-edit",&branch]).map(|_|()).context("divergent lane requires a separately reviewed integration; no automatic conflict-resolution code was merged");
+        return catch_up_reviewed(&lane.worktree, &branch, &lane.name);
     }
     merge(
         &lane.worktree,
         &branch,
         &format!("catching lane {} up", lane.name),
     )
+}
+
+/// A reviewed lane takes no code it was not reviewed with: the task's branch
+/// only by fast-forward, or by a merge when all the branch added is the
+/// team's own history, which no lane writes (accepting a planning step
+/// commits it while a lane still holds its unmerged candidate).
+fn catch_up_reviewed(worktree: &Path, branch: &str, lane: &str) -> Result<()> {
+    anyhow::ensure!(
+        checks::inspect(worktree, "HEAD", &[], &[])?
+            .uncommitted
+            .is_empty(),
+        "lane has uncommitted changes"
+    );
+    if git(worktree, &["merge", "--ff-only", "--no-edit", branch]).is_ok() {
+        return Ok(());
+    }
+    let added = git(worktree, &["diff", "--name-only", &format!("HEAD...{branch}")])?;
+    let history = format!("{}/", crate::history::FOLDER);
+    if !added.lines().all(|path| path.starts_with(&history)) {
+        bail!(
+            "divergent lane requires a separately reviewed integration; no automatic conflict-resolution code was merged"
+        );
+    }
+    merge(worktree, branch, &format!("catching lane {lane} up with the team's history"))
 }
 
 /// An accepted step: the lane's work goes into the task's branch.
@@ -462,6 +480,33 @@ mod tests {
             std::fs::read_to_string(back.worktree.join("backend/api.rs")).unwrap(),
             "api fixed\n"
         );
+    }
+
+    /// A reviewed lane holding its candidate takes the team's history the
+    /// task's branch got since, but never code it was not reviewed with.
+    #[test]
+    fn a_reviewed_lane_takes_only_the_teams_history_by_merge() {
+        let dir = TempDir::new().unwrap();
+        let (_home, _devws, task, repo) = started(&dir);
+        let branch = task.config().unwrap().branch;
+        let front = add(&task, "front", &["frontend/**".into()], None).unwrap();
+        commit_file(&front.worktree, "frontend/page.ts", "page\n", "candidate");
+        commit_file(
+            repo.path(),
+            ".devagentics/history/feat-x/history.json",
+            "{}\n",
+            "record a planning step",
+        );
+        catch_up_reviewed(&front.worktree, &branch, "front").unwrap();
+        assert!(front.worktree.join(".devagentics/history/feat-x/history.json").exists());
+        assert!(front.worktree.join("frontend/page.ts").exists(), "the candidate stays");
+
+        commit_file(repo.path(), "backend/api.rs", "api\n", "unreviewed code");
+        let error = catch_up_reviewed(&front.worktree, &branch, "front")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("separately reviewed integration"), "{error}");
+        assert!(!front.worktree.join("backend/api.rs").exists());
     }
 
     /// A merge that fails without a conflict (a repo locked by another git)

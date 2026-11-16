@@ -150,7 +150,10 @@ pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
     crate::check_profiles::validate(&profiles)?;
     let check = request.check.clone().or(repo.check.clone());
     if check.is_some() && !profiles.selected.is_empty() {
-        bail!("legacy check and named profiles cannot be mixed");
+        bail!(
+            "this repo checks with named profiles ({}): leave out check, or choose profiles",
+            profiles.selected.join(", ")
+        );
     }
     let allowed = match &lane {
         Some(lane) if request.allowed.is_empty() => lane.globs.clone(),
@@ -566,7 +569,9 @@ pub(crate) fn authoritative<'a>(
     }
     let current = state
         .open_order_of(agent)
-        .context("no open order to report on")?;
+        .with_context(|| {
+            format!("order {id} is not open ({agent} has no open order): a new order for its step runs its checks again")
+        })?;
     if current.id != id || current.agent != agent || !current.delivered {
         bail!(
             "order {id} is stale, foreign or undelivered; current order is {}",
@@ -1208,6 +1213,29 @@ mod tests {
         assert!(worker.join().unwrap().is_err());
         assert_eq!(status(&f, "s1"), StepStatus::Ordered);
         assert!(f.task.state().unwrap().check_evidence.is_empty());
+    }
+
+    #[test]
+    fn order_and_check_errors_say_what_to_do() {
+        let f = fixture(None);
+        let profiles = serde_json::json!({"environments":{"testing":{}}, "checks":{"unit":{"command":"true","environment":"testing"}}, "selected":["unit"]});
+        crate::check_profiles::configure(&f.task, "app", serde_json::from_value(profiles).unwrap())
+            .unwrap();
+        let mut with_check = request("s1");
+        with_check.check = Some("true".into());
+        let error = send_order(&f.task, with_check).unwrap_err().to_string();
+        assert!(error.contains("named profiles (unit): leave out check"), "{error}");
+
+        let id = send_order(&f.task, request("s1")).unwrap();
+        f.task
+            .transaction(|tx| {
+                tx.state.orders[0].status = OrderStatus::Closed;
+                Ok(())
+            })
+            .unwrap();
+        let error = crate::check_profiles::run(&f.task, &id, None).unwrap_err().to_string();
+        assert!(error.contains(&format!("order {id} is not open")), "{error}");
+        assert!(error.contains("a new order for its step"), "{error}");
     }
 
     #[test]

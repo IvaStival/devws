@@ -71,6 +71,25 @@ pub fn pending<'a>(state: &'a crate::state::State, reviewer: &str) -> Option<&'a
         .iter()
         .find(|review| review.reviewer == reviewer && review.verdict.is_none())
 }
+/// What the checks found, readable by a reviewer who cannot run them: the
+/// author's checks of the order and the candidate check of the exact merge,
+/// each profile with its outcome, exit code, time and diagnostic.
+pub fn check_results(state: &crate::state::State, review: &Review) -> serde_json::Value {
+    let phases = |phases: &[crate::check_profiles::Phase]| {
+        phases
+            .iter()
+            .map(|phase| serde_json::json!({"profile":phase.profile,"outcome":phase.outcome,"exit_code":phase.exit_code,"seconds":phase.seconds,"diagnostic":phase.diagnostic}))
+            .collect::<Vec<_>>()
+    };
+    let order = state.check_evidence.get(&review.order).map(|evidence| {
+        serde_json::json!({"head":evidence.head,"passed":evidence.passed(),"phases":phases(&evidence.phases)})
+    });
+    let candidate = state.candidate_evidence.get(&review.candidate.tree).map(|evidence| {
+        serde_json::json!({"tree":evidence.tree,"passed":evidence.passed(),"phases":phases(&evidence.phases)})
+    });
+    serde_json::json!({"order":order,"candidate":candidate})
+}
+
 pub fn resumption(state: &crate::state::State, reviewer: &str) -> Option<String> {
     pending(state, reviewer).map(|review| format!("Resume independent review {} for order {}. Call status and review_diff, inspect the immutable candidate through execute, then review_submit. Do not modify code.", review.id, review.order))
 }
@@ -530,6 +549,46 @@ pub fn require_approval(task: &Task, step: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_reviewer_reads_the_check_results_of_what_it_reviews() {
+        use crate::check_profiles::{Evidence, Outcome, Phase};
+        let phase = |profile: &str| Phase {
+            profile: profile.into(),
+            outcome: Outcome::Passed,
+            exit_code: Some(0),
+            seconds: 170,
+            diagnostic: "ok".into(),
+            log: "/x/log".into(),
+        };
+        let mut state = crate::state::State::default();
+        let review = Review {
+            order: "o161".into(),
+            candidate: crate::integration::Candidate {
+                tree: "t1".into(),
+                ..Default::default()
+            },
+            ..Review::default()
+        };
+        state.check_evidence.insert(
+            "o161".into(),
+            Evidence {
+                order: "o161".into(),
+                revision: 0,
+                base: "b".into(),
+                head: "h".into(),
+                configuration: "c".into(),
+                run: "/x".into(),
+                phases: vec![phase("lint"), phase("test")],
+            },
+        );
+        let results = check_results(&state, &review);
+        assert_eq!(results["order"]["passed"], true);
+        assert_eq!(results["order"]["phases"][1]["profile"], "test");
+        assert_eq!(results["order"]["phases"][1]["exit_code"], 0);
+        assert!(results["order"]["phases"][1].get("log").is_none(), "a path it cannot open");
+        assert!(results["candidate"].is_null(), "no candidate check yet");
+    }
+
     #[test]
     fn absent_review_blocks_before_acceptance_and_preserves_refs() {
         let root = tempfile::TempDir::new().unwrap();
