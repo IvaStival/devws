@@ -251,7 +251,11 @@ test_mark_sets_the_state_the_sidebar_shows() {
   [ "$(tmux show-option -qv -t =mark: @devws_agent_state)" = waiting ] || fail "mark did not reach the workspace's state"
   "$SCRIPTS/agent_cli.sh" mark "$pane" done
   [ "$(tmux show-option -qv -t =mark: @devws_agent_state)" = done ] || fail "mark done did not reach the workspace"
-  [ "$(status_of "$SCRIPTS/agent_cli.sh" mark "$pane" working)" = 2 ] || fail "mark accepted a state agents report themselves"
+  # A managed devAgentics worker runs its provider with hooks off, so its
+  # supervisor reports working for it.
+  "$SCRIPTS/agent_cli.sh" mark "$pane" working
+  [ "$(tmux show-options -pqv -t "$pane" @devws_pane_state)" = working ] || fail "mark working did not set the pane's state"
+  [ "$(status_of "$SCRIPTS/agent_cli.sh" mark "$pane" idle)" = 2 ] || fail "mark accepted a state it does not set"
 }
 
 test_stop_ends_the_agent_and_clears_its_state() {
