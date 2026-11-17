@@ -678,7 +678,10 @@ mod tests {
         assert_eq!(results["order"]["passed"], true);
         assert_eq!(results["order"]["phases"][1]["profile"], "test");
         assert_eq!(results["order"]["phases"][1]["exit_code"], 0);
-        assert!(results["order"]["phases"][1].get("log").is_none(), "a path it cannot open");
+        assert!(
+            results["order"]["phases"][1].get("log").is_none(),
+            "a path it cannot open"
+        );
         assert!(results["candidate"].is_null(), "no candidate check yet");
     }
 

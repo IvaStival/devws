@@ -796,7 +796,10 @@ fn drawn_body(
             .collect::<String>()
             .contains('▸')
     });
-    dialog_body_of(dialog_area(&rows[nav.index].detail, width, height, anchor, false), false)
+    dialog_body_of(
+        dialog_area(&rows[nav.index].detail, width, height, anchor, false),
+        false,
+    )
 }
 
 #[test]
@@ -1126,13 +1129,19 @@ fn a_review_the_leader_left_is_in_its_backlog_not_under_needs_you() {
         .map(|entry| entry.id.as_str())
         .collect();
     assert!(!needs_you.contains(&"step:s0"), "{needs_you:?}");
-    assert_eq!(crate::board_view::message_about("step:s0"), Some(crate::leader::About::Step("s0".into())));
+    assert_eq!(
+        crate::board_view::message_about("step:s0"),
+        Some(crate::leader::About::Step("s0".into()))
+    );
 
     let mut unknown = board;
     unknown.stale_review[0].waiting = None;
     let rows = entries(&unknown, View::Overview, false, &[], None);
     let stale = rows.iter().find(|entry| entry.id == "step:s0").unwrap();
-    assert_eq!(stale.tail, "check failed", "no time known: its state instead");
+    assert_eq!(
+        stale.tail, "check failed",
+        "no time known: its state instead"
+    );
 }
 
 #[test]
@@ -1147,7 +1156,11 @@ fn the_leader_question_to_you_comes_first_under_needs_you() {
     let asks = &rows[needs_you + 2];
     assert_eq!(asks.id, "leader-asks");
     assert_eq!(asks.label, "● leader asks: A or B for the runner?");
-    assert!(asks.detail.contains("A or B for the runner?"), "{}", asks.detail);
+    assert!(
+        asks.detail.contains("A or B for the runner?"),
+        "{}",
+        asks.detail
+    );
     assert_eq!(
         crate::board_view::message_about("leader-asks"),
         Some(crate::leader::About::General)
@@ -1217,7 +1230,11 @@ fn a_step_that_failed_for_good_needs_you_with_a_red_cross() {
     assert_eq!(step_mark(StepStatus::Exhausted), '✕');
     assert_eq!(mark_color(Some('✕')), Some(Color::Red));
     assert_eq!(step_word(StepStatus::Exhausted), "failed");
-    assert_ne!(step_word(StepStatus::Failed), "failed", "two statuses, one word");
+    assert_ne!(
+        step_word(StepStatus::Failed),
+        "failed",
+        "two statuses, one word"
+    );
     assert!(failed.attention);
 }
 
@@ -1226,59 +1243,146 @@ fn the_accounts_card_sits_under_the_leader_with_a_switch_for_each() {
     use crate::board::AccountSwitch;
     let mut board = board();
     board.switches = vec![
-        AccountSwitch { name: "codex".into(), enabled: true, five_hour: Some(19), week: Some(41), leader_on: true },
-        AccountSwitch { name: "claude".into(), enabled: false, five_hour: Some(40), week: Some(22), leader_on: false },
-        AccountSwitch { name: "claude_work".into(), enabled: false, five_hour: None, week: None, leader_on: true },
+        AccountSwitch {
+            name: "codex".into(),
+            enabled: true,
+            five_hour: Some(19),
+            week: Some(41),
+            leader_on: true,
+        },
+        AccountSwitch {
+            name: "claude".into(),
+            enabled: false,
+            five_hour: Some(40),
+            week: Some(22),
+            leader_on: false,
+        },
+        AccountSwitch {
+            name: "claude_work".into(),
+            enabled: false,
+            five_hour: None,
+            week: None,
+            leader_on: true,
+        },
     ];
     let rows = entries(&board, View::Overview, false, &[], None);
-    let place = |id: &str| rows.iter().position(|entry| entry.id == id).unwrap_or_else(|| panic!("no {id}"));
+    let place = |id: &str| {
+        rows.iter()
+            .position(|entry| entry.id == id)
+            .unwrap_or_else(|| panic!("no {id}"))
+    };
     assert!(place("leader") < place("heading:ACCOUNTS"));
     assert!(place("heading:ACCOUNTS") < place("account:codex"));
     assert_eq!(rows[place("heading:ACCOUNTS")].tail, "space on/off");
 
     let text = |id: &str| rows[place(id)].label.clone();
-    assert!(text("account:codex").starts_with("[━━● on ]  codex"), "{}", text("account:codex"));
-    assert!(text("account:codex").contains("5h 19%  wk 41%"), "{}", text("account:codex"));
-    assert!(text("account:claude").starts_with("[○━━ off]  claude"), "{}", text("account:claude"));
+    assert!(
+        text("account:codex").starts_with("[━━● on ]  codex"),
+        "{}",
+        text("account:codex")
+    );
+    assert!(
+        text("account:codex").contains("5h 19%  wk 41%"),
+        "{}",
+        text("account:codex")
+    );
+    assert!(
+        text("account:claude").starts_with("[○━━ off]  claude"),
+        "{}",
+        text("account:claude")
+    );
     assert_eq!(rows[place("account:codex")].parts[0].1, Tone::On);
     assert_eq!(rows[place("account:claude")].parts[0].1, Tone::Muted);
-    assert_eq!(rows[place("account:claude_work")].tail, "leader still on it");
-    assert_eq!(rows[place("account:codex")].tail, "", "on, and the leader on it: nothing to say");
-    assert!(leader_detail(&board).contains("codex on · claude off · claude_work off"), "{}", leader_detail(&board));
+    assert_eq!(
+        rows[place("account:claude_work")].tail,
+        "leader still on it"
+    );
+    assert_eq!(
+        rows[place("account:codex")].tail,
+        "",
+        "on, and the leader on it: nothing to say"
+    );
+    assert!(
+        leader_detail(&board).contains("codex on · claude off · claude_work off"),
+        "{}",
+        leader_detail(&board)
+    );
 }
 
 #[test]
 fn a_dialog_that_takes_a_message_has_an_input_box() {
     let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 16));
-    draw_dialog(&mut buffer, "B1-1-AT", "Blocked.", 0, None, Message::Offered);
+    draw_dialog(
+        &mut buffer,
+        "B1-1-AT",
+        "Blocked.",
+        0,
+        None,
+        Message::Offered,
+    );
     let text = plain(&buffer);
-    assert!(text.contains("To the leader"), "the box is there before writing: {text}");
+    assert!(
+        text.contains("To the leader"),
+        "the box is there before writing: {text}"
+    );
     assert!(text.contains("Enter, m or a click to write"), "{text}");
 
     let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 16));
     let long = "accept it if the checkpoint passed and then send the docs lane its order";
-    draw_dialog(&mut buffer, "B1-1-AT", "Blocked.", 0, None, Message::Writing(long));
+    draw_dialog(
+        &mut buffer,
+        "B1-1-AT",
+        "Blocked.",
+        0,
+        None,
+        Message::Writing(long),
+    );
     let text = plain(&buffer);
-    assert!(text.contains("its order▏"), "the end of a long text shows: {text}");
+    assert!(
+        text.contains("its order▏"),
+        "the end of a long text shows: {text}"
+    );
     assert!(text.contains("Enter send · Esc cancel"), "{text}");
 
     let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 16));
     draw_dialog(&mut buffer, "B1-1-AT", "Blocked.", 0, None, Message::Sent);
-    assert!(plain(&buffer).contains("Sent to the leader ✓"), "{}", plain(&buffer));
+    assert!(
+        plain(&buffer).contains("Sent to the leader ✓"),
+        "{}",
+        plain(&buffer)
+    );
 
     let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 16));
     draw_dialog(&mut buffer, "agent", "Details.", 0, None, Message::None);
-    assert!(!plain(&buffer).contains("To the leader"), "no box where no message goes");
+    assert!(
+        !plain(&buffer).contains("To the leader"),
+        "no box where no message goes"
+    );
 }
 
 #[test]
 fn every_needs_you_row_takes_a_message_about_itself() {
     use crate::leader::About;
-    assert_eq!(message_about("permission:p32"), Some(About::Permission("p32".into())));
-    assert_eq!(message_about("question:q7"), Some(About::Question("q7".into())));
-    assert_eq!(message_about("attention:hammer-5"), Some(About::Agent("hammer-5".into())));
-    assert_eq!(message_about("step:B1-1-AT"), Some(About::Step("B1-1-AT".into())));
-    assert_eq!(message_about("failed:B1-1-AT"), Some(About::Step("B1-1-AT".into())));
+    assert_eq!(
+        message_about("permission:p32"),
+        Some(About::Permission("p32".into()))
+    );
+    assert_eq!(
+        message_about("question:q7"),
+        Some(About::Question("q7".into()))
+    );
+    assert_eq!(
+        message_about("attention:hammer-5"),
+        Some(About::Agent("hammer-5".into()))
+    );
+    assert_eq!(
+        message_about("step:B1-1-AT"),
+        Some(About::Step("B1-1-AT".into()))
+    );
+    assert_eq!(
+        message_about("failed:B1-1-AT"),
+        Some(About::Step("B1-1-AT".into()))
+    );
     assert_eq!(message_about("leader"), Some(About::General));
     assert_eq!(message_about("agent:hammer-5"), None);
     assert_eq!(message_about("account:codex"), None);
@@ -1287,12 +1391,19 @@ fn every_needs_you_row_takes_a_message_about_itself() {
 #[test]
 fn a_needs_you_row_already_opened_or_answered_no_longer_calls() {
     let draw = |seen: Seen| {
-        let mut entry = Entry::text("permission:p1".into(), "⚠ p1 runner".into(), "x".into(), true);
+        let mut entry = Entry::text(
+            "permission:p1".into(),
+            "⚠ p1 runner".into(),
+            "x".into(),
+            true,
+        );
         entry.seen = seen;
         let area = Rect::new(0, 0, 30, 1);
         let mut buffer = Buffer::empty(area);
         entry_line(&entry, false, area, &mut buffer);
-        let text: String = (0..30).map(|x| buffer[(x, 0)].symbol().to_string()).collect();
+        let text: String = (0..30)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
         (text, buffer[(4, 0)].fg)
     };
     let (_, new) = draw(Seen::New);

@@ -14,7 +14,11 @@ pub fn is_enabled(state: &State, account: &str) -> bool {
 /// The user turns `account` on or off for this task. The last account that
 /// is on stays on: a team with none could not start anyone.
 pub fn set_enabled(task: &Task, devws: &dyn Devws, account: &str, on: bool) -> Result<()> {
-    let registered: Vec<String> = devws.accounts()?.into_iter().map(|(name, _)| name).collect();
+    let registered: Vec<String> = devws
+        .accounts()?
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
     if !registered.iter().any(|name| name == account) {
         bail!("there is no account {account} in devws");
     }
@@ -75,13 +79,18 @@ mod tests {
         let state = task.state().unwrap();
         assert!(!is_enabled(&state, "claude"));
         assert!(is_enabled(&state, "codex"));
-        assert!(state.queue.iter().any(|message| message.to == LEADER
-            && message.text.contains("turned claude off")));
-        assert!(task
-            .log_lines()
-            .unwrap()
-            .iter()
-            .any(|line| line.contains("the user turned claude off")));
+        assert!(
+            state
+                .queue
+                .iter()
+                .any(|message| message.to == LEADER && message.text.contains("turned claude off"))
+        );
+        assert!(
+            task.log_lines()
+                .unwrap()
+                .iter()
+                .any(|line| line.contains("the user turned claude off"))
+        );
 
         set_enabled(&task, &devws, "claude", true).unwrap();
         assert!(is_enabled(&task.state().unwrap(), "claude"));
@@ -92,7 +101,9 @@ mod tests {
         let (_dir, _repo, task, devws) = task();
         set_enabled(&task, &devws, "claude", false).unwrap();
         set_enabled(&task, &devws, "claude_work", false).unwrap();
-        let error = set_enabled(&task, &devws, "codex", false).unwrap_err().to_string();
+        let error = set_enabled(&task, &devws, "codex", false)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("last account that is on"), "{error}");
         assert!(is_enabled(&task.state().unwrap(), "codex"));
     }
@@ -100,7 +111,9 @@ mod tests {
     #[test]
     fn only_a_registered_account_can_be_switched() {
         let (_dir, _repo, task, devws) = task();
-        let error = set_enabled(&task, &devws, "nobody", false).unwrap_err().to_string();
+        let error = set_enabled(&task, &devws, "nobody", false)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("no account nobody"), "{error}");
     }
 }

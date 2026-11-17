@@ -737,11 +737,8 @@ fn copy_and_commit(
                 let mode = fs::metadata(&destination)
                     .map(|metadata| metadata.permissions().mode() & 0o666)
                     .unwrap_or(0o644);
-                let executable = fs::metadata(regular(snapshot, path)?)?
-                    .permissions()
-                    .mode()
-                    & 0o111
-                    != 0;
+                let executable =
+                    fs::metadata(regular(snapshot, path)?)?.permissions().mode() & 0o111 != 0;
                 fs::write(&destination, content)?;
                 fs::set_permissions(
                     &destination,
@@ -840,7 +837,9 @@ pub fn checkpoint(task: &Task, agent: &str, summary: &str) -> Result<Vec<String>
     collect(&worker.snapshot, &worker.snapshot, &mut files, &mut 0)?;
     let build_output = ignored(
         &worker.source,
-        files.keys().filter(|path| !worker.original.contains_key(*path)),
+        files
+            .keys()
+            .filter(|path| !worker.original.contains_key(*path)),
     )?;
     let mut changed = Vec::new();
     for path in worker
@@ -1188,7 +1187,11 @@ fn ignored<'a>(
             "controlled Git operation failed: {}",
             String::from_utf8_lossy(&result.stderr)
         );
-        found.extend(String::from_utf8(result.stdout)?.lines().map(str::to_string));
+        found.extend(
+            String::from_utf8(result.stdout)?
+                .lines()
+                .map(str::to_string),
+        );
     }
     Ok(found)
 }
@@ -2041,7 +2044,9 @@ mod policy_regressions {
             std::collections::BTreeSet::from(["web/.next/types/cache-life.d.ts".to_string()])
         );
         assert!(
-            ignored(source.path(), paths[1..].iter()).unwrap().is_empty(),
+            ignored(source.path(), paths[1..].iter())
+                .unwrap()
+                .is_empty(),
             "nothing ignored is not an error"
         );
     }

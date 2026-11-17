@@ -4,9 +4,9 @@
 
 use crate::board_usage::{LEADER_NAME, TeamUsage};
 use crate::devws::{Devws, PaneState, Usage};
+use crate::log::Kind;
 use crate::roles::{Group, Role, Roles};
 use crate::state::LEADER;
-use crate::log::Kind;
 use crate::state::{Effect, LeaderWait, PermissionStatus, Step, StepStatus};
 use crate::task::Task;
 use anyhow::Result;
@@ -944,7 +944,11 @@ pub(crate) mod tests {
             line("escalate", "leader", "old question"),
             line("escalate", "leader", "Which runner, A or B?"),
             line("report", "hammer-1", "done"),
-            line("escalate", "leader", "Permission p148 requested for application_workflow (external)"),
+            line(
+                "escalate",
+                "leader",
+                "Permission p148 requested for application_workflow (external)",
+            ),
             "not json".to_string(),
         ];
         assert_eq!(
@@ -952,7 +956,11 @@ pub(crate) mod tests {
             Some("Which runner, A or B?")
         );
         assert_eq!(leader_question(&lines, LeaderWait::No), None, "answered");
-        assert_eq!(leader_question(&lines[2..], LeaderWait::Asked), None, "only a permission");
+        assert_eq!(
+            leader_question(&lines[2..], LeaderWait::Asked),
+            None,
+            "only a permission"
+        );
     }
 
     #[test]

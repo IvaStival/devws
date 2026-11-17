@@ -231,7 +231,12 @@ fn reason(message: Option<&str>, content: &Value) -> String {
     if text.trim().is_empty() {
         "no reason given".into()
     } else {
-        shorten(text.split_whitespace().collect::<Vec<_>>().join(" ").as_str())
+        shorten(
+            text.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .as_str(),
+        )
     }
 }
 
@@ -387,32 +392,54 @@ mod tests {
             }]
         );
         let shown = plain(&render(&codex_events(line)[0], 120).unwrap());
-        assert!(shown.contains("• checkpoint \"Add B1-1-AT tests\" ✕ checkpoint outside"), "{shown}");
+        assert!(
+            shown.contains("• checkpoint \"Add B1-1-AT tests\" ✕ checkpoint outside"),
+            "{shown}"
+        );
     }
 
     #[test]
     fn codex_messages_commands_and_usage_become_events() {
         assert_eq!(
-            codex_events(r#"{"type":"item.completed","item":{"type":"agent_message","text":"**Done**\n"}}"#),
+            codex_events(
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"**Done**\n"}}"#
+            ),
             [Event::Message("**Done**".into())]
         );
         assert_eq!(
-            codex_events(r#"{"type":"item.completed","item":{"type":"command_execution","command":"/bin/bash -lc 'ls web'","exit_code":2}}"#),
-            [Event::Command { line: "ls web".into(), exit: Some(2) }]
+            codex_events(
+                r#"{"type":"item.completed","item":{"type":"command_execution","command":"/bin/bash -lc 'ls web'","exit_code":2}}"#
+            ),
+            [Event::Command {
+                line: "ls web".into(),
+                exit: Some(2)
+            }]
         );
         assert_eq!(
-            codex_events(r#"{"type":"turn.completed","usage":{"input_tokens":1136501,"cached_input_tokens":1069568,"output_tokens":8329}}"#),
-            [Event::TurnDone(Usage { input: 1136501, cached: 1069568, output: 8329 })]
+            codex_events(
+                r#"{"type":"turn.completed","usage":{"input_tokens":1136501,"cached_input_tokens":1069568,"output_tokens":8329}}"#
+            ),
+            [Event::TurnDone(Usage {
+                input: 1136501,
+                cached: 1069568,
+                output: 8329
+            })]
         );
         assert!(codex_events(r#"{"type":"thread.started","thread_id":"t1"}"#).is_empty());
-        assert_eq!(codex_events("Reading additional input from stdin..."), [Event::Raw("Reading additional input from stdin...".into())]);
+        assert_eq!(
+            codex_events("Reading additional input from stdin..."),
+            [Event::Raw("Reading additional input from stdin...".into())]
+        );
     }
 
     #[test]
     fn a_claude_tool_call_is_shown_when_its_result_arrives() {
         let mut stream = ClaudeStream::default();
         let call = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Checking status."},{"type":"tool_use","id":"tu_1","name":"mcp__devagentics_worker__worker","input":{"action":"execute","input":{"command":"npm run typecheck"}}}]}}"#;
-        assert_eq!(stream.events(call), [Event::Message("Checking status.".into())]);
+        assert_eq!(
+            stream.events(call),
+            [Event::Message("Checking status.".into())]
+        );
         let result = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","is_error":true,"content":[{"type":"text","text":"task is paused"}]}]}}"#;
         assert_eq!(
             stream.events(result),
@@ -425,7 +452,11 @@ mod tests {
         let done = r#"{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":12,"cache_read_input_tokens":3000,"output_tokens":400}}"#;
         assert_eq!(
             stream.events(done),
-            [Event::TurnDone(Usage { input: 3012, cached: 3000, output: 400 })]
+            [Event::TurnDone(Usage {
+                input: 3012,
+                cached: 3000,
+                output: 400
+            })]
         );
     }
 
@@ -453,12 +484,29 @@ mod tests {
             order: Some("o52 (B1-1-AT)".into()),
         };
         assert_eq!(
-            plain(&header(&turn, "10:12", 80)).trim_end_matches('─').trim_end(),
+            plain(&header(&turn, "10:12", 80))
+                .trim_end_matches('─')
+                .trim_end(),
             "── planner-5 · codex · gpt-6.1-sol · medium · order o52 (B1-1-AT) · 10:12"
         );
-        let done = plain(&footer(134, Some(Usage { input: 1136501, cached: 1069568, output: 8329 }), None, 80));
-        assert!(done.starts_with("── done in 2m 14s · 1.1M in (1.1M cached) · 8.3k out"), "{done}");
+        let done = plain(&footer(
+            134,
+            Some(Usage {
+                input: 1136501,
+                cached: 1069568,
+                output: 8329,
+            }),
+            None,
+            80,
+        ));
+        assert!(
+            done.starts_with("── done in 2m 14s · 1.1M in (1.1M cached) · 8.3k out"),
+            "{done}"
+        );
         let failed = plain(&footer(5, None, Some("exit status 1"), 80));
-        assert!(failed.starts_with("── failed after 5s: exit status 1"), "{failed}");
+        assert!(
+            failed.starts_with("── failed after 5s: exit status 1"),
+            "{failed}"
+        );
     }
 }

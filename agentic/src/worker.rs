@@ -256,15 +256,24 @@ mod tests {
         let chosen = launch.next_available(&devws, false, &off).unwrap();
         assert_eq!(chosen.agent, "codex");
         assert!(
-            launch.failures.iter().any(|failure| failure.contains("claude is turned off for this task")),
+            launch
+                .failures
+                .iter()
+                .any(|failure| failure.contains("claude is turned off for this task")),
             "{:?}",
             launch.failures
         );
 
         let mut launch = LaunchState::new(&role, Kind::Claude);
         let all_off = std::collections::BTreeSet::from(["claude".to_string(), "codex".to_string()]);
-        let error = launch.next_available(&devws, false, &all_off).unwrap_err().to_string();
-        assert!(error.contains("codex is turned off for this task"), "{error}");
+        let error = launch
+            .next_available(&devws, false, &all_off)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("codex is turned off for this task"),
+            "{error}"
+        );
     }
 
     #[test]

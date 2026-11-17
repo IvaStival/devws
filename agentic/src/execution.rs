@@ -672,7 +672,10 @@ pub mod tests {
         assert_eq!(outline["revision"], 1);
 
         let read = items(&baseline(), &["S01-B01".into()]).unwrap();
-        assert_eq!(read["items"]["S01-B01"]["acceptance"][0], "Service contract passes");
+        assert_eq!(
+            read["items"]["S01-B01"]["acceptance"][0],
+            "Service contract passes"
+        );
         let error = items(&baseline(), &["S09".into()]).unwrap_err().to_string();
         assert!(error.contains("no item S09"), "{error}");
     }
@@ -680,7 +683,8 @@ pub mod tests {
     #[test]
     fn an_amendment_changes_only_what_it_names_on_the_next_revision() {
         let mut base = baseline();
-        base.items.insert("S01-B02".into(), base.items["S01-B01"].clone());
+        base.items
+            .insert("S01-B02".into(), base.items["S01-B01"].clone());
         let mut added = base.items["S01-B01"].clone();
         added.title = "Token refresh".into();
         let mut renamed = base.items["S01-B01"].clone();
@@ -698,7 +702,10 @@ pub mod tests {
         assert_eq!(next.items["S01-B03"].title, "Token refresh");
         assert_eq!(next.items["S01-B01"].title, "Token issue");
         assert!(!next.items.contains_key("S01-B02"));
-        assert_eq!((&next.goal, &next.milestones), (&base.goal, &base.milestones));
+        assert_eq!(
+            (&next.goal, &next.milestones),
+            (&base.goal, &base.milestones)
+        );
     }
 
     #[test]
@@ -720,7 +727,10 @@ pub mod tests {
         amend(&task, non_goals, "no payments").unwrap();
         let proposal = task.state().unwrap().application_proposal.unwrap();
         assert_eq!(proposal.revision, 2);
-        assert_eq!(proposal.goal, "Application with billing", "the first amendment stays");
+        assert_eq!(
+            proposal.goal, "Application with billing",
+            "the first amendment stays"
+        );
         assert_eq!(proposal.non_goals, ["No payments"]);
         assert!(proposal.approved_revision.is_none());
 
@@ -729,7 +739,10 @@ pub mod tests {
             ..Default::default()
         };
         assert!(amend(&task, broken, "empty contract").is_err());
-        assert_eq!(task.state().unwrap().application_proposal.unwrap(), proposal);
+        assert_eq!(
+            task.state().unwrap().application_proposal.unwrap(),
+            proposal
+        );
     }
     #[test]
     fn contracts_reject_incomplete_escaping_and_cyclic_work() {

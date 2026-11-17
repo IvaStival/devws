@@ -426,8 +426,13 @@ fn account_entries(board: &Board) -> Vec<Entry> {
         } else {
             ("[○━━ off]", Tone::Muted, Tone::Muted, "off")
         };
-        let percent = |used: Option<u32>| used.map_or("  -".to_string(), |used| format!("{used:>2}%"));
-        let usage = format!("5h {}  wk {}", percent(switch.five_hour), percent(switch.week));
+        let percent =
+            |used: Option<u32>| used.map_or("  -".to_string(), |used| format!("{used:>2}%"));
+        let usage = format!(
+            "5h {}  wk {}",
+            percent(switch.five_hour),
+            percent(switch.week)
+        );
         let detail = format!(
             "{} is {word} for this task: {}\nSpace turns it {}.",
             switch.name,
@@ -438,12 +443,17 @@ fn account_entries(board: &Board) -> Vec<Entry> {
             },
             if switch.enabled { "off" } else { "on" }
         );
-        let entry = Entry::text(format!("account:{}", switch.name), String::new(), detail, false)
-            .toned(vec![
-                (format!("{pill}  "), tone),
-                (format!("{:<13}", switch.name), name_tone),
-                (usage, Tone::Muted),
-            ]);
+        let entry = Entry::text(
+            format!("account:{}", switch.name),
+            String::new(),
+            detail,
+            false,
+        )
+        .toned(vec![
+            (format!("{pill}  "), tone),
+            (format!("{:<13}", switch.name), name_tone),
+            (usage, Tone::Muted),
+        ]);
         entries.push(if switch.leader_on && !switch.enabled {
             entry.with_tail("leader still on it")
         } else {
@@ -620,7 +630,13 @@ fn account_summary(board: &Board) -> String {
     board
         .switches
         .iter()
-        .map(|switch| format!("{} {}", switch.name, if switch.enabled { "on" } else { "off" }))
+        .map(|switch| {
+            format!(
+                "{} {}",
+                switch.name,
+                if switch.enabled { "on" } else { "off" }
+            )
+        })
         .collect::<Vec<_>>()
         .join(" · ")
         + " (switch them in the ACCOUNTS card)"
@@ -1831,7 +1847,9 @@ fn hint_line(message: Message, width: usize) -> Line<'static> {
             .to_string()
     };
     match message {
-        Message::Writing(_) => Line::styled(fitting(&["Enter send · Esc cancel", "Enter · Esc"]), DIM),
+        Message::Writing(_) => {
+            Line::styled(fitting(&["Enter send · Esc cancel", "Enter · Esc"]), DIM)
+        }
         Message::Sent => Line::from(vec![
             Span::styled("Sent to the leader ✓", Style::new().fg(Color::Green)),
             Span::styled(" · Esc/q close", DIM),
@@ -1846,8 +1864,15 @@ fn draw_input(buffer: &mut Buffer, area: Rect, message: Message) {
     let writing = matches!(message, Message::Writing(_));
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(if writing { Style::new().fg(Color::Cyan) } else { DIM })
-        .title(Line::styled(" To the leader ", if writing { BOLD } else { DIM }));
+        .border_style(if writing {
+            Style::new().fg(Color::Cyan)
+        } else {
+            DIM
+        })
+        .title(Line::styled(
+            " To the leader ",
+            if writing { BOLD } else { DIM },
+        ));
     let inner = block.inner(area);
     block.render(area, buffer);
     let room = usize::from(inner.width).saturating_sub(1);
@@ -1980,7 +2005,10 @@ pub fn draw_dialog(
     if !body.is_empty() {
         Paragraph::new(crate::details_view::text(content))
             .wrap(Wrap { trim: false })
-            .scroll((scroll.min(dialog_scroll_max(content, width, height, input)), 0))
+            .scroll((
+                scroll.min(dialog_scroll_max(content, width, height, input)),
+                0,
+            ))
             .render(body, buffer);
     }
     if inner.height >= 2 {

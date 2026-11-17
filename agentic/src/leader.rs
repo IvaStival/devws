@@ -332,8 +332,15 @@ pub fn tell(task: &Task, about: &About, text: &str) -> Result<()> {
         };
         tx.state.say(crate::state::LEADER, message);
         tx.state.leader_wait = crate::state::LeaderWait::No;
-        let about = subject.map(|subject| format!(" about {subject}")).unwrap_or_default();
-        tx.log(Kind::Review, None, step.as_deref(), &format!("the user told the leader{about}"));
+        let about = subject
+            .map(|subject| format!(" about {subject}"))
+            .unwrap_or_default();
+        tx.log(
+            Kind::Review,
+            None,
+            step.as_deref(),
+            &format!("the user told the leader{about}"),
+        );
         Ok(())
     })
 }
@@ -805,7 +812,12 @@ mod tests {
         })
         .unwrap();
 
-        tell(&task, &About::Step("B1-1-AT".into()), "  accept it if the checkpoint passed ").unwrap();
+        tell(
+            &task,
+            &About::Step("B1-1-AT".into()),
+            "  accept it if the checkpoint passed ",
+        )
+        .unwrap();
         tell(&task, &About::General, "pause the floor").unwrap();
 
         let state = task.state().unwrap();
@@ -817,10 +829,25 @@ mod tests {
             .collect();
         assert!(said.contains(&"The user, about step B1-1-AT (blocked · 6 attempts): accept it if the checkpoint passed"), "{said:?}");
         assert!(said.contains(&"The user says: pause the floor"), "{said:?}");
-        assert_eq!(state.leader_wait, crate::state::LeaderWait::No, "the user answered");
-        assert!(task.log_lines().unwrap().iter().any(|line| line.contains("the user told the leader about step B1-1-AT")));
-        assert!(tell(&task, &About::General, "   ").is_err(), "an empty message");
-        assert!(tell(&task, &About::Step("nope".into()), "x").is_err(), "an unknown step");
+        assert_eq!(
+            state.leader_wait,
+            crate::state::LeaderWait::No,
+            "the user answered"
+        );
+        assert!(
+            task.log_lines()
+                .unwrap()
+                .iter()
+                .any(|line| line.contains("the user told the leader about step B1-1-AT"))
+        );
+        assert!(
+            tell(&task, &About::General, "   ").is_err(),
+            "an empty message"
+        );
+        assert!(
+            tell(&task, &About::Step("nope".into()), "x").is_err(),
+            "an unknown step"
+        );
     }
 
     #[test]
@@ -846,7 +873,12 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        tell(&task, &About::Permission("p32".into()), "deny it: p33 applied it").unwrap();
+        tell(
+            &task,
+            &About::Permission("p32".into()),
+            "deny it: p33 applied it",
+        )
+        .unwrap();
         tell(&task, &About::Question("q7".into()), "the one in the plan").unwrap();
         tell(&task, &About::Agent("hammer-5".into()), "let it finish").unwrap();
         let said: Vec<String> = task
@@ -859,7 +891,11 @@ mod tests {
             .collect();
         assert!(said.iter().any(|text| text == "The user, about permission p32 (application_workflow runner_configure, pending): deny it: p33 applied it"), "{said:?}");
         assert!(said.iter().any(|text| text == "The user, about question q7 (hammer-5 → leader: Which manifest path?): the one in the plan"), "{said:?}");
-        assert!(said.iter().any(|text| text == "The user, about agent hammer-5: let it finish"), "{said:?}");
+        assert!(
+            said.iter()
+                .any(|text| text == "The user, about agent hammer-5: let it finish"),
+            "{said:?}"
+        );
         assert!(tell(&task, &About::Permission("p99".into()), "x").is_err());
     }
 

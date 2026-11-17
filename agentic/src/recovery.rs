@@ -86,11 +86,12 @@ pub fn queue_resumption(task: &Task, devws: &dyn Devws, invoking: Option<&str>) 
             .unwrap_or(&entry.pane);
         // A leader waiting for the user sits at its prompt: the user's resume
         // is the answer it waits for.
-        let ready = invoking == Some(pane) || match devws.pane_state(pane)? {
-            PaneState::Done | PaneState::Idle => true,
-            PaneState::Waiting => id == LEADER,
-            _ => false,
-        };
+        let ready = invoking == Some(pane)
+            || match devws.pane_state(pane)? {
+                PaneState::Done | PaneState::Idle => true,
+                PaneState::Waiting => id == LEADER,
+                _ => false,
+            };
         if !ready {
             bail!("task remains paused: {id} is not ready to resume");
         }

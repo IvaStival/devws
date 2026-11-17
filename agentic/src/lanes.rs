@@ -191,14 +191,21 @@ fn catch_up_reviewed(worktree: &Path, branch: &str, lane: &str) -> Result<()> {
     if git(worktree, &["merge", "--ff-only", "--no-edit", branch]).is_ok() {
         return Ok(());
     }
-    let added = git(worktree, &["diff", "--name-only", &format!("HEAD...{branch}")])?;
+    let added = git(
+        worktree,
+        &["diff", "--name-only", &format!("HEAD...{branch}")],
+    )?;
     let history = format!("{}/", crate::history::FOLDER);
     if !added.lines().all(|path| path.starts_with(&history)) {
         bail!(
             "divergent lane requires a separately reviewed integration; no automatic conflict-resolution code was merged"
         );
     }
-    merge(worktree, branch, &format!("catching lane {lane} up with the team's history"))
+    merge(
+        worktree,
+        branch,
+        &format!("catching lane {lane} up with the team's history"),
+    )
 }
 
 /// An accepted step: the lane's work goes into the task's branch.
@@ -498,8 +505,16 @@ mod tests {
             "record a planning step",
         );
         catch_up_reviewed(&front.worktree, &branch, "front").unwrap();
-        assert!(front.worktree.join(".devagentics/history/feat-x/history.json").exists());
-        assert!(front.worktree.join("frontend/page.ts").exists(), "the candidate stays");
+        assert!(
+            front
+                .worktree
+                .join(".devagentics/history/feat-x/history.json")
+                .exists()
+        );
+        assert!(
+            front.worktree.join("frontend/page.ts").exists(),
+            "the candidate stays"
+        );
 
         commit_file(repo.path(), "backend/api.rs", "api\n", "unreviewed code");
         let error = catch_up_reviewed(&front.worktree, &branch, "front")

@@ -150,7 +150,12 @@ impl<'a> Dispatcher<'a> {
             self.task.transaction(|tx| {
                 tx.state.recovery.remove(LEADER);
                 tx.state.leader_nudged = newest;
-                tx.log(Kind::Delivered, Some(LEADER), None, "nudged to read its inbox");
+                tx.log(
+                    Kind::Delivered,
+                    Some(LEADER),
+                    None,
+                    "nudged to read its inbox",
+                );
                 Ok(())
             })?;
         }
@@ -443,8 +448,11 @@ pub fn lock(task: &Task) -> Result<WatchLock> {
 /// A log line for the pane: "14:03:22 order     backend-1 s2  Write src/…".
 /// Epoch seconds as local time, in `format`.
 fn local_time(seconds: i64, format: &str) -> Option<String> {
-    chrono::DateTime::from_timestamp(seconds, 0)
-        .map(|time| time.with_timezone(&chrono::Local).format(format).to_string())
+    chrono::DateTime::from_timestamp(seconds, 0).map(|time| {
+        time.with_timezone(&chrono::Local)
+            .format(format)
+            .to_string()
+    })
 }
 
 /// When a retry is due, for the leader: `14:05`.
@@ -897,7 +905,10 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        f.queue(LEADER, "Planner planner-5 proposed an application baseline.");
+        f.queue(
+            LEADER,
+            "Planner planner-5 proposed an application baseline.",
+        );
         let mut dispatcher = f.dispatcher();
 
         f.devws.set_state("%1", PaneState::Working);
@@ -914,11 +925,19 @@ mod tests {
         );
 
         dispatcher.tick().unwrap();
-        assert_eq!(f.sent_to("%1").len(), 1, "nudged again for the same message");
+        assert_eq!(
+            f.sent_to("%1").len(),
+            1,
+            "nudged again for the same message"
+        );
 
         f.devws.set_state("%1", PaneState::Done);
         dispatcher.tick().unwrap();
-        assert_eq!(f.sent_to("%1").len(), 1, "nudged again for the same message");
+        assert_eq!(
+            f.sent_to("%1").len(),
+            1,
+            "nudged again for the same message"
+        );
 
         f.queue(LEADER, "executor-1 reports step s1 done.");
         dispatcher.tick().unwrap();
@@ -933,7 +952,11 @@ mod tests {
                 tx.state.workflow = crate::execution::Workflow::Reviewed;
                 tx.state.recovery.insert(
                     LEADER.into(),
-                    crate::state::Recovery { pane: "%98".into(), interrupted: false, error: None },
+                    crate::state::Recovery {
+                        pane: "%98".into(),
+                        interrupted: false,
+                        error: None,
+                    },
                 );
                 Ok(())
             })
@@ -943,7 +966,10 @@ mod tests {
         f.devws.set_state("%1", PaneState::Waiting);
         f.dispatcher().tick().unwrap();
         assert_eq!(f.sent_to("%1"), [LEADER_NUDGE]);
-        assert!(f.task.state().unwrap().recovery.is_empty(), "the resumed leader is woken");
+        assert!(
+            f.task.state().unwrap().recovery.is_empty(),
+            "the resumed leader is woken"
+        );
     }
 
     #[test]
@@ -971,7 +997,10 @@ mod tests {
         assert_eq!(f.devws.pane_state("%1").unwrap(), PaneState::Waiting);
         assert_eq!(wait(), crate::state::LeaderWait::Shown);
         dispatcher.tick().unwrap();
-        assert!(f.sent_to("%1").is_empty(), "nudged while waiting for the user");
+        assert!(
+            f.sent_to("%1").is_empty(),
+            "nudged while waiting for the user"
+        );
 
         // The user answered: the leader works again and the wait is over.
         f.devws.set_state("%1", PaneState::Working);
@@ -1019,14 +1048,20 @@ mod tests {
         let state = f.task.state().unwrap();
         assert_eq!(
             state.step_retries.get("s9"),
-            Some(&StepRetry::Waiting { at: 1_000 + RETRY_AFTER_SECS })
+            Some(&StepRetry::Waiting {
+                at: 1_000 + RETRY_AFTER_SECS
+            })
         );
         assert_eq!(leader_heard(&f, "retries it once"), 1);
 
-        dispatcher.retry_spent_steps(1_000 + RETRY_AFTER_SECS - 1).unwrap();
+        dispatcher
+            .retry_spent_steps(1_000 + RETRY_AFTER_SECS - 1)
+            .unwrap();
         assert_eq!(f.task.state().unwrap().attempt_limits.get("s9"), None);
 
-        dispatcher.retry_spent_steps(1_000 + RETRY_AFTER_SECS).unwrap();
+        dispatcher
+            .retry_spent_steps(1_000 + RETRY_AFTER_SECS)
+            .unwrap();
         let state = f.task.state().unwrap();
         assert_eq!(state.attempt_limits.get("s9"), Some(&(limit + 1)));
         assert_eq!(state.step_retries.get("s9"), Some(&StepRetry::Granted));
@@ -1045,7 +1080,12 @@ mod tests {
         dispatcher.retry_spent_steps(5_001).unwrap();
         let state = f.task.state().unwrap();
         assert_eq!(
-            state.steps.iter().find(|step| step.id == "s9").unwrap().status,
+            state
+                .steps
+                .iter()
+                .find(|step| step.id == "s9")
+                .unwrap()
+                .status,
             StepStatus::Exhausted
         );
         assert_eq!(leader_heard(&f, "failed after"), 1);

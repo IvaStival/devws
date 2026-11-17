@@ -616,7 +616,10 @@ pub fn report_findings(
         close(tx, &order, status);
         tx.state.say(
             LEADER,
-            format!("{agent} {verb} on step {} (order {}): {summary}", order.step, order.id),
+            format!(
+                "{agent} {verb} on step {} (order {}): {summary}",
+                order.step, order.id
+            ),
         );
         tx.log(Kind::Report, Some(agent), Some(&order.step), summary);
         Ok("Reported to the leader. Wait for the next order.".to_string())
@@ -1059,7 +1062,14 @@ mod tests {
     fn a_planners_findings_close_its_order_and_reach_the_leader() {
         let f = fixture(None);
         let id = send_order(&f.task, request("s1")).unwrap();
-        let agent = f.task.state().unwrap().agent_in_pane("%5").unwrap().id.clone();
+        let agent = f
+            .task
+            .state()
+            .unwrap()
+            .agent_in_pane("%5")
+            .unwrap()
+            .id
+            .clone();
         assert!(
             report_findings(&f.task, &agent, &id, Outcome::Done, "early").is_err(),
             "an undelivered order was reported"
@@ -1075,7 +1085,12 @@ mod tests {
 
         let state = f.task.state().unwrap();
         assert_eq!(state.orders[0].status, OrderStatus::Closed);
-        assert!(state.steps.iter().any(|step| step.id == "s1" && step.status == StepStatus::Reported));
+        assert!(
+            state
+                .steps
+                .iter()
+                .any(|step| step.id == "s1" && step.status == StepStatus::Reported)
+        );
         assert!(
             state
                 .queue
@@ -1224,7 +1239,10 @@ mod tests {
         let mut with_check = request("s1");
         with_check.check = Some("true".into());
         let error = send_order(&f.task, with_check).unwrap_err().to_string();
-        assert!(error.contains("named profiles (unit): leave out check"), "{error}");
+        assert!(
+            error.contains("named profiles (unit): leave out check"),
+            "{error}"
+        );
 
         let id = send_order(&f.task, request("s1")).unwrap();
         f.task
@@ -1233,8 +1251,13 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let error = crate::check_profiles::run(&f.task, &id, None).unwrap_err().to_string();
-        assert!(error.contains(&format!("order {id} is not open")), "{error}");
+        let error = crate::check_profiles::run(&f.task, &id, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(&format!("order {id} is not open")),
+            "{error}"
+        );
         assert!(error.contains("a new order for its step"), "{error}");
     }
 

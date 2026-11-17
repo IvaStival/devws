@@ -790,7 +790,9 @@ fn relayed(binary: &Path, arguments: &[OsString], line: &str) -> Vec<u8> {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .spawn()
-            .with_context(|| format!("starting the installed devagentics at {}", binary.display()))?;
+            .with_context(|| {
+                format!("starting the installed devagentics at {}", binary.display())
+            })?;
         child
             .stdin
             .take()
@@ -903,7 +905,11 @@ mod tests {
         let installed = folder.path().join("devagentics");
         // The installed binary stands in as an echo: its answer is the request.
         std::fs::write(&installed, "#!/bin/sh\ncat\n").unwrap();
-        std::fs::set_permissions(&installed, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(
+            &installed,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
         let requests = "{\"id\":1,\"method\":\"tools/list\"}\n{\"id\":2,\"method\":\"ping\"}\n";
         let mut output = Vec::new();
         f.server()
@@ -922,11 +928,23 @@ mod tests {
             "the tools reload once, then every answer is the installed one's"
         );
 
-        let missing = relayed(&folder.path().join("gone"), &[], r#"{"id":5,"method":"ping"}"#);
+        let missing = relayed(
+            &folder.path().join("gone"),
+            &[],
+            r#"{"id":5,"method":"ping"}"#,
+        );
         let answer: Value = serde_json::from_slice(&missing).unwrap();
         assert_eq!(answer["id"], 5);
-        assert!(answer["error"]["message"].as_str().unwrap().contains("starting the installed devagentics"));
-        assert!(relayed(&folder.path().join("gone"), &[], r#"{"method":"note"}"#).is_empty(), "a notification gets no answer");
+        assert!(
+            answer["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("starting the installed devagentics")
+        );
+        assert!(
+            relayed(&folder.path().join("gone"), &[], r#"{"method":"note"}"#).is_empty(),
+            "a notification gets no answer"
+        );
     }
 
     #[test]
@@ -934,7 +952,11 @@ mod tests {
         let f = fixture();
         let mut output = Vec::new();
         f.server()
-            .serve_with(Cursor::new("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}\n"), &mut output, || None)
+            .serve_with(
+                Cursor::new("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}\n"),
+                &mut output,
+                || None,
+            )
             .unwrap();
         let answer: Value = serde_json::from_slice(&output).unwrap();
         assert_eq!(answer["id"], 3);
@@ -943,7 +965,9 @@ mod tests {
 
     #[test]
     fn a_result_too_big_for_the_leader_says_what_to_ask_for() {
-        let error = fitting("task_status", "x".repeat(MAX_RESULT_CHARS + 1)).unwrap_err().to_string();
+        let error = fitting("task_status", "x".repeat(MAX_RESULT_CHARS + 1))
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("80 KB"), "{error}");
         assert!(error.contains("section"), "{error}");
         assert_eq!(fitting("task_status", "small".into()).unwrap(), "small");

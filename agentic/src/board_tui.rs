@@ -175,7 +175,10 @@ enum Action {
     Refresh,
     Zoom,
     Leader,
-    Visit { pane: String, peek: bool },
+    Visit {
+        pane: String,
+        peek: bool,
+    },
     /// Turn this account on or off for the task.
     ToggleAccount(String),
     /// What the user wrote to the leader in a dialog, about a step or not.
@@ -207,7 +210,8 @@ impl Interaction {
     ) -> Action {
         self.clamp_scroll(entries, size);
         let page = if let Some(content) = self.dialog_content(entries) {
-            board_view::dialog_body(content, size.width, size.height, self.dialog_input(entries)).height
+            board_view::dialog_body(content, size.width, size.height, self.dialog_input(entries))
+                .height
         } else {
             size.height.saturating_sub(
                 board_view::header_rows(board, &self.nav, size.width, size.height) + 1,
@@ -744,7 +748,9 @@ fn screen_loop(
                         .and_then(|()| {
                             ui.nav.sent = true;
                             match selected_entry(&ui.nav, &entries) {
-                                Some(entry) => marks.told(entry).map(|added| entries_dirty |= added),
+                                Some(entry) => {
+                                    marks.told(entry).map(|added| entries_dirty |= added)
+                                }
                                 None => Ok(()),
                             }
                         }),
@@ -756,8 +762,10 @@ fn screen_loop(
                         crate::accounts::set_enabled(task, devws, &account, !enabled).map(|()| {
                             // Shown at once: the reload asks every account for its
                             // limits, and a switch that lags gets pressed twice.
-                            if let Some(switch) =
-                                board.switches.iter_mut().find(|switch| switch.name == account)
+                            if let Some(switch) = board
+                                .switches
+                                .iter_mut()
+                                .find(|switch| switch.name == account)
                             {
                                 switch.enabled = !enabled;
                             }
@@ -775,7 +783,9 @@ fn screen_loop(
                 if let Some(entry) = selected_entry(&ui.nav, &entries) {
                     match marks.opened(entry) {
                         Ok(added) => entries_dirty |= added,
-                        Err(error) => local_problem = Some(format!("Board action failed: {error:#}")),
+                        Err(error) => {
+                            local_problem = Some(format!("Board action failed: {error:#}"))
+                        }
                     }
                 }
             }
@@ -793,7 +803,10 @@ fn screen_loop(
 }
 
 /// The row the selection is on.
-fn selected_entry<'a>(nav: &Navigation, entries: &'a [board_view::Entry]) -> Option<&'a board_view::Entry> {
+fn selected_entry<'a>(
+    nav: &Navigation,
+    entries: &'a [board_view::Entry],
+) -> Option<&'a board_view::Entry> {
     let id = nav.selected.as_deref()?;
     entries.iter().find(|entry| entry.id == id)
 }
@@ -913,7 +926,11 @@ mod tests {
             press(&mut ui, KeyCode::Char(character));
         }
         press(&mut ui, KeyCode::Backspace);
-        assert_eq!(ui.nav.compose.as_deref(), Some("ok q"), "q and j are text while writing");
+        assert_eq!(
+            ui.nav.compose.as_deref(),
+            Some("ok q"),
+            "q and j are text while writing"
+        );
         assert!(ui.nav.detail, "q did not close the details");
         assert_eq!(
             press(&mut ui, KeyCode::Enter),
@@ -1009,10 +1026,21 @@ mod tests {
             ui.key(KeyCode::Char(' '), &board, &entries, 10),
             Action::ToggleAccount("claude".into())
         );
-        assert_eq!(ui.nav.selected.as_deref(), Some("account:claude"), "it stays put");
+        assert_eq!(
+            ui.nav.selected.as_deref(),
+            Some("account:claude"),
+            "it stays put"
+        );
         ui.key(KeyCode::Char('k'), &board, &entries, 10);
-        assert_eq!(ui.key(KeyCode::Char(' '), &board, &entries, 1), Action::None);
-        assert_ne!(ui.nav.selected.as_deref(), Some("leader"), "Space still pages");
+        assert_eq!(
+            ui.key(KeyCode::Char(' '), &board, &entries, 1),
+            Action::None
+        );
+        assert_ne!(
+            ui.nav.selected.as_deref(),
+            Some("leader"),
+            "Space still pages"
+        );
     }
 
     #[test]

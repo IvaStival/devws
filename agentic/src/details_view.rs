@@ -360,10 +360,22 @@ Arguments: {"action":"runner_configure","input":{"configuration":{"cpus":2,"sour
         let formatted = text("Status:\n{\n  \"runner\": {\n    \"cpus\": 2\n  }\n}\nafter");
         assert_eq!(
             plain(&formatted),
-            ["Status:", "{", "  \"runner\": {", "    \"cpus\": 2", "  }", "}", "after"]
+            [
+                "Status:",
+                "{",
+                "  \"runner\": {",
+                "    \"cpus\": 2",
+                "  }",
+                "}",
+                "after"
+            ]
         );
         assert_eq!(style_of(&formatted, "\"runner\""), KEY);
-        assert_eq!(plain(&text("{\nnot json")), ["{", "not json"], "an unclosed brace is text");
+        assert_eq!(
+            plain(&text("{\nnot json")),
+            ["{", "not json"],
+            "an unclosed brace is text"
+        );
     }
 
     #[test]

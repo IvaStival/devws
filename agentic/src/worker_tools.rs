@@ -480,7 +480,10 @@ pub fn call(task: &Task, agent: &str, action: &str, input: &Value) -> Result<Val
             Ok(json!({"proposed":true,"affected":affected}))
         }
         "application_read" => {
-            ensure!(!worker.writes, "only a read-only specialist reads the baseline");
+            ensure!(
+                !worker.writes,
+                "only a read-only specialist reads the baseline"
+            );
             let application = if input["proposal"].as_bool() == Some(true) {
                 state
                     .application_proposal
@@ -490,7 +493,10 @@ pub fn call(task: &Task, agent: &str, action: &str, input: &Value) -> Result<Val
                 &state.application
             };
             match input.get("items") {
-                Some(ids) => crate::execution::items(application, &serde_json::from_value::<Vec<String>>(ids.clone())?),
+                Some(ids) => crate::execution::items(
+                    application,
+                    &serde_json::from_value::<Vec<String>>(ids.clone())?,
+                ),
                 None => Ok(crate::execution::outline(application)),
             }
         }
@@ -513,7 +519,9 @@ pub fn call(task: &Task, agent: &str, action: &str, input: &Value) -> Result<Val
                 "only a planning specialist writes an execution plan"
             );
             let step = crate::plans::store_execution(task, agent, field(input, "plan")?)?;
-            Ok(json!({"stored":true,"step":step,"next":"report the order done; the leader reads it with read_plan"}))
+            Ok(
+                json!({"stored":true,"step":step,"next":"report the order done; the leader reads it with read_plan"}),
+            )
         }
         "ask_user" => {
             ensure!(
@@ -553,7 +561,9 @@ pub fn call(task: &Task, agent: &str, action: &str, input: &Value) -> Result<Val
                 _ => bail!("outcome must be done or blocked"),
             };
             if !worker.writes {
-                return Ok(json!({"result":crate::orders::report_findings(task,agent,&order.id,outcome,field(input,"summary")?)?}));
+                return Ok(
+                    json!({"result":crate::orders::report_findings(task,agent,&order.id,outcome,field(input,"summary")?)?}),
+                );
             }
             Ok(
                 json!({"result":crate::orders::report(task,pane,&order.id,outcome,field(input,"summary")?,crate::orders::check_timeout())?}),
@@ -809,7 +819,13 @@ pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> 
             let step = task
                 .state()
                 .ok()
-                .and_then(|state| state.orders.iter().find(|order| order.id == *id).map(|order| order.step.clone()))
+                .and_then(|state| {
+                    state
+                        .orders
+                        .iter()
+                        .find(|order| order.id == *id)
+                        .map(|order| order.step.clone())
+                })
                 .unwrap_or_default();
             format!("{id} ({step})")
         });
@@ -830,7 +846,15 @@ pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> 
         );
         let raw = raw_turns(&directory)?;
         let (status, usage) = if program == crate::agent_args::Kind::Codex {
-            codex_turn(task, agent, identity, &prompt, model, effort.as_deref(), &raw)?
+            codex_turn(
+                task,
+                agent,
+                identity,
+                &prompt,
+                model,
+                effort.as_deref(),
+                &raw,
+            )?
         } else {
             let mut arguments = claude_arguments(&config, &prompt, model, &session, resumed);
             if let Some(effort) = effort {
@@ -930,7 +954,10 @@ mod tests {
             plan: plan.map(str::to_string),
         };
         let state = crate::state::State {
-            orders: vec![order("o140", "B1-1", None), order("o161", "B1-1", Some("B1-1-plan"))],
+            orders: vec![
+                order("o140", "B1-1", None),
+                order("o161", "B1-1", Some("B1-1-plan")),
+            ],
             reviews: vec![crate::reviews::Review {
                 id: "r171".into(),
                 order: "o161".into(),
@@ -939,7 +966,10 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert_eq!(followed_plan(&state, "code-reviewer-3").as_deref(), Some("B1-1-plan"));
+        assert_eq!(
+            followed_plan(&state, "code-reviewer-3").as_deref(),
+            Some("B1-1-plan")
+        );
         assert_eq!(followed_plan(&state, "nobody"), None);
         assert_eq!(plan_of_step(&state, "B1-1").as_deref(), Some("B1-1-plan"));
         assert_eq!(plan_of_step(&state, "B9"), None);
@@ -962,13 +992,19 @@ mod tests {
         let folder = tempfile::tempdir().unwrap();
         let devws = crate::devws::fake::FakeDevws::new(folder.path());
         show_model(&devws, "%7", Some("gpt-6.1-sol")).unwrap();
-        assert_eq!(devws.option("%7", "@devws_model").as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(
+            devws.option("%7", "@devws_model").as_deref(),
+            Some("gpt-6.1-sol")
+        );
         assert_eq!(
             devws.option("%7", "@devws_model_configured").as_deref(),
             Some("gpt-6.1-sol")
         );
         show_model(&devws, "%8", None).unwrap();
-        assert_eq!(devws.option("%8", "@devws_model").as_deref(), Some("default model"));
+        assert_eq!(
+            devws.option("%8", "@devws_model").as_deref(),
+            Some("default model")
+        );
     }
     #[test]
     fn native_tools_and_other_mcp_configs_are_disabled() {
@@ -979,9 +1015,19 @@ mod tests {
             "uuid",
             false,
         );
-        let position = args.iter().position(|arg| arg == "--output-format").unwrap();
-        assert_eq!(args[position + 1], "stream-json", "the panel draws events as they come");
-        assert!(args.contains(&"--verbose".to_string()), "stream-json needs --verbose with --print");
+        let position = args
+            .iter()
+            .position(|arg| arg == "--output-format")
+            .unwrap();
+        assert_eq!(
+            args[position + 1],
+            "stream-json",
+            "the panel draws events as they come"
+        );
+        assert!(
+            args.contains(&"--verbose".to_string()),
+            "stream-json needs --verbose with --print"
+        );
         for flag in [
             "--print",
             "--restricted",

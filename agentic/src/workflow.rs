@@ -138,9 +138,7 @@ pub fn compact(task: &Task) -> Result<Value> {
 pub fn brief(task: &Task) -> Result<Value> {
     let mut status = status(task)?;
     let state = task.state()?;
-    let size = |application: &execution::Application| {
-        json!({"revision":application.revision,"confirmed_revision":application.confirmed_revision,"approved_revision":application.approved_revision,"items":application.items.len()})
-    };
+    let size = |application: &execution::Application| json!({"revision":application.revision,"confirmed_revision":application.confirmed_revision,"approved_revision":application.approved_revision,"items":application.items.len()});
     status["application"] = size(&state.application);
     if let Some(proposal) = &state.application_proposal {
         status["proposal"] = size(proposal);
@@ -149,10 +147,14 @@ pub fn brief(task: &Task) -> Result<Value> {
     // each review's outcome and the work still to do, the section the rest.
     status["reviews"] = json!(state.reviews.iter().map(|review| json!({"id":review.id,"order":review.order,"author":review.author,"reviewer":review.reviewer,"verdict":review.verdict,"findings":review.findings.len(),"submitted_at":review.submitted_at})).collect::<Vec<_>>());
     let ready_work = status["ready_work"].as_array().cloned().unwrap_or_default();
-    let (accepted, open): (Vec<_>, Vec<_>) = ready_work.into_iter().partition(|item| item["stage"] == "accepted");
+    let (accepted, open): (Vec<_>, Vec<_>) = ready_work
+        .into_iter()
+        .partition(|item| item["stage"] == "accepted");
     status["ready_work"] = json!(open);
     status["accepted_items"] = json!(accepted.len());
-    status["read_more"] = json!("application_workflow status: the baseline's outline; section (reviews, ready_work, runner, …) for the full part, and items for contracts");
+    status["read_more"] = json!(
+        "application_workflow status: the baseline's outline; section (reviews, ready_work, runner, …) for the full part, and items for contracts"
+    );
     Ok(status)
 }
 
@@ -172,7 +174,10 @@ fn section(task: &Task, section: &str, input: &Value) -> Result<Value> {
     };
     if let Some(application) = application {
         return match input.get("items") {
-            Some(ids) => execution::items(application, &serde_json::from_value::<Vec<String>>(ids.clone())?),
+            Some(ids) => execution::items(
+                application,
+                &serde_json::from_value::<Vec<String>>(ids.clone())?,
+            ),
             None => Ok(execution::outline(application)),
         };
     }
@@ -348,12 +353,8 @@ pub fn call(task: &Task, action: &str, input: &Value) -> Result<Value> {
             )
         }
         "amend" => {
-            let changes = serde_json::from_value(
-                input
-                    .get("changes")
-                    .context("changes required")?
-                    .clone(),
-            )?;
+            let changes =
+                serde_json::from_value(input.get("changes").context("changes required")?.clone())?;
             let affected = execution::amend(
                 task,
                 changes,
@@ -449,19 +450,42 @@ mod tests {
         let read = |input: Value| call(&task, "status", &input).unwrap();
 
         let whole = read(json!({}));
-        assert_eq!(whole["proposal"]["items"]["S01-B01"]["title"], "Token service");
-        assert!(whole["proposal"]["items"]["S01-B01"].get("acceptance").is_none());
+        assert_eq!(
+            whole["proposal"]["items"]["S01-B01"]["title"],
+            "Token service"
+        );
+        assert!(
+            whole["proposal"]["items"]["S01-B01"]
+                .get("acceptance")
+                .is_none()
+        );
         assert!(whole["read_more"].as_str().unwrap().contains("items"));
         let brief = brief(&task).unwrap();
-        assert_eq!(brief["proposal"]["items"], 1, "only its size inside task_status");
+        assert_eq!(
+            brief["proposal"]["items"], 1,
+            "only its size inside task_status"
+        );
         assert_eq!(brief["proposal"]["revision"], 1);
 
         let runner = read(json!({"section":"runner"}));
-        assert_eq!(runner.as_object().unwrap().keys().collect::<Vec<_>>(), ["runner"]);
+        assert_eq!(
+            runner.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["runner"]
+        );
         let contracts = read(json!({"section":"proposal","items":["S01-B01"]}));
-        assert_eq!(contracts["items"]["S01-B01"]["acceptance"][0], "Service contract passes");
+        assert_eq!(
+            contracts["items"]["S01-B01"]["acceptance"][0],
+            "Service contract passes"
+        );
         assert!(call(&task, "status", &json!({"section":"nothing"})).is_err());
-        assert!(call(&task, "status", &json!({"section":"proposal","items":["S9"]})).is_err());
+        assert!(
+            call(
+                &task,
+                "status",
+                &json!({"section":"proposal","items":["S9"]})
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -499,7 +523,12 @@ mod tests {
         assert!(brief["reviews"][0].get("summary").is_none());
         assert_eq!(brief["accepted_items"], 0);
         let reviews = call(&task, "status", &json!({"section":"reviews"})).unwrap();
-        assert!(reviews["reviews"][0]["summary"].as_str().unwrap().starts_with("a long"));
+        assert!(
+            reviews["reviews"][0]["summary"]
+                .as_str()
+                .unwrap()
+                .starts_with("a long")
+        );
     }
 
     #[test]
@@ -524,7 +553,10 @@ mod tests {
         let proposal = task.state().unwrap().application_proposal.unwrap();
         assert_eq!(proposal.revision, 2);
         assert_eq!(proposal.items.len(), 2);
-        assert!(call(&task, "amend", &json!({"changes":{}})).is_err(), "a reason is required");
+        assert!(
+            call(&task, "amend", &json!({"changes":{}})).is_err(),
+            "a reason is required"
+        );
     }
 
     #[test]
@@ -533,7 +565,10 @@ mod tests {
         let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
         let runner = |task: &Task| status(task).unwrap()["runner"].clone();
         assert_eq!(runner(&task)["adapter"], "claude_mcp_only");
-        assert_eq!(runner(&task)["worker_programs"], serde_json::json!(["claude"]));
+        assert_eq!(
+            runner(&task)["worker_programs"],
+            serde_json::json!(["claude"])
+        );
         task.transaction(|tx| {
             tx.state.codex_team = true;
             Ok(())
@@ -544,7 +579,11 @@ mod tests {
             serde_json::json!(["claude", "codex"]),
             "the user put the whole team on Codex: planners, writers and reviewers"
         );
-        assert!(runner(&task)["adapter"].as_str().unwrap().contains("codex"), "{}", runner(&task));
+        assert!(
+            runner(&task)["adapter"].as_str().unwrap().contains("codex"),
+            "{}",
+            runner(&task)
+        );
     }
 
     #[test]

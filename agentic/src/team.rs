@@ -890,7 +890,11 @@ fn reviewed_adapter(
 
 /// What a capacity place is for: writers and read-only agents count apart.
 fn kind_of_agents(writes: bool) -> &'static str {
-    if writes { "writers" } else { "read-only agents" }
+    if writes {
+        "writers"
+    } else {
+        "read-only agents"
+    }
 }
 
 #[cfg(test)]
@@ -1168,7 +1172,9 @@ mod tests {
             crate::lanes::add(&f.task, lane, &[format!("{lane}/**")], None).unwrap();
         }
         for lane in ["one", "two", "three"] {
-            f.team().spawn_agent_in("executor", None, Some(lane)).unwrap();
+            f.team()
+                .spawn_agent_in("executor", None, Some(lane))
+                .unwrap();
         }
         let error = f
             .team()
@@ -1773,8 +1779,9 @@ mod tests {
         let state = f.task.state().unwrap();
         assert!(!state.paused);
         assert_eq!(state.leader_wait, crate::state::LeaderWait::No);
-        assert!(state.queue.iter().any(|message| message.to == crate::state::LEADER
-            && message.text.starts_with("RESUME")));
+        assert!(state.queue.iter().any(
+            |message| message.to == crate::state::LEADER && message.text.starts_with("RESUME")
+        ));
     }
 
     #[test]
@@ -1797,7 +1804,10 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        assert!(f.team().resume().is_err(), "someone else resuming waits for its turn to end");
+        assert!(
+            f.team().resume().is_err(),
+            "someone else resuming waits for its turn to end"
+        );
         f.team().resume_from(Some("%2")).unwrap();
         assert!(!f.task.state().unwrap().paused);
     }

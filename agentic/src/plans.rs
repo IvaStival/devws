@@ -169,12 +169,20 @@ mod tests {
         let planner = team.spawn_agent("planner", None).unwrap();
         team.write_plan("1. s1\n").unwrap();
         team.approve().unwrap();
-        let error = store_execution(&task, &planner.id, "x").unwrap_err().to_string();
+        let error = store_execution(&task, &planner.id, "x")
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("no open order"), "{error}");
         order(&task, &planner.id, "s1");
-        assert_eq!(store_execution(&task, &planner.id, "1. manifest\n").unwrap(), "s1");
+        assert_eq!(
+            store_execution(&task, &planner.id, "1. manifest\n").unwrap(),
+            "s1"
+        );
         assert_eq!(read(&task, "s1").unwrap(), "1. manifest\n");
-        assert!(store_execution(&task, &planner.id, "  ").is_err(), "an empty plan");
+        assert!(
+            store_execution(&task, &planner.id, "  ").is_err(),
+            "an empty plan"
+        );
     }
 
     #[test]
@@ -192,10 +200,26 @@ mod tests {
         order(&task, &planner.id, "s1");
         store_execution(&task, &planner.id, "1. write the manifest\n").unwrap();
         let reader = planner.id.clone();
-        let read = crate::worker_tools::call(&task, &reader, "plan_read", &serde_json::json!({"step": "s1"})).unwrap();
+        let read = crate::worker_tools::call(
+            &task,
+            &reader,
+            "plan_read",
+            &serde_json::json!({"step": "s1"}),
+        )
+        .unwrap();
         assert_eq!(read["plan"], "1. write the manifest\n");
-        let missing = crate::worker_tools::call(&task, &reader, "plan_read", &serde_json::json!({"step": "nope"}));
-        assert!(missing.unwrap_err().to_string().contains("no execution plan"));
+        let missing = crate::worker_tools::call(
+            &task,
+            &reader,
+            "plan_read",
+            &serde_json::json!({"step": "nope"}),
+        );
+        assert!(
+            missing
+                .unwrap_err()
+                .to_string()
+                .contains("no execution plan")
+        );
     }
 
     #[test]
@@ -217,8 +241,15 @@ mod tests {
         let outline = call("application_read", serde_json::json!({})).unwrap();
         assert_eq!(outline["items"]["S01-B01"]["title"], "Token service");
         assert!(outline["items"]["S01-B01"].get("acceptance").is_none());
-        let full = call("application_read", serde_json::json!({"items": ["S01-B01"]})).unwrap();
-        assert_eq!(full["items"]["S01-B01"]["acceptance"][0], "Service contract passes");
+        let full = call(
+            "application_read",
+            serde_json::json!({"items": ["S01-B01"]}),
+        )
+        .unwrap();
+        assert_eq!(
+            full["items"]["S01-B01"]["acceptance"][0],
+            "Service contract passes"
+        );
 
         let amended = call(
             "plan_amend",
@@ -227,14 +258,22 @@ mod tests {
         .unwrap();
         assert_eq!(amended["proposed"], true);
         let proposal = task.state().unwrap().application_proposal.unwrap();
-        assert_eq!((proposal.revision, proposal.goal.as_str()), (2, "Accounts only"));
+        assert_eq!(
+            (proposal.revision, proposal.goal.as_str()),
+            (2, "Accounts only")
+        );
         assert_eq!(proposal.items, crate::execution::tests::baseline().items);
         let pending = call("application_read", serde_json::json!({"proposal": true})).unwrap();
         assert_eq!(pending["goal"], "Accounts only");
 
         let executor = team.spawn_agent("executor", None).unwrap();
         for action in ["application_read", "plan_amend"] {
-            let refused = crate::worker_tools::call(&task, &executor.id, action, &serde_json::json!({"reason": "x", "changes": {}}));
+            let refused = crate::worker_tools::call(
+                &task,
+                &executor.id,
+                action,
+                &serde_json::json!({"reason": "x", "changes": {}}),
+            );
             assert!(refused.is_err(), "{action} is not a writer's");
         }
     }

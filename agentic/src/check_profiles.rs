@@ -905,8 +905,10 @@ mod tests {
     #[test]
     fn a_reviewed_check_does_not_go_stale_in_another_process() {
         use crate::execution::Workflow;
-        let worker = r#"[{"selected":["lint"]},null,{"PATH":"/codex/arg0-AAA:/usr/bin"},{"image":"node"}]"#;
-        let leader = r#"[{"selected":["lint"]},null,{"PATH":"/codex/arg0-BBB:/usr/bin"},{"image":"node"}]"#;
+        let worker =
+            r#"[{"selected":["lint"]},null,{"PATH":"/codex/arg0-AAA:/usr/bin"},{"image":"node"}]"#;
+        let leader =
+            r#"[{"selected":["lint"]},null,{"PATH":"/codex/arg0-BBB:/usr/bin"},{"image":"node"}]"#;
         assert!(same_configuration(Workflow::Reviewed, leader, worker).unwrap());
         let other_profiles = r#"[{"selected":["test"]},null,{"PATH":"/usr/bin"},{"image":"node"}]"#;
         assert!(!same_configuration(Workflow::Reviewed, other_profiles, worker).unwrap());
