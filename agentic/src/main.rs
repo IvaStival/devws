@@ -15,6 +15,7 @@ mod execution;
 mod graph;
 mod history;
 mod home;
+mod images;
 mod integration;
 mod lanes;
 mod leader;

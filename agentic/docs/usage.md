@@ -119,7 +119,10 @@ the task paused, and its pending permission requests. A step the leader has
 left, waiting more than 10 minutes while the leader is not working, moves to
 the **Leader backlog** card under the CTO, with how long it has waited. It is
 the leader's work, not yours, so it stays out of Needs you; to remind the
-leader, press `m` in its details. The
+leader, write to it from its details. In the details of a NEEDS YOU row, a
+step or the leader, Enter (or `m`, a click in the "To the leader" box, or a
+paste) starts a message, and Enter sends it; an empty message is never sent.
+The
 frames use the devws menu's muted blue accent, while green marks successful
 states. Selection skips section titles, second lines and blank lines, and the wheel
 scrolls the whole list, down to the oldest done step. Panes under 60 columns
@@ -206,7 +209,7 @@ waiting for you takes it as your answer.
 - At most `max_agents` writers running (6), and as many read-only agents
   (planners, reviewers) apart, so an idle senior never keeps a writer from
   starting. Agents stay between steps; the leader stops them at the end, near a limit, or to make room.
-- No new agents on an account at 85% of its week or five-hour limit. Workers
+- No new agents on an account at 95% of its week or five-hour limit. Workers
   automatically try available alternatives, including Claude → Codex, without
   asking you again. Their role, lane and queued work stay the same. See
   [worker availability and configuration](../../docs/user/devagentics-execution.md#continue-when-a-provider-or-model-is-unavailable).
@@ -411,7 +414,8 @@ fixed `notes` fixture. See [Measuring an agent team](../../docs/user/devagentics
 
 ## Worker usage-limit approval
 
-When both worker accounts reach the local 85% guard, the leader asks for your
+When every worker account the task may use has reached the local 95% guard,
+or is switched off for the task, the leader asks for your
 explicit approval to continue above it for this task. It records the answer with
 `set_usage_limit_approval`, then calls `resume_task` after approval to restart
 existing blocked workers. Approval survives restarts until revoked and applies

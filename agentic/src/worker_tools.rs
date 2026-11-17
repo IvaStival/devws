@@ -370,7 +370,7 @@ pub fn mcp(task: &Task, agent: &str, identity: &Path) -> Result<()> {
                 json!({"protocolVersion":request["params"]["protocolVersion"].as_str().unwrap_or("2024-11-05"),"capabilities":{"tools":{}},"serverInfo":{"name":"devagentics_worker","version":env!("CARGO_PKG_VERSION")}})
             }
             "tools/list" => {
-                json!({"tools":[{"name":"worker","description":"Scoped worker tools. action=status, execute, checkpoint, check, report, plan_proposal (input.application: the whole next revision), plan_amend (input.changes: only what changes in the next revision, by id, null removes; input.reason), application_read (the baseline as an outline; input.items [ids]: their full contracts; input.proposal true: the pending proposal), plan_write (input.plan: the execution plan of your order's step, markdown), plan_read (the plan your order or review follows, or input.step), ask_user, review_diff (the candidate diff, the plan it follows and its check results: profiles, exit codes, times, diagnostics), review_submit, graph, ask or answer. Execute runs only inside the isolated source container. No leader, database or external-action permissions.","inputSchema":{"type":"object","properties":{"action":{"type":"string"},"input":{"type":"object"}},"required":["action"]}}]})
+                json!({"tools":[{"name":"worker","description":"Scoped worker tools. action=status, execute, checkpoint, check, report, plan_proposal (input.application: the whole next revision), plan_amend (input.changes: only what changes in the next revision, by id, null removes; input.reason), application_read (the baseline as an outline; input.items [ids]: their full contracts; input.proposal true: the pending proposal), plan_write (input.plan: the execution plan of your order's step, markdown), plan_read (the plan your order or review follows, or input.step), ask_user, review_diff (the candidate diff, the plan it follows and its check results: profiles, exit codes, times, diagnostics), review_submit, graph, ask or answer; for an infra agent also image_build (input: name, dockerfile, context_files [tracked repo paths], repo; devAgentics builds it on the user's rootless Docker with network, capped at 4 GB, 2 CPUs and 30 min, and returns the image ID) and image_try (input: image, image_mounts, command; runs in that image on your read-only snapshot, no network). Execute runs only inside the isolated source container. No leader, database or external-action permissions.","inputSchema":{"type":"object","properties":{"action":{"type":"string"},"input":{"type":"object"}},"required":["action"]}}]})
             }
             "tools/call" => {
                 let result = (|| {
@@ -444,6 +444,9 @@ fn reviewed_contracts(
         })
         .collect()
 }
+
+/// The role that builds the team's runner images.
+const INFRA_ROLE: &str = "infra";
 
 fn field<'a>(input: &'a Value, name: &str) -> Result<&'a str> {
     input[name]
@@ -581,6 +584,20 @@ pub fn call(task: &Task, agent: &str, action: &str, input: &Value) -> Result<Val
                 &commit,
                 input,
             )?}))
+        }
+        "image_build" | "image_try" => {
+            ensure!(
+                worker.role == INFRA_ROLE,
+                "only an infra agent builds and tries runner images"
+            );
+            if action == "image_build" {
+                let request = serde_json::from_value(input.clone())?;
+                return Ok(serde_json::to_value(crate::images::build(task, &request)?)?);
+            }
+            let request = serde_json::from_value(input.clone())?;
+            Ok(serde_json::to_value(crate::images::try_image(
+                task, agent, &request,
+            )?)?)
         }
         "review_submit" => {
             let verdict = serde_json::from_value(input["verdict"].clone())?;
@@ -849,6 +866,52 @@ pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_infra_agent_builds_or_tries_images() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        let agent = |id: &str, role: &str, writes: bool| crate::state::Agent {
+            id: id.into(),
+            role: role.into(),
+            agent: "codex".into(),
+            repo: "app".into(),
+            session: String::new(),
+            pane: format!("%{id}"),
+            writes,
+            group: None,
+            lane: None,
+            live: true,
+            unavailable: false,
+            ready: true,
+            lost: false,
+            usage: None,
+        };
+        task.transaction(|tx| {
+            tx.state.agents.push(agent("hammer-1", "hammer", true));
+            tx.state.agents.push(agent("planner-1", "planner", false));
+            tx.state.agents.push(agent("infra-1", INFRA_ROLE, false));
+            Ok(())
+        })
+        .unwrap();
+        let build = serde_json::json!({"name": "back", "dockerfile": "FROM alpine:3.20"});
+        for (worker, action) in [("hammer-1", "image_build"), ("planner-1", "image_try")] {
+            let error = call(&task, worker, action, &build).unwrap_err().to_string();
+            assert!(error.contains("only an infra agent"), "{worker}: {error}");
+        }
+        let error = call(
+            &task,
+            "infra-1",
+            "image_build",
+            &serde_json::json!({"name": "Bad Name", "dockerfile": "FROM x"}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("image name"),
+            "the infra agent gets as far as the build: {error}"
+        );
+    }
 
     #[test]
     fn a_reviewer_reads_the_plan_of_the_order_it_reviews() {

@@ -1,6 +1,6 @@
 //! Containers see disposable source snapshots, never host projects or data volumes.
 use crate::{checks, execution::Workflow, state::LEADER, task::Task};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -38,6 +38,42 @@ pub struct Configuration {
     pub memory_mb: Option<u32>,
     #[serde(default)]
     pub cpus: Option<u32>,
+    /// A lane's own image, for work the main image cannot run (a PHP
+    /// backend beside a Node frontend). Left out when empty, so a task
+    /// without lane images keeps its evidence signatures.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lanes: BTreeMap<String, LaneImage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaneImage {
+    /// A local immutable image ID, like the main one.
+    pub image: String,
+    #[serde(default)]
+    pub image_mounts: Vec<ImageMount>,
+}
+
+impl Configuration {
+    /// What a container of `lane` runs with: the lane's image and mounts when
+    /// it has its own, the main ones otherwise.
+    pub fn for_lane(&self, lane: Option<&str>) -> Configuration {
+        let mut config = self.clone();
+        config.lanes = BTreeMap::new();
+        if let Some(own) = lane.and_then(|name| self.lanes.get(name)) {
+            config.image = own.image.clone();
+            config.image_mounts = own.image_mounts.clone();
+        }
+        config
+    }
+
+    /// The configuration without its lane images: what a lane-only change
+    /// leaves as it was.
+    fn without_lanes(&self) -> Configuration {
+        let mut config = self.clone();
+        config.lanes = BTreeMap::new();
+        config
+    }
 }
 
 const MEMORY_MB: std::ops::RangeInclusive<u32> = 128..=8192;
@@ -86,6 +122,11 @@ fn runtime_dir_from(variable: Option<String>, standard: &Path) -> Option<String>
             .is_dir()
             .then(|| standard.to_string_lossy().into_owned())
     })
+}
+
+/// The user's own rootless Docker socket, never a pinned or shared one.
+pub(crate) fn user_docker_endpoint() -> Result<String> {
+    user_endpoint(runtime_dir().as_deref())
 }
 
 fn configured_endpoint(config: &Configuration) -> Result<String> {
@@ -174,7 +215,7 @@ fn relative(path: &Path) -> Result<String> {
     );
     Ok(text.into())
 }
-fn regular(root: &Path, path: &str) -> Result<PathBuf> {
+pub(crate) fn regular(root: &Path, path: &str) -> Result<PathBuf> {
     let relative = relative(Path::new(path))?;
     let mut current = root.to_path_buf();
     ensure!(
@@ -192,7 +233,7 @@ fn regular(root: &Path, path: &str) -> Result<PathBuf> {
     }
     Ok(current)
 }
-fn bytes(path: &Path) -> Result<Vec<u8>> {
+pub(crate) fn bytes(path: &Path) -> Result<Vec<u8>> {
     let metadata = fs::symlink_metadata(path)?;
     ensure!(
         metadata.is_file() && !metadata.file_type().is_symlink() && metadata.len() <= FILE_LIMIT,
@@ -210,15 +251,41 @@ pub(crate) fn content_hash(content: &[u8]) -> Result<String> {
     Ok(format!("{:x}", sha2::Sha256::digest(content)))
 }
 
-pub fn validate_configuration(config: &Configuration) -> Result<()> {
+pub(crate) fn validate_image(image: &str) -> Result<()> {
     ensure!(
-        config.image.starts_with("sha256:")
-            && config.image.len() == 71
-            && config.image[7..]
+        image.starts_with("sha256:")
+            && image.len() == 71
+            && image[7..]
                 .chars()
                 .all(|character| character.is_ascii_hexdigit()),
         "runner image must be an immutable local sha256 image ID"
     );
+    Ok(())
+}
+
+pub(crate) fn validate_mounts(mounts: &[ImageMount]) -> Result<()> {
+    for mount in mounts {
+        let inside = mount
+            .path
+            .strip_prefix('/')
+            .context("an image mount's path is absolute in the image")?;
+        relative(Path::new(inside)).context("an image mount's path")?;
+        relative(Path::new(&mount.target)).context("an image mount's target")?;
+        ensure!(
+            !mount.path.contains(',') && !mount.target.contains(','),
+            "an image mount path contains a comma"
+        );
+    }
+    Ok(())
+}
+
+pub fn validate_configuration(config: &Configuration) -> Result<()> {
+    validate_image(&config.image)?;
+    validate_mounts(&config.image_mounts)?;
+    for (lane, own) in &config.lanes {
+        validate_image(&own.image).with_context(|| format!("lane {lane}'s image"))?;
+        validate_mounts(&own.image_mounts).with_context(|| format!("lane {lane}'s mounts"))?;
+    }
     ensure!(
         (1..=900).contains(&config.timeout_seconds),
         "runner timeout must be 1–900 seconds"
@@ -235,18 +302,6 @@ pub fn validate_configuration(config: &Configuration) -> Result<()> {
         CPUS.start(),
         CPUS.end()
     );
-    for mount in &config.image_mounts {
-        let inside = mount
-            .path
-            .strip_prefix('/')
-            .context("an image mount's path is absolute in the image")?;
-        relative(Path::new(inside)).context("an image mount's path")?;
-        relative(Path::new(&mount.target)).context("an image mount's target")?;
-        ensure!(
-            !mount.path.contains(',') && !mount.target.contains(','),
-            "an image mount path contains a comma"
-        );
-    }
     if let Some(host) = &config.docker_host {
         ensure!(
             host.starts_with("unix://") && host.len() > "unix://".len(),
@@ -292,14 +347,16 @@ pub fn probe(config: &Configuration) -> Result<()> {
         rootless(&String::from_utf8_lossy(&info.stdout)),
         "the Docker daemon at {endpoint} is not rootless: reviewed work runs only on your own rootless daemon"
     );
-    let result = docker(&endpoint)
-        .args(["image", "inspect", "--format", "{{.Id}}", &config.image])
-        .output()
-        .context("Docker must be installed and running")?;
-    ensure!(
-        result.status.success() && String::from_utf8_lossy(&result.stdout).trim() == config.image,
-        "configured local Docker image is unavailable; no pull or daemon changes were attempted"
-    );
+    for image in std::iter::once(&config.image).chain(config.lanes.values().map(|own| &own.image)) {
+        let result = docker(&endpoint)
+            .args(["image", "inspect", "--format", "{{.Id}}", image])
+            .output()
+            .context("Docker must be installed and running")?;
+        ensure!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).trim() == image,
+            "configured local Docker image {image} is unavailable; no pull or daemon changes were attempted"
+        );
+    }
     Ok(())
 }
 pub fn available(task: &Task) -> Result<()> {
@@ -312,6 +369,28 @@ pub fn available(task: &Task) -> Result<()> {
         .context("configure and verify the approved container runner before execution")?;
     probe(&config)
 }
+/// The lanes a runner change touches, when it touches only lane images;
+/// `None` when the main configuration changes too, which every live worker
+/// depends on. Workers of other lanes may keep running.
+fn changed_lanes(
+    current: Option<&Configuration>,
+    requested: &Configuration,
+) -> Option<std::collections::BTreeSet<String>> {
+    let current = current?;
+    if current.without_lanes() != requested.without_lanes() {
+        return None;
+    }
+    Some(
+        current
+            .lanes
+            .keys()
+            .chain(requested.lanes.keys())
+            .filter(|lane| current.lanes.get(*lane) != requested.lanes.get(*lane))
+            .cloned()
+            .collect(),
+    )
+}
+
 /// The folders the image mounts go over: Docker cannot create them in a
 /// read-only workspace.
 fn mount_points(workspace: &Path, config: &Configuration) -> Result<()> {
@@ -323,31 +402,55 @@ fn mount_points(workspace: &Path, config: &Configuration) -> Result<()> {
 
 pub fn configure(task: &Task, config: Configuration) -> Result<()> {
     probe(&config)?;
-    // Verify the isolation flags in a real disposable container before enabling.
-    let root = task.dir().join("runner-probe");
-    fs::create_dir_all(&root)?;
-    mount_points(&root, &config)?;
-    let result = run_container(
-        &config,
-        &root,
-        true,
-        // A real write: `test -w` answers yes for uid 0 whatever the mount.
-        "test ! -e /var/run/docker.sock && test ! -e /host && test ! -e /root/.ssh && ! touch /etc/.devagentics-probe 2>/dev/null && test -r /proc/net/route",
-    )?;
-    ensure!(
-        result.success,
-        "container isolation preflight failed: {}",
-        result.stderr
-    );
+    let lanes = task.config()?.lanes;
+    for lane in config.lanes.keys() {
+        ensure!(
+            lanes.iter().any(|found| found.name == *lane),
+            "the task has no lane {lane}: add_lane it first"
+        );
+    }
+    // Verify the isolation flags in a real disposable container of every
+    // image before enabling.
+    for lane in std::iter::once(None).chain(config.lanes.keys().map(|lane| Some(lane.as_str()))) {
+        let own = config.for_lane(lane);
+        let root = task.dir().join("runner-probe").join(lane.unwrap_or("main"));
+        fs::create_dir_all(&root)?;
+        mount_points(&root, &own)?;
+        let result = run_container(
+            &own,
+            &root,
+            true,
+            // A real write: `test -w` answers yes for uid 0 whatever the mount.
+            "test ! -e /var/run/docker.sock && test ! -e /host && test ! -e /root/.ssh && ! touch /etc/.devagentics-probe 2>/dev/null && test -r /proc/net/route",
+        )?;
+        ensure!(
+            result.success,
+            "container isolation preflight failed: {}",
+            result.stderr
+        );
+    }
     let _control = task.control_lock()?;
     task.transaction(|tx| {
-        ensure!(
-            !tx.state
+        if tx.state.workflow == Workflow::Reviewed {
+            let changed = changed_lanes(tx.state.runner.as_ref(), &config);
+            let busy = tx
+                .state
                 .agents
                 .iter()
-                .any(|agent| agent.live && tx.state.workflow == Workflow::Reviewed),
-            "pause and close reviewed workers before changing runner policy"
-        );
+                .filter(|agent| agent.live)
+                .find(|agent| match (&changed, &agent.lane) {
+                    (None, _) => true,
+                    (Some(lanes), Some(lane)) => lanes.contains(lane),
+                    (Some(_), None) => false,
+                });
+            if let Some(agent) = busy {
+                bail!(
+                    "pause and close reviewed workers before changing runner policy ({} is live); \
+                     a change of lane images only waits for that lane's workers",
+                    agent.id
+                );
+            }
+        }
         tx.state.runner = Some(config);
         tx.log(
             crate::log::Kind::Review,
@@ -991,8 +1094,32 @@ pub fn execute(task: &Task, agent: &str, command: &str) -> Result<Output> {
         .runner_workspaces
         .get(agent)
         .context("worker source missing")?;
-    let config = state.runner.context("runner missing")?;
+    let config = state
+        .runner
+        .as_ref()
+        .context("runner missing")?
+        .for_lane(container_lane(&state, agent).as_deref());
     run_container(&config, &workspace.snapshot, workspace.readonly, command)
+}
+
+/// The lane whose image `agent`'s containers use: its own, or for a reviewer
+/// the lane of the work it reviews now. None for the main image.
+pub fn container_lane(state: &crate::state::State, agent: &str) -> Option<String> {
+    if let Some(lane) = state.agent(agent).and_then(|found| found.lane.clone()) {
+        return Some(lane);
+    }
+    let review = state
+        .reviews
+        .iter()
+        .rev()
+        .find(|review| review.reviewer == agent && review.verdict.is_none())?;
+    lane_of_order(state, &review.order)
+}
+
+/// The lane of the agent an order was given to.
+pub fn lane_of_order(state: &crate::state::State, order: &str) -> Option<String> {
+    let order = state.orders.iter().find(|found| found.id == order)?;
+    state.agent(&order.agent)?.lane.clone()
 }
 
 /// Git plumbing must not execute repository hooks, filters or fsmonitor programs.
@@ -1079,10 +1206,11 @@ pub fn preflight(task: &Task, item_id: &str, source: &Path) -> Result<()> {
         .get(item_id)
         .context("unknown contract")?;
     let configuration = task.config()?;
-    let definitions = configuration
+    let definitions = &configuration
         .check_profiles
         .get(&item.repo)
-        .context("named checks not configured")?;
+        .context("named checks not configured")?
+        .for_lane(Some(&item.lane));
     let fingerprint = content_hash(&serde_json::to_vec(&(
         item,
         definitions,
@@ -1120,7 +1248,10 @@ pub fn preflight(task: &Task, item_id: &str, source: &Path) -> Result<()> {
             .context("environment missing")?;
         let phase = crate::check_profiles::run_container_profile(
             task,
-            &worker,
+            crate::check_profiles::Container {
+                agent: &worker,
+                lane: Some(&item.lane),
+            },
             name,
             &profile,
             environment,
@@ -1422,8 +1553,61 @@ pub mod tests {
             image_mounts: vec![],
             memory_mb: None,
             cpus: None,
+            lanes: BTreeMap::new(),
         }
     }
+    fn back_lane() -> LaneImage {
+        LaneImage {
+            image: format!("sha256:{}", "b".repeat(64)),
+            image_mounts: vec![ImageMount {
+                path: "/vendor".into(),
+                target: "backend/vendor".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn a_lane_with_its_own_image_runs_in_it_and_the_others_in_the_main_one() {
+        let mut config = configuration();
+        config.lanes.insert("back".into(), back_lane());
+        validate_configuration(&config).unwrap();
+        let back = config.for_lane(Some("back"));
+        assert_eq!(back.image, back_lane().image);
+        assert_eq!(back.image_mounts, back_lane().image_mounts);
+        assert!(back.lanes.is_empty());
+        assert_eq!(config.for_lane(Some("front")).image, configuration().image);
+        assert_eq!(config.for_lane(None).image, configuration().image);
+
+        config.lanes.get_mut("back").unwrap().image = "php:8.4".into();
+        let error = validate_configuration(&config).unwrap_err();
+        assert!(format!("{error:#}").contains("lane back"), "{error:#}");
+        assert!(
+            !serde_json::to_string(&configuration())
+                .unwrap()
+                .contains("lanes"),
+            "a task without lane images keeps its evidence signatures"
+        );
+    }
+
+    #[test]
+    fn a_change_of_lane_images_only_waits_for_that_lanes_workers() {
+        let current = configuration();
+        let mut added = current.clone();
+        added.lanes.insert("back".into(), back_lane());
+        assert_eq!(
+            changed_lanes(Some(&current), &added),
+            Some(std::collections::BTreeSet::from(["back".to_string()]))
+        );
+        let mut main = added.clone();
+        main.timeout_seconds = 60;
+        assert_eq!(
+            changed_lanes(Some(&current), &main),
+            None,
+            "the main image changed"
+        );
+        assert_eq!(changed_lanes(None, &added), None, "a first configuration");
+    }
+
     #[test]
     fn policy_distinguishes_source_deletion_from_data_and_path_escapes() {
         let config = configuration();
@@ -1498,6 +1682,7 @@ mod docker_tests {
             image_mounts: vec![],
             memory_mb: None,
             cpus: None,
+            lanes: BTreeMap::new(),
         }
     }
     #[test]
@@ -1718,6 +1903,14 @@ mod docker_tests {
             "Exact refreshed integration context reviewed",
         )
         .unwrap();
+        assert!(
+            task.state().unwrap().queue.iter().any(|message| {
+                message.to == crate::state::LEADER
+                    && message.text.contains(&final_review.id)
+                    && message.text.contains("accept_step S01-B01")
+            }),
+            "the leader hears of the submitted review"
+        );
         assert!(
             !final_review.candidate_evidence.is_empty(),
             "the merge candidate passed its candidate check before review"

@@ -46,7 +46,7 @@ fn tools() -> Vec<Value> {
     let mut tools = vec![
         tool(
             "application_workflow",
-            "Project application planning. Actions: status (an outline; input.section for one part in full, e.g. runner; section application or proposal with input.items [ids] for those full contracts), propose (input.application: the whole next revision), amend (input.changes: only what changes in the next revision, by id, null removes; input.reason), answer, confirm, approve, milestones, preview_adoption, adopt, review_request, provision_roles, runner_configure, recover_turn, validate_milestone, leader_inbox, inbox_ack, runner_images, project_overview, preflight_retry. provision_roles changes managed storage outside the project and requires exact-call external authorization. Only record confirm/approve after the user's explicit answer for that exact revision. Material proposals never inherit approval. Preview is read-only; runner enforcement may block adoption.",
+            "Project application planning. Actions: status (an outline; input.section for one part in full, e.g. runner; section application or proposal with input.items [ids] for those full contracts), propose (input.application: the whole next revision), amend (input.changes: only what changes in the next revision, by id, null removes; input.reason), answer, confirm, approve, milestones, preview_adoption, adopt, review_request, provision_roles, runner_configure (input.configuration; its lanes: {lane: {image, image_mounts}} give a lane its own image), image_build (input: name, dockerfile, context_files, repo; builds a runner image on the user's rootless Docker and returns its ID), recover_turn, validate_milestone, leader_inbox, inbox_ack, runner_images, project_overview, preflight_retry. provision_roles changes managed storage outside the project and requires exact-call external authorization; so does a runner_configure that changes docker_host. Other runner changes and image builds are yours to decide. Only record confirm/approve after the user's explicit answer for that exact revision. Material proposals never inherit approval. Preview is read-only; runner enforcement may block adoption.",
             json!({"action":text("Workflow action"),"input":{"type":"object"}}),
             &["action"],
         ),
@@ -406,12 +406,7 @@ impl Server<'_> {
             return self.authorize_action(arguments);
         }
         validate_required(name, arguments)?;
-        if name == "application_workflow"
-            && matches!(
-                arguments["action"].as_str(),
-                Some("provision_roles" | "runner_configure")
-            )
-        {
+        if name == "application_workflow" && self.leaves_project(arguments)? {
             return self.authorized_call(name, arguments, Effect::External);
         }
         if let Some(effect) = effect(name) {
@@ -420,6 +415,28 @@ impl Server<'_> {
             }
         }
         self.call_inner(name, arguments)
+    }
+
+    /// Whether an `application_workflow` call reaches outside the project:
+    /// provisioning roles writes devAgentics' home, and a runner change that
+    /// moves to another Docker daemon leaves the user's own. Every other
+    /// runner change stays inside the bounds its validation keeps (local
+    /// image IDs, capped memory and CPUs, image folders, no network): the
+    /// leader decides it.
+    fn leaves_project(&self, arguments: &Value) -> Result<bool> {
+        Ok(match arguments["action"].as_str() {
+            Some("provision_roles") => true,
+            Some("runner_configure") => {
+                let requested = arguments["input"]["configuration"]["docker_host"].as_str();
+                let current = self
+                    .task
+                    .state()?
+                    .runner
+                    .and_then(|runner| runner.docker_host);
+                requested != current.as_deref()
+            }
+            _ => false,
+        })
     }
 
     fn authorized_call(&self, name: &str, arguments: &Value, effect: Effect) -> Result<String> {
@@ -1103,7 +1120,7 @@ mod tests {
                 account,
                 crate::devws::Limits {
                     week: None,
-                    five_hour: Some(85),
+                    five_hour: Some(95),
                 },
             );
         }
@@ -1195,6 +1212,36 @@ mod tests {
             failed && text.contains("not authorized or has already been used"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn runner_changes_are_the_leaders_unless_they_change_the_docker_daemon() {
+        let f = fixture();
+        let configure = |docker_host: Value| {
+            json!({"action": "runner_configure", "input": {"configuration": {
+                "image": format!("sha256:{}", "a".repeat(64)),
+                "source_paths": ["src/**"], "protected_paths": [], "timeout_seconds": 60,
+                "docker_host": docker_host,
+            }}})
+        };
+        let (_, text) = f.call("application_workflow", configure(Value::Null));
+        assert!(!text.contains("No action was taken"), "{text}");
+        assert!(
+            f.task.state().unwrap().permissions.is_empty(),
+            "the leader decides"
+        );
+
+        let (failed, text) = f.call(
+            "application_workflow",
+            configure(json!("unix:///run/other/docker.sock")),
+        );
+        assert!(!failed && text.contains("No action was taken"), "{text}");
+        let (failed, text) = f.call(
+            "application_workflow",
+            json!({"action": "provision_roles", "input": {"approved_storage": true}}),
+        );
+        assert!(!failed && text.contains("No action was taken"), "{text}");
+        assert_eq!(f.task.state().unwrap().permissions.len(), 2);
     }
 
     #[test]

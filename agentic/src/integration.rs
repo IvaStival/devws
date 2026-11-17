@@ -268,14 +268,19 @@ impl CandidateEvidence {
 
 /// The candidate profiles of `repo` and what their results depend on: the
 /// profile definitions and the runner they ran in.
-fn candidate_configuration(task: &Task, repo: &str) -> Result<(Vec<String>, String)> {
+fn candidate_configuration(
+    task: &Task,
+    repo: &str,
+    lane: Option<&str>,
+) -> Result<(Vec<String>, String)> {
     let checks = task
         .config()?
         .check_profiles
         .get(repo)
-        .cloned()
+        .map(|checks| checks.for_lane(lane))
         .unwrap_or_default();
-    let signature = serde_json::to_string(&(&checks, task.state()?.runner))?;
+    let runner = task.state()?.runner.map(|runner| runner.for_lane(lane));
+    let signature = serde_json::to_string(&(&checks, runner))?;
     Ok((checks.candidate, signature))
 }
 
@@ -286,9 +291,10 @@ fn candidate_configuration(task: &Task, repo: &str) -> Result<(Vec<String>, Stri
 pub fn check_candidate(
     task: &Task,
     repo: &str,
+    lane: Option<&str>,
     candidate: &Candidate,
 ) -> Result<Option<CandidateEvidence>> {
-    let (profiles, configuration) = candidate_configuration(task, repo)?;
+    let (profiles, configuration) = candidate_configuration(task, repo, lane)?;
     if profiles.is_empty() || task.state()?.workflow == Workflow::Legacy {
         return Ok(None);
     }
@@ -306,7 +312,8 @@ pub fn check_candidate(
         .find(|found| found.name == repo)
         .context("unknown candidate repo")?
         .worktree;
-    let definitions = crate::check_profiles::named(&config.check_profiles[repo], profiles)?;
+    let definitions =
+        crate::check_profiles::named(&config.check_profiles[repo].for_lane(lane), profiles)?;
     let short = &candidate.tree[..candidate.tree.len().min(12)];
     let directory = task.dir().join("candidate-checks").join(format!(
         "{short}-{}",
@@ -328,7 +335,7 @@ pub fn check_candidate(
     )?;
     let worker = format!("candidate-{short}");
     let started = crate::log::now();
-    let phases = run_candidate_phases(task, &worker, &checkout, &directory, definitions);
+    let phases = run_candidate_phases(task, &worker, lane, &checkout, &directory, definitions);
     // The snapshot holds its own copy; the checkout only had to outlive the runs.
     crate::runner::safe_git(
         worktree,
@@ -368,6 +375,7 @@ pub fn check_candidate(
 fn run_candidate_phases(
     task: &Task,
     worker: &str,
+    lane: Option<&str>,
     checkout: &std::path::Path,
     directory: &std::path::Path,
     definitions: Vec<(
@@ -383,7 +391,10 @@ fn run_candidate_phases(
         .map(|(index, (name, profile, environment))| {
             crate::check_profiles::run_container_profile(
                 task,
-                worker,
+                crate::check_profiles::Container {
+                    agent: worker,
+                    lane,
+                },
                 &name,
                 &profile,
                 &environment,
@@ -398,7 +409,8 @@ fn run_candidate_phases(
 /// evidence for its exact candidate, when the repo configures candidate
 /// profiles: the same rule for the merge, the acceptance and recovery.
 pub fn require_candidate_evidence(task: &Task, repo: &str, review: &Review) -> Result<()> {
-    let (profiles, configuration) = candidate_configuration(task, repo)?;
+    let lane = crate::runner::lane_of_order(&task.state()?, &review.order);
+    let (profiles, configuration) = candidate_configuration(task, repo, lane.as_deref())?;
     // Candidate checks run in the reviewed runner; a legacy task has none.
     if profiles.is_empty() || task.state()?.workflow == Workflow::Legacy {
         return Ok(());
@@ -473,7 +485,7 @@ mod tests {
     /// Records candidate evidence for `candidate()` with `outcome`, and a
     /// review bound to it.
     fn checked(task: &Task, repo: &str, outcome: Outcome) -> Review {
-        let (_, configuration) = candidate_configuration(task, repo).unwrap();
+        let (_, configuration) = candidate_configuration(task, repo, None).unwrap();
         let evidence = CandidateEvidence {
             repo: repo.into(),
             source: "s".into(),
@@ -502,7 +514,10 @@ mod tests {
         let (_home, _devws, task, _repo) = crate::board::tests::started(&root);
         let repo = task.config().unwrap().repos[0].name.clone();
         require_candidate_evidence(&task, &repo, &Review::default()).unwrap();
-        assert_eq!(check_candidate(&task, &repo, &candidate()).unwrap(), None);
+        assert_eq!(
+            check_candidate(&task, &repo, None, &candidate()).unwrap(),
+            None
+        );
 
         with_candidate_profile(&task, &repo);
         task.transaction(|tx| {
@@ -512,7 +527,7 @@ mod tests {
         .unwrap();
         require_candidate_evidence(&task, &repo, &Review::default()).unwrap();
         assert_eq!(
-            check_candidate(&task, &repo, &candidate()).unwrap(),
+            check_candidate(&task, &repo, None, &candidate()).unwrap(),
             None,
             "a legacy task has no runner to check candidates in"
         );
@@ -533,7 +548,7 @@ mod tests {
         let review = checked(&task, &repo, Outcome::Passed);
         require_candidate_evidence(&task, &repo, &review).unwrap();
         assert_eq!(
-            check_candidate(&task, &repo, &candidate()).unwrap(),
+            check_candidate(&task, &repo, None, &candidate()).unwrap(),
             Some(task.state().unwrap().candidate_evidence["abc"].clone()),
             "passing evidence for the same candidate is reused, not rerun"
         );

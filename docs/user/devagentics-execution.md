@@ -30,7 +30,7 @@ Claude in the same way. The default Codex alternative is `gpt-6.1-sol` at medium
 effort; the default Claude alternative uses its default model at high effort.
 Fallback keeps the worker's role, lane and queued assignment.
 
-Accounts at 85% or more of their week or five-hour allowance receive no new
+Accounts at 95% or more of their week or five-hour allowance receive no new
 workers unless you explicitly approve the task override described below. Explicit provider or model rejection during the opening turn also
 tries an alternative. A worker already doing an order is not automatically
 interrupted or moved.
@@ -183,7 +183,8 @@ Done reports use the same runner. Passing named evidence can be reused only for 
 
 ## Continue above the worker percentage threshold
 
-When both compatible accounts reach 85% of their weekly or five-hour allowance,
+When every compatible account the task may use reaches 95% of its weekly or
+five-hour allowance, or is switched off for the task,
 the leader shows their usage and asks whether it may continue using workers for
 this task. Say yes to allow workers above that threshold, or no to keep the guard.
 Approving the plan does not grant this separate permission.
@@ -309,9 +310,43 @@ Configure the image, source paths, protected paths and timeout using a JSON file
 devagentics workflow <task> runner_configure --input-file runner.json
 ```
 
-Through MCP, `runner_configure` is an external action requiring the exact-call
-approval flow. The configuration is checked with a disposable container before
-it becomes active. Declare narrow source roots appropriate to your project;
+Through MCP, the leader decides `runner_configure` on its own. Only a change of
+`docker_host`, another Docker daemon, uses the exact-call approval flow. Every
+image is checked with a disposable container before the configuration becomes
+active.
+
+### A lane with its own image and checks
+
+A project whose parts need different toolchains (a PHP backend beside a Node
+frontend) gives a lane its own image. The runner configuration's `lanes` maps
+a lane to `{"image": "sha256:…", "image_mounts": [...]}`, and that lane's
+commands, checks, candidate checks and checkpoints run in it. Its checks are
+named like the repo's, under the check configuration's `lanes`:
+
+```json
+{"lanes": {"back": {"test": {"command": "cd backend && php artisan test", "environment": "testing"}}}}
+```
+
+In the back lane, `test` runs that command. Its other profiles and the other
+lanes keep the repo's. A milestone runs every lane's own checks too. A change
+that only adds or edits a lane's image waits for that lane's workers alone;
+the other lanes keep working.
+
+### Images the team builds
+
+An `infra` senior (a provisioned role) builds the images a lane needs. It
+writes a Dockerfile, and devAgentics builds it (`image_build`) on your
+rootless daemon:
+- the build context holds only the repo's tracked files that the request
+  names;
+- the build has network, for package downloads;
+- it is capped at 4 GB of memory, 2 CPUs and 30 minutes;
+- it is tagged `devws-runner/<repo>:<name>`.
+
+The infra senior then runs each check command in the new image (`image_try`),
+with no network and the source read-only, and reports the image ID, its
+`image_mounts` and the commands. The leader puts them in the runner and in
+the checks without asking you. Declare narrow source roots appropriate to your project;
 broad whole-project globs are rejected. Use explicit migration source paths when
 needed while keeping existing database files protected.
 

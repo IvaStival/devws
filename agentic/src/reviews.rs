@@ -187,7 +187,9 @@ fn check_candidate_first(
     }
     let lane = crate::lanes::get(task, &lane)?;
     let candidate = crate::integration::candidate(task, &lane)?;
-    let Some(evidence) = crate::integration::check_candidate(task, &lane.repo, &candidate)? else {
+    let Some(evidence) =
+        crate::integration::check_candidate(task, &lane.repo, Some(&lane.name), &candidate)?
+    else {
         return Ok(None);
     };
     if evidence.passed() {
@@ -296,6 +298,7 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
         &lane.repo,
         &Review {
             id: "the requested review".into(),
+            order: order.id.clone(),
             candidate: candidate.clone(),
             candidate_evidence: candidate_evidence.clone(),
             ..Review::default()
@@ -494,7 +497,18 @@ pub fn submit(
         "blocking findings remain"
     );
     validate(task, review)?;
+    let step = state
+        .orders
+        .iter()
+        .find(|order| order.id == review.order)
+        .map(|order| order.step.clone())
+        .context("unknown review order")?;
+    // The leader may have ended its turn waiting for this review: the inbox
+    // message is what starts its next one.
+    let message = submitted_message(id, &agent.id, &step, &verdict, &findings, summary);
+    let reviewer = agent.id.clone();
     task.transaction(|tx| {
+        tx.state.say(crate::state::LEADER, message);
         let review = tx
             .state
             .reviews
@@ -514,12 +528,46 @@ pub fn submit(
         }
         tx.log(
             Kind::Review,
-            Some(&agent.id),
-            None,
+            Some(&reviewer),
+            Some(&step),
             &format!("review {id} submitted"),
         );
         Ok(())
     })
+}
+
+/// What the leader reads when a review comes back: the verdict, the findings'
+/// count, the reviewer's summary and the next move.
+fn submitted_message(
+    id: &str,
+    reviewer: &str,
+    step: &str,
+    verdict: &Verdict,
+    findings: &[Finding],
+    summary: &str,
+) -> String {
+    const SUMMARY_CHARS: usize = 600;
+    let blocking = findings.iter().filter(|finding| finding.blocking).count();
+    let other = findings.len() - blocking;
+    let mut summary: String = summary.trim().chars().take(SUMMARY_CHARS).collect();
+    if summary.chars().count() == SUMMARY_CHARS {
+        summary.push_str("… (the rest: application_workflow status, section reviews)");
+    }
+    let (outcome, next) = match verdict {
+        Verdict::Approved => ("approved", format!("accept_step {step}")),
+        Verdict::ChangesRequested => (
+            "changes requested",
+            "order the correction or answer the reviewer, then request a fresh review".into(),
+        ),
+        Verdict::Blocked => (
+            "blocked",
+            "resolve what blocks it or answer the reviewer, then request a fresh review".into(),
+        ),
+    };
+    format!(
+        "Reviewer {reviewer} submitted review {id} of step {step}: {outcome} \
+         ({blocking} blocking, {other} other findings).\n{summary}\nNext: {next}."
+    )
 }
 pub fn require_approval(task: &Task, step: &str) -> Result<()> {
     let state = task.state()?;
@@ -549,6 +597,51 @@ pub fn require_approval(task: &Task, step: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_submitted_review_tells_the_leader_what_comes_next() {
+        let approved = submitted_message(
+            "r312",
+            "code-reviewer-6",
+            "B1-2",
+            &Verdict::Approved,
+            &[],
+            "All six files reviewed.",
+        );
+        assert!(
+            approved.contains("code-reviewer-6 submitted review r312 of step B1-2"),
+            "{approved}"
+        );
+        assert!(approved.contains("approved"), "{approved}");
+        assert!(approved.contains("accept_step B1-2"), "{approved}");
+
+        let finding = Finding {
+            file: "web/package.json".into(),
+            line: 1,
+            severity: "high".into(),
+            blocking: true,
+            rationale: "no build evidence".into(),
+            resolution: None,
+            category: Some(Category::EnvironmentMismatch),
+        };
+        let changes = submitted_message(
+            "r312",
+            "code-reviewer-6",
+            "B1-2",
+            &Verdict::ChangesRequested,
+            &[finding],
+            &"x".repeat(2000),
+        );
+        assert!(changes.contains("changes requested"), "{changes}");
+        assert!(changes.contains("1 blocking, 0 other"), "{changes}");
+        assert!(changes.contains("fresh review"), "{changes}");
+        assert!(!changes.contains("accept_step"), "{changes}");
+        assert!(
+            changes.len() < 1200,
+            "the summary is cut: {}",
+            changes.len()
+        );
+    }
     #[test]
     fn a_reviewer_reads_the_check_results_of_what_it_reviews() {
         use crate::check_profiles::{Evidence, Outcome, Phase};

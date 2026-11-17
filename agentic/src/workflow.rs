@@ -7,7 +7,9 @@ use crate::{
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 
-pub fn status(task: &Task) -> Result<Value> {
+/// Each baseline item: its stage, whether it is assigned, and whether it is
+/// ready to start or what blocks it.
+pub fn ready_work(task: &Task) -> Result<Vec<Value>> {
     let state = task.state()?;
     let config = task.config()?;
     let mut items = Vec::new();
@@ -85,6 +87,13 @@ pub fn status(task: &Task) -> Result<Value> {
         .map(|error| error.to_string());
         items.push(json!({"id":id,"scope":item.scope,"role":item.role,"lane":item.lane,"stage":stage,"assigned":assigned,"reusable_worker":reusable,"ready":reason.is_none(),"blocked":reason}));
     }
+    Ok(items)
+}
+
+pub fn status(task: &Task) -> Result<Value> {
+    let state = task.state()?;
+    let config = task.config()?;
+    let items = ready_work(task)?;
     // A repo without candidate profiles merges reviewed work untested in
     // combination until the milestone check: say so.
     let candidate_checks: serde_json::Map<String, Value> = config
@@ -204,13 +213,7 @@ pub fn call(task: &Task, action: &str, input: &Value) -> Result<Value> {
             })?;
             Ok(json!({"retry_enabled":item}))
         }
-        "leader_inbox" => Ok(json!(
-            task.state()?
-                .queue
-                .into_iter()
-                .filter(|message| message.to == crate::state::LEADER)
-                .collect::<Vec<_>>()
-        )),
+        "leader_inbox" => leader_inbox(task),
         "inbox_ack" => {
             let ids = serde_json::from_value::<Vec<u64>>(input["ids"].clone())?;
             task.transaction(|tx| {
@@ -252,6 +255,10 @@ pub fn call(task: &Task, action: &str, input: &Value) -> Result<Value> {
                 json!({"configured":true,"adapter":if task.state()?.codex_team {"claude_mcp_only or codex_sandbox"} else {"claude_mcp_only"},"network":"none","live_project_mounts":false}),
             )
         }
+        "image_build" => Ok(serde_json::to_value(crate::images::build(
+            task,
+            &serde_json::from_value(input.clone())?,
+        )?)?),
         "recover_turn" => {
             let agent = input["agent"].as_str().context("agent required")?;
             ensure!(
@@ -408,6 +415,24 @@ pub fn milestones(task: &Task) -> Result<Value> {
     }
     Ok(json!(result))
 }
+/// The leader's messages, and the ready items nobody has started. Only
+/// agents send messages; ready work is shown here, read when the leader reads
+/// its inbox, and never wakes it on its own.
+fn leader_inbox(task: &Task) -> Result<Value> {
+    let messages: Vec<_> = task
+        .state()?
+        .queue
+        .into_iter()
+        .filter(|message| message.to == crate::state::LEADER)
+        .collect();
+    let ready_not_started: Vec<Value> = ready_work(task)?
+        .into_iter()
+        .filter(|item| item["ready"] == true && item["assigned"] == false)
+        .map(|item| json!({"id": item["id"], "lane": item["lane"]}))
+        .collect();
+    Ok(json!({"messages": messages, "ready_not_started": ready_not_started}))
+}
+
 pub fn block_unverified_runner(task: &Task) -> Result<()> {
     crate::runner::available(task)
 }
@@ -437,6 +462,21 @@ mod tests {
         assert_eq!(contracts["items"]["S01-B01"]["acceptance"][0], "Service contract passes");
         assert!(call(&task, "status", &json!({"section":"nothing"})).is_err());
         assert!(call(&task, "status", &json!({"section":"proposal","items":["S9"]})).is_err());
+    }
+
+    #[test]
+    fn the_inbox_shows_ready_work_beside_the_messages() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        task.transaction(|tx| {
+            tx.state
+                .say(crate::state::LEADER, "hammer-1 reports".into());
+            Ok(())
+        })
+        .unwrap();
+        let inbox = call(&task, "leader_inbox", &json!({})).unwrap();
+        assert_eq!(inbox["messages"][0]["text"], "hammer-1 reports");
+        assert!(inbox["ready_not_started"].is_array());
     }
 
     #[test]
@@ -696,6 +736,10 @@ mod tests {
         let path = home.roles_dir().join("backend-data.md");
         let original = std::fs::read_to_string(&path).unwrap();
         assert!(original.contains("SOLID") && original.contains("database"));
+        let roles = crate::roles::Roles::load(&home, None).unwrap();
+        let infra = roles.get("infra").expect("an infra senior is provisioned");
+        assert!(!infra.writes, "infra changes no repo file");
+        assert!(infra.instructions.contains("image_build"));
         std::fs::write(&path, "customized").unwrap();
         crate::roles::provision_specialists(&home).unwrap();
         assert_eq!(std::fs::read_to_string(path).unwrap(), "customized");

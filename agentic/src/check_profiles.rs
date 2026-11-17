@@ -24,6 +24,24 @@ pub struct RepositoryChecks {
     /// finds two lanes that pass alone and break together at that merge, not
     /// at the milestone.
     pub candidate: Vec<String>,
+    /// A lane's own commands for profile names: in that lane they replace the
+    /// repo's (`test` runs `cd backend && …` in the back lane). Left out when
+    /// empty, so a repo without them keeps its evidence signatures.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub lanes: BTreeMap<String, BTreeMap<String, Profile>>,
+}
+
+impl RepositoryChecks {
+    /// The checks an order in `lane` runs: the repo's, with the lane's own
+    /// profiles in place of those of the same name.
+    pub fn for_lane(&self, lane: Option<&str>) -> RepositoryChecks {
+        let mut checks = self.clone();
+        checks.lanes = BTreeMap::new();
+        if let Some(own) = lane.and_then(|name| self.lanes.get(name)) {
+            checks.checks.extend(own.clone());
+        }
+        checks
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -118,6 +136,9 @@ pub(crate) fn named(
 }
 
 pub fn validate(config: &RepositoryChecks) -> Result<()> {
+    for lane in config.lanes.keys() {
+        validate(&config.for_lane(Some(lane))).with_context(|| format!("lane {lane}'s checks"))?;
+    }
     if config.selected.len() > 32 {
         bail!("select at most 32 check profiles");
     }
@@ -218,6 +239,15 @@ pub fn configure(task: &Task, repo: &str, profiles: RepositoryChecks) -> Result<
     if repository.check.is_some() && !profiles.selected.is_empty() {
         bail!("remove the legacy repo check before selecting named profiles");
     }
+    for lane in profiles.lanes.keys() {
+        ensure!(
+            config
+                .lanes
+                .iter()
+                .any(|found| found.name == *lane && found.repo == repo),
+            "{repo} has no lane {lane}: add_lane it first"
+        );
+    }
     let state = task.state()?;
     if state.workflow == crate::execution::Workflow::Reviewed && state.application.approved() {
         ensure!(
@@ -279,7 +309,10 @@ pub fn configuration(task: &Task, order: &Order) -> Result<Option<RepositoryChec
             "configured checks differ from approved baseline"
         );
     }
-    let mut selected = config.check_profiles.get(&agent.repo).cloned();
+    let mut selected = config
+        .check_profiles
+        .get(&agent.repo)
+        .map(|checks| checks.for_lane(agent.lane.as_deref()));
     if let Some(names) = state.order_profiles.get(&order.id) {
         if selected.is_none() && !names.is_empty() {
             bail!("named profile configuration was removed");
@@ -403,7 +436,10 @@ pub fn execute(task: &Task, order: &Order, timeout: Duration) -> Result<Evidence
                 .push(if state.workflow == crate::execution::Workflow::Reviewed {
                     run_container_profile(
                         task,
-                        &agent.id,
+                        crate::check_profiles::Container {
+                            agent: &agent.id,
+                            lane: agent.lane.as_deref(),
+                        },
                         name,
                         &config.checks[name],
                         &config.environments[&config.checks[name].environment],
@@ -561,9 +597,15 @@ fn signature(
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
+/// Where a check runs: the runner workspace of `agent`, in `lane`'s image.
+pub(crate) struct Container<'a> {
+    pub agent: &'a str,
+    pub lane: Option<&'a str>,
+}
+
 pub(crate) fn run_container_profile(
     task: &Task,
-    agent: &str,
+    container: Container<'_>,
     name: &str,
     profile: &Profile,
     environment: &Environment,
@@ -584,7 +626,7 @@ pub(crate) fn run_container_profile(
         fs::write(&log, &phase.diagnostic)?;
         return Ok(phase);
     }
-    crate::runner::assert_checkpointed(task, agent)?;
+    crate::runner::assert_checkpointed(task, container.agent)?;
     let mut prefix = String::new();
     for (key, value) in &environment.values {
         if key.is_empty()
@@ -619,9 +661,13 @@ pub(crate) fn run_container_profile(
         let state = task.state()?;
         let workspace = state
             .runner_workspaces
-            .get(agent)
+            .get(container.agent)
             .context("isolated check source missing")?;
-        let mut runner = state.runner.clone().context("runner missing")?;
+        let mut runner = state
+            .runner
+            .as_ref()
+            .context("runner missing")?
+            .for_lane(container.lane);
         runner.timeout_seconds = runner.timeout_seconds.min(profile.timeout_seconds);
         let result = crate::runner::run_container_artifacts(
             &runner,
@@ -668,7 +714,7 @@ pub(crate) fn run_container_profile(
             }
         }
     }
-    crate::runner::assert_checkpointed(task, agent)?;
+    crate::runner::assert_checkpointed(task, container.agent)?;
     phase.outcome = Outcome::Passed;
     phase.exit_code = Some(0);
     phase.seconds = started.elapsed().as_secs();
@@ -896,6 +942,67 @@ mod tests {
             0,
         )
         .unwrap()
+    }
+
+    fn web_and_back() -> RepositoryChecks {
+        RepositoryChecks {
+            environments: BTreeMap::from([("testing".into(), Environment::default())]),
+            checks: BTreeMap::from([
+                ("lint".into(), profile("cd web && npm run lint")),
+                ("test".into(), profile("cd web && npm test")),
+            ]),
+            selected: vec!["lint".into(), "test".into()],
+            candidate: vec!["lint".into()],
+            lanes: BTreeMap::from([(
+                "back".into(),
+                BTreeMap::from([("test".into(), profile("cd backend && php artisan test"))]),
+            )]),
+        }
+    }
+
+    #[test]
+    fn a_lane_runs_its_own_command_for_a_profile_and_the_repos_for_the_rest() {
+        let checks = web_and_back();
+        validate(&checks).unwrap();
+        let back = checks.for_lane(Some("back"));
+        assert_eq!(
+            back.checks["test"].command,
+            "cd backend && php artisan test"
+        );
+        assert_eq!(back.checks["lint"].command, "cd web && npm run lint");
+        assert_eq!(
+            checks.for_lane(Some("front")).checks["test"].command,
+            "cd web && npm test"
+        );
+        assert_ne!(
+            serde_json::to_string(&back).unwrap(),
+            serde_json::to_string(&checks.for_lane(Some("front"))).unwrap(),
+            "evidence of one lane never counts for the other"
+        );
+
+        let mut broken = web_and_back();
+        broken
+            .lanes
+            .get_mut("back")
+            .unwrap()
+            .get_mut("test")
+            .unwrap()
+            .command = " ".into();
+        let error = validate(&broken).unwrap_err();
+        assert!(format!("{error:#}").contains("lane back"), "{error:#}");
+    }
+
+    #[test]
+    fn checks_for_a_lane_the_task_does_not_have_are_refused() {
+        let dir = TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&dir);
+        let repo = task.config().unwrap().repos[0].name.clone();
+        let error = configure(&task, &repo, web_and_back())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no lane back"), "{error}");
+        crate::lanes::add(&task, "back", &["backend/**".into()], None).unwrap();
+        configure(&task, &repo, web_and_back()).unwrap();
     }
 
     #[test]

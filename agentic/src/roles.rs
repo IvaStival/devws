@@ -505,6 +505,7 @@ pub fn provision_specialists(home: &Home) -> Result<()> {
             include_str!("../roles/samples/code-reviewer.md"),
             reviewer_standards.as_str(),
         ),
+        ("infra", include_str!("../roles/samples/infra.md"), ""),
     ] {
         let path = folder.join(format!("{name}.md"));
         match fs::OpenOptions::new()

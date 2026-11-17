@@ -137,16 +137,31 @@ pub fn validate(task: &Task, id: &str) -> Result<Evidence> {
             .check_profiles
             .get(&repo_name)
             .context("final named checks are missing")?;
-        for (name, profile, environment) in crate::check_profiles::named(definitions, profiles)? {
-            workspaces.push((worker.clone(), name, profile, environment));
+        // A lane with checks of its own runs them in its own image too: the
+        // milestone covers the backend as well as the frontend.
+        let lanes =
+            std::iter::once(None).chain(definitions.lanes.keys().map(|lane| Some(lane.clone())));
+        for lane in lanes {
+            let checks = definitions.for_lane(lane.as_deref());
+            for (name, profile, environment) in
+                crate::check_profiles::named(&checks, profiles.clone())?
+            {
+                let label = lane
+                    .as_ref()
+                    .map_or_else(|| name.clone(), |lane| format!("{lane}:{name}"));
+                workspaces.push((worker.clone(), lane.clone(), label, profile, environment));
+            }
         }
     }
     drop(_operation);
     let mut phases = Vec::new();
-    for (index, (worker, name, profile, environment)) in workspaces.into_iter().enumerate() {
+    for (index, (worker, lane, name, profile, environment)) in workspaces.into_iter().enumerate() {
         phases.push(crate::check_profiles::run_container_profile(
             task,
-            &worker,
+            crate::check_profiles::Container {
+                agent: &worker,
+                lane: lane.as_deref(),
+            },
             &name,
             &profile,
             &environment,
