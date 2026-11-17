@@ -8,7 +8,7 @@ use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-const LIMIT_PERCENT: u32 = 85;
+const LIMIT_PERCENT: u32 = 95;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PercentageBlock {
@@ -135,7 +135,10 @@ impl LaunchState {
             self.selected = Some(candidate);
             return Ok(role);
         }
-        if self.percentage_blocks.len() >= 2 {
+        // Nothing could start. When an account was held back only by its
+        // percentage, the user's consent starts it, whatever kept the others
+        // out: their usage too, or the user switching them off.
+        if !self.percentage_blocks.is_empty() {
             return Err(anyhow::Error::new(UsageLimitRequired).context(format!(
                 "usage-limit approval required: {}. Ask the user whether workers may exceed the percentage threshold for this task; record explicit consent with set_usage_limit_approval, then resume_task",
                 self.failures.join("; ")

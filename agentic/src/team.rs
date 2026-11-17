@@ -306,7 +306,7 @@ impl Team<'_> {
                     tx.state.usage_limit_blocks = launch.percentage_blocks.clone();
                     if tx.state.usage_limit_approval == UsageApproval::NotRequested {
                         tx.state.usage_limit_approval = UsageApproval::Pending;
-                        tx.state.say(crate::state::LEADER, "Both worker accounts reached the percentage guard. Ask the user for task-scoped usage-limit approval, then record their decision with set_usage_limit_approval. Resume existing workers after approval.".into());
+                        tx.state.say(crate::state::LEADER, "Every worker account the task may use reached the percentage guard or is switched off. Ask the user for task-scoped usage-limit approval, then record their decision with set_usage_limit_approval. Resume existing workers after approval.".into());
                         tx.log(Kind::Review, None, None, "worker usage-limit approval requested");
                     }
                 }
@@ -1186,7 +1186,7 @@ mod tests {
             .with_limits(
                 "claude",
                 Limits {
-                    five_hour: Some(85),
+                    five_hour: Some(95),
                     week: Some(10),
                 },
             );
@@ -1197,12 +1197,17 @@ mod tests {
         };
         let error = team.spawn_agent("executor", None).unwrap_err().to_string();
         assert!(
-            error.contains("85%") || error.contains("used 85"),
+            error.contains("95%") || error.contains("used 95"),
             "{error}"
         );
         assert!(
-            f.task.state().unwrap().agents.is_empty(),
-            "a refused spawn leaves no agent behind"
+            f.task
+                .state()
+                .unwrap()
+                .agents
+                .iter()
+                .all(|agent| !agent.live),
+            "a refused spawn starts no agent; the reserved one waits for the user's consent"
         );
 
         // The week first: it says so even when the 5-hour window is full too.
@@ -1211,8 +1216,8 @@ mod tests {
             .with_limits(
                 "claude",
                 Limits {
-                    five_hour: Some(90),
-                    week: Some(85),
+                    five_hour: Some(97),
+                    week: Some(95),
                 },
             );
         let error = Team {
@@ -1224,7 +1229,7 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(
-            error.contains("claude has used 85% of its week: no new agents on it until it resets"),
+            error.contains("claude has used 95% of its week: no new agents on it until it resets"),
             "{error}"
         );
 
@@ -1233,7 +1238,7 @@ mod tests {
             .with_limits(
                 "claude",
                 Limits {
-                    five_hour: Some(84),
+                    five_hour: Some(94),
                     week: None,
                 },
             );
@@ -1261,6 +1266,43 @@ mod tests {
     }
 
     #[test]
+    fn usage_consent_is_offered_when_the_only_account_left_on_is_over_its_limit() {
+        use crate::state::UsageApproval;
+        let f = fixture().approved();
+        f.task
+            .transaction(|tx| {
+                tx.state.disabled_accounts.insert("claude".into());
+                Ok(())
+            })
+            .unwrap();
+        f.devws.set_limits(
+            "codex",
+            Limits {
+                week: Some(97),
+                five_hour: None,
+            },
+        );
+        let error = f
+            .team()
+            .spawn_agent("executor", None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("approval"), "{error}");
+        let state = f.task.state().unwrap();
+        assert_eq!(state.usage_limit_approval, UsageApproval::Pending);
+        assert_eq!(state.usage_limit_blocks.len(), 1, "codex alone");
+        f.team().set_usage_limit_approval(true).unwrap();
+        assert!(
+            f.team()
+                .resume()
+                .unwrap()
+                .iter()
+                .any(|id| id.starts_with("executor")),
+            "the consent starts it on codex"
+        );
+    }
+
+    #[test]
     fn usage_consent_requires_a_request_and_survives_reload_and_revocation() {
         use crate::state::UsageApproval;
         let f = fixture().approved();
@@ -1269,7 +1311,7 @@ mod tests {
             f.devws.set_limits(
                 account,
                 Limits {
-                    week: Some(85),
+                    week: Some(95),
                     five_hour: None,
                 },
             );
@@ -1322,8 +1364,8 @@ mod tests {
             f.devws.set_limits(
                 account,
                 Limits {
-                    week: Some(90),
-                    five_hour: Some(90),
+                    week: Some(95),
+                    five_hour: Some(95),
                 },
             );
         }
