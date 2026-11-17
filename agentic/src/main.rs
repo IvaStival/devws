@@ -21,6 +21,7 @@ mod leader;
 mod log;
 mod mcp;
 mod milestones;
+mod opencode;
 mod orders;
 mod panel_view;
 mod performance;
@@ -43,9 +44,10 @@ mod worker;
 mod worker_tools;
 mod workflow;
 
+use agent_args::Kind;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use devws::CommandDevws;
+use devws::{CommandDevws, Devws};
 use home::Home;
 use std::io::Read;
 use std::path::PathBuf;
@@ -128,6 +130,11 @@ enum Command {
     Role {
         #[command(subcommand)]
         action: RoleAction,
+    },
+    /// Team agents on opencode: the switches and the models
+    Opencode {
+        #[command(subcommand)]
+        action: OpencodeAction,
     },
     /// The leader's program
     Leader {
@@ -316,6 +323,48 @@ enum RoleAction {
         #[arg(long)]
         repo: Option<PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+enum OpencodeAction {
+    /// The switches, the groups' models and the account, tab-separated
+    Show,
+    /// Turn a switch on or off. `global` is mandatory: while it is off,
+    /// opencode runs no agent, whatever the groups' switches say
+    Switch { switch: SwitchArg, state: OnOff },
+    /// The model a group runs on opencode (`provider/model`, as `opencode
+    /// models` lists it); an empty one removes it
+    Model { group: GroupArg, model: String },
+    /// The devws agent that runs opencode (`DEVWS_AGENTS`)
+    Account { name: String },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum SwitchArg {
+    Global,
+    Floor,
+    Senior,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum GroupArg {
+    Floor,
+    Senior,
+}
+
+impl From<GroupArg> for roles::Group {
+    fn from(group: GroupArg) -> Self {
+        match group {
+            GroupArg::Floor => roles::Group::Floor,
+            GroupArg::Senior => roles::Group::Senior,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, ValueEnum)]
+enum OnOff {
+    On,
+    Off,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -719,6 +768,44 @@ fn run() -> Result<()> {
             for choice in roles::Setting::from(setting).choices(kind) {
                 println!("{choice}");
             }
+        }
+        Command::Opencode { action } => {
+            let mut settings = opencode::OpencodeSettings::load(&home)?;
+            match action {
+                OpencodeAction::Show => {
+                    println!("{}", settings.describe());
+                    return Ok(());
+                }
+                OpencodeAction::Switch { switch, state } => {
+                    let on = state == OnOff::On;
+                    match switch {
+                        SwitchArg::Global => settings.enabled = on,
+                        SwitchArg::Floor => settings.floor.enabled = on,
+                        SwitchArg::Senior => settings.senior.enabled = on,
+                    }
+                }
+                OpencodeAction::Model { group, model } => {
+                    let model = model.trim();
+                    if !model.is_empty() && !model.contains('/') {
+                        bail!(
+                            "name the model as provider/model, as `opencode models` lists it: {model}"
+                        );
+                    }
+                    settings.group_mut(group.into())?.model =
+                        Some(model.to_string()).filter(|model| !model.is_empty());
+                }
+                OpencodeAction::Account { name } => {
+                    devws.agent_kind(&name).ok().filter(|kind| *kind == Kind::Opencode).with_context(|| {
+                        format!("{name} is not a devws opencode agent: register it in the devws menu")
+                    })?;
+                    settings.account = name;
+                }
+            }
+            settings.save(&home)?;
+            println!(
+                "{}\nAgents started from now on follow it; running ones keep theirs.",
+                settings.describe()
+            );
         }
         Command::Leader {
             action: LeaderAction::Switch { task, reason },

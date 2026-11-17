@@ -7,6 +7,7 @@ use crate::devws::{Devws, PaneState};
 use crate::home::Home;
 use crate::lanes;
 use crate::log::Kind;
+use crate::opencode::OpencodeSettings;
 use crate::orders;
 use crate::roles::{Role, Roles};
 use crate::start::{AGENT_FIRST, opening, repo_name};
@@ -167,7 +168,7 @@ impl Team<'_> {
             .devws
             .agent_kind(&role.agent)
             .or_else(|error| Program::parse(&role.agent).ok_or(error))?;
-        let mut launch = LaunchState::new(role, kind);
+        let mut launch = LaunchState::new(role, kind, &OpencodeSettings::load(self.home)?);
         self.prefer_codex(&mut launch.candidates)?;
 
         // The agent is reserved before it starts, so two spawns cannot both
@@ -295,7 +296,12 @@ impl Team<'_> {
         loop {
             let state = self.task.state()?;
             let approved = state.usage_limit_approval == UsageApproval::Approved;
-            let candidate = launch.next_available(self.devws, approved, &state.disabled_accounts);
+            let candidate = launch.next_available(
+                self.devws,
+                approved,
+                &state.disabled_accounts,
+                &OpencodeSettings::load(self.home)?,
+            );
             let needs_consent = candidate
                 .as_ref()
                 .err()
@@ -721,7 +727,8 @@ impl Team<'_> {
                 .devws
                 .agent_kind(&resumed_role.agent)
                 .or_else(|error| Program::parse(&resumed_role.agent).ok_or(error))?;
-            let mut launch = LaunchState::new(&resumed_role, kind);
+            let mut launch =
+                LaunchState::new(&resumed_role, kind, &OpencodeSettings::load(self.home)?);
             self.prefer_codex(&mut launch.candidates)?;
             // A failed cleanup is not permission to duplicate the still-live process.
             if agent.unavailable && self.devws.pane_state(&agent.pane)? != PaneState::Gone {

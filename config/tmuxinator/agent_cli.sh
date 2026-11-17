@@ -54,6 +54,11 @@
 #                                         account's are asked of Anthropic
 #                                         live (claude_limits.sh), else its
 #                                         status line's if under 15 minutes old
+#   agent_cli.sh credit <agent>           "<balance> <used>": a prepaid
+#                                         (opencode Zen) account's credit in
+#                                         US$, the balance entered and what
+#                                         was spent since (opencode_credit.sh);
+#                                         nothing when not known
 #   agent_cli.sh stop <pane>             asks the agent to exit, closes the
 #                                         pane if it did not, and updates the
 #                                         workspace's state
@@ -278,6 +283,13 @@ limits() {
   printf '%s\n' "${value:-- -}"
 }
 
+credit() {
+  local kind
+  [ "$#" -eq 1 ] || usage_fail "usage: devws agent credit <agent>"
+  kind="$(agent_kind "$1" 2>/dev/null)" || fail "unknown agent: $1 (register it in the devws menu)"
+  [ "$kind" != opencode ] || "$script_dir/opencode_credit.sh" show "$1"
+}
+
 # What the pane's agent has used: "<input> <output> <cache> <US$> <unpriced>"
 # (tokens; dollars at API prices), "-" while it has not said which conversation
 # it is in.
@@ -294,7 +306,7 @@ usage() {
 
 # Interrupt one turn without invoking the quit/kill behavior of stop.
 interrupt() {
-  local pane agent kind current attempt
+  local pane agent kind key current attempt
   [ "$#" -eq 1 ] || usage_fail "usage: devws agent interrupt <pane>"
   pane="$1"
   require_pane "$pane"
@@ -302,10 +314,20 @@ interrupt() {
   agent="$(tmux show-options -pqv -t "$pane" @devws_agent 2>/dev/null)"
   [ -n "$agent" ] || agent="$(tmux show-options -qv -t "$(pane_session "$pane")" @devws_agent 2>/dev/null)"
   kind="$(agent_kind "$agent" 2>/dev/null)" || fail "unsupported agent in $pane"
-  case "$kind" in claude|codex) ;; *) fail "unsupported interrupt program: $kind" ;; esac
+  # Ctrl-C stops a Claude Code or Codex turn; in opencode it quits, and
+  # Escape stops the turn once pressed again ("esc again to interrupt").
+  case "$kind" in
+    claude|codex) key=C-c ;;
+    opencode) key=Escape ;;
+    *) fail "unsupported interrupt program: $kind" ;;
+  esac
   current="$(pane_state "$pane")"
   case "$current" in done|idle) return 0 ;; working|waiting) ;; *) fail "cannot interrupt $current" ;; esac
-  tmux send-keys -t "$pane" C-c || fail "could not interrupt $pane"
+  tmux send-keys -t "$pane" "$key" || fail "could not interrupt $pane"
+  if [ "$kind" = opencode ]; then
+    sleep 0.3
+    tmux send-keys -t "$pane" "$key" || fail "could not interrupt $pane"
+  fi
   for attempt in $(seq 1 40); do
     current="$(pane_state "$pane")"
     case "$current" in done|idle) return 0 ;; gone) code=4 fail "$pane went away during interrupt" ;; esac
@@ -347,6 +369,7 @@ case "$command" in
   spawn) spawn "$@" ;;
   run) run "$@" ;;
   limits) limits "$@" ;;
+  credit) credit "$@" ;;
   usage) usage "$@" ;;
   kind) kind "$@" ;;
   accounts) accounts "$@" ;;
@@ -354,5 +377,5 @@ case "$command" in
     [ "$#" -eq 1 ] || usage_fail "usage: devws agent $command <pane>"
     exec "$script_dir/team_groups.sh" "$command" "$1"
     ;;
-  *) usage_fail "usage: devws agent state|send|mark|stop|interrupt|spawn|run|limits|usage|kind|accounts|go|peek …" ;;
+  *) usage_fail "usage: devws agent state|send|mark|stop|interrupt|spawn|run|limits|credit|usage|kind|accounts|go|peek …" ;;
 esac

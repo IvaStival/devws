@@ -11,6 +11,8 @@
 #   header_tokens.sh usage <transcript>     what one conversation used:
 #                                           "<input> <output> <cache> <US$> <unpriced>"
 #                                           (tokens; cache is read + written)
+#                                           An opencode conversation is
+#                                           <db>#<session> (opencode_usage.sh)
 #   header_tokens.sh messages <transcript>  the same, a line per response:
 #                                           "<id> <YYYY-MM-DD> <input> <output>
 #                                           <cache> <US$> <unpriced>" (id "-"
@@ -123,6 +125,8 @@ costs() {
     case "$kind" in
       claude) cost="$(claude_cost "$month" "$home")" ;;
       codex) cost="$(codex_cost "$month" "$home")" ;;
+      # Billed per response by the provider: every cost is known.
+      opencode) cost="$("$scripts_dir/opencode_usage.sh" spent "$home/opencode/opencode.db" "$month") 0" ;;
     esac
     printf '%s %s\n' "$agent" "${cost:-0 0}"
   done
@@ -169,6 +173,12 @@ session() {
 # has a usage per message; a Codex log the running total of its latest count.
 usage() {
   local transcript="$1" records
+  case "$transcript" in
+    *.db\#*)
+      "$scripts_dir/opencode_usage.sh" usage "$transcript"
+      return 0
+      ;;
+  esac
   [ -r "$transcript" ] || return 0
   records="$(printf '%s\0' "$transcript" | token_records)"
   if grep -q '"token_count"' <<< "$records"; then

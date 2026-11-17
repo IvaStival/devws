@@ -18,6 +18,7 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
     let config = task.config()?;
     let state = task.state()?;
     let first_worktree = config.repos.first().map(|repo| repo.worktree.clone());
+    let opencode = crate::opencode::OpencodeSettings::load(home)?;
     let roles: Vec<Value> = Roles::load(home, first_worktree.as_deref())?
         .all()
         .iter()
@@ -46,11 +47,13 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
                     Some(crate::agent_args::Kind::Claude) if role.writes => "acceptEdits",
                     Some(crate::agent_args::Kind::Claude) => "default",
                     Some(crate::agent_args::Kind::Codex) => "on-request",
-                    None => "provider-default",
+                    Some(crate::agent_args::Kind::Opencode) | None => "provider-default",
                 })},
                 "description": role.description,
                 "startup_candidates": if role.name == "leader" { None } else {
-                    devws.agent_kind(&role.agent).ok().map(|kind| role.worker_candidates(kind))
+                    devws.agent_kind(&role.agent).ok().map(|kind| {
+                        crate::worker::LaunchState::new(role, kind, &opencode).candidates
+                    })
                 },
             })
         })
@@ -145,7 +148,7 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
         // The user's switches: new agents start only on accounts that are on.
         "accounts": devws.accounts()?.into_iter().map(|(name, kind)| json!({
             "name": name,
-            "kind": match kind { crate::agent_args::Kind::Claude => "claude", crate::agent_args::Kind::Codex => "codex" },
+            "kind": match kind { crate::agent_args::Kind::Claude => "claude", crate::agent_args::Kind::Codex => "codex", crate::agent_args::Kind::Opencode => "opencode" },
             "enabled": crate::accounts::is_enabled(&state, &name),
         })).collect::<Vec<_>>(),
         "leader": crate::leader::status(home, task, devws)?,

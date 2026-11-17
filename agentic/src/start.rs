@@ -102,6 +102,7 @@ pub fn write_leader_args(
 ) -> Result<PathBuf> {
     let config = task.config()?;
     let kind = devws.agent_kind(&leader.agent)?;
+    crate::leader::refuse_opencode(&leader.agent, kind)?;
     let mcp = McpServer {
         command: command.to_string(),
         task_id: config.id.clone(),

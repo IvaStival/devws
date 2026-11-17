@@ -77,11 +77,14 @@ fi
 
 # The account: the folder registered for the agent, or none for a bare name,
 # whatever folder the environment came with.
-unset CLAUDE_CONFIG_DIR CODEX_HOME
+unset CLAUDE_CONFIG_DIR CODEX_HOME DEVWS_OPENCODE_DB
 if agent_has_folder "$agent"; then
   case "$kind" in
     claude) export CLAUDE_CONFIG_DIR="$(agent_home "$agent")" ;;
     codex) export CODEX_HOME="$(agent_home "$agent")" ;;
+    # opencode has no folder variable of its own: XDG_DATA_HOME moves its
+    # login and conversations (and those of the agent's own commands).
+    opencode) export XDG_DATA_HOME="$(agent_home "$agent")" ;;
   esac
 fi
 # The status line records this agent's limits under its name.
@@ -187,6 +190,27 @@ case "$kind" in
       "${state_hooks[@]}" \
       ${status_line_args[@]+"${status_line_args[@]}"} \
       -c "developer_instructions=$(jq -n --arg prompt "$prompt" '$prompt')" \
+      ${extra_args[@]+"${extra_args[@]}"}
+    ;;
+  opencode)
+    # Where its usage is read (opencode_usage.sh), told to the plugin.
+    export DEVWS_OPENCODE_DB="${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db"
+    # Passed as config content, so the user's own opencode config stays: the
+    # plugin that reports to devws, the editor prompt, and the two agents
+    # devAgentics starts (agent_args.rs): the floor's edits its worktree,
+    # a senior's has no edit tools (its orders forbid every file).
+    config="$(jq -n --arg plugin "file://$link_dir/opencode_devws_plugin.js" \
+      --arg prompt "$link_dir/agent_editor_prompt.md" '{
+        plugin: [$plugin],
+        instructions: [$prompt],
+        agent: {
+          "devws-floor": {mode: "primary", description: "devws factory floor: works in its worktree",
+            permission: {edit: "allow", bash: "allow", webfetch: "allow"}},
+          "devws-senior": {mode: "primary", description: "devws senior: reads and plans, never edits",
+            permission: {edit: "deny", bash: "allow", webfetch: "allow"}}
+        }
+      }')"
+    OPENCODE_CONFIG_CONTENT="$config" opencode ${resume:+--continue} \
       ${extra_args[@]+"${extra_args[@]}"}
     ;;
 esac

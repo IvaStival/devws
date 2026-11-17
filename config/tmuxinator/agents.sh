@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # The agents registered in devws (.env): DEVWS_AGENTS lists their names, and
 # each name's DEVWS_AGENT_<name>="<kind> <folder>" says which program it runs
-# (claude or codex) and the config folder it runs with (CLAUDE_CONFIG_DIR or
-# CODEX_HOME). A name without an entry that is itself a kind, as in .env files
+# (claude, codex or opencode) and the config folder it runs with
+# (CLAUDE_CONFIG_DIR, CODEX_HOME, or for opencode XDG_DATA_HOME: it keeps its
+# login and conversations in <folder>/opencode). A name without an entry that is itself a kind, as in .env files
 # from before the registry, is that kind in its default folder.
 #
 # Source this file; it reads the variables already set (it does not load .env).
@@ -12,6 +13,7 @@ agent_default_home() {
   case "$1" in
     claude) printf '%s' "$HOME/.claude" ;;
     codex) printf '%s' "$HOME/.codex" ;;
+    opencode) printf '%s' "$HOME/.local/share" ;;
     *) return 1 ;;
   esac
 }
@@ -33,7 +35,7 @@ agent_entry() {
   printf '%s' "$entry"
 }
 
-# <name>: claude or codex; fails for a name that is not registered.
+# <name>: claude, codex or opencode; fails for a name that is not registered.
 agent_kind() {
   local entry kind
   entry="$(agent_entry "$1")" || return 1
@@ -77,4 +79,13 @@ agent_limits() {
     claude) tmux show-option -gqv "@devws_limits_$1" 2>/dev/null ;;
     codex) "$(dirname "${BASH_SOURCE[0]}")/header_tokens.sh" limits "$1" ;;
   esac
+}
+
+# <name>: an opencode agent's database, where its conversations and their
+# cost are (opencode_usage.sh).
+opencode_db() {
+  local home
+  [ "$(agent_kind "$1")" = opencode ] || return 1
+  home="$(agent_home "$1")" || return 1
+  printf '%s' "$home/opencode/opencode.db"
 }

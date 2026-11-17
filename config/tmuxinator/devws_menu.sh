@@ -53,6 +53,7 @@ agent|register-agent|＋ Register agent||register_agent
 agent|agent-folder|⌂ Change agent folder||change_agent_folder
 agent|remove-agent|− Remove agent||remove_agent
 agent|team-roles|⚙ Team roles||team_roles
+agent|opencode|◆ OpenCode||opencode_screen
 agent|memory-search|⁘ Search memory||search_memory|memory
 agent|memory-recent|◷ Recent memory||recent_memory|memory
 agent|memory-web|↗ Open memory web UI||open_memory_web|memory

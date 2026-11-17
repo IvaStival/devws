@@ -998,6 +998,16 @@ fn percent(value: Option<u32>) -> String {
     value.map_or_else(|| "—".to_string(), |value| format!("{value}%"))
 }
 
+/// A prepaid account has no limits: what it has left. Zen has no balance
+/// API: the balance is the one the user entered (opencode_credit.sh).
+fn credit_left(credit: &crate::devws::Credit) -> String {
+    format!(
+        "${:.2} left of ${:.2} (estimated)",
+        credit.left(),
+        credit.balance
+    )
+}
+
 fn account_lines(board: &Board) -> Vec<Line<'static>> {
     if board.accounts.is_empty() {
         return vec![Line::styled("No agent is running.", DIM)];
@@ -1008,11 +1018,14 @@ fn account_lines(board: &Board) -> Vec<Line<'static>> {
         .map(|account| {
             Line::from(vec![
                 Span::styled(format!("{:<14}", account.name), BOLD),
-                Span::raw(format!(
-                    "5 h {:<5} week {}",
-                    percent(account.five_hour),
-                    percent(account.week)
-                )),
+                Span::raw(match &account.credit {
+                    Some(credit) => credit_left(credit),
+                    None => format!(
+                        "5 h {:<5} week {}",
+                        percent(account.five_hour),
+                        percent(account.week)
+                    ),
+                }),
             ])
         })
         .collect()
@@ -1557,6 +1570,11 @@ fn header(
         .unwrap_or(0);
     for account in &board.accounts {
         let mut spans = vec![Span::raw(format!(" {:<name_width$}  ", account.name))];
+        if let Some(credit) = &account.credit {
+            spans.push(Span::raw(credit_left(credit)));
+            rows.push(Line::from(spans));
+            continue;
+        }
         spans.extend(limit("5h", account.five_hour));
         // Narrow panes keep the 5-hour window: it runs out first.
         if width >= 60 {

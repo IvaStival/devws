@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 pub enum Kind {
     Claude,
     Codex,
+    Opencode,
 }
 
 impl Kind {
@@ -16,6 +17,7 @@ impl Kind {
         match name {
             "claude" => Some(Kind::Claude),
             "codex" => Some(Kind::Codex),
+            "opencode" => Some(Kind::Opencode),
             _ => None,
         }
     }
@@ -71,6 +73,7 @@ pub fn arguments(context: &Launch) -> Vec<String> {
     match context.kind {
         Kind::Claude => claude(context),
         Kind::Codex => codex(context),
+        Kind::Opencode => opencode(context),
     }
 }
 
@@ -165,6 +168,23 @@ fn codex(context: &Launch) -> Vec<String> {
         ));
     }
     arguments.push(context.first_message.to_string());
+    arguments
+}
+
+/// The agents devws defines for opencode (agent_runner.sh): one that edits,
+/// for the floor, and one without edit tools, for seniors. Its TUI takes no
+/// reasoning-effort flag, so a role's effort does not apply. opencode never
+/// leads: it gets no MCP server.
+fn opencode(context: &Launch) -> Vec<String> {
+    let role = context.role;
+    let mut arguments = vec!["--prompt".to_string(), context.first_message.to_string()];
+    push_option(&mut arguments, "--model", role.model.as_deref());
+    let agent = if role.writes {
+        "devws-floor"
+    } else {
+        "devws-senior"
+    };
+    push_option(&mut arguments, "--agent", Some(agent));
     arguments
 }
 
@@ -526,9 +546,56 @@ mod tests {
     }
 
     #[test]
-    fn only_claude_and_codex_are_known() {
+    fn claude_codex_and_opencode_are_known() {
         assert_eq!(Kind::parse("claude"), Some(Kind::Claude));
         assert_eq!(Kind::parse("codex"), Some(Kind::Codex));
-        assert_eq!(Kind::parse("opencode"), None);
+        assert_eq!(Kind::parse("opencode"), Some(Kind::Opencode));
+        assert_eq!(Kind::parse("openrouter"), None);
+    }
+
+    #[test]
+    fn an_opencode_floor_agent_starts_with_its_prompt_model_and_writing_agent() {
+        let role = role(
+            "executor",
+            "opencode",
+            Some("opencode/deepseek-v4.1-flash"),
+            Some("high"),
+            true,
+        );
+        let arguments = arguments(&Launch {
+            role: &role,
+            kind: Kind::Opencode,
+            first_message: "Hello\nthere",
+            mcp: None,
+            writable: Vec::new(),
+        });
+        // opencode's TUI takes no effort flag: the role's effort is left out.
+        assert_eq!(
+            arguments,
+            strings(&[
+                "--prompt",
+                "Hello\nthere",
+                "--model",
+                "opencode/deepseek-v4.1-flash",
+                "--agent",
+                "devws-floor",
+            ])
+        );
+    }
+
+    #[test]
+    fn an_opencode_senior_runs_the_agent_that_cannot_edit() {
+        let role = role("reviewer", "opencode", None, None, false);
+        let arguments = arguments(&Launch {
+            role: &role,
+            kind: Kind::Opencode,
+            first_message: "Review",
+            mcp: None,
+            writable: Vec::new(),
+        });
+        assert_eq!(
+            arguments,
+            strings(&["--prompt", "Review", "--agent", "devws-senior"])
+        );
     }
 }

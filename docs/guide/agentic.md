@@ -81,6 +81,17 @@ repos get their own worktrees the same way, as the leader opens them.
   role, the setting, then a value its program takes, or Default. Agents
   started after that use it. Codex agents in the team's own lane folders start
   without asking whether to trust the folder.
+- **◆ OpenCode** in the Agent tab puts floor and senior agents on
+  [opencode](https://opencode.ai), to save Claude and Codex usage on a cheap
+  model (Zen's DeepSeek Flash). Its global switch is mandatory: off, nothing
+  runs on opencode and the floor's and seniors' switches are ignored. With
+  both on, that group's agents try opencode first, on the model you pick for
+  the group, and fall back to Claude or Codex. The screen also registers the
+  account and logs it in (`opencode auth login`), shows what it used, and
+  keeps the credit left: Zen has no balance API, so you enter the balance and
+  devws counts what was spent since. The leader never runs on opencode, nor
+  do reviewed tasks' workers (they need the Claude MCP-only adapter). See
+  [OpenCode workers](../../agentic/docs/usage.md#opencode-workers).
 - **The board** beside it opens on **Overview**, under a header with the
   progress bar and each account's limit bars. Each part is a card: what needs
   you, the CTO (the leader first), the seniors, the floor, the queue, the usage

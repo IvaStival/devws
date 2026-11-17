@@ -192,11 +192,13 @@ initialize_agent() {
 # The folders of a kind's accounts (~/.claude, ~/.claude-work, …) that no
 # agent uses yet, written under ~.
 unregistered_folders() {
-  local kind="$1" folder agent used=" "
+  local kind="$1" folder agent used=" " default=""
   for agent in ${DEVWS_AGENTS:-claude codex}; do
     used+="$(agent_home "$agent" 2>/dev/null) "
   done
-  for folder in "$HOME/.$kind" "$HOME/.$kind"-*; do
+  # opencode keeps an account in an XDG data folder: its default one first.
+  [ "$kind" != opencode ] || default="$HOME/.local/share"
+  for folder in ${default:+"$default"} "$HOME/.$kind" "$HOME/.$kind"-*; do
     [ -d "$folder" ] || continue
     case "$used" in *" $folder "*) continue ;; esac
     printf '~/%s\n' "${folder#"$HOME"/}"
@@ -207,7 +209,7 @@ unregistered_folders() {
 # writes them to .env (register_agent.sh).
 register_agent() {
   local kind folder name suggested
-  kind="$(printf '%s\n' claude codex | pick Kind 'Register an agent: which program it runs')" || return
+  kind="$(printf '%s\n' claude codex opencode | pick Kind 'Register an agent: which program it runs')" || return
   [ -n "$kind" ] || return
 
   folder="$(unregistered_folders "$kind" |
@@ -723,6 +725,12 @@ team_roles() {
   esac
   "$agentic" role set "$role" "--$setting" "$value" "${repo[@]}"
   pause
+}
+
+# Team agents on opencode: the switches, models, account and credit
+# (opencode_menu.sh).
+opencode_screen() {
+  "$HOME/.tmuxinator/opencode_menu.sh"
 }
 
 # Opens a workspace on a git worktree of the current workspace's repo: an

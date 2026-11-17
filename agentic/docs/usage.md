@@ -381,10 +381,46 @@ in a new conversation.
 | `DEVAGENTICS_GH` | `gh` | The GitHub CLI |
 | `DEVAGENTICS_CHECK_TIMEOUT` | `900` | Seconds a check may run |
 
+## OpenCode workers
+
+Floor and senior agents can run on [opencode](https://opencode.ai) to save
+Claude and Codex usage, on a cheap model such as Zen's DeepSeek Flash. The
+devws menu's **◆ OpenCode** screen (Agent tab) does it all; the same is
+`devagentics opencode`:
+
+```bash
+devagentics opencode show                          # switches, models, account
+devagentics opencode switch global on              # mandatory: off, nothing runs on opencode
+devagentics opencode switch floor on               # and/or: senior
+devagentics opencode model floor opencode/<model>  # from `opencode models`
+```
+
+- **Switches.** The global switch is mandatory: while it is off, the floor's
+  and the seniors' switches are kept but ignored (`show` says `ignored`), and
+  no agent runs on opencode, even one whose role names it. With both on, a
+  group's agents try opencode first, on the group's model, and fall back to
+  their role's Claude or Codex program when opencode cannot start them. The
+  leader never runs on opencode. Saved in `~/.devagentics/opencode.toml`;
+  agents started from then on follow it.
+- **Account.** The screen registers the `opencode` devws agent (its folder is
+  opencode's data folder's parent, `~/.local/share`) and runs `opencode auth
+  login`: pick OpenCode Zen and paste its key. devws keeps no key.
+- **Usage and credit.** What opencode agents used is in the board's USAGE
+  card, the header and `devws usage`, at what Zen billed. Zen has no balance
+  API: enter the balance on the screen (Set balance) and devws counts what was
+  spent since against it. An account with nothing left takes no new agents;
+  a credit or limit error from the provider makes the agent fall back too.
+- **What each may do.** Floor agents run devws's `devws-floor` opencode agent
+  (edits allowed), seniors `devws-senior` (no edit tools).
+
 ## Known limits
 
-- Claude and Codex only; other programs (OpenCode, OpenRouter models) are not
-  there yet.
+- OpenCode runs floor and senior agents of legacy tasks only: not the
+  leader, and not a reviewed task's workers, which start only through the
+  verified Claude MCP-only adapter (an opencode candidate there is refused
+  and the worker falls back). OpenRouter models are not there yet.
+- An opencode account's credit left is an estimate from the balance you
+  entered.
 - A message for the leader is typed in when the leader is done or idle. If you
   are typing in its input at that moment it lands in your draft.
 - A planner or executor starts by answering "ready"; its first order waits for

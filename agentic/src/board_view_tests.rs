@@ -23,6 +23,7 @@ pub(crate) fn board() -> Board {
             name: "claude".into(),
             five_hour: Some(40),
             week: None,
+            credit: None,
         }],
         switches: vec![],
         roles: vec![
@@ -432,12 +433,37 @@ fn the_done_card_scrolls_with_a_bar_and_too_short_a_pane_is_a_plain_list() {
 }
 
 #[test]
+fn a_prepaid_account_shows_its_credit_left_instead_of_limit_bars() {
+    let mut board = board_with_history();
+    board.accounts.push(crate::board::Account {
+        name: "opencode".into(),
+        five_hour: None,
+        week: None,
+        credit: Some(crate::devws::Credit {
+            balance: 20.0,
+            used: 7.5,
+        }),
+    });
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let mut nav = Navigation::new(View::Overview);
+    nav.reconcile(&rows);
+    let text = plain(&screen(&board, &nav, &rows, 84, 40, None));
+    let line = text
+        .lines()
+        .find(|line| line.contains("opencode"))
+        .unwrap_or_else(|| panic!("no opencode line: {text}"));
+    assert!(line.contains("$12.50 left of $20.00"), "{line}");
+    assert!(!line.contains("5h"), "{line}");
+}
+
+#[test]
 fn the_header_has_the_count_the_tabs_the_progress_and_limit_bars() {
     let mut board = board_with_history();
     board.accounts.push(crate::board::Account {
         name: "codex".into(),
         five_hour: Some(9),
         week: Some(87),
+        credit: None,
     });
     let rows = entries(&board, View::Overview, false, &[], None);
     let mut nav = Navigation::new(View::Overview);

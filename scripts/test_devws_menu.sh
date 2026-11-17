@@ -125,7 +125,7 @@ test_tabs_list_their_actions() {
     fail "Templates tab: $(actions_of templates)"
   [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor ghostty-theme" ] ||
     fail "Layout tab: $(actions_of layout)"
-  [ "$(actions_of agent)" = "jump switch-agent restart-agent follow-mode initialize-agent register-agent agent-folder remove-agent team-roles" ] ||
+  [ "$(actions_of agent)" = "jump switch-agent restart-agent follow-mode initialize-agent register-agent agent-folder remove-agent team-roles opencode" ] ||
     fail "Agent tab: $(actions_of agent)"
   [ "$(actions_of git)" = "commit commit-manual push tidy github-login" ] || fail "Git tab: $(actions_of git)"
   [ "$(actions_of jungleForge)" = "run-here switch-run stop-run services migrate shell logs info settings register-jungleforge" ] ||

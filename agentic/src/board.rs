@@ -114,6 +114,8 @@ pub struct Account {
     pub name: String,
     pub five_hour: Option<u32>,
     pub week: Option<u32>,
+    /// A prepaid account's (opencode Zen), which has no plan limits.
+    pub credit: Option<crate::devws::Credit>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -299,7 +301,9 @@ impl Board {
                                 crate::agent_args::claude_permission_mode(effective),
                             Some(crate::agent_args::Kind::Codex) =>
                                 effective.approvals.as_deref().unwrap_or("on-request"),
-                            None => effective.approvals.as_deref().unwrap_or("provider-default"),
+                            Some(crate::agent_args::Kind::Opencode) | None => {
+                                effective.approvals.as_deref().unwrap_or("provider-default")
+                            }
                         },
                     ),
                     // A leader on its fallback (leader.rs) shows the program it
@@ -419,10 +423,13 @@ impl Board {
         for name in accounts {
             let used = devws.limits(&name)?;
             limits.insert(name.clone(), used);
+            // Informational, as usage: an unreadable credit never stops the board.
+            let credit = devws.credit(&name).ok().flatten();
             account_rows.push(Account {
                 name,
                 five_hour: used.five_hour,
                 week: used.week,
+                credit,
             });
         }
         let mut switches = Vec::new();
@@ -850,7 +857,8 @@ pub(crate) mod tests {
             [Account {
                 name: "claude".into(),
                 five_hour: Some(40),
-                week: None
+                week: None,
+                credit: None
             }]
         );
         assert_eq!(board.summary, "No plan yet. 1 working.");

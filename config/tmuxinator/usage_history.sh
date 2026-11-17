@@ -69,6 +69,15 @@ rows() {
     case "$kind" in
       claude) root="$home/projects" ;;
       codex) root="$home/sessions" ;;
+      # opencode keeps every response in one database, read in one query.
+      opencode)
+        root="$home/opencode/opencode.db"
+        case "$seen" in *"$tab$root$tab"*) continue ;; esac
+        seen="$seen$tab$root$tab"
+        "$scripts_dir/opencode_usage.sh" rows "$root" |
+          awk -v account="$agent" -v OFS="$tab" -F "$tab" '{ print account, $0 }'
+        continue
+        ;;
       *) continue ;;
     esac
     # Two names for one folder are one account's logs, counted once.

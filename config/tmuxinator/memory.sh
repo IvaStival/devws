@@ -73,6 +73,7 @@ wire() {
   case "$(agent_kind "$agent")" in
     claude) client=claude-code ;;
     codex) client=codex ;;
+    opencode) die "ai-memory has no client for opencode: $agent" ;;
     *) die "not a registered agent: $agent" ;;
   esac
   with_account "$agent" "$ai_memory" install-mcp --client "$client" --apply || return 1
@@ -87,6 +88,7 @@ wire_all() {
   available || return 0
   for agent in ${DEVWS_AGENTS:-claude codex}; do
     [ "${1:-}" != --force ] && grep -qxF "$agent" "$wired_file" 2>/dev/null && continue
+    [ "$(agent_kind "$agent" 2>/dev/null)" != opencode ] || continue
     wire "$agent" || printf 'devws memory: could not wire %s\n' "$agent" >&2
   done
 }

@@ -115,16 +115,18 @@ pub const FLOOR_CLAUDE_MODEL: &str = "sonnet";
 pub const FLOOR_CODEX_MODEL: &str = "gpt-6-luna";
 
 /// A floor agent's model on `kind`: the one named when it is of the floor's
-/// family, else the floor's.
-fn floor_model(kind: Kind, named: Option<&str>) -> String {
+/// family, else the floor's. opencode is there to try cheap models, so the
+/// one the user picked stays, whichever it is.
+fn floor_model(kind: Kind, named: Option<&str>) -> Option<String> {
     let (family, model) = match kind {
         Kind::Claude => ("sonnet", FLOOR_CLAUDE_MODEL),
         Kind::Codex => ("luna", FLOOR_CODEX_MODEL),
+        Kind::Opencode => return named.map(str::to_string),
     };
-    match named {
+    Some(match named {
         Some(named) if named.contains(family) => named.to_string(),
         _ => model.to_string(),
-    }
+    })
 }
 
 impl Role {
@@ -171,7 +173,7 @@ impl Role {
         }
         if self.fallback.is_none() && self.alternatives.is_empty() {
             candidates.push(match kind {
-                Kind::Claude => Fallback {
+                Kind::Claude | Kind::Opencode => Fallback {
                     agent: "codex".into(),
                     model: Some("gpt-6.1-sol".into()),
                     effort: Some("medium".into()),
@@ -198,7 +200,7 @@ impl Role {
                     Kind::parse(&candidate.agent)
                 };
                 if let Some(candidate_kind) = candidate_kind {
-                    candidate.model = Some(floor_model(candidate_kind, candidate.model.as_deref()));
+                    candidate.model = floor_model(candidate_kind, candidate.model.as_deref());
                 }
             }
         }
@@ -382,6 +384,12 @@ impl Setting {
                 &["default", "acceptEdits", "plan", AUTO, "bypassPermissions"]
             }
             (Setting::Approvals, Kind::Codex) => &["untrusted", "on-request", "never", AUTO],
+            // Only the ones checked against Zen's catalog; `devagentics opencode
+            // models` lists what the account has.
+            (Setting::Model, Kind::Opencode) => &["opencode/deepseek-v4.1-flash-free"],
+            // devws's opencode agents decide what it may do (agent_runner.sh),
+            // and its TUI takes no effort.
+            (Setting::Effort | Setting::Approvals, Kind::Opencode) => &[],
         }
     }
 }

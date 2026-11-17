@@ -47,6 +47,31 @@ pub struct Limits {
     pub week: Option<u32>,
 }
 
+/// An opencode Zen account's credit, in US$. Zen has no balance API: the
+/// balance is the one the user entered, and `used` what the account's
+/// conversations cost since.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Credit {
+    pub balance: f64,
+    pub used: f64,
+}
+
+impl Credit {
+    pub fn left(&self) -> f64 {
+        self.balance - self.used
+    }
+
+    /// `"<balance> <used>"`, as `devws agent credit` prints it; an account
+    /// whose balance was never entered prints nothing.
+    pub fn parse(text: &str) -> Option<Self> {
+        let mut fields = text.split_whitespace();
+        Some(Self {
+            balance: fields.next()?.parse().ok()?,
+            used: fields.next()?.parse().ok()?,
+        })
+    }
+}
+
 /// What an agent's conversation used: tokens, and the cost at API prices (a
 /// plan is not billed so; it shows what the tokens would cost).
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -130,6 +155,9 @@ pub trait Devws: Send + Sync {
     /// Brings the agent under the board for a look; again, back to its group.
     fn peek(&self, pane: &str) -> Result<()>;
     fn limits(&self, agent: &str) -> Result<Limits>;
+    /// The credit of a prepaid account (opencode Zen); `None` when devws does
+    /// not know it.
+    fn credit(&self, agent: &str) -> Result<Option<Credit>>;
     /// What the pane's agent has used; `None` while devws does not know its
     /// conversation yet, or when the pane is gone.
     fn usage(&self, pane: &str) -> Result<Option<Usage>>;
@@ -372,6 +400,10 @@ impl Devws for CommandDevws {
         })
     }
 
+    fn credit(&self, agent: &str) -> Result<Option<Credit>> {
+        Ok(Credit::parse(&self.devws(&["agent", "credit", agent])?))
+    }
+
     fn usage(&self, pane: &str) -> Result<Option<Usage>> {
         // Informational: a pane that went or a log that cannot be read is no
         // reason to stop the board.
@@ -424,6 +456,7 @@ pub mod fake {
         states: HashMap<String, PaneState>,
         kinds: HashMap<String, Kind>,
         limits: HashMap<String, Limits>,
+        credits: HashMap<String, Credit>,
         usages: HashMap<String, Usage>,
         roles: HashMap<(String, String), String>,
         options: HashMap<(String, String), String>,
@@ -468,6 +501,15 @@ pub mod fake {
                 .unwrap()
                 .limits
                 .insert(agent.to_string(), limits);
+            self
+        }
+
+        pub fn with_credit(self, agent: &str, credit: Credit) -> Self {
+            self.inner
+                .lock()
+                .unwrap()
+                .credits
+                .insert(agent.to_string(), credit);
             self
         }
 
@@ -738,6 +780,11 @@ pub mod fake {
             Ok(inner.limits.get(agent).copied().unwrap_or_default())
         }
 
+        fn credit(&self, agent: &str) -> Result<Option<Credit>> {
+            let inner = self.record(format!("credit {agent}"));
+            Ok(inner.credits.get(agent).copied())
+        }
+
         fn usage(&self, pane: &str) -> Result<Option<Usage>> {
             let inner = self.record(format!("usage {pane}"));
             Ok(inner.usages.get(pane).copied())
@@ -779,13 +826,14 @@ mod tests {
                 r#"#!/bin/sh
 echo "devws $*" >> "{log}"
 case "$1 $2" in
-  "agent kind") case "$3" in claude|work) echo claude ;; codex) echo codex ;; opencode) echo opencode ;; *) echo "unknown agent" >&2; exit 1 ;; esac ;;
+  "agent kind") case "$3" in claude|work) echo claude ;; codex) echo codex ;; opencode) echo opencode ;; openrouter) echo openrouter ;; *) echo "unknown agent" >&2; exit 1 ;; esac ;;
   "worktree ensure") echo "/work/$3-$4" ;;
   "open --no-attach") echo "dev-$8" ;;
   "agent spawn") echo "%7" ;;
   "agent state") case "$3" in %1) echo working ;; %2) echo gone ;; *) echo done ;; esac ;;
   "agent send") cat >> "{log}.sent"; case "$3" in %1) echo "busy (working)" >&2; exit 3 ;; %2) exit 4 ;; esac ;;
   "agent limits") case "$3" in claude) echo "42 63" ;; *) echo "- -" ;; esac ;;
+  "agent credit") case "$3" in opencode) echo "20.00 7.5" ;; esac ;;
   "agent mark"|"agent stop") ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
@@ -860,8 +908,9 @@ esac
 
         assert_eq!(devws.agent_kind("work").unwrap(), Kind::Claude);
         assert!(devws.agent_kind("nobody").is_err());
+        assert_eq!(devws.agent_kind("opencode").unwrap(), Kind::Opencode);
         assert!(
-            devws.agent_kind("opencode").is_err(),
+            devws.agent_kind("openrouter").is_err(),
             "an agent kind devAgentics does not run is refused"
         );
         assert_eq!(
@@ -903,6 +952,22 @@ esac
         );
         assert!(calls.contains(&"devws agent mark %7 waiting".to_string()));
         assert!(calls.contains(&"devws agent stop %7".to_string()));
+    }
+
+    #[test]
+    fn it_reads_a_prepaid_accounts_credit_and_knows_none_for_the_others() {
+        let dir = TempDir::new().unwrap();
+        let (devws, _log) = command_devws(&dir);
+        let credit = devws.credit("opencode").unwrap().unwrap();
+        assert_eq!(
+            credit,
+            Credit {
+                balance: 20.0,
+                used: 7.5
+            }
+        );
+        assert_eq!(credit.left(), 12.5);
+        assert_eq!(devws.credit("claude").unwrap(), None);
     }
 
     #[test]

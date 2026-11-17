@@ -72,8 +72,10 @@ the editor. Each executor is an agent pane in its worktree's devws workspace.
 - **v1:** tasks across repos, roles, the MCP tools, queues and the log,
   Claude and Codex executors, file rules, checks plus the leader's review,
   draft PRs, limits, ai-memory handoffs.
-- **v2:** OpenCode as a devws agent kind (its plugin events need checking
-  first), executors on OpenRouter models (DeepSeek…), the stronger-model
+- **v2:** OpenCode as a devws agent kind, for floor and senior agents
+  (done: `devagentics opencode`, the devws menu's ◆ OpenCode; its plugin,
+  opencode_devws_plugin.js, sends devws the hook events), executors on
+  OpenRouter models, the stronger-model
   rule, the task's branches run together in jungleforge with end-to-end
   checks.
 - **v3:** stock test and review helper roles.

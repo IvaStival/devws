@@ -2,7 +2,7 @@
 # Registers devws agents in .env (the format agents.sh reads), for the devws
 # menu's Register agent / Remove agent:
 #
-#   register_agent.sh add <name> <claude|codex> <folder>
+#   register_agent.sh add <name> <claude|codex|opencode> <folder>
 #   register_agent.sh remove <name>
 #   register_agent.sh folder <name> <folder>
 #
@@ -110,9 +110,11 @@ write_entry() {
     }'
 }
 
-# With ai-memory installed, the account in its folder gets memory too (memory.sh).
+# With ai-memory installed, the account in its folder gets memory too
+# (memory.sh); ai-memory has no client for opencode.
 wire_memory() {
-  local name="$1" memory="$scripts_dir/memory.sh"
+  local name="$1" kind="$2" memory="$scripts_dir/memory.sh"
+  [ "$kind" != opencode ] || return 0
   [ -x "$memory" ] && "$memory" available || return 0
   if "$memory" wire "$name" >/dev/null 2>&1; then
     printf 'Wired %s to ai-memory\n' "$name"
@@ -125,12 +127,12 @@ add() {
   local name="$1" kind="$2" folder="$3" written
   agent_valid_name "$name" || die "an agent name uses only letters, digits and _: $name"
   listed "$name" && die "$name is already registered"
-  agent_default_home "$kind" >/dev/null || die "unknown agent kind: $kind (claude or codex)"
+  agent_default_home "$kind" >/dev/null || die "unknown agent kind: $kind (claude, codex or opencode)"
   written="$(written_folder "$folder")" || exit
   write_entry "$name" "$(printf '%s' "$agents $name" | xargs)" "DEVWS_AGENT_$name=\"$kind $written\""
   restart_header
   printf 'Registered %s (%s, %s)\n' "$name" "$kind" "$written"
-  wire_memory "$name"
+  wire_memory "$name" "$kind"
 }
 
 # The agents already running keep their folder until restarted.
@@ -142,7 +144,7 @@ folder() {
   write_entry "$name" "$(printf '%s' "$agents" | xargs)" "DEVWS_AGENT_$name=\"$kind $written\""
   restart_header
   printf '%s now runs in %s (restart its agents to use it)\n' "$name" "$written"
-  wire_memory "$name"
+  wire_memory "$name" "$kind"
 }
 
 remove() {
@@ -164,7 +166,7 @@ remove() {
 
 case "${1:-}" in
   add)
-    [ "$#" -eq 4 ] || die "usage: register_agent.sh add <name> <claude|codex> <folder>"
+    [ "$#" -eq 4 ] || die "usage: register_agent.sh add <name> <claude|codex|opencode> <folder>"
     add "$2" "$3" "$4"
     ;;
   remove)
@@ -175,5 +177,5 @@ case "${1:-}" in
     [ "$#" -eq 3 ] || die "usage: register_agent.sh folder <name> <folder>"
     folder "$2" "$3"
     ;;
-  *) die "usage: register_agent.sh add <name> <claude|codex> <folder> | remove <name> | folder <name> <folder>" ;;
+  *) die "usage: register_agent.sh add <name> <claude|codex|opencode> <folder> | remove <name> | folder <name> <folder>" ;;
 esac

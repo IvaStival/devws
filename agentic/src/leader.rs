@@ -94,6 +94,15 @@ fn now_and_other(role: &Role, state: &State) -> Option<(Role, Role)> {
     }
 }
 
+/// opencode works on the floor and among the seniors (opencode.rs); the team
+/// is run from Claude or Codex, which take the leader's MCP tools.
+pub fn refuse_opencode(agent: &str, kind: crate::agent_args::Kind) -> Result<()> {
+    if kind == crate::agent_args::Kind::Opencode {
+        bail!("{agent} runs opencode, which does not lead a team: pick a Claude or Codex agent");
+    }
+    Ok(())
+}
+
 /// The leader's role led by the agent the user picked. Its own agent leaves
 /// it as it is; its fallback's swaps the two, so the role's own program is
 /// the one to move to; any other agent keeps the role's settings when it runs
@@ -101,6 +110,7 @@ fn now_and_other(role: &Role, state: &State) -> Option<(Role, Role)> {
 /// one program means nothing to the other), with the fallback kept.
 pub fn led_by(role: &Role, agent: &str, devws: &dyn Devws) -> Result<Role> {
     let kind = devws.agent_kind(agent)?;
+    refuse_opencode(agent, kind)?;
     if agent == role.agent {
         return Ok(role.clone());
     }
@@ -1015,6 +1025,17 @@ mod tests {
             led_by(&role, "ghost", &devws).is_err(),
             "an agent devws does not know"
         );
+    }
+
+    #[test]
+    fn an_opencode_agent_does_not_lead() {
+        let dir = TempDir::new().unwrap();
+        let home = Home::at(dir.path().join("home"));
+        let devws = FakeDevws::new(dir.path()).with_kind("opencode", Program::Opencode);
+        let message = led_by(&builtin_leader(&home), "opencode", &devws)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("does not lead"), "{message}");
     }
 
     /// A task started with the leader the user picked.

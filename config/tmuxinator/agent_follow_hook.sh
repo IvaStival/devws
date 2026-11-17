@@ -4,8 +4,9 @@
 # mode). Claude Code passes the tool call's JSON (file_path, new_string or
 # content, a Read's offset); Codex passes its apply_patch call, whose patch
 # names the files. Codex reads through shell commands, so its reads are not seen.
+# devws's opencode plugin (opencode_devws_plugin.js) passes the edited file.
 #
-#   agent_follow_hook.sh <claude|codex>          after a tool call
+#   agent_follow_hook.sh <claude|codex|opencode> after a tool call
 #   agent_follow_hook.sh <claude|codex> pre      before one: the project is
 #                                                snapshot (agent_changes.sh)
 #   agent_follow_hook.sh <claude|codex> prompt   the user's new prompt: the
@@ -115,6 +116,9 @@ case "$agent" in
       current == file && /^\+/ && length($0) > 1 { print substr($0, 2); exit }')"
     cwd="$(json '.cwd // empty')"
     [ -n "$cwd" ] && cd "$cwd" 2>/dev/null
+    ;;
+  opencode)
+    file="$(json '.tool_input.file_path // empty')"
     ;;
 esac
 
