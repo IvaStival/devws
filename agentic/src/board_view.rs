@@ -1,7 +1,9 @@
 //! Pure board navigation and rendering. Stable row identities keep a refresh
 //! from moving the user's focus to a different agent or task.
 
-use crate::board::{AgentRow, Board, PermissionRow, Progress, RoleRow, SpecRow, StaleReview, StepRow};
+use crate::board::{
+    AgentRow, Board, PermissionRow, Progress, RoleRow, SpecRow, StaleReview, StepRow,
+};
 use crate::devws::{PaneState, Usage};
 use crate::roles::Group;
 use crate::state::StepStatus;
@@ -192,6 +194,9 @@ pub struct ScreenMap {
     pub tabs: Vec<(u16, std::ops::Range<u16>, View)>,
     /// The open dialog's area.
     pub dialog: Option<Rect>,
+    /// Its "To the leader" box, when it takes a message: a click there
+    /// starts writing.
+    pub input: Option<Rect>,
 }
 
 impl ScreenMap {
@@ -1761,14 +1766,16 @@ pub fn screen_map(
                 (None, Some(_)) => Message::Offered,
                 (_, None) => Message::None,
             };
-            map.dialog = Some(draw_dialog(
+            let area = draw_dialog(
                 &mut buffer,
                 &entry.label,
                 &entry.detail,
                 nav.detail_scroll,
                 selected_y,
                 message,
-            ));
+            );
+            map.dialog = Some(area);
+            map.input = input_area(area, message != Message::None);
         }
     }
     (buffer, map)
@@ -1852,7 +1859,7 @@ fn draw_input(buffer: &mut Buffer, area: Rect, message: Message) {
                 Span::styled("▏", BOLD),
             ])
         }
-        _ => Line::styled("press m to write · Enter sends it", DIM),
+        _ => Line::styled("Enter, m or a click to write · Enter sends it", DIM),
     };
     line.render(inner, buffer);
 }
@@ -1979,15 +1986,26 @@ pub fn draw_dialog(
     if inner.height >= 2 {
         hint_line(message, body.width as usize)
             .render(Rect::new(body.x, inner.bottom() - 1, body.width, 1), buffer);
-        if input && body.bottom() + INPUT_ROWS < inner.bottom() {
-            draw_input(
-                buffer,
-                Rect::new(body.x, inner.bottom() - 1 - INPUT_ROWS, body.width, INPUT_ROWS),
-                message,
-            );
+        if let Some(box_area) = input_area(area, input) {
+            draw_input(buffer, box_area, message);
         }
     }
     area
+}
+
+/// Where a dialog at `area` draws its "To the leader" box; None when it takes
+/// no message or has no room for it.
+pub fn input_area(area: Rect, input: bool) -> Option<Rect> {
+    let inner = Block::bordered().inner(area);
+    let body = dialog_body_of(area, input);
+    (input && inner.height >= 2 && body.bottom() + INPUT_ROWS < inner.bottom()).then(|| {
+        Rect::new(
+            body.x,
+            inner.bottom() - 1 - INPUT_ROWS,
+            body.width,
+            INPUT_ROWS,
+        )
+    })
 }
 
 pub fn plain(buffer: &Buffer) -> String {

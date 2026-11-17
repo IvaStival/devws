@@ -1253,7 +1253,7 @@ fn a_dialog_that_takes_a_message_has_an_input_box() {
     draw_dialog(&mut buffer, "B1-1-AT", "Blocked.", 0, None, Message::Offered);
     let text = plain(&buffer);
     assert!(text.contains("To the leader"), "the box is there before writing: {text}");
-    assert!(text.contains("press m to write"), "{text}");
+    assert!(text.contains("Enter, m or a click to write"), "{text}");
 
     let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 16));
     let long = "accept it if the checkpoint passed and then send the docs lane its order";

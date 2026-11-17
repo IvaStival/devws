@@ -12,8 +12,8 @@ use crate::task::Task;
 use crate::watch::{self, Dispatcher};
 use anyhow::Result;
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
-    MouseEventKind,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind,
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
@@ -193,7 +193,7 @@ struct Interaction {
     map: ScreenMap,
 }
 
-const HELP: &str = "Board navigation\n\nTab / Shift-Tab: next / previous view\nj/k or arrows: select row; scroll details\nPgUp/PgDn: move a page\ng/G or Home/End: first / last\nEnter: full details (JSON laid out, lists one item per line); a NEEDS YOU row you opened turns grey, one you answered shows ✉\nm in the details of a NEEDS YOU row, a step or the leader: write to the leader in its box (Enter send, Esc cancel)\nSpace on an account: turn it on/off for this task\nClick: select a row; click it again for details\nClick a view's name: show that view\nClick outside details: close them\nEsc: close details or cancel peek\no: go to selected agent\nv: peek selected agent\n1–9: go to numbered agent\np then 1–9: peek numbered agent\nL: return to leader\nl: toggle Activity\nc: toggle completed steps or inactive role catalog\nr: refresh\nz: zoom\n?: help\nq: close details, or quit board (dispatcher stops)";
+const HELP: &str = "Board navigation\n\nTab / Shift-Tab: next / previous view\nj/k or arrows: select row; scroll details\nPgUp/PgDn: move a page\ng/G or Home/End: first / last\nEnter: full details (JSON laid out, lists one item per line); a NEEDS YOU row you opened turns grey, one you answered shows ✉\nIn the details of a NEEDS YOU row, a step or the leader: Enter, m, a click in its box or a paste starts a message to the leader (Enter sends it, nothing when empty; Esc cancels)\nSpace on an account: turn it on/off for this task\nClick: select a row; click it again for details\nClick a view's name: show that view\nClick outside details: close them\nEsc: close details or cancel peek\no: go to selected agent\nv: peek selected agent\n1–9: go to numbered agent\np then 1–9: peek numbered agent\nL: return to leader\nl: toggle Activity\nc: toggle completed steps or inactive role catalog\nr: refresh\nz: zoom\n?: help\nq: close details, or quit board (dispatcher stops)";
 
 impl Interaction {
     /// One event from the terminal: a key, or the wheel, which moves `WHEEL`
@@ -217,6 +217,10 @@ impl Interaction {
         let action = match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 self.key(key.code, board, entries, page)
+            }
+            Event::Paste(text) => {
+                self.paste(&text, entries);
+                Action::None
             }
             Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
                 self.click(mouse.column, mouse.row, entries);
@@ -265,7 +269,32 @@ impl Interaction {
     /// A left click: outside an open dialog closes it; on a view's name
     /// shows that view; on a row selects it, and on the selected row opens
     /// its details, as Enter does. Anything else does nothing.
+    /// Whether the open details are of a row the user can write about.
+    fn takes_message(&self, entries: &[board_view::Entry]) -> bool {
+        self.nav.detail
+            && !self.help
+            && entries
+                .get(self.nav.index)
+                .is_some_and(|entry| board_view::message_about(&entry.id).is_some())
+    }
+
+    /// Pasted text goes into the message, which it starts when none is open.
+    fn paste(&mut self, text: &str, entries: &[board_view::Entry]) {
+        if self.nav.compose.is_none() && !self.takes_message(entries) {
+            return;
+        }
+        let message = self.nav.compose.get_or_insert_with(String::new);
+        // One line: the box sends on Enter, so line breaks become spaces.
+        message.push_str(&text.replace(['\r', '\n'], " "));
+    }
+
     fn click(&mut self, column: u16, row: u16, entries: &[board_view::Entry]) {
+        let position = ratatui::layout::Position::new(column, row);
+        if self.map.input.is_some_and(|area| area.contains(position)) && self.takes_message(entries)
+        {
+            self.nav.compose.get_or_insert_with(String::new);
+            return;
+        }
         if self.help || self.nav.detail {
             let inside = self
                 .map
@@ -367,13 +396,9 @@ impl Interaction {
             return Action::None;
         }
         match code {
-            KeyCode::Char('m')
-                if self.nav.detail
-                    && !self.help
-                    && entries
-                        .get(self.nav.index)
-                        .is_some_and(|entry| board_view::message_about(&entry.id).is_some()) =>
-            {
+            // In details that take a message, Enter (or m) starts writing it;
+            // the next Enter sends it.
+            KeyCode::Char('m') | KeyCode::Enter if self.takes_message(entries) => {
                 self.nav.compose = Some(String::new());
             }
             KeyCode::Esc | KeyCode::Char('q') if self.help || self.nav.detail => {
@@ -599,7 +624,7 @@ fn screen_loop(
     let mut marks = crate::seen::Marks::load(task.dir())?;
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
-        execute!(std::io::stdout(), EnableMouseCapture)?;
+        execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
         // A pane left on the alternate screen (a board that was killed) keeps
         // its old text there; the first frame would draw only over its own
         // cells and leave the rest showing through.
@@ -756,7 +781,11 @@ fn screen_loop(
             }
         }
     })();
-    let mouse_result = execute!(std::io::stdout(), DisableMouseCapture);
+    let mouse_result = execute!(
+        std::io::stdout(),
+        DisableMouseCapture,
+        DisableBracketedPaste
+    );
     ratatui::restore();
     result?;
     mouse_result?;
@@ -907,6 +936,62 @@ mod tests {
         press(&mut ui, KeyCode::Enter);
         press(&mut ui, KeyCode::Char('m'));
         assert_eq!(ui.nav.compose, None, "an agent's details take no message");
+    }
+
+    #[test]
+    fn enter_a_click_or_a_paste_starts_the_message_and_an_empty_one_is_never_sent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (home, devws, task, _repo) = crate::board::tests::started(&dir);
+        let board = load(&task, &devws, &home, &mut UsageReader::new(Duration::ZERO)).unwrap();
+        let row = |id: &str| board_view::Entry::text(id.into(), id.into(), "details".into(), true);
+        let entries = vec![row("leader-asks")];
+        let mut ui = Interaction::new(View::Overview);
+        ui.nav.reconcile(&entries);
+        let press = |ui: &mut Interaction, code| ui.key(code, &board, &entries, 10);
+
+        press(&mut ui, KeyCode::Enter);
+        assert!(ui.nav.detail);
+        press(&mut ui, KeyCode::Enter);
+        assert_eq!(ui.nav.compose.as_deref(), Some(""), "Enter starts writing");
+        assert_eq!(
+            press(&mut ui, KeyCode::Enter),
+            Action::None,
+            "nothing written, nothing sent"
+        );
+        press(&mut ui, KeyCode::Char(' '));
+        assert_eq!(
+            press(&mut ui, KeyCode::Enter),
+            Action::None,
+            "blanks are nothing"
+        );
+        assert_eq!(ui.nav.compose.as_deref(), Some(" "), "still writing");
+        press(&mut ui, KeyCode::Esc);
+
+        ui.paste("yes to 1\nand 3", &entries);
+        assert_eq!(
+            ui.nav.compose.as_deref(),
+            Some("yes to 1 and 3"),
+            "a paste starts it"
+        );
+        assert_eq!(
+            press(&mut ui, KeyCode::Enter),
+            Action::TellLeader {
+                about: crate::leader::About::General,
+                text: "yes to 1 and 3".into()
+            }
+        );
+
+        let size = Rect::new(0, 0, 80, 30);
+        let drawn = ui.screen(&board, &entries, size.width, size.height, None).1;
+        ui.map = drawn;
+        let input = ui.map.input.expect("the dialog has its message box");
+        ui.click(input.x + 1, input.y + 1, &entries);
+        assert_eq!(
+            ui.nav.compose.as_deref(),
+            Some(""),
+            "a click in the box starts writing"
+        );
+        assert!(ui.nav.detail, "and keeps the details open");
     }
 
     #[test]
