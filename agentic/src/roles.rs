@@ -226,7 +226,7 @@ struct FrontMatter {
 const FENCE: &str = "+++";
 
 /// A role file: a TOML block between `+++` lines, then the instructions.
-fn parse(name: &str, text: &str, source: Source, origin: &str) -> Result<Role> {
+pub(crate) fn parse(name: &str, text: &str, source: Source, origin: &str) -> Result<Role> {
     let rest = text
         .strip_prefix(FENCE)
         .and_then(|rest| rest.strip_prefix('\n'))
@@ -505,6 +505,7 @@ pub fn provision_specialists(home: &Home) -> Result<()> {
             include_str!("../roles/samples/code-reviewer.md"),
             reviewer_standards.as_str(),
         ),
+        ("infra", include_str!("../roles/samples/infra.md"), ""),
     ] {
         let path = folder.join(format!("{name}.md"));
         match fs::OpenOptions::new()

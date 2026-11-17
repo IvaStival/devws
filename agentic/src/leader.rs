@@ -205,9 +205,17 @@ pub fn request_switch(
     };
     anyhow::ensure!(
         task.state()?.workflow != crate::execution::Workflow::Reviewed
+            || task.state()?.codex_team
             || devws.agent_kind(&other.agent)? == crate::agent_args::Kind::Claude,
         "reviewed coordinator switching requires a supported MCP-only adapter; Codex is not enabled for this workflow"
     );
+    if !crate::accounts::is_enabled(&task.state()?, &other.agent) {
+        bail!(
+            "{} is turned off for this task: the leader stays on {}",
+            other.agent,
+            program(&now)
+        );
+    }
     if let Some(out) = run_out(devws, &other.agent)? {
         bail!(
             "{} has used {out}: the leader stays on {}",
@@ -234,6 +242,100 @@ pub fn request_switch(
         "The leader moves to {} once its turn is over.",
         program(&other)
     ))
+}
+
+/// What a message from the board is about: the row whose details it was
+/// written in.
+#[derive(Clone, Debug, PartialEq)]
+pub enum About {
+    /// The leader's own details.
+    General,
+    Step(String),
+    Permission(String),
+    Question(String),
+    Agent(String),
+}
+
+/// What the user writes to the leader from the board's details dialog, with
+/// where its subject stands, so the leader needs nothing else. It is the
+/// user's answer too: a leader waiting for them is woken.
+pub fn tell(task: &Task, about: &About, text: &str) -> Result<()> {
+    let text = text.trim();
+    anyhow::ensure!(!text.is_empty(), "write something for the leader first");
+    task.transaction(|tx| {
+        let state = &tx.state;
+        let (message, subject) = match about {
+            About::General => (format!("The user says: {text}"), None),
+            About::Step(id) => {
+                let found = state
+                    .steps
+                    .iter()
+                    .find(|candidate| candidate.id == *id)
+                    .with_context(|| format!("there is no step {id}"))?;
+                let status = serde_json::to_value(found.status)?
+                    .as_str()
+                    .unwrap_or_default()
+                    .replace('_', " ");
+                (
+                    format!(
+                        "The user, about step {id} ({status} · {} attempts): {text}",
+                        found.attempts
+                    ),
+                    Some(format!("step {id}")),
+                )
+            }
+            About::Permission(id) => {
+                let found = state
+                    .permissions
+                    .iter()
+                    .find(|candidate| candidate.id == *id)
+                    .with_context(|| format!("there is no permission request {id}"))?;
+                let action = found.arguments["action"]
+                    .as_str()
+                    .map(|action| format!(" {action}"))
+                    .unwrap_or_default();
+                let status = serde_json::to_value(found.status)?
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                (
+                    format!(
+                        "The user, about permission {id} ({}{action}, {status}): {text}",
+                        found.tool
+                    ),
+                    Some(format!("permission {id}")),
+                )
+            }
+            About::Question(id) => {
+                let found = state
+                    .questions
+                    .iter()
+                    .find(|candidate| candidate.id == *id)
+                    .with_context(|| format!("there is no question {id}"))?;
+                let asked: String = found.text.chars().take(80).collect();
+                (
+                    format!(
+                        "The user, about question {id} ({} → {}: {asked}): {text}",
+                        found.from, found.to
+                    ),
+                    Some(format!("question {id}")),
+                )
+            }
+            About::Agent(id) => (
+                format!("The user, about agent {id}: {text}"),
+                Some(format!("agent {id}")),
+            ),
+        };
+        let step = match about {
+            About::Step(id) => Some(id.clone()),
+            _ => None,
+        };
+        tx.state.say(crate::state::LEADER, message);
+        tx.state.leader_wait = crate::state::LeaderWait::No;
+        let about = subject.map(|subject| format!(" about {subject}")).unwrap_or_default();
+        tx.log(Kind::Review, None, step.as_deref(), &format!("the user told the leader{about}"));
+        Ok(())
+    })
 }
 
 /// Whether a move was asked for and not made yet: the board then looks every
@@ -278,6 +380,9 @@ pub fn hand_over(
     let Some((now, other)) = now_and_other(&role, &state) else {
         return Ok(None);
     };
+    if !crate::accounts::is_enabled(&state, &other.agent) {
+        return Ok(None);
+    }
     if state.workflow == crate::execution::Workflow::Reviewed
         && devws.agent_kind(&other.agent)? != crate::agent_args::Kind::Claude
     {
@@ -680,6 +785,104 @@ mod tests {
             None,
             "only once"
         );
+    }
+
+    #[test]
+    fn what_the_user_writes_on_the_board_reaches_the_leader_with_its_step() {
+        let dir = TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = team(&dir, 40, 14);
+        task.transaction(|tx| {
+            tx.state.steps.push(crate::state::Step {
+                id: "B1-1-AT".into(),
+                title: "Registry tests".into(),
+                status: crate::state::StepStatus::Blocked,
+                attempts: 6,
+                spec: None,
+                review_since: None,
+            });
+            tx.state.leader_wait = crate::state::LeaderWait::Shown;
+            Ok(())
+        })
+        .unwrap();
+
+        tell(&task, &About::Step("B1-1-AT".into()), "  accept it if the checkpoint passed ").unwrap();
+        tell(&task, &About::General, "pause the floor").unwrap();
+
+        let state = task.state().unwrap();
+        let said: Vec<_> = state
+            .queue
+            .iter()
+            .filter(|message| message.to == crate::state::LEADER)
+            .map(|message| message.text.as_str())
+            .collect();
+        assert!(said.contains(&"The user, about step B1-1-AT (blocked · 6 attempts): accept it if the checkpoint passed"), "{said:?}");
+        assert!(said.contains(&"The user says: pause the floor"), "{said:?}");
+        assert_eq!(state.leader_wait, crate::state::LeaderWait::No, "the user answered");
+        assert!(task.log_lines().unwrap().iter().any(|line| line.contains("the user told the leader about step B1-1-AT")));
+        assert!(tell(&task, &About::General, "   ").is_err(), "an empty message");
+        assert!(tell(&task, &About::Step("nope".into()), "x").is_err(), "an unknown step");
+    }
+
+    #[test]
+    fn a_message_from_needs_you_carries_what_it_is_about() {
+        let dir = TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = team(&dir, 40, 14);
+        task.transaction(|tx| {
+            tx.state.permissions.push(crate::state::PermissionRequest {
+                id: "p32".into(),
+                tool: "application_workflow".into(),
+                arguments: serde_json::json!({"action": "runner_configure"}),
+                effect: crate::state::Effect::External,
+                status: crate::state::PermissionStatus::Pending,
+            });
+            tx.state.questions.push(crate::state::Question {
+                id: "q7".into(),
+                from: "hammer-5".into(),
+                to: crate::state::LEADER.into(),
+                order: "o1".into(),
+                text: "Which manifest path?".into(),
+                answer: None,
+            });
+            Ok(())
+        })
+        .unwrap();
+        tell(&task, &About::Permission("p32".into()), "deny it: p33 applied it").unwrap();
+        tell(&task, &About::Question("q7".into()), "the one in the plan").unwrap();
+        tell(&task, &About::Agent("hammer-5".into()), "let it finish").unwrap();
+        let said: Vec<String> = task
+            .state()
+            .unwrap()
+            .queue
+            .iter()
+            .filter(|message| message.to == crate::state::LEADER)
+            .map(|message| message.text.clone())
+            .collect();
+        assert!(said.iter().any(|text| text == "The user, about permission p32 (application_workflow runner_configure, pending): deny it: p33 applied it"), "{said:?}");
+        assert!(said.iter().any(|text| text == "The user, about question q7 (hammer-5 → leader: Which manifest path?): the one in the plan"), "{said:?}");
+        assert!(said.iter().any(|text| text == "The user, about agent hammer-5: let it finish"), "{said:?}");
+        assert!(tell(&task, &About::Permission("p99".into()), "x").is_err());
+    }
+
+    #[test]
+    fn the_leader_never_moves_to_an_account_the_user_turned_off() {
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, _repo) = team(&dir, 40, 14);
+        task.transaction(|tx| {
+            tx.state.disabled_accounts.insert("codex".into());
+            Ok(())
+        })
+        .unwrap();
+        let message = format!(
+            "{:#}",
+            request_switch(&home, &task, &devws, None).err().unwrap()
+        );
+        assert_eq!(
+            message,
+            "codex is turned off for this task: the leader stays on claude"
+        );
+        // Run out, the leader would move on its own; not to an account that is off.
+        devws.set_limits("claude", five_hour(99));
+        assert_eq!(hand_over(&home, &task, &devws, "d").unwrap(), None);
     }
 
     #[test]

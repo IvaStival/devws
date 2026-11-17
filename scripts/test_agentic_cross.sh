@@ -35,9 +35,13 @@ fail() {
 ok() { printf 'ok  %s\n' "$*"; }
 
 mkdir -p "$ROOT/bin" "$ROOT/home/.tmuxinator" "$ROOT/started" "$ROOT/repo"
+# The panes' shells are not login shells: with the test's empty HOME, a login
+# shell gets only /etc/profile's PATH (on Linux, no Homebrew tmux and none of
+# the stubs). A plain one keeps the PATH of whoever started the server.
+printf 'set -g default-command "exec bash --noprofile --norc"\n' > "$ROOT/tmux.conf"
 cat > "$ROOT/bin/tmux" <<EOF
 #!/usr/bin/env bash
-exec "$REAL_TMUX" -L "$SOCKET" -f /dev/null "\$@"
+exec "$REAL_TMUX" -L "$SOCKET" -f "$ROOT/tmux.conf" "\$@"
 EOF
 for program in claude codex nvim fzf; do
   cat > "$ROOT/bin/$program" <<EOF
@@ -140,7 +144,7 @@ case "$reply" in *"queued for planner-1"*) ;; *) fail "send_order: $reply" ;; es
 typed_in() { tmux capture-pane -p -J -t "$pane" | grep -q "$1"; }
 wait_until typed_in 'ORDER o1' || fail "the order did not reach the pane: $(tmux capture-pane -p -t "$pane")"
 wait_until typed_in 'Write the plan' || fail "the order's text is missing in the pane"
-wait_until typed_in 'devagentics report done' || fail "the order's report instruction is missing in the pane"
+wait_until typed_in 'devagentics report done --order o1' || fail "the order's report instruction is missing in the pane"
 ok "the order was typed into the planner's real pane, whole"
 
 # 5. The senior's execution plan, accepted by the CTO; a hammer gets a step of

@@ -196,7 +196,7 @@ test_changes_are_found_by_snapshot() {
   real="$(cd "$repo" && pwd -P)"
   index_before="$(shasum < "$repo/.git/index")"
   changes snapshot "$repo/src" pane-1 || fail "the snapshot failed"
-  sed -i '' 's/^three$/THREE/' "$repo/a.txt"
+  perl -pi -e 's/^three$/THREE/' "$repo/a.txt"
   printf 'added\n' >> "$repo/b.txt"
   printf 'new\nfile\n' > "$repo/src/c.txt"
   printf 'changed\n' > "$repo/ignored/z.txt"
@@ -207,7 +207,7 @@ test_changes_are_found_by_snapshot() {
   [ -z "$(changes changes "$repo" pane-1)" ] || fail "changes were reported twice for one snapshot"
   # Deleted lines are marked where they were.
   changes snapshot "$repo" pane-1
-  sed -i '' '/^four$/d' "$repo/a.txt"
+  perl -ni -e 'print unless /^four$/' "$repo/a.txt"
   [ "$(changes changes "$repo" pane-1)" = "$(printf '%s\t3\t3' "$real/a.txt")" ] ||
     fail "a deletion is not marked where it was: $(changes changes "$repo" pane-1)"
   # Outside a git project nothing is found, and nothing fails.
@@ -263,7 +263,7 @@ test_a_shell_edit_is_followed_and_marked() {
     repo="$(new_repo)"
     start_editor
     tool_call "$agent" pre "$tool" "$repo"
-    sed -i '' 's/^three$/THREE/' "$repo/a.txt"
+    perl -pi -e 's/^three$/THREE/' "$repo/a.txt"
     sleep 0.1
     printf 'added\n' >> "$repo/b.txt"
     tool_call "$agent" "" "$tool" "$repo"
@@ -281,7 +281,7 @@ test_a_shell_edit_is_followed_and_marked() {
   start_editor
   tmux set-option -t work @devws_follow off
   tool_call claude pre Bash "$repo"
-  sed -i '' 's/^one$/ONE/' "$repo/a.txt"
+  perl -pi -e 's/^one$/ONE/' "$repo/a.txt"
   tool_call claude "" Bash "$repo"
   sleep 1
   [ "$(current_location)" = ":1" ] || fail "following off still showed a shell edit: $(current_location)"

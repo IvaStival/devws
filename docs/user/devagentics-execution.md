@@ -30,7 +30,7 @@ Claude in the same way. The default Codex alternative is `gpt-6.1-sol` at medium
 effort; the default Claude alternative uses its default model at high effort.
 Fallback keeps the worker's role, lane and queued assignment.
 
-Accounts at 85% or more of their week or five-hour allowance receive no new
+Accounts at 95% or more of their week or five-hour allowance receive no new
 workers unless you explicitly approve the task override described below. Explicit provider or model rejection during the opening turn also
 tries an alternative. A worker already doing an order is not automatically
 interrupted or moved.
@@ -183,7 +183,8 @@ Done reports use the same runner. Passing named evidence can be reused only for 
 
 ## Continue above the worker percentage threshold
 
-When both compatible accounts reach 85% of their weekly or five-hour allowance,
+When every compatible account the task may use reaches 95% of its weekly or
+five-hour allowance, or is switched off for the task,
 the leader shows their usage and asks whether it may continue using workers for
 this task. Say yes to allow workers above that threshold, or no to keep the guard.
 Approving the plan does not grant this separate permission.
@@ -214,6 +215,40 @@ scoped devAgentics MCP catalog enabled. Codex remains available for legacy teams
 reviewed startup skips unsupported worker adapters and tries compatible
 alternatives. An unsupported coordinator switch is refused.
 
+Codex can run the read-only code reviewers, so a second model reviews what
+the first wrote. It is off by default, because Codex cannot turn its own shell
+off: in its read-only sandbox it cannot write, but it can read files on the
+host. To allow it for one task:
+
+```sh
+devagentics task codex-reviewers <task> on    # off returns them to Claude
+```
+
+Reviewers started from then on (from the `code-reviewer` role, whose program
+is Codex) run `codex exec` without your Codex config or rules, with the
+worker tools as their only MCP server, in their read-only review snapshot.
+Their conversation continues across turns. Writers and the leader always run
+on Claude. Without the opt-in, a Codex reviewer falls back to Claude.
+`application_workflow` `status` shows the reviewer adapter in use.
+
+The whole team, leader included, can run on Codex too, when you accept
+weaker isolation for that task:
+
+```sh
+devagentics task codex-team <task> on     # off: writers and the leader on Claude again
+```
+
+Workers then start on their Codex candidate (Claude stays behind it as a
+fallback). A writer's `codex exec` turns run in Codex's workspace-write sandbox
+in its own runner snapshot: it can write only there (not `/tmp`, not the rest
+of your home), with no network; checks and tests still run in the isolated
+container. A reviewer's are read-only. The leader runs interactive Codex in
+the read-only sandbox without approval prompts, with the leader tools as its
+only pre-approved tools; restart it to move it (`devagentics task start
+<folder> --leader codex`, then `devws agent run <pane> codex --agent-args
+<file>`). What Codex cannot do is turn its own shell off: every Codex agent
+can read files on the host.
+
 ### Prepare the isolated tool environment
 
 Inspect available local images and project facts through the leader's
@@ -221,6 +256,42 @@ Inspect available local images and project facts through the leader's
 local image containing the required runtimes and offline dependencies. Images
 are pinned by their full `sha256:` ID; the runner never pulls an image or changes
 the Docker daemon configuration automatically.
+
+The runner uses only a **rootless** Docker daemon of your own, never a root or
+shared one, so a host's other containers (production ones included) stay out of
+its reach. By default that is `$XDG_RUNTIME_DIR/docker.sock`; set the runner
+configuration's `docker_host` (`unix://…`) to pin another rootless socket.
+Every Docker command it runs goes to that socket whatever `DOCKER_HOST` or your
+current Docker context say, and configuring or using the runner is refused when
+the daemon there does not report itself as rootless. Set one up with
+`dockerd-rootless-setuptool.sh install`. Its containers need the systemd
+cgroup driver with your user's cpu, memory, pids and io controllers delegated,
+so the runner's resource limits are enforced (once, as root, a
+`/etc/systemd/system/user@.service.d/delegate.conf` with
+`Delegate=cpu io memory pids`, then `systemctl daemon-reload` and a restart of
+your `user@<uid>.service`). Containers run as the rootless daemon's root, which
+is you on the host, without capabilities.
+
+Two more runner settings fit a project's toolchain:
+
+- `image_mounts` mounts folders of the image read-only inside the workspace,
+  for dependencies the project keeps untracked: the snapshot holds tracked
+  source only and the container has no network. For example
+  `[{"path": "/node_modules", "target": "web/node_modules"}]` with an image
+  that ran `npm ci` at `/`. A mount may not hide tracked source.
+- `memory_mb` (128–8192, default 512) and `cpus` (1–4, default 1) size each
+  container. A TypeScript check or a Next.js build needs about 2048 MiB.
+
+A build that fetches from the network (Next's `next/font/google`, for one)
+cannot pass in the runner; vendor what it fetches (`next/font/local`) or leave
+it out of the reviewed checks.
+
+If every container fails with "Interactive authentication required", runc did
+not learn your host user: it reads the `OwnerUID=` line of `busctl --user
+--no-pager status`, which some systemd versions (Debian 12's 252) do not
+print, and then asks the system manager instead. A `busctl` wrapper ahead of
+it in `docker.service`'s `PATH` (a user drop-in) that adds
+`OwnerUID=$ROOTLESSKIT_PARENT_EUID` to that one query fixes it.
 
 Configure the image, source paths, protected paths and timeout using a JSON file:
 
@@ -239,9 +310,43 @@ Configure the image, source paths, protected paths and timeout using a JSON file
 devagentics workflow <task> runner_configure --input-file runner.json
 ```
 
-Through MCP, `runner_configure` is an external action requiring the exact-call
-approval flow. The configuration is checked with a disposable container before
-it becomes active. Declare narrow source roots appropriate to your project;
+Through MCP, the leader decides `runner_configure` on its own. Only a change of
+`docker_host`, another Docker daemon, uses the exact-call approval flow. Every
+image is checked with a disposable container before the configuration becomes
+active.
+
+### A lane with its own image and checks
+
+A project whose parts need different toolchains (a PHP backend beside a Node
+frontend) gives a lane its own image. The runner configuration's `lanes` maps
+a lane to `{"image": "sha256:…", "image_mounts": [...]}`, and that lane's
+commands, checks, candidate checks and checkpoints run in it. Its checks are
+named like the repo's, under the check configuration's `lanes`:
+
+```json
+{"lanes": {"back": {"test": {"command": "cd backend && php artisan test", "environment": "testing"}}}}
+```
+
+In the back lane, `test` runs that command. Its other profiles and the other
+lanes keep the repo's. A milestone runs every lane's own checks too. A change
+that only adds or edits a lane's image waits for that lane's workers alone;
+the other lanes keep working.
+
+### Images the team builds
+
+An `infra` senior (a provisioned role) builds the images a lane needs. It
+writes a Dockerfile, and devAgentics builds it (`image_build`) on your
+rootless daemon:
+- the build context holds only the repo's tracked files that the request
+  names;
+- the build has network, for package downloads;
+- it is capped at 4 GB of memory, 2 CPUs and 30 minutes;
+- it is tagged `devws-runner/<repo>:<name>`.
+
+The infra senior then runs each check command in the new image (`image_try`),
+with no network and the source read-only, and reports the image ID, its
+`image_mounts` and the commands. The leader puts them in the runner and in
+the checks without asking you. Declare narrow source roots appropriate to your project;
 broad whole-project globs are rejected. Use explicit migration source paths when
 needed while keeping existing database files protected.
 
@@ -263,7 +368,9 @@ host/database shell to either workers or the reviewed coordinator.
 
 Have the planner interview you in grilling rounds: currently answerable questions,
 recommendations, recorded answers and unresolved dependencies. Its scoped tools
-include `plan_proposal` and `ask_user`; only the leader records your approval.
+include `plan_proposal`, `plan_amend` (only the changes for the next revision),
+`application_read` (the baseline as an outline, or chosen items in full) and
+`ask_user`; only the leader records your approval.
 The baseline covers the known application before implementation staffing:
 scopes, applicable backend/frontend/data work, interfaces, dependencies, tests,
 acceptance criteria, required check definitions and milestones.
@@ -272,16 +379,32 @@ Inspect or submit the baseline through CLI or the equivalent leader tool:
 
 ```bash
 devagentics workflow <task> status
+devagentics workflow <task> status --input '{"section":"application","items":["S01-B01"]}'
 devagentics workflow <task> propose --input-file baseline-proposal.json
+devagentics workflow <task> amend --input-file changes.json
 devagentics workflow <task> answer --input '{"question":"Q1","answer":"Use milestone releases"}'
 devagentics workflow <task> confirm --input '{"revision":1}'
 devagentics workflow <task> approve --input '{"revision":1}'
 ```
 
+`status` gives the baseline and the proposal as outlines (each item's title,
+scope, role, lane and dependencies), so it stays small enough for an agent's
+tool call. `section` returns one part in full (`runner`, `ready_work`,
+`reviews`, …), and `items` the full contracts of the items named. `amend`
+takes `{"reason": …, "changes": {…}}` with only what changes, by id:
+`items`, `milestones`, `scopes` and `check_configuration` (`null` removes an
+entry), `decisions` (replacing the one with the same id), `goal` and
+`non_goals`. It builds on the pending proposal, so amendments add up, and is
+checked and approved like any proposal.
+
 The proposal file contains `application` and `reason`. Every implementation item
 specifies its scope, specialist, repository, lane, dependencies, file scope,
 reuse references, interfaces, behavior/errors, tests, named profiles, acceptance,
-open questions, data effects and standards version (`1`). Required profile
+open questions, data effects and standards version (`1`). An item may name
+`protected_tests` (globs): the acceptance tests that judge it. They come from an
+item of their own with `writes_tests: true`, which the implementation must
+depend on, and every order for the implementation forbids them, so it can read
+but not change the tests it is judged by. Required profile
 definitions are captured in `check_configuration` for your review. Missing fields,
 path escapes, unresolved decisions and cyclic dependencies cannot become ready.
 
@@ -309,12 +432,19 @@ use `preflight_retry` with `item` to request another attempt.
 
 Managed worker panels have no editable model prompt. A supervisor consumes their
 queued messages through piped provider turns and retains conversation context
-between healthy turns. Source commands, checkpoints, authoritative checks and
+between healthy turns. The panel draws each turn for reading: a header with the
+agent, program, model, effort and order; the agent's messages as formatted
+markdown; one line per tool call with a green ✓ or a red ✕ and its reason;
+commands; and a footer with the time and tokens. Each turn's raw provider
+lines are kept in `workers/<agent>/control/turns.jsonl`. Source commands, checkpoints, authoritative checks and
 reports use the worker-only tools. Read-only reviewers cannot checkpoint code,
 authorize actions or merge.
 
 The leader reads `leader_inbox` and acknowledges handled IDs with `inbox_ack`.
-Reviewed coordination never pastes a message into your prompt. Existing legacy
+Reviewed coordination never pastes a message's text into your prompt. When the
+leader's turn is over and a message arrived since its last nudge, the board types
+the fixed line `Check your inbox and continue.` so the team keeps moving without
+you. Existing legacy
 terminal delivery is unchanged until explicit adoption.
 
 After the specialist reports passing checks, request independent review with
@@ -325,6 +455,30 @@ evidence; changed inputs invalidate it. Only leader acceptance integrates the
 approved candidate. Divergent lane catch-up is blocked rather than inventing
 unreviewed conflict-resolution code. Resolve it through a reviewed assignment.
 
+Each lane passes its own checks, but two lanes can break each other once
+merged. Name a fast build/smoke set as the repo's `candidate` profiles:
+
+```json
+{"checks": {"smoke": {"command": "make build smoke", "environment": "testing"}},
+ "environments": {"testing": {}}, "selected": ["unit"], "candidate": ["smoke"]}
+```
+
+`review_request` then runs them on the merge candidate (the lane's work merged
+with the task's branch) in a disposable runner snapshot before the reviewer is
+asked. A failing candidate fails the step as an integration defect, and the
+leader orders a correction. A passing result is bound to the review: the merge,
+acceptance and recovery require it to be current, and a changed candidate or
+candidate configuration needs a fresh review. Without candidate profiles,
+`application_workflow` `status` warns that merges are first tested together at
+the milestone check.
+
+A step gets the task's `max_attempts` (5, in `task.toml`) in all: orders, and
+reviews that ask for changes. When they are used, devAgentics waits 15 minutes
+and allows one more attempt on its own. If that one fails too, the step is
+**failed** (a red ✕ under NEEDS YOU), orders and review requests are refused,
+and the leader escalates to you; `devagentics task attempts <task> <step>
+<limit>` allows that step more and starts the retry over.
+
 Required checks run in the isolated source environment. Use image-local runtimes
 and dependencies; network downloads and host secret sources are unavailable.
 Database tests must use explicitly disposable data in the isolated environment,
@@ -332,6 +486,32 @@ not an existing host/service database. The runner does not silently skip a
 required test or substitute a weaker gate. Matching authoritative evidence is
 reused when reporting unchanged work. Structured test counts use a separate
 bounded artifact, so large console logs cannot hide required skipped tests.
+
+### Code graph (pilot)
+
+A code graph lets the leader and workers look up a symbol's definition,
+callers and callees instead of grepping, which helps plans name real
+interfaces and reviews catch callers in other lanes. It is
+[Graphify](https://github.com/Graphify-Labs/graphify), run code only: no LLM
+backend, no query log, no network (in a network namespace where the system
+allows one), with its own `HOME`. devAgentics builds the graph of a repo's
+tracked source per commit into the task folder (`graphs/<repo>/<tree>/`),
+never into the project, and with a runner, only from what the runner lets
+agents read. A graph is never reused for other code.
+
+```sh
+devagentics task graph <task> on      # off to stop
+```
+
+It is off by default. Turning it on checks that Graphify runs, from
+`DEVAGENTICS_GRAPHIFY` or the pinned install at
+`~/.local/share/devagentics/graphify` (a venv of `graphifyy`, double y; other
+`graphify*` packages are unaffiliated). The leader's `graph` tool asks about a
+repo's task branch; a worker's `graph` action asks about its lane, and a
+reviewer's about the candidate it reviews. `explain` takes a name or
+`path::name` and lists candidates for an ambiguous one; `path` takes two;
+`query` is a bounded search. `devagentics bench` counts the queries, so a
+series with the graph on can be compared with one without.
 
 ### Milestones, recovery and existing tasks
 

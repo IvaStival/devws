@@ -14,9 +14,11 @@ use crate::status;
 use crate::task::Task;
 use crate::team::Team;
 use crate::watch::format_line;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
+use std::ffi::OsString;
 use std::io::{BufRead, Write};
+use std::path::{Path, PathBuf};
 
 /// What a client without a preference is told.
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -44,7 +46,7 @@ fn tools() -> Vec<Value> {
     let mut tools = vec![
         tool(
             "application_workflow",
-            "Project application planning. Actions: status, propose, answer, confirm, approve, milestones, preview_adoption, adopt, review_request, provision_roles, runner_configure, recover_turn, validate_milestone, leader_inbox, inbox_ack, runner_images, project_overview, preflight_retry. provision_roles changes managed storage outside the project and requires exact-call external authorization. Only record confirm/approve after the user's explicit answer for that exact revision. Material proposals never inherit approval. Preview is read-only; runner enforcement may block adoption.",
+            "Project application planning. Actions: status (an outline; input.section for one part in full, e.g. runner; section application or proposal with input.items [ids] for those full contracts), propose (input.application: the whole next revision), amend (input.changes: only what changes in the next revision, by id, null removes; input.reason), answer, confirm, approve, milestones, preview_adoption, adopt, review_request, provision_roles, runner_configure (input.configuration; its lanes: {lane: {image, image_mounts}} give a lane its own image), image_build (input: name, dockerfile, context_files, repo; builds a runner image on the user's rootless Docker and returns its ID), recover_turn, validate_milestone, leader_inbox, inbox_ack, runner_images, project_overview, preflight_retry. provision_roles changes managed storage outside the project and requires exact-call external authorization; so does a runner_configure that changes docker_host. Other runner changes and image builds are yours to decide. Only record confirm/approve after the user's explicit answer for that exact revision. Material proposals never inherit approval. Preview is read-only; runner enforcement may block adoption.",
             json!({"action":text("Workflow action"),"input":{"type":"object"}}),
             &["action"],
         ),
@@ -146,6 +148,19 @@ fn tools() -> Vec<Value> {
             &["agent", "step", "title", "text"],
         ),
         tool(
+            "graph",
+            "Ask the code graph (when the user turned it on for the task) about a repo at its task branch: action=explain with symbol (where it is defined, what calls it and what it calls; an ambiguous name lists its candidates: retry with path::symbol), path with from and to (how one reaches the other), or query with question (a bounded search). Use it for reuse, interfaces, callers and the impact of a change before planning or accepting work.",
+            json!({
+                "action": text("explain, path or query"),
+                "symbol": text("For explain: a name, or path::name"),
+                "from": text("For path: the first symbol"),
+                "to": text("For path: the second symbol"),
+                "question": text("For query: a question about the code"),
+                "repo": text("The repo (default: the task's first)")
+            }),
+            &["action"],
+        ),
+        tool(
             "read_plan",
             "A senior's execution plan for a step it was ordered. Read it before you accept that step: accepting it approves the plan for the factory floor.",
             json!({ "step": text("The senior's step") }),
@@ -237,6 +252,7 @@ fn effect(name: &str) -> Option<Effect> {
         | "approve_plan"
         | "add_lane"
         | "send_order"
+        | "graph"
         | "read_plan"
         | "answer_question"
         | "accept_step"
@@ -291,11 +307,42 @@ fn strings(arguments: &Value, key: &str) -> Result<Vec<String>> {
 }
 
 impl Server<'_> {
-    /// Answers requests from `input` until it ends.
-    pub fn serve(&self, input: impl BufRead, mut output: impl Write) -> Result<()> {
+    /// Answers requests from `input` until it ends. Once a reinstall has
+    /// replaced this binary, the installed one answers instead, so the
+    /// leader never runs old tools until its next start.
+    pub fn serve(&self, input: impl BufRead, output: impl Write) -> Result<()> {
+        let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
+        self.serve_with(input, output, || {
+            let running = std::env::current_exe().ok()?;
+            let binary = crate::executable::replacement(&running)?;
+            Some((binary, arguments.clone()))
+        })
+    }
+
+    fn serve_with(
+        &self,
+        input: impl BufRead,
+        mut output: impl Write,
+        replacement: impl Fn() -> Option<(PathBuf, Vec<OsString>)>,
+    ) -> Result<()> {
+        let mut announced = false;
         for line in input.lines() {
             let line = line?;
             if line.trim().is_empty() {
+                continue;
+            }
+            if let Some((binary, arguments)) = replacement() {
+                if !announced {
+                    // The client reloads the tools, so it sees the new ones.
+                    writeln!(
+                        output,
+                        "{}",
+                        json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+                    )?;
+                    announced = true;
+                }
+                output.write_all(&relayed(&binary, &arguments, &line))?;
+                output.flush()?;
                 continue;
             }
             let response = match serde_json::from_str::<Value>(&line) {
@@ -319,7 +366,7 @@ impl Server<'_> {
                 id,
                 json!({
                     "protocolVersion": request["params"]["protocolVersion"].as_str().unwrap_or(PROTOCOL_VERSION),
-                    "capabilities": { "tools": {} },
+                    "capabilities": { "tools": { "listChanged": true } },
                     "serverInfo": { "name": "devagentics", "version": env!("CARGO_PKG_VERSION") },
                 }),
             ),
@@ -327,7 +374,9 @@ impl Server<'_> {
             "tools/list" => success(id, json!({ "tools": tools() })),
             "tools/call" => {
                 let name = request["params"]["name"].as_str().unwrap_or("");
-                let result = self.call(name, &request["params"]["arguments"]);
+                let result = self
+                    .call(name, &request["params"]["arguments"])
+                    .and_then(|text| fitting(name, text));
                 success(
                     id,
                     match result {
@@ -357,12 +406,7 @@ impl Server<'_> {
             return self.authorize_action(arguments);
         }
         validate_required(name, arguments)?;
-        if name == "application_workflow"
-            && matches!(
-                arguments["action"].as_str(),
-                Some("provision_roles" | "runner_configure")
-            )
-        {
+        if name == "application_workflow" && self.leaves_project(arguments)? {
             return self.authorized_call(name, arguments, Effect::External);
         }
         if let Some(effect) = effect(name) {
@@ -371,6 +415,28 @@ impl Server<'_> {
             }
         }
         self.call_inner(name, arguments)
+    }
+
+    /// Whether an `application_workflow` call reaches outside the project:
+    /// provisioning roles writes devAgentics' home, and a runner change that
+    /// moves to another Docker daemon leaves the user's own. Every other
+    /// runner change stays inside the bounds its validation keeps (local
+    /// image IDs, capped memory and CPUs, image folders, no network): the
+    /// leader decides it.
+    fn leaves_project(&self, arguments: &Value) -> Result<bool> {
+        Ok(match arguments["action"].as_str() {
+            Some("provision_roles") => true,
+            Some("runner_configure") => {
+                let requested = arguments["input"]["configuration"]["docker_host"].as_str();
+                let current = self
+                    .task
+                    .state()?
+                    .runner
+                    .and_then(|runner| runner.docker_host);
+                requested != current.as_deref()
+            }
+            _ => false,
+        })
     }
 
     fn authorized_call(&self, name: &str, arguments: &Value, effect: Effect) -> Result<String> {
@@ -476,12 +542,12 @@ impl Server<'_> {
 
     fn call_inner(&self, name: &str, arguments: &Value) -> Result<String> {
         match name {
-            "application_workflow" => Ok(serde_json::to_string_pretty(&crate::workflow::call(
+            "application_workflow" => Ok(serde_json::to_string(&crate::workflow::call(
                 self.task,
                 &string(arguments, "action")?,
                 arguments.get("input").unwrap_or(&json!({})),
             )?)?),
-            "task_status" => Ok(serde_json::to_string_pretty(&status::summary(
+            "task_status" => Ok(serde_json::to_string(&status::summary(
                 self.task, self.devws, self.home,
             )?)?),
             "approve_plan" => {
@@ -550,7 +616,9 @@ impl Server<'_> {
                 Ok("Paused.".into())
             }
             "resume_task" => {
-                let restarted = self.team().resume()?;
+                let restarted = self
+                    .team()
+                    .resume_from(std::env::var("TMUX_PANE").ok().as_deref())?;
                 Ok(format!("Resumed; restarted: {}", restarted.join(", ")))
             }
             "configure_checks" => {
@@ -596,6 +664,22 @@ impl Server<'_> {
                 ))
             }
             "read_plan" => crate::plans::read(self.task, &string(arguments, "step")?),
+            "graph" => {
+                let config = self.task.config()?;
+                let repo = match arguments["repo"].as_str() {
+                    Some(name) => config.repos.iter().find(|repo| repo.name == name),
+                    None => config.repos.first(),
+                }
+                .context("unknown repo")?;
+                let head = crate::checks::head(&repo.worktree)?;
+                crate::graph::answer(
+                    &crate::graph::Graphify::from_env()?,
+                    self.task,
+                    repo,
+                    &head,
+                    arguments,
+                )
+            }
             "answer_question" => crate::questions::answer(
                 self.task,
                 crate::questions::Answerer::Leader,
@@ -683,6 +767,7 @@ impl Server<'_> {
     fn escalate(&self, question: &str) -> Result<String> {
         self.task.transaction(|tx| {
             tx.log(Kind::Escalate, Some(LEADER), None, question);
+            tx.state.leader_wait = crate::state::LeaderWait::Asked;
             Ok(())
         })?;
         if let Some(pane) = self
@@ -693,6 +778,58 @@ impl Server<'_> {
         }
         Ok("The user will see you need them. Put the question to them in your reply, with the options, and stop.".to_string())
     }
+}
+
+/// One request line answered by a fresh `binary` server with `arguments`:
+/// a request carries all it needs, so nothing is lost between servers. When
+/// that server cannot answer, the request gets the reason.
+fn relayed(binary: &Path, arguments: &[OsString], line: &str) -> Vec<u8> {
+    let answer = (|| -> Result<Vec<u8>> {
+        let mut child = std::process::Command::new(binary)
+            .args(arguments)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .with_context(|| format!("starting the installed devagentics at {}", binary.display()))?;
+        child
+            .stdin
+            .take()
+            .context("no input to the installed devagentics")?
+            .write_all(format!("{line}\n").as_bytes())?;
+        let output = child.wait_with_output()?;
+        ensure!(
+            output.status.success(),
+            "the installed devagentics at {} failed ({})",
+            binary.display(),
+            output.status
+        );
+        Ok(output.stdout)
+    })();
+    answer.unwrap_or_else(|error| {
+        let id = serde_json::from_str::<Value>(line)
+            .ok()
+            .and_then(|request| request.get("id").cloned());
+        match id {
+            Some(id) => format!("{}\n", failure(id, -32603, &format!("{error:#}"))).into_bytes(),
+            None => Vec::new(),
+        }
+    })
+}
+
+/// The most a tool result may hold: past it Claude Code saves the result to
+/// a file, which an MCP-only leader cannot open.
+const MAX_RESULT_CHARS: usize = 80_000;
+
+/// A result too big for the leader becomes what to ask for instead.
+fn fitting(name: &str, text: String) -> Result<String> {
+    let size = text.chars().count();
+    ensure!(
+        size <= MAX_RESULT_CHARS,
+        "{name}'s result is {} KB, more than your tools take in ({} KB). Ask for less: application_workflow status takes section (runner, ready_work, reviews, …) and, for application or proposal, items [ids].",
+        size / 1000,
+        MAX_RESULT_CHARS / 1000
+    );
+    Ok(text)
 }
 
 fn success(id: Value, result: Value) -> Value {
@@ -760,6 +897,59 @@ mod tests {
     }
 
     #[test]
+    fn a_replaced_server_hands_each_request_to_the_installed_binary() {
+        let f = fixture();
+        let folder = TempDir::new().unwrap();
+        let installed = folder.path().join("devagentics");
+        // The installed binary stands in as an echo: its answer is the request.
+        std::fs::write(&installed, "#!/bin/sh\ncat\n").unwrap();
+        std::fs::set_permissions(&installed, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let requests = "{\"id\":1,\"method\":\"tools/list\"}\n{\"id\":2,\"method\":\"ping\"}\n";
+        let mut output = Vec::new();
+        f.server()
+            .serve_with(Cursor::new(requests), &mut output, || {
+                Some((installed.clone(), vec!["mcp".into(), "feat-x".into()]))
+            })
+            .unwrap();
+        let lines: Vec<&str> = std::str::from_utf8(&output).unwrap().lines().collect();
+        assert_eq!(
+            lines,
+            [
+                r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#,
+                r#"{"id":1,"method":"tools/list"}"#,
+                r#"{"id":2,"method":"ping"}"#,
+            ],
+            "the tools reload once, then every answer is the installed one's"
+        );
+
+        let missing = relayed(&folder.path().join("gone"), &[], r#"{"id":5,"method":"ping"}"#);
+        let answer: Value = serde_json::from_slice(&missing).unwrap();
+        assert_eq!(answer["id"], 5);
+        assert!(answer["error"]["message"].as_str().unwrap().contains("starting the installed devagentics"));
+        assert!(relayed(&folder.path().join("gone"), &[], r#"{"method":"note"}"#).is_empty(), "a notification gets no answer");
+    }
+
+    #[test]
+    fn a_current_server_answers_itself() {
+        let f = fixture();
+        let mut output = Vec::new();
+        f.server()
+            .serve_with(Cursor::new("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}\n"), &mut output, || None)
+            .unwrap();
+        let answer: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(answer["id"], 3);
+        assert_eq!(answer["result"], json!({}));
+    }
+
+    #[test]
+    fn a_result_too_big_for_the_leader_says_what_to_ask_for() {
+        let error = fitting("task_status", "x".repeat(MAX_RESULT_CHARS + 1)).unwrap_err().to_string();
+        assert!(error.contains("80 KB"), "{error}");
+        assert!(error.contains("section"), "{error}");
+        assert_eq!(fitting("task_status", "small".into()).unwrap(), "small");
+    }
+
+    #[test]
     fn it_introduces_itself_and_echoes_the_clients_protocol_version() {
         let f = fixture();
         let response = f.server().handle(&json!({ "jsonrpc": "2.0", "id": 7, "method": "initialize", "params": { "protocolVersion": "2025-03-26" } })).unwrap();
@@ -803,6 +993,7 @@ mod tests {
                 "add_lane",
                 "add_repo",
                 "send_order",
+                "graph",
                 "read_plan",
                 "answer_question",
                 "accept_step",
@@ -887,6 +1078,15 @@ mod tests {
     }
 
     #[test]
+    fn the_leader_asks_the_code_graph_only_when_the_user_turned_it_on() {
+        let f = fixture();
+        let (failed, text) = f.call("graph", json!({"action": "explain", "symbol": "app"}));
+        assert!(failed && text.contains("devagentics task graph"), "{text}");
+        let (failed, text) = f.call("graph", json!({"action": "explain", "repo": "nope"}));
+        assert!(failed && text.contains("unknown repo"), "{text}");
+    }
+
+    #[test]
     fn a_tool_that_fails_answers_with_its_reason_not_a_protocol_error() {
         let f = fixture();
         let (failed, text) = f.call("spawn_agent", json!({ "role": "executor" }));
@@ -920,7 +1120,7 @@ mod tests {
                 account,
                 crate::devws::Limits {
                     week: None,
-                    five_hour: Some(85),
+                    five_hour: Some(95),
                 },
             );
         }
@@ -1012,6 +1212,36 @@ mod tests {
             failed && text.contains("not authorized or has already been used"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn runner_changes_are_the_leaders_unless_they_change_the_docker_daemon() {
+        let f = fixture();
+        let configure = |docker_host: Value| {
+            json!({"action": "runner_configure", "input": {"configuration": {
+                "image": format!("sha256:{}", "a".repeat(64)),
+                "source_paths": ["src/**"], "protected_paths": [], "timeout_seconds": 60,
+                "docker_host": docker_host,
+            }}})
+        };
+        let (_, text) = f.call("application_workflow", configure(Value::Null));
+        assert!(!text.contains("No action was taken"), "{text}");
+        assert!(
+            f.task.state().unwrap().permissions.is_empty(),
+            "the leader decides"
+        );
+
+        let (failed, text) = f.call(
+            "application_workflow",
+            configure(json!("unix:///run/other/docker.sock")),
+        );
+        assert!(!failed && text.contains("No action was taken"), "{text}");
+        let (failed, text) = f.call(
+            "application_workflow",
+            json!({"action": "provision_roles", "input": {"approved_storage": true}}),
+        );
+        assert!(!failed && text.contains("No action was taken"), "{text}");
+        assert_eq!(f.task.state().unwrap().permissions.len(), 2);
     }
 
     #[test]
@@ -1120,6 +1350,11 @@ mod tests {
             "{text}"
         );
         assert!(f.devws.calls().contains(&"mark %1 waiting".to_string()));
+        assert_eq!(
+            f.task.state().unwrap().leader_wait,
+            crate::state::LeaderWait::Asked,
+            "the mark would not outlive the leader's turn"
+        );
         assert!(f.task.log_lines().unwrap().iter().any(
             |line| line.contains("\"kind\":\"escalate\"") && line.contains("Keep the old API?")
         ));

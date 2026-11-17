@@ -86,6 +86,68 @@ builds left out).
   that already has one opens it again. Same as `devws worktree <branch>`.
 - **⌂ Open folder in…**: the workspace's folder in Finder, Zed or VS Code.
 
+## The system monitor
+
+**▤ System monitor** (Workspace tab of the menu) opens one workspace for the
+machine, `dev-system`, at once: the sidebar,
+[btop](https://github.com/aristocratos/btop) (processes, CPU, memory, disks,
+network) across the top, and under it a log pane beside
+[lazydocker](https://github.com/jesseduffield/lazydocker) (containers,
+images, their logs).
+
+Once it is open, the log pane asks which log to follow, in a box inside the
+pane, and has the focus: only the log pane waits for the answer, while btop,
+lazydocker and the sidebar work as usual (click or move to them, then back).
+
+The list:
+
+- the logs you followed before, then the `*.log` files under `/var/log` and
+  the open workspaces' folders;
+- **⌕ Search files…**: every file under `~` and `/var/log`, to find by name;
+- **✎ Type a path…**: any file (Tab completes).
+
+Esc in the list follows the log it followed last time. The pane runs
+`tail -n 200 -F <file>`; **Ctrl-C** stops it and asks again, with
+**✎ Edit the command** first: another file, more lines, a filter
+(`tail -F /var/log/syslog | grep -i error`). Enter runs the edit and keeps
+it. Choosing **System monitor** while it is open takes you to it. The command
+is remembered, so after a restart the system workspace comes back following
+the same log, without asking.
+
+btop and lazydocker come with `./install.sh --deps`; a pane whose tool is
+missing says so, and one you quit (`q`) waits for Enter to start it again.
+
+## Templates
+
+A workspace of your own making, kept to open again on any folder (the
+Templates tab of the menu):
+
+- **□ New empty workspace** asks nothing: it opens at once in your home
+  folder, as `empty` (`empty-2`, … when that one is open), with the sidebar
+  and one shell. Split it
+  (**▣ New panel**, or tmux's own keys), run in each pane what it is for, and
+  arrange them.
+- **⤓ Save as template** keeps the workspace you are in as a template, under
+  the name you give: its layout and, for each pane, what runs in it: a shell
+  stays a shell, a program you started in one (`npm run dev`, `htop`…) is
+  started again, in the same folder under the workspace's. devws's own panes
+  (the sidebar, an editor, an agent) start as devws starts them. A workspace
+  opened from a template follows the one you save it as.
+- **▶ Open a template** lists devws's own templates first (the folder
+  workspace, the system monitor, an agent team, the empty workspace), each
+  opening as its own menu action does, then the ones you saved, which open
+  on a folder you choose, under a name you choose.
+- **✎ Edit a template** opens its file in your editor (`$EDITOR`, Neovim
+  otherwise). A pane is one line under `panes:`; change its command freely.
+  A pane more or fewer needs the `layout:` to match: arrange the workspace
+  and save it again instead.
+- **× Delete a template** removes it; workspaces opened from it stay open.
+
+Templates are tmuxinator files in `~/.tmuxinator/templates/<name>.yml`. A
+workspace opened from one, or an empty one, comes back from its template
+after a restart (no agent conversation to resume). `blank`, `dev`, `system`
+and `agentic` are devws's own templates' names.
+
 ## Closing and leaving
 
 - **× Close workspace** closes the workspace you choose. Closing the one you
@@ -108,7 +170,15 @@ builds left out).
 
 ## The sidebar
 
-Each open workspace shows its folder, branch, agent and editor:
+The open workspaces are listed in sections, each shown only when it has one:
+
+- **SYSTEM**: the [system monitor](#the-system-monitor), with the log command
+  it follows in place of an agent and editor;
+- **WORKSPACES**: your dev workspaces, and the tasks a program groups;
+- **TEAMS**: the [agent teams](agentic.md), each with its task, groups and
+  agents.
+
+Each dev workspace shows its folder, branch, agent and editor:
 
 - dark grey: the workspace you are in; lighter grey: the selected row;
 - yellow `●`: uncommitted or untracked changes; green `✓`: clean;
@@ -119,8 +189,8 @@ Each open workspace shows its folder, branch, agent and editor:
 - `· paused`: frozen while unused (below).
 
 Workspaces a program groups under a task (`devws open --task`, [Commands](commands.md#for-programs-agent-commands))
-come after the others, under a `▸ <task>` heading; `Enter` on the heading goes
-to the task's first workspace.
+come after the others in **WORKSPACES**, under a `▸ <task>` heading; `Enter` on
+the heading goes to the task's first workspace.
 
 **☰ Menu** at its top opens the devws menu. `devws menu toggle` (or
 `open`/`close`) shows or hides it.

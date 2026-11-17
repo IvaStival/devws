@@ -14,7 +14,8 @@
 #                                         pasted, not typed line by line. Exit 3 "busy (<state>)" when it
 #                                         works or waits on you, 4 when the
 #                                         pane is gone. --force sends anyway.
-#   agent_cli.sh mark <pane> waiting|done sets the agent's state as its hooks
+#   agent_cli.sh mark <pane> working|waiting|done
+#                                         sets the agent's state as its hooks
 #                                         would: the sidebar and the
 #                                         notification react
 #   agent_cli.sh usage <pane>             what the agent used: "<input> <output>
@@ -147,13 +148,15 @@ send() {
 
 mark() {
   local pane state session
-  [ "$#" -eq 2 ] || usage_fail "usage: devws agent mark <pane> waiting|done"
+  [ "$#" -eq 2 ] || usage_fail "usage: devws agent mark <pane> working|waiting|done"
   pane="$1"
   state="$2"
   require_pane "$pane"
+  # working too: a managed devAgentics worker runs its provider with hooks
+  # off, so its supervisor reports for it.
   case "$state" in
-    waiting | done) ;;
-    *) usage_fail "mark sets waiting or done, not: $state" ;;
+    working | waiting | done) ;;
+    *) usage_fail "mark sets working, waiting or done, not: $state" ;;
   esac
   pane_exists "$pane" || code=4 fail "$pane is gone"
   session="$(pane_session "$pane")"
@@ -230,6 +233,17 @@ run() {
 kind() {
   [ "$#" -eq 1 ] || usage_fail "usage: devws agent kind <agent>"
   agent_kind "$1" 2>/dev/null || fail "unknown agent: $1 (register it in the devws menu)"
+}
+
+# "<name> <kind>" for each registered agent, in the registry's order; a name
+# with no program is left out.
+accounts() {
+  [ "$#" -eq 0 ] || usage_fail "usage: devws agent accounts"
+  local name kind
+  for name in ${DEVWS_AGENTS:-claude codex}; do
+    kind="$(agent_kind "$name" 2>/dev/null)" || continue
+    printf '%s %s\n' "$name" "$kind"
+  done
 }
 
 # How long a Claude status line's reading stands in when Anthropic cannot be
@@ -335,9 +349,10 @@ case "$command" in
   limits) limits "$@" ;;
   usage) usage "$@" ;;
   kind) kind "$@" ;;
+  accounts) accounts "$@" ;;
   go | peek)
     [ "$#" -eq 1 ] || usage_fail "usage: devws agent $command <pane>"
     exec "$script_dir/team_groups.sh" "$command" "$1"
     ;;
-  *) usage_fail "usage: devws agent state|send|mark|stop|interrupt|spawn|run|limits|usage|kind|go|peek …" ;;
+  *) usage_fail "usage: devws agent state|send|mark|stop|interrupt|spawn|run|limits|usage|kind|accounts|go|peek …" ;;
 esac

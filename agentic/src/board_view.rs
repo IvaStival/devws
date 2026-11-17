@@ -1,7 +1,9 @@
 //! Pure board navigation and rendering. Stable row identities keep a refresh
 //! from moving the user's focus to a different agent or task.
 
-use crate::board::{AgentRow, Board, PermissionRow, RoleRow, SpecRow, StaleReview, StepRow};
+use crate::board::{
+    AgentRow, Board, PermissionRow, Progress, RoleRow, SpecRow, StaleReview, StepRow,
+};
 use crate::devws::{PaneState, Usage};
 use crate::roles::Group;
 use crate::state::StepStatus;
@@ -13,6 +15,8 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Widget, Wrap};
 
 const TITLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 const DIM: Style = Style::new().fg(Color::DarkGray);
+/// A NEEDS YOU row the user already opened or answered.
+const SEEN: Style = Style::new().fg(Color::Indexed(245));
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 const HEADING: Style = Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD);
 /// Every Overview card is drawn in one color, so the sections read as one
@@ -76,6 +80,19 @@ pub struct Entry {
     /// How the label is colored: consecutive runs of its characters, each in
     /// a tone. Empty means the whole label in the row's style.
     pub parts: Vec<(usize, Tone)>,
+    /// For a NEEDS YOU row: whether the user already opened or answered it.
+    pub seen: Seen,
+}
+
+/// What the user did with a NEEDS YOU row (`seen.rs` keeps it).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Seen {
+    #[default]
+    New,
+    /// Its details were opened.
+    Opened,
+    /// The user wrote to the leader from it.
+    Told,
 }
 
 /// The color of a run of a row's label, laid over the row's own style so a
@@ -89,6 +106,8 @@ pub enum Tone {
     Muted,
     /// A state mark (`✓`, `⠋`, `⚠`), in the color of what it says.
     Mark,
+    /// Something that is on: an account's switch.
+    On,
 }
 
 impl Entry {
@@ -102,6 +121,7 @@ impl Entry {
             kind: Kind::Row,
             tail: String::new(),
             parts: Vec::new(),
+            seen: Seen::New,
         }
     }
 
@@ -115,6 +135,7 @@ impl Entry {
             kind,
             tail: String::new(),
             parts: Vec::new(),
+            seen: Seen::New,
         }
     }
 
@@ -173,6 +194,9 @@ pub struct ScreenMap {
     pub tabs: Vec<(u16, std::ops::Range<u16>, View)>,
     /// The open dialog's area.
     pub dialog: Option<Rect>,
+    /// Its "To the leader" box, when it takes a message: a click there
+    /// starts writing.
+    pub input: Option<Rect>,
 }
 
 impl ScreenMap {
@@ -212,6 +236,10 @@ pub struct Navigation {
     pub detail: bool,
     pub detail_scroll: u16,
     pub expanded: bool,
+    /// What the user is writing to the leader in the open details.
+    pub compose: Option<String>,
+    /// The last one was sent: the details say so until the next key.
+    pub sent: bool,
 }
 
 impl Navigation {
@@ -223,6 +251,8 @@ impl Navigation {
             detail: false,
             detail_scroll: 0,
             expanded: false,
+            compose: None,
+            sent: false,
         }
     }
 
@@ -306,10 +336,11 @@ fn step_word(status: StepStatus) -> &'static str {
     match status {
         StepStatus::Ordered => "ordered",
         StepStatus::Reported => "to review",
-        StepStatus::Failed => "failed",
+        StepStatus::Failed => "check failed",
         StepStatus::Blocked => "blocked",
         StepStatus::Rejected => "sent back",
         StepStatus::Accepted => "accepted",
+        StepStatus::Exhausted => "failed",
     }
 }
 
@@ -320,6 +351,7 @@ fn step_mark(status: StepStatus) -> char {
         StepStatus::Ordered => '⠋',
         StepStatus::Reported => '●',
         StepStatus::Failed | StepStatus::Blocked | StepStatus::Rejected => '⚠',
+        StepStatus::Exhausted => '✕',
     }
 }
 
@@ -348,13 +380,12 @@ fn step_entry(board: &Board, step: &StepRow) -> Entry {
     .with_tail(step_word(step.status))
 }
 
-/// A review the leader left: under NEEDS YOU, for you to tell the leader, so
-/// it says whose it is, and how long it has waited when that is known.
+/// A review the leader left, in LEADER BACKLOG: how long it has waited when
+/// that is known, its state otherwise.
 fn stale_entry(board: &Board, review: &StaleReview) -> Entry {
     let step = &review.step;
     let entry = step_entry(board, step).toned(vec![
         (format!("{} ", step_mark(step.status)), Tone::Mark),
-        ("leader hasn't reviewed ".into(), Tone::Plain),
         (format!("{}  ", step.id), Tone::Muted),
         (step.title.clone(), Tone::Plain),
     ]);
@@ -379,6 +410,49 @@ fn waited(seconds: u64) -> String {
 
 /// A team row: `1  executor-1       claude`, the name standing out from its
 /// number and program.
+/// The ACCOUNTS card: a switch for each registered account, Space on its row
+/// turns it on or off for this task.
+fn account_entries(board: &Board) -> Vec<Entry> {
+    if board.switches.is_empty() {
+        return Vec::new();
+    }
+    let mut entries = vec![
+        Entry::gap("accounts"),
+        Entry::section("ACCOUNTS", None).with_tail("space on/off"),
+    ];
+    for switch in &board.switches {
+        let (pill, tone, name_tone, word) = if switch.enabled {
+            ("[━━● on ]", Tone::On, Tone::Strong, "on")
+        } else {
+            ("[○━━ off]", Tone::Muted, Tone::Muted, "off")
+        };
+        let percent = |used: Option<u32>| used.map_or("  -".to_string(), |used| format!("{used:>2}%"));
+        let usage = format!("5h {}  wk {}", percent(switch.five_hour), percent(switch.week));
+        let detail = format!(
+            "{} is {word} for this task: {}\nSpace turns it {}.",
+            switch.name,
+            if switch.enabled {
+                "new agents may start on it."
+            } else {
+                "no new agent starts on it; agents already on it keep running."
+            },
+            if switch.enabled { "off" } else { "on" }
+        );
+        let entry = Entry::text(format!("account:{}", switch.name), String::new(), detail, false)
+            .toned(vec![
+                (format!("{pill}  "), tone),
+                (format!("{:<13}", switch.name), name_tone),
+                (usage, Tone::Muted),
+            ]);
+        entries.push(if switch.leader_on && !switch.enabled {
+            entry.with_tail("leader still on it")
+        } else {
+            entry
+        });
+    }
+    entries
+}
+
 fn member_label(mark: &str, name: &str, program: &str) -> Vec<(String, Tone)> {
     vec![
         (format!("{mark}  "), Tone::Muted),
@@ -413,6 +487,7 @@ fn agent_entry(board: &Board, role: &RoleRow, agent: &AgentRow, label: String) -
         kind: Kind::Row,
         tail: String::new(),
         parts: Vec::new(),
+        seen: Seen::New,
     }
 }
 
@@ -537,6 +612,20 @@ fn permission_entry(permission: &PermissionRow) -> Entry {
 
 /// What Enter on the leader's row shows: how it runs, what it may do, where
 /// the task stands and which of its calls wait for you.
+/// `codex on · claude off`, or how to see them when devws listed none.
+fn account_summary(board: &Board) -> String {
+    if board.switches.is_empty() {
+        return "none registered in devws".into();
+    }
+    board
+        .switches
+        .iter()
+        .map(|switch| format!("{} {}", switch.name, if switch.enabled { "on" } else { "off" }))
+        .collect::<Vec<_>>()
+        .join(" · ")
+        + " (switch them in the ACCOUNTS card)"
+}
+
 fn leader_detail(board: &Board) -> String {
     let pane = match (&board.leader_pane, board.leader_state) {
         (Some(pane), Some(state)) => format!("{pane} · {}", state_word(state)),
@@ -545,10 +634,11 @@ fn leader_detail(board: &Board) -> String {
     };
     let yes_no = |value: bool| if value { "yes" } else { "no" };
     let mut text = format!(
-        "The leader: {}\nYou talk to it in its pane.\n\nPane: {pane}\nPermissions: {}\nFallback: {}\nPlan approved: {}\nPaused: {}\nPending permissions: ",
+        "The leader: {}\nYou talk to it in its pane.\n\nPane: {pane}\nPermissions: {}\nFallback: {}\nAccounts: {}\nPlan approved: {}\nPaused: {}\nPending permissions: ",
         board.leader,
         board.leader_permissions,
         board.leader_fallback.as_deref().unwrap_or("none"),
+        account_summary(board),
         yes_no(board.approved),
         yes_no(board.paused),
     );
@@ -586,6 +676,13 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
             true,
         ));
     }
+    if let Some(question) = &board.leader_question {
+        let label = format!("leader asks: {question}");
+        needs_you.push(
+            Entry::text("leader-asks".into(), String::new(), question.clone(), true)
+                .toned(vec![("● ".into(), Tone::Mark), (label, Tone::Plain)]),
+        );
+    }
     for question in &board.questions {
         let id = question.split_whitespace().next().unwrap_or(question);
         needs_you.push(
@@ -602,8 +699,14 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
         );
     }
     needs_you.extend(board.permissions.iter().map(permission_entry));
-    for review in &board.stale_review {
-        needs_you.push(stale_entry(board, review));
+    for step in board
+        .steps
+        .iter()
+        .filter(|step| step.status == StepStatus::Exhausted)
+    {
+        let mut entry = step_entry(board, step);
+        entry.id = format!("failed:{}", step.id);
+        needs_you.push(entry);
     }
     let agents = board
         .roles
@@ -669,6 +772,21 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
             for step in &board.leader_review {
                 entries.push(step_entry(board, step));
             }
+        }
+        // What the leader left: still its work, so out of NEEDS YOU; a
+        // message from its details reminds the leader.
+        if group == Group::Cto && !board.stale_review.is_empty() {
+            entries.push(Entry::gap("leader-backlog"));
+            entries.push(Entry::section(
+                "LEADER BACKLOG",
+                Some(board.stale_review.len()),
+            ));
+            for review in &board.stale_review {
+                entries.push(stale_entry(board, review));
+            }
+        }
+        if group == Group::Cto {
+            entries.extend(account_entries(board));
         }
     }
     if !board.queue.is_empty() {
@@ -967,6 +1085,7 @@ fn tone_style(tone: Tone, text: &str) -> Style {
         Tone::Mark => {
             mark_color(text.chars().next()).map_or(Style::new(), |color| Style::new().fg(color))
         }
+        Tone::On => BOLD.fg(Color::Green),
     }
 }
 
@@ -1040,12 +1159,24 @@ fn entry_line(entry: &Entry, selected: bool, area: Rect, buffer: &mut Buffer) {
         Style::new()
             .bg(Color::DarkGray)
             .add_modifier(Modifier::BOLD)
-    } else if entry.attention {
+    } else if entry.attention && entry.seen == Seen::New {
         Style::new().fg(Color::Yellow)
+    } else if entry.attention {
+        // Already opened or answered: still there, no longer calling.
+        SEEN
     } else {
         Style::default()
     };
     let prefix = if selected { "▸ " } else { "  " };
+    if entry.seen == Seen::Told {
+        let mut told = entry.clone();
+        told.tail = match entry.tail.as_str() {
+            "" => "✉ told".into(),
+            tail => format!("✉ {tail}"),
+        };
+        row_line(prefix, &told, style, None, area, buffer);
+        return;
+    }
     row_line(prefix, entry, style, None, area, buffer);
 }
 
@@ -1306,12 +1437,18 @@ fn limit(label: &str, used: Option<u32>) -> Vec<Span<'static>> {
     ]
 }
 
-/// What needs you: questions, leader calls to approve, reviews the leader
-/// left, agents waiting or gone, and a dispatcher that cannot work.
+/// What needs you, the rows of NEEDS YOU: the leader's question and the
+/// agents', leader calls to approve, failed steps, agents waiting or gone,
+/// and a dispatcher that cannot work.
 fn attention(board: &Board, problem: Option<&str>) -> usize {
-    board.questions.len()
+    usize::from(board.leader_question.is_some())
+        + board.questions.len()
         + board.permissions.len()
-        + board.stale_review.len()
+        + board
+            .steps
+            .iter()
+            .filter(|step| step.status == StepStatus::Exhausted)
+            .count()
         + board
             .roles
             .iter()
@@ -1368,10 +1505,18 @@ fn header(
     };
     rows.push(Line::from(tabs));
 
-    let total = board.steps.len() as u32;
-    let done = board.done.len() as u32;
+    let Progress {
+        done,
+        total,
+        helpers,
+    } = board.progress;
     let percent = (done * 100).checked_div(total).unwrap_or(0);
-    let summary = format!(" {done}/{total} · {percent}% · {}", board.phase);
+    let helpers = if helpers > 0 {
+        format!(" · +{helpers} helper steps")
+    } else {
+        String::new()
+    };
+    let summary = format!(" {done}/{total} · {percent}%{helpers} · {}", board.phase);
     let cells = width
         .saturating_sub(11 + summary.chars().count())
         .clamp(4, 40);
@@ -1615,16 +1760,108 @@ pub fn screen_map(
                 .then(|| map.rows.iter().find(|(_, index)| *index == nav.index))
                 .flatten()
                 .map(|(y, _)| *y);
-            map.dialog = Some(draw_dialog(
+            let message = match (&nav.compose, message_about(&entry.id)) {
+                (Some(text), Some(_)) => Message::Writing(text),
+                (None, Some(_)) if nav.sent => Message::Sent,
+                (None, Some(_)) => Message::Offered,
+                (_, None) => Message::None,
+            };
+            let area = draw_dialog(
                 &mut buffer,
                 &entry.label,
                 &entry.detail,
                 nav.detail_scroll,
                 selected_y,
-            ));
+                message,
+            );
+            map.dialog = Some(area);
+            map.input = input_area(area, message != Message::None);
         }
     }
     (buffer, map)
+}
+
+/// What the user may write to the leader from a dialog, and how far along.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Message<'a> {
+    /// The dialog takes no message.
+    None,
+    /// It takes one: `m` starts it.
+    Offered,
+    Writing(&'a str),
+    Sent,
+}
+
+/// Whose details take a message for the leader, and what it is about: the
+/// leader's own, its question to you, a step's, and every row of NEEDS YOU. `None`: no message.
+pub fn message_about(id: &str) -> Option<crate::leader::About> {
+    use crate::leader::About;
+    if id == "leader" || id == "leader-asks" {
+        return Some(About::General);
+    }
+    let (kind, name) = id.split_once(':')?;
+    let name = name.to_string();
+    match kind {
+        "step" | "failed" => Some(About::Step(name)),
+        "permission" => Some(About::Permission(name)),
+        "question" => Some(About::Question(name)),
+        "attention" => Some(About::Agent(name)),
+        _ => None,
+    }
+}
+
+/// The rows a dialog's input box takes: its two borders and its line.
+const INPUT_ROWS: u16 = 3;
+
+/// The dialog's last row: what to press.
+fn hint_line(message: Message, width: usize) -> Line<'static> {
+    const PLAIN: [&str; 5] = [
+        "Esc/q close · ↑↓ scroll · PgUp/PgDn page · Home/End",
+        "Esc/q close · ↑↓ scroll · PgUp/PgDn",
+        "Esc/q close · ↑↓ scroll",
+        "Esc/q close",
+        "Esc/q",
+    ];
+    let fitting = |hints: &[&str]| {
+        hints
+            .iter()
+            .find(|hint| Line::raw(**hint).width() <= width)
+            .copied()
+            .unwrap_or("")
+            .to_string()
+    };
+    match message {
+        Message::Writing(_) => Line::styled(fitting(&["Enter send · Esc cancel", "Enter · Esc"]), DIM),
+        Message::Sent => Line::from(vec![
+            Span::styled("Sent to the leader ✓", Style::new().fg(Color::Green)),
+            Span::styled(" · Esc/q close", DIM),
+        ]),
+        Message::None | Message::Offered => Line::styled(fitting(&PLAIN), DIM),
+    }
+}
+
+/// The input box over the hint row: the message being written, its end and
+/// the cursor in view, or how to start one.
+fn draw_input(buffer: &mut Buffer, area: Rect, message: Message) {
+    let writing = matches!(message, Message::Writing(_));
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(if writing { Style::new().fg(Color::Cyan) } else { DIM })
+        .title(Line::styled(" To the leader ", if writing { BOLD } else { DIM }));
+    let inner = block.inner(area);
+    block.render(area, buffer);
+    let room = usize::from(inner.width).saturating_sub(1);
+    let line = match message {
+        Message::Writing(text) => {
+            let skip = text.chars().count().saturating_sub(room);
+            Line::from(vec![
+                Span::raw(text.chars().skip(skip).collect::<String>()),
+                Span::styled("▏", BOLD),
+            ])
+        }
+        _ => Line::styled("Enter, m or a click to write · Enter sends it", DIM),
+    };
+    line.render(inner, buffer);
 }
 
 /// The most a dialog takes: the pane less a margin.
@@ -1655,18 +1892,19 @@ fn dialog_text_area(inner: Rect) -> Rect {
 /// to the pane less a margin. It opens just below the row at `anchor`, or
 /// above it when there is no room below, so the details show where you
 /// looked; without a row (the help) it is centered.
-fn dialog_area(content: &str, width: u16, height: u16, anchor: Option<u16>) -> Rect {
+fn dialog_area(content: &str, width: u16, height: u16, anchor: Option<u16>, input: bool) -> Rect {
     let bounds = dialog_bounds(width, height);
     let text_width = dialog_text_area(Block::bordered().inner(bounds)).width;
     if text_width == 0 {
         return bounds;
     }
-    let lines = Paragraph::new(content)
+    let lines = Paragraph::new(crate::details_view::text(content))
         .wrap(Wrap { trim: false })
         .line_count(text_width)
         .max(1);
-    // Two borders and the hint row.
-    let wanted = (lines + 3).min(bounds.height as usize) as u16;
+    // Two borders and the hint row, and the input box when there is one.
+    let input_rows = if input { usize::from(INPUT_ROWS) } else { 0 };
+    let wanted = (lines + 3 + input_rows).min(bounds.height as usize) as u16;
     let y = match anchor {
         Some(row) if row + 1 + wanted <= bounds.bottom() => row + 1,
         Some(row) if row >= bounds.y + wanted => row - wanted,
@@ -1680,10 +1918,16 @@ fn dialog_area(content: &str, width: u16, height: u16, anchor: Option<u16>) -> R
 
 /// The text area of a dialog at `area`, less the hint row when there is room
 /// for text too.
-fn dialog_body_of(area: Rect) -> Rect {
+fn dialog_body_of(area: Rect, input: bool) -> Rect {
     let text = dialog_text_area(Block::bordered().inner(area));
+    let hint = u16::from(text.height >= 2);
+    let input = if input && text.height > INPUT_ROWS + hint {
+        INPUT_ROWS
+    } else {
+        0
+    };
     Rect {
-        height: text.height.saturating_sub(u16::from(text.height >= 2)),
+        height: text.height.saturating_sub(hint + input),
         ..text
     }
 }
@@ -1691,16 +1935,16 @@ fn dialog_body_of(area: Rect) -> Rect {
 /// Shared by rendering and input so wrapping, page movement and End agree,
 /// including after a resize. Leave a hint row when there is room for text too.
 /// Its height does not depend on where the dialog opens.
-pub fn dialog_body(content: &str, width: u16, height: u16) -> Rect {
-    dialog_body_of(dialog_area(content, width, height, None))
+pub fn dialog_body(content: &str, width: u16, height: u16, input: bool) -> Rect {
+    dialog_body_of(dialog_area(content, width, height, None, input), input)
 }
 
-pub fn dialog_scroll_max(content: &str, width: u16, height: u16) -> u16 {
-    let body = dialog_body(content, width, height);
+pub fn dialog_scroll_max(content: &str, width: u16, height: u16, input: bool) -> u16 {
+    let body = dialog_body(content, width, height, input);
     if body.width == 0 || body.height == 0 {
         return 0;
     }
-    Paragraph::new(content)
+    Paragraph::new(crate::details_view::text(content))
         .wrap(Wrap { trim: false })
         .line_count(body.width)
         .saturating_sub(body.height as usize)
@@ -1715,10 +1959,12 @@ pub fn draw_dialog(
     content: &str,
     scroll: u16,
     anchor: Option<u16>,
+    message: Message,
 ) -> Rect {
     let width = buffer.area.width;
     let height = buffer.area.height;
-    let area = dialog_area(content, width, height, anchor);
+    let input = message != Message::None;
+    let area = dialog_area(content, width, height, anchor, input);
     if area.is_empty() {
         return area;
     }
@@ -1730,30 +1976,36 @@ pub fn draw_dialog(
         .title(Line::styled(format!(" {title} "), TITLE));
     let inner = block.inner(area);
     block.render(area, buffer);
-    let body = dialog_body_of(area);
+    let body = dialog_body_of(area, input);
     if !body.is_empty() {
-        Paragraph::new(content)
+        Paragraph::new(crate::details_view::text(content))
             .wrap(Wrap { trim: false })
-            .scroll((scroll.min(dialog_scroll_max(content, width, height)), 0))
+            .scroll((scroll.min(dialog_scroll_max(content, width, height, input)), 0))
             .render(body, buffer);
     }
     if inner.height >= 2 {
-        let hints = [
-            "Esc/q close · ↑↓ scroll · PgUp/PgDn page · Home/End",
-            "Esc/q close · ↑↓ scroll · PgUp/PgDn",
-            "Esc/q close · ↑↓ scroll",
-            "Esc/q close",
-            "Esc/q",
-        ];
-        let hint = hints
-            .iter()
-            .find(|hint| Line::raw(**hint).width() <= body.width as usize)
-            .copied()
-            .unwrap_or("");
-        Line::styled(hint, DIM)
+        hint_line(message, body.width as usize)
             .render(Rect::new(body.x, inner.bottom() - 1, body.width, 1), buffer);
+        if let Some(box_area) = input_area(area, input) {
+            draw_input(buffer, box_area, message);
+        }
     }
     area
+}
+
+/// Where a dialog at `area` draws its "To the leader" box; None when it takes
+/// no message or has no room for it.
+pub fn input_area(area: Rect, input: bool) -> Option<Rect> {
+    let inner = Block::bordered().inner(area);
+    let body = dialog_body_of(area, input);
+    (input && inner.height >= 2 && body.bottom() + INPUT_ROWS < inner.bottom()).then(|| {
+        Rect::new(
+            body.x,
+            inner.bottom() - 1 - INPUT_ROWS,
+            body.width,
+            INPUT_ROWS,
+        )
+    })
 }
 
 pub fn plain(buffer: &Buffer) -> String {

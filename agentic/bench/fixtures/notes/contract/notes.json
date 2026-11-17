@@ -1,0 +1,4 @@
+{
+  "note": {"id": "integer, assigned by the API, from 1", "title": "non-empty string", "body": "string"},
+  "errors": {"invalid_note": 400, "not_found": 404}
+}

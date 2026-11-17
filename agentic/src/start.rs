@@ -109,10 +109,22 @@ pub fn write_leader_args(
     };
     agent_args::write_mcp_config(&mcp)?;
     let first_message = opening(leader, &config, "the leader", &config.repos[0], first);
-    let arguments = if task.state()?.workflow == crate::execution::Workflow::Reviewed {
+    let state = task.state()?;
+    let arguments = if state.workflow == crate::execution::Workflow::Reviewed
+        && kind == crate::agent_args::Kind::Codex
+        && state.codex_team
+    {
+        crate::worker_tools::codex_leader_arguments(
+            command,
+            &config.id,
+            &first_message,
+            leader.model.as_deref(),
+            leader.effort.as_deref(),
+        )
+    } else if state.workflow == crate::execution::Workflow::Reviewed {
         anyhow::ensure!(
             kind == crate::agent_args::Kind::Claude,
-            "reviewed coordinator requires the verified Claude MCP-only adapter; unsafe provider switching is blocked"
+            "reviewed coordinator requires the verified Claude MCP-only adapter (or the user's `devagentics task codex-team <task> on`); unsafe provider switching is blocked"
         );
         crate::worker_tools::leader_arguments(
             &mcp.config_file,
@@ -232,6 +244,7 @@ pub fn start_task_with_workflow(
                     branch: branch.clone(),
                     workspace: session_name(&folder),
                     max_agents: 3,
+                    max_attempts: crate::task::DEFAULT_MAX_ATTEMPTS,
                     check_profiles: Default::default(),
                     repos: vec![repo.clone()],
                     lanes: Vec::new(),
@@ -274,6 +287,7 @@ pub fn start_task_with_workflow(
         (None, _) => leader::choose(role, devws)?,
     };
     if task.state()?.workflow == crate::execution::Workflow::Reviewed
+        && !task.state()?.codex_team
         && pick.is_none()
         && devws.agent_kind(&leader.agent)? != crate::agent_args::Kind::Claude
         && devws.agent_kind(&role.agent)? == crate::agent_args::Kind::Claude

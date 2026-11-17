@@ -58,10 +58,13 @@ case "${1:-} ${2:-}" in
       printf 'tmuxinator\n'
     ;;
   bundle*)
+    # A line of brew's own output, which the installer only logs.
+    printf 'brew-bundle-output\n'
     if [[ ! -x "$FAKE_BIN/fzf" ]]; then
       printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_BIN/fzf"
       chmod +x "$FAKE_BIN/fzf"
     fi
+    [[ "${BREW_BUNDLE_FAILS:-0}" == 1 ]] && exit 1
     if [[ ! -x "$FAKE_BIN/glow" ]]; then
       printf '#!/usr/bin/env bash\nexit 0\n' > "$FAKE_BIN/glow"
       chmod +x "$FAKE_BIN/glow"
@@ -642,7 +645,81 @@ EOF
     fail "install failed with a tmux server: $output"
   grep -q "^source-file $test_home/.tmux.conf$" "$test_home/tmux.log" ||
     fail "install did not reload the open workspaces"
-  grep -q 'devws: reloaded tmux.conf' <<< "$output" || fail "install did not report the reload: $output"
+  grep -q '✓.* Open workspaces reloaded (reloaded tmux.conf' <<< "$output" ||
+    fail "install did not report the reload: $output"
+}
+
+# Each step is one line; what the tools print goes to the install log.
+test_install_output_is_one_line_per_step() {
+  local test_home="$TEST_ROOT/quiet"
+  local fake_bin="$test_home/bin"
+  local output
+  mkdir -p "$test_home/.tmux/plugins/tpm"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+
+  output="$(run_install "$test_home" "$fake_bin" --deps </dev/null 2>&1)" ||
+    fail "install failed: $output"
+  grep -q '✓.* Configuration links' <<<"$output" || fail "no step line for the links: $output"
+  grep -q '✓.* Homebrew packages' <<<"$output" || fail "no step line for brew bundle: $output"
+  ! grep -q 'brew-bundle-output' <<<"$output" || fail "brew's output was shown: $output"
+  ! grep -q '\[done\] ' <<<"$output" || fail "each link was listed: $output"
+  grep -q 'brew-bundle-output' "$test_home/.devws-state/install.log" ||
+    fail "brew's output is not in the install log"
+}
+
+# A failing step shows its name, the end of the log and where the log is.
+test_a_failing_step_shows_its_log() {
+  local test_home="$TEST_ROOT/failing-step"
+  local fake_bin="$test_home/bin"
+  local output
+  mkdir -p "$test_home"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+
+  if output="$(BREW_BUNDLE_FAILS=1 run_install "$test_home" "$fake_bin" --deps </dev/null 2>&1)"; then
+    fail "install succeeded although brew bundle failed"
+  fi
+  grep -q '✗.* Homebrew packages' <<<"$output" || fail "the failed step was not named: $output"
+  grep -q 'brew-bundle-output' <<<"$output" || fail "the log's end was not shown: $output"
+  grep -q "$test_home/.devws-state/install.log" <<<"$output" || fail "the log was not named: $output"
+}
+
+# The system monitor's tools come with the dependencies (not --no-deps);
+# an install without them says which are missing, and nothing once they are.
+test_install_names_missing_system_monitor_tools() {
+  local test_home="$TEST_ROOT/monitor-tools"
+  local fake_bin="$test_home/bin"
+  local output
+  mkdir -p "$test_home"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+
+  output="$(run_install "$test_home" "$fake_bin" </dev/null 2>&1)" || fail "install failed: $output"
+  grep -q 'btop and lazydocker (system monitor) are missing; run ./install.sh' <<<"$output" ||
+    fail "missing btop and lazydocker were not named: $output"
+
+  make_command "$fake_bin/btop"
+  output="$(run_install "$test_home" "$fake_bin" </dev/null 2>&1)" || fail "install failed: $output"
+  grep -q 'lazydocker (system monitor) is missing; run ./install.sh' <<<"$output" ||
+    fail "a missing lazydocker alone was not named: $output"
+
+  make_command "$fake_bin/lazydocker"
+  output="$(run_install "$test_home" "$fake_bin" </dev/null 2>&1)" || fail "install failed: $output"
+  ! grep -q 'system monitor' <<<"$output" || fail "installed tools were reported missing: $output"
+}
+
+test_verbose_shows_everything() {
+  local test_home="$TEST_ROOT/verbose"
+  local fake_bin="$test_home/bin"
+  local output
+  mkdir -p "$test_home/.tmux/plugins/tpm"
+  make_fake_bin "$fake_bin"
+  make_command "$fake_bin/fzf"
+
+  output="$(run_install "$test_home" "$fake_bin" --deps --verbose </dev/null 2>&1)" ||
+    fail "install --verbose failed: $output"
+  grep -q 'brew-bundle-output' <<<"$output" || fail "--verbose hid brew's output: $output"
 }
 
 test_picker_fails_once_without_fzf() {
@@ -684,6 +761,10 @@ test_a_preexisting_agentic_is_rebuilt_but_kept_on_uninstall
 test_install_without_cargo_says_what_agentic_needs
 test_install_with_an_old_rust_does_not_build
 test_install_reloads_open_workspaces
+test_install_output_is_one_line_per_step
+test_a_failing_step_shows_its_log
+test_install_names_missing_system_monitor_tools
+test_verbose_shows_everything
 test_picker_fails_once_without_fzf
 
 printf 'Install lifecycle tests passed.\n'

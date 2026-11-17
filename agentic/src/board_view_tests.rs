@@ -24,6 +24,7 @@ pub(crate) fn board() -> Board {
             five_hour: Some(40),
             week: None,
         }],
+        switches: vec![],
         roles: vec![
             RoleRow {
                 name: "executor".into(),
@@ -68,7 +69,9 @@ pub(crate) fn board() -> Board {
             label: "s2 add a test  for executor-1".into(),
         }],
         questions: vec!["q9 executor-1 → tester: which file?".into()],
+        leader_question: Some("A or B for the runner?".into()),
         done: vec![],
+        progress: crate::board::Progress::default(),
         done_specs: vec![],
         usage: vec![
             (
@@ -202,6 +205,11 @@ fn board_with_history() -> Board {
             attempts: step.attempts,
         })
         .collect();
+    board.progress = crate::board::Progress {
+        done: 99,
+        total: 101,
+        helpers: 0,
+    };
     board.done_specs = board
         .done
         .iter()
@@ -260,6 +268,7 @@ fn the_overview_groups_the_team_with_what_each_agent_costs() {
         [
             "NEEDS YOU · 2",
             "CTO",
+            "LEADER BACKLOG · 1",
             "FLOOR · 2",
             "QUEUE · 1",
             "USAGE",
@@ -417,7 +426,7 @@ fn the_done_card_scrolls_with_a_bar_and_too_short_a_pane_is_a_plain_list() {
     assert!(short.contains("▌NEEDS YOU · 2"), "{short}");
     assert_eq!(
         list_rows(&rows),
-        rows.iter().filter(|row| row.kind != Kind::Gap).count() + 6 - (99 - DONE_ROWS),
+        rows.iter().filter(|row| row.kind != Kind::Gap).count() + 7 - (99 - DONE_ROWS),
         "DONE counts its fixed height"
     );
 }
@@ -470,6 +479,17 @@ fn the_header_has_the_count_the_tabs_the_progress_and_limit_bars() {
     assert!(row("[overview]").contains("usage"));
     let progress = row("PROGRESS");
     assert!(progress.contains("99/101 · 98%"), "{progress:?}");
+    assert!(!progress.contains("helper"), "{progress:?}");
+    board.progress = crate::board::Progress {
+        done: 4,
+        total: 56,
+        helpers: 24,
+    };
+    let reviewed = plain(&screen(&board, &nav, &rows, 84, 40, None));
+    assert!(
+        reviewed.contains("4/56 · 7% · +24 helper steps"),
+        "baseline items, helpers apart: {reviewed}"
+    );
     assert!(
         progress.contains('⣿') && progress.contains('⣀'),
         "dots: {progress:?}"
@@ -520,7 +540,7 @@ fn the_header_has_the_count_the_tabs_the_progress_and_limit_bars() {
     assert!(!narrow.contains("wk "), "the week bar goes first: {narrow}");
 
     board.questions.clear();
-    board.stale_review.clear();
+    board.leader_question = None;
     let calm = plain(&screen(&board, &nav, &rows, 84, 40, None));
     assert!(!calm.lines().next().unwrap().contains("need you"), "{calm}");
 }
@@ -553,7 +573,7 @@ fn every_step_row_starts_with_its_mark_and_ends_with_its_state() {
             ("✓ a  title of a", "accepted"),
             ("⠋ o  title of o", "ordered"),
             ("● r  title of r", "to review"),
-            ("⚠ f  title of f", "failed"),
+            ("⚠ f  title of f", "check failed"),
             ("⚠ b  title of b", "blocked"),
             ("⚠ x  title of x", "sent back"),
         ]
@@ -569,7 +589,7 @@ fn every_step_row_starts_with_its_mark_and_ends_with_its_state() {
 fn quiet_sections_are_left_out() {
     let mut board = board();
     board.questions.clear();
-    board.stale_review.clear();
+    board.leader_question = None;
     board.queue.clear();
     let rows = entries(&board, View::Overview, false, &[], None);
     assert!(!rows.iter().any(|entry| entry.id == "heading:NEEDS YOU"));
@@ -776,7 +796,7 @@ fn drawn_body(
             .collect::<String>()
             .contains('▸')
     });
-    dialog_body_of(dialog_area(&rows[nav.index].detail, width, height, anchor))
+    dialog_body_of(dialog_area(&rows[nav.index].detail, width, height, anchor, false), false)
 }
 
 #[test]
@@ -788,7 +808,7 @@ fn dialog_wrapping_and_end_scrolling_reach_the_last_line_after_resize() {
     nav.detail = true;
     rows[nav.index].detail = format!("{}\nFINAL LINE", "wide context ".repeat(80));
     for (width, height) in [(84, 30), (24, 12), (12, 8), (5, 5), (84, 30)] {
-        nav.detail_scroll = dialog_scroll_max(&rows[nav.index].detail, width, height);
+        nav.detail_scroll = dialog_scroll_max(&rows[nav.index].detail, width, height, false);
         let rendered = screen(&board, &nav, &rows, width, height, None);
         let body = drawn_body(&board, &mut nav, &rows, width, height);
         let text = (body.y..body.bottom())
@@ -1035,7 +1055,7 @@ fn a_dialog_is_as_tall_as_its_content_and_opens_next_to_its_row() {
         "as tall as its content"
     );
     assert_eq!(
-        dialog_body(&rows[nav.index].detail, width, height).height,
+        dialog_body(&rows[nav.index].detail, width, height, false).height,
         2
     );
 
@@ -1062,7 +1082,7 @@ fn a_dialog_is_as_tall_as_its_content_and_opens_next_to_its_row() {
 
     let long = "line\n".repeat(200);
     assert_eq!(
-        dialog_body(&long, width, height).height,
+        dialog_body(&long, width, height, false).height,
         height - 2 - 2 - 1,
         "long details still take the pane less its margin, borders and hints"
     );
@@ -1085,29 +1105,65 @@ fn an_idle_agent_shows_its_counts_where_its_step_would_be() {
 }
 
 #[test]
-fn a_review_the_leader_left_needs_you_and_says_so() {
+fn a_review_the_leader_left_is_in_its_backlog_not_under_needs_you() {
     let board = board();
     let rows = entries(&board, View::Overview, false, &[], None);
-    let needs_you = rows
-        .iter()
-        .position(|entry| entry.id == "heading:NEEDS YOU")
-        .unwrap();
-    let stale = rows.iter().position(|entry| entry.id == "step:s0").unwrap();
-    assert!(stale > needs_you);
-    assert_eq!(rows[stale].label, "⚠ leader hasn't reviewed s0  set up");
+    let position = |id: &str| rows.iter().position(|entry| entry.id == id);
+    let backlog = position("heading:LEADER BACKLOG").expect("a LEADER BACKLOG card");
+    assert_eq!(rows[backlog].label, "LEADER BACKLOG · 1");
+    let stale = position("step:s0").unwrap();
+    assert_eq!(stale, backlog + 1);
+    assert_eq!(rows[stale].label, "⚠ s0  set up");
     assert_eq!(rows[stale].tail, "2h 5m");
+    assert!(
+        position("heading:CTO").unwrap() < backlog,
+        "it follows the leader's card"
+    );
+    let needs_you: Vec<&str> = rows
+        .iter()
+        .skip(position("heading:NEEDS YOU").unwrap() + 1)
+        .take_while(|entry| !entry.id.starts_with("gap:") && !entry.id.starts_with("heading:"))
+        .map(|entry| entry.id.as_str())
+        .collect();
+    assert!(!needs_you.contains(&"step:s0"), "{needs_you:?}");
+    assert_eq!(crate::board_view::message_about("step:s0"), Some(crate::leader::About::Step("s0".into())));
+
     let mut unknown = board;
     unknown.stale_review[0].waiting = None;
     let rows = entries(&unknown, View::Overview, false, &[], None);
     let stale = rows.iter().find(|entry| entry.id == "step:s0").unwrap();
-    assert_eq!(stale.tail, "failed", "no time known: its state instead");
+    assert_eq!(stale.tail, "check failed", "no time known: its state instead");
+}
+
+#[test]
+fn the_leader_question_to_you_comes_first_under_needs_you() {
+    let board = board();
+    let rows = entries(&board, View::Overview, false, &[], Some("cannot deliver"));
+    let needs_you = rows
+        .iter()
+        .position(|entry| entry.id == "heading:NEEDS YOU")
+        .unwrap();
+    assert_eq!(rows[needs_you + 1].id, "dispatcher");
+    let asks = &rows[needs_you + 2];
+    assert_eq!(asks.id, "leader-asks");
+    assert_eq!(asks.label, "● leader asks: A or B for the runner?");
+    assert!(asks.detail.contains("A or B for the runner?"), "{}", asks.detail);
+    assert_eq!(
+        crate::board_view::message_about("leader-asks"),
+        Some(crate::leader::About::General)
+    );
+
+    let mut answered = board;
+    answered.leader_question = None;
+    let rows = entries(&answered, View::Overview, false, &[], None);
+    assert!(!rows.iter().any(|entry| entry.id == "leader-asks"));
 }
 
 #[test]
 fn what_the_leader_is_reviewing_has_its_own_card_and_does_not_need_you() {
     let mut board = board();
     board.questions.clear();
-    board.stale_review.clear();
+    board.leader_question = None;
     board.leader_review = vec![StepRow {
         id: "s5".into(),
         title: "add login".into(),
@@ -1140,4 +1196,110 @@ fn what_the_leader_is_reviewing_has_its_own_card_and_does_not_need_you() {
     let nav = Navigation::new(View::Overview);
     let text = plain(&screen(&board, &nav, &rows, 84, 40, None));
     assert!(!text.lines().next().unwrap().contains("need you"), "{text}");
+}
+
+#[test]
+fn a_step_that_failed_for_good_needs_you_with_a_red_cross() {
+    let mut board = board();
+    board.steps.push(StepRow {
+        id: "B1-1-AT".into(),
+        title: "Registry tests".into(),
+        status: StepStatus::Exhausted,
+        attempts: 6,
+    });
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let failed = rows
+        .iter()
+        .find(|entry| entry.id == "failed:B1-1-AT")
+        .expect("the failed step is under NEEDS YOU");
+    let place = |id: &str| rows.iter().position(|entry| entry.id == id).unwrap();
+    assert!(place("heading:NEEDS YOU") < place("failed:B1-1-AT"));
+    assert_eq!(step_mark(StepStatus::Exhausted), '✕');
+    assert_eq!(mark_color(Some('✕')), Some(Color::Red));
+    assert_eq!(step_word(StepStatus::Exhausted), "failed");
+    assert_ne!(step_word(StepStatus::Failed), "failed", "two statuses, one word");
+    assert!(failed.attention);
+}
+
+#[test]
+fn the_accounts_card_sits_under_the_leader_with_a_switch_for_each() {
+    use crate::board::AccountSwitch;
+    let mut board = board();
+    board.switches = vec![
+        AccountSwitch { name: "codex".into(), enabled: true, five_hour: Some(19), week: Some(41), leader_on: true },
+        AccountSwitch { name: "claude".into(), enabled: false, five_hour: Some(40), week: Some(22), leader_on: false },
+        AccountSwitch { name: "claude_work".into(), enabled: false, five_hour: None, week: None, leader_on: true },
+    ];
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let place = |id: &str| rows.iter().position(|entry| entry.id == id).unwrap_or_else(|| panic!("no {id}"));
+    assert!(place("leader") < place("heading:ACCOUNTS"));
+    assert!(place("heading:ACCOUNTS") < place("account:codex"));
+    assert_eq!(rows[place("heading:ACCOUNTS")].tail, "space on/off");
+
+    let text = |id: &str| rows[place(id)].label.clone();
+    assert!(text("account:codex").starts_with("[━━● on ]  codex"), "{}", text("account:codex"));
+    assert!(text("account:codex").contains("5h 19%  wk 41%"), "{}", text("account:codex"));
+    assert!(text("account:claude").starts_with("[○━━ off]  claude"), "{}", text("account:claude"));
+    assert_eq!(rows[place("account:codex")].parts[0].1, Tone::On);
+    assert_eq!(rows[place("account:claude")].parts[0].1, Tone::Muted);
+    assert_eq!(rows[place("account:claude_work")].tail, "leader still on it");
+    assert_eq!(rows[place("account:codex")].tail, "", "on, and the leader on it: nothing to say");
+    assert!(leader_detail(&board).contains("codex on · claude off · claude_work off"), "{}", leader_detail(&board));
+}
+
+#[test]
+fn a_dialog_that_takes_a_message_has_an_input_box() {
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 16));
+    draw_dialog(&mut buffer, "B1-1-AT", "Blocked.", 0, None, Message::Offered);
+    let text = plain(&buffer);
+    assert!(text.contains("To the leader"), "the box is there before writing: {text}");
+    assert!(text.contains("Enter, m or a click to write"), "{text}");
+
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 16));
+    let long = "accept it if the checkpoint passed and then send the docs lane its order";
+    draw_dialog(&mut buffer, "B1-1-AT", "Blocked.", 0, None, Message::Writing(long));
+    let text = plain(&buffer);
+    assert!(text.contains("its order▏"), "the end of a long text shows: {text}");
+    assert!(text.contains("Enter send · Esc cancel"), "{text}");
+
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 16));
+    draw_dialog(&mut buffer, "B1-1-AT", "Blocked.", 0, None, Message::Sent);
+    assert!(plain(&buffer).contains("Sent to the leader ✓"), "{}", plain(&buffer));
+
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 16));
+    draw_dialog(&mut buffer, "agent", "Details.", 0, None, Message::None);
+    assert!(!plain(&buffer).contains("To the leader"), "no box where no message goes");
+}
+
+#[test]
+fn every_needs_you_row_takes_a_message_about_itself() {
+    use crate::leader::About;
+    assert_eq!(message_about("permission:p32"), Some(About::Permission("p32".into())));
+    assert_eq!(message_about("question:q7"), Some(About::Question("q7".into())));
+    assert_eq!(message_about("attention:hammer-5"), Some(About::Agent("hammer-5".into())));
+    assert_eq!(message_about("step:B1-1-AT"), Some(About::Step("B1-1-AT".into())));
+    assert_eq!(message_about("failed:B1-1-AT"), Some(About::Step("B1-1-AT".into())));
+    assert_eq!(message_about("leader"), Some(About::General));
+    assert_eq!(message_about("agent:hammer-5"), None);
+    assert_eq!(message_about("account:codex"), None);
+}
+
+#[test]
+fn a_needs_you_row_already_opened_or_answered_no_longer_calls() {
+    let draw = |seen: Seen| {
+        let mut entry = Entry::text("permission:p1".into(), "⚠ p1 runner".into(), "x".into(), true);
+        entry.seen = seen;
+        let area = Rect::new(0, 0, 30, 1);
+        let mut buffer = Buffer::empty(area);
+        entry_line(&entry, false, area, &mut buffer);
+        let text: String = (0..30).map(|x| buffer[(x, 0)].symbol().to_string()).collect();
+        (text, buffer[(4, 0)].fg)
+    };
+    let (_, new) = draw(Seen::New);
+    assert_eq!(new, Color::Yellow, "a new one calls");
+    let (_, opened) = draw(Seen::Opened);
+    assert_eq!(opened, SEEN.fg.unwrap(), "an opened one is grey");
+    let (told, color) = draw(Seen::Told);
+    assert_eq!(color, SEEN.fg.unwrap());
+    assert!(told.trim_end().ends_with("✉ told"), "{told:?}");
 }

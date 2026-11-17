@@ -19,6 +19,29 @@ pub struct RepositoryChecks {
     pub environments: BTreeMap<String, Environment>,
     pub checks: BTreeMap<String, Profile>,
     pub selected: Vec<String>,
+    /// Profiles run on each reviewed merge candidate (the lane's work merged
+    /// with the task's branch) before its review: a fast build/smoke set that
+    /// finds two lanes that pass alone and break together at that merge, not
+    /// at the milestone.
+    pub candidate: Vec<String>,
+    /// A lane's own commands for profile names: in that lane they replace the
+    /// repo's (`test` runs `cd backend && …` in the back lane). Left out when
+    /// empty, so a repo without them keeps its evidence signatures.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub lanes: BTreeMap<String, BTreeMap<String, Profile>>,
+}
+
+impl RepositoryChecks {
+    /// The checks an order in `lane` runs: the repo's, with the lane's own
+    /// profiles in place of those of the same name.
+    pub fn for_lane(&self, lane: Option<&str>) -> RepositoryChecks {
+        let mut checks = self.clone();
+        checks.lanes = BTreeMap::new();
+        if let Some(own) = lane.and_then(|name| self.lanes.get(name)) {
+            checks.checks.extend(own.clone());
+        }
+        checks
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -89,7 +112,33 @@ impl Evidence {
     }
 }
 
+/// The definitions of the profiles `names`, each with its environment.
+pub(crate) fn named(
+    definitions: &RepositoryChecks,
+    names: impl IntoIterator<Item = String>,
+) -> Result<Vec<(String, Profile, Environment)>> {
+    names
+        .into_iter()
+        .map(|name| {
+            let profile = definitions
+                .checks
+                .get(&name)
+                .with_context(|| format!("check profile {name} is not defined"))?
+                .clone();
+            let environment = definitions
+                .environments
+                .get(&profile.environment)
+                .with_context(|| format!("environment {} is not defined", profile.environment))?
+                .clone();
+            Ok((name, profile, environment))
+        })
+        .collect()
+}
+
 pub fn validate(config: &RepositoryChecks) -> Result<()> {
+    for lane in config.lanes.keys() {
+        validate(&config.for_lane(Some(lane))).with_context(|| format!("lane {lane}'s checks"))?;
+    }
     if config.selected.len() > 32 {
         bail!("select at most 32 check profiles");
     }
@@ -131,7 +180,17 @@ pub fn validate(config: &RepositoryChecks) -> Result<()> {
         }
     }
 
-    for name in &config.selected {
+    let mut candidate = std::collections::BTreeSet::new();
+    for name in &config.candidate {
+        if !candidate.insert(name) {
+            bail!("duplicate candidate profile {name}");
+        }
+    }
+    if config.candidate.len() > 32 {
+        bail!("select at most 32 candidate profiles");
+    }
+
+    for name in config.selected.iter().chain(&config.candidate) {
         let profile = config
             .checks
             .get(name)
@@ -180,6 +239,15 @@ pub fn configure(task: &Task, repo: &str, profiles: RepositoryChecks) -> Result<
     if repository.check.is_some() && !profiles.selected.is_empty() {
         bail!("remove the legacy repo check before selecting named profiles");
     }
+    for lane in profiles.lanes.keys() {
+        ensure!(
+            config
+                .lanes
+                .iter()
+                .any(|found| found.name == *lane && found.repo == repo),
+            "{repo} has no lane {lane}: add_lane it first"
+        );
+    }
     let state = task.state()?;
     if state.workflow == crate::execution::Workflow::Reviewed && state.application.approved() {
         ensure!(
@@ -210,10 +278,25 @@ pub fn operation(task: &Task, order: &str) -> Result<File> {
     let folder = task.dir().join("operations");
     fs::create_dir_all(&folder)?;
     let lock = File::create(folder.join(format!("{order}.lock")))?;
-    lock.try_lock_exclusive()
-        .context("a check or report for this order is already running")?;
-    Ok(lock)
+    let deadline = std::time::Instant::now() + OPERATION_LOCK_WAIT;
+    loop {
+        match lock.try_lock_exclusive() {
+            Ok(()) => return Ok(lock),
+            Err(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => {
+                return Err(error).context("a check or report for this order is already running");
+            }
+        }
+    }
 }
+
+/// How long `operation` waits for the order's lock before refusing. A
+/// process another thread of this program is starting holds a copy of the
+/// lock's file until it runs its program, keeping a lock just released for
+/// a moment; a real check or report holds it for seconds or minutes.
+const OPERATION_LOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 
 pub fn configuration(task: &Task, order: &Order) -> Result<Option<RepositoryChecks>> {
     let state = task.state()?;
@@ -226,7 +309,10 @@ pub fn configuration(task: &Task, order: &Order) -> Result<Option<RepositoryChec
             "configured checks differ from approved baseline"
         );
     }
-    let mut selected = config.check_profiles.get(&agent.repo).cloned();
+    let mut selected = config
+        .check_profiles
+        .get(&agent.repo)
+        .map(|checks| checks.for_lane(agent.lane.as_deref()));
     if let Some(names) = state.order_profiles.get(&order.id) {
         if selected.is_none() && !names.is_empty() {
             bail!("named profile configuration was removed");
@@ -350,7 +436,10 @@ pub fn execute(task: &Task, order: &Order, timeout: Duration) -> Result<Evidence
                 .push(if state.workflow == crate::execution::Workflow::Reviewed {
                     run_container_profile(
                         task,
-                        &agent.id,
+                        crate::check_profiles::Container {
+                            agent: &agent.id,
+                            lane: agent.lane.as_deref(),
+                        },
                         name,
                         &config.checks[name],
                         &config.environments[&config.checks[name].environment],
@@ -458,10 +547,34 @@ pub fn validate_configuration(
     }
     let selected = selected.filter(|config| !config.selected.is_empty());
     let signature = signature(state, selected.as_ref(), order)?;
-    if signature != evidence.configuration {
+    if !same_configuration(state.workflow, &signature, &evidence.configuration)? {
         bail!("check configuration changed; evidence is stale");
     }
     Ok(())
+}
+
+/// Whether evidence was made under the configuration checks have now. A
+/// reviewed check runs in the runner's container, its environment set by the
+/// runner configuration (part of the signature): the host process's own
+/// PATH and temp folders do not count. Under Codex each process has its own
+/// (a random `codex-arg0…` folder), so the worker's evidence would be stale
+/// to the leader at once.
+fn same_configuration(
+    workflow: crate::execution::Workflow,
+    current: &str,
+    recorded: &str,
+) -> Result<bool> {
+    if workflow != crate::execution::Workflow::Reviewed {
+        return Ok(current == recorded);
+    }
+    let parts = |signature: &str| -> Result<Vec<serde_json::Value>> {
+        let mut parts: Vec<serde_json::Value> = serde_json::from_str(signature)?;
+        // (profiles, check, host environment, runner): leave the host out.
+        ensure!(parts.len() == 4, "unreadable check configuration signature");
+        parts.remove(2);
+        Ok(parts)
+    };
+    Ok(parts(current)? == parts(recorded)?)
 }
 
 fn signature(
@@ -484,9 +597,15 @@ fn signature(
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
+/// Where a check runs: the runner workspace of `agent`, in `lane`'s image.
+pub(crate) struct Container<'a> {
+    pub agent: &'a str,
+    pub lane: Option<&'a str>,
+}
+
 pub(crate) fn run_container_profile(
     task: &Task,
-    agent: &str,
+    container: Container<'_>,
     name: &str,
     profile: &Profile,
     environment: &Environment,
@@ -507,7 +626,7 @@ pub(crate) fn run_container_profile(
         fs::write(&log, &phase.diagnostic)?;
         return Ok(phase);
     }
-    crate::runner::assert_checkpointed(task, agent)?;
+    crate::runner::assert_checkpointed(task, container.agent)?;
     let mut prefix = String::new();
     for (key, value) in &environment.values {
         if key.is_empty()
@@ -542,9 +661,13 @@ pub(crate) fn run_container_profile(
         let state = task.state()?;
         let workspace = state
             .runner_workspaces
-            .get(agent)
+            .get(container.agent)
             .context("isolated check source missing")?;
-        let mut runner = state.runner.clone().context("runner missing")?;
+        let mut runner = state
+            .runner
+            .as_ref()
+            .context("runner missing")?
+            .for_lane(container.lane);
         runner.timeout_seconds = runner.timeout_seconds.min(profile.timeout_seconds);
         let result = crate::runner::run_container_artifacts(
             &runner,
@@ -591,7 +714,7 @@ pub(crate) fn run_container_profile(
             }
         }
     }
-    crate::runner::assert_checkpointed(task, agent)?;
+    crate::runner::assert_checkpointed(task, container.agent)?;
     phase.outcome = Outcome::Passed;
     phase.exit_code = Some(0);
     phase.seconds = started.elapsed().as_secs();
@@ -779,6 +902,22 @@ fn run_profile(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_reviewed_check_does_not_go_stale_in_another_process() {
+        use crate::execution::Workflow;
+        let worker = r#"[{"selected":["lint"]},null,{"PATH":"/codex/arg0-AAA:/usr/bin"},{"image":"node"}]"#;
+        let leader = r#"[{"selected":["lint"]},null,{"PATH":"/codex/arg0-BBB:/usr/bin"},{"image":"node"}]"#;
+        assert!(same_configuration(Workflow::Reviewed, leader, worker).unwrap());
+        let other_profiles = r#"[{"selected":["test"]},null,{"PATH":"/usr/bin"},{"image":"node"}]"#;
+        assert!(!same_configuration(Workflow::Reviewed, other_profiles, worker).unwrap());
+        let other_runner = r#"[{"selected":["lint"]},null,{"PATH":"/codex/arg0-AAA:/usr/bin"},{"image":"python"}]"#;
+        assert!(!same_configuration(Workflow::Reviewed, other_runner, worker).unwrap());
+        assert!(
+            !same_configuration(Workflow::Legacy, leader, worker).unwrap(),
+            "legacy checks run on the host: its environment counts"
+        );
+    }
+
     use super::*;
     use tempfile::TempDir;
 
@@ -803,6 +942,67 @@ mod tests {
             0,
         )
         .unwrap()
+    }
+
+    fn web_and_back() -> RepositoryChecks {
+        RepositoryChecks {
+            environments: BTreeMap::from([("testing".into(), Environment::default())]),
+            checks: BTreeMap::from([
+                ("lint".into(), profile("cd web && npm run lint")),
+                ("test".into(), profile("cd web && npm test")),
+            ]),
+            selected: vec!["lint".into(), "test".into()],
+            candidate: vec!["lint".into()],
+            lanes: BTreeMap::from([(
+                "back".into(),
+                BTreeMap::from([("test".into(), profile("cd backend && php artisan test"))]),
+            )]),
+        }
+    }
+
+    #[test]
+    fn a_lane_runs_its_own_command_for_a_profile_and_the_repos_for_the_rest() {
+        let checks = web_and_back();
+        validate(&checks).unwrap();
+        let back = checks.for_lane(Some("back"));
+        assert_eq!(
+            back.checks["test"].command,
+            "cd backend && php artisan test"
+        );
+        assert_eq!(back.checks["lint"].command, "cd web && npm run lint");
+        assert_eq!(
+            checks.for_lane(Some("front")).checks["test"].command,
+            "cd web && npm test"
+        );
+        assert_ne!(
+            serde_json::to_string(&back).unwrap(),
+            serde_json::to_string(&checks.for_lane(Some("front"))).unwrap(),
+            "evidence of one lane never counts for the other"
+        );
+
+        let mut broken = web_and_back();
+        broken
+            .lanes
+            .get_mut("back")
+            .unwrap()
+            .get_mut("test")
+            .unwrap()
+            .command = " ".into();
+        let error = validate(&broken).unwrap_err();
+        assert!(format!("{error:#}").contains("lane back"), "{error:#}");
+    }
+
+    #[test]
+    fn checks_for_a_lane_the_task_does_not_have_are_refused() {
+        let dir = TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&dir);
+        let repo = task.config().unwrap().repos[0].name.clone();
+        let error = configure(&task, &repo, web_and_back())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no lane back"), "{error}");
+        crate::lanes::add(&task, "back", &["backend/**".into()], None).unwrap();
+        configure(&task, &repo, web_and_back()).unwrap();
     }
 
     #[test]
@@ -963,5 +1163,77 @@ mod tests {
             .values
             .insert("DEVAGENTICS_RESULT".into(), "override".into());
         assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn an_operation_waits_out_a_lock_held_for_an_instant_but_not_a_running_one() {
+        let directory = TempDir::new().unwrap();
+        let home = crate::home::Home::at(directory.path().join("home"));
+        let task = Task::create(
+            &home,
+            &crate::task::TaskConfig {
+                id: "t".into(),
+                branch: "feat/x".into(),
+                workspace: "w".into(),
+                max_agents: 3,
+                max_attempts: crate::task::DEFAULT_MAX_ATTEMPTS,
+                check_profiles: Default::default(),
+                repos: vec![],
+                lanes: vec![],
+            },
+        )
+        .unwrap();
+        task.transaction(|tx| {
+            tx.state.orders.push(Order {
+                id: "o1".into(),
+                step: "s1".into(),
+                agent: "a".into(),
+                text: String::new(),
+                allowed: vec![],
+                forbidden: vec![],
+                check: None,
+                base: String::new(),
+                status: crate::state::OrderStatus::Open,
+                delivered: true,
+                stalled: false,
+                plan: None,
+            });
+            Ok(())
+        })
+        .unwrap();
+
+        // A process another thread is starting holds a copy of the lock's
+        // file until it runs its program: a moment, not an operation.
+        let held = operation(&task, "o1").unwrap();
+        let copy = held.try_clone().unwrap();
+        drop(held);
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            drop(copy);
+        });
+        operation(&task, "o1").expect("a lock held for an instant is waited out");
+        release.join().unwrap();
+
+        let running = operation(&task, "o1").unwrap();
+        let error = operation(&task, "o1").unwrap_err().to_string();
+        assert!(error.contains("already running"), "{error}");
+        drop(running);
+    }
+
+    #[test]
+    fn candidate_profiles_must_be_defined_once() {
+        let mut config = RepositoryChecks {
+            checks: BTreeMap::from([("smoke".into(), profile("true"))]),
+            environments: BTreeMap::from([("testing".into(), Environment::default())]),
+            candidate: vec!["smoke".into()],
+            ..Default::default()
+        };
+        validate(&config).unwrap();
+        config.candidate = vec!["build".into()];
+        assert!(validate(&config).unwrap_err().to_string().contains("build"));
+        config.candidate = vec!["smoke".into(), "smoke".into()];
+        assert!(validate(&config).is_err());
+        let old: RepositoryChecks = serde_json::from_str(r#"{"selected":[]}"#).unwrap();
+        assert!(old.candidate.is_empty(), "configurations from before load");
     }
 }

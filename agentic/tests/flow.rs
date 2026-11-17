@@ -54,6 +54,7 @@ DIR="$DEVAGENTICS_TEST_DIR"
 echo "$*" >> "$DIR/devws.calls"
 case "$1 $2" in
   "agent kind") case "$3" in codex) echo codex ;; *) echo claude ;; esac ;;
+  "agent accounts") printf 'claude claude\ncodex codex\n' ;;
   "agent spawn") n=$(cat "$DIR/pane.counter" 2>/dev/null || echo 6); n=$((n+1)); echo $n > "$DIR/pane.counter"; echo "%$n" ;;
   "agent state") cat "$DIR/state/$3" 2>/dev/null || echo idle ;;
   "agent send") cat >> "$DIR/sent/$3"; echo >> "$DIR/sent/$3" ;;
@@ -84,6 +85,10 @@ esac
 
         git(origin.path(), &["init", "-q", "--bare", "-b", "main"]);
         git(repo.path(), &["init", "-q", "-b", "main"]);
+        // Its own identity, for the commits devagentics makes there (the team
+        // history): a machine with no global one could not commit it.
+        git(repo.path(), &["config", "user.name", "t"]);
+        git(repo.path(), &["config", "user.email", "t@t"]);
         fs::write(repo.path().join("README.md"), "hello\n").unwrap();
         git(repo.path(), &["add", "-A"]);
         git(repo.path(), &["commit", "-q", "-m", "first"]);
@@ -834,4 +839,40 @@ fn reviewed_tasks_preserve_the_boundary_without_changing_existing_teams() {
     );
     let pane_calls = fs::read_to_string(world.path("devws.calls")).unwrap_or_default();
     assert!(!pane_calls.contains("agent spawn"));
+}
+
+#[test]
+fn a_finished_run_is_measured_and_compared() {
+    let world = World::new();
+    world.ok(
+        None,
+        &[
+            "task",
+            "start",
+            "--legacy",
+            &world.repo.path().display().to_string(),
+        ],
+        "",
+    );
+
+    let report = world.ok(None, &["bench", "report", "feat-x"], "");
+    assert!(report.starts_with("feat-x"), "{report}");
+    assert!(
+        report.contains("first pass") && report.contains("0 of 0"),
+        "{report}"
+    );
+
+    let json: Value =
+        serde_json::from_str(&world.ok(None, &["bench", "report", "feat-x", "--json"], ""))
+            .unwrap();
+    assert_eq!(json["workflow"], "legacy");
+    assert_eq!(json["accepted"], 0);
+
+    let table = world.ok(None, &["bench", "compare", "feat-x", "feat-x"], "");
+    assert!(
+        table.lines().any(|line| line.contains("corrective orders")),
+        "{table}"
+    );
+    let (succeeded, _, error) = world.run(None, &["bench", "report", "nope"], "");
+    assert!(!succeeded, "an unknown task is an error: {error}");
 }

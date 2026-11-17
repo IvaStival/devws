@@ -114,7 +114,9 @@ codex_cost() {
 
 costs() {
   local month agent kind home cost
-  month="$(date -r "$now" -v1d -v0H -v0M -v0S +%s)"
+  # The 1st of this month at midnight: BSD date (macOS), else GNU's (Linux).
+  month="$(date -r "$now" -v1d -v0H -v0M -v0S +%s 2>/dev/null ||
+    date -d "$(date -d "@$now" +%Y-%m-01)" +%s)"
   for agent in ${DEVWS_AGENTS-claude codex}; do
     kind="$(agent_kind "$agent")" || continue
     home="$(agent_home "$agent")"

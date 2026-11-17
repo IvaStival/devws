@@ -69,8 +69,11 @@ pub fn interrupt(task: &Task, devws: &dyn Devws, invoking: Option<&str>) -> Resu
     Ok(())
 }
 
-pub fn queue_resumption(task: &Task, devws: &dyn Devws) -> Result<()> {
+pub fn queue_resumption(task: &Task, devws: &dyn Devws, invoking: Option<&str>) -> Result<()> {
     let state = task.state()?;
+    // The leader's pane now: a leader started again (its workspace closed and
+    // opened) has a new one, and its old one is gone for good.
+    let leader_pane = devws.pane_with_role(&task.config()?.workspace, "agent")?;
     for (id, entry) in &state.recovery {
         if state.agent(id).is_some_and(|agent| !agent.live) {
             continue;
@@ -79,12 +82,23 @@ pub fn queue_resumption(task: &Task, devws: &dyn Devws) -> Result<()> {
             .agent(id)
             .filter(|agent| agent.live)
             .map(|agent| agent.pane.as_str())
+            .or_else(|| leader_pane.as_deref().filter(|_| id == LEADER))
             .unwrap_or(&entry.pane);
-        if !matches!(devws.pane_state(pane)?, PaneState::Done | PaneState::Idle) {
+        // A leader waiting for the user sits at its prompt: the user's resume
+        // is the answer it waits for.
+        let ready = invoking == Some(pane) || match devws.pane_state(pane)? {
+            PaneState::Done | PaneState::Idle => true,
+            PaneState::Waiting => id == LEADER,
+            _ => false,
+        };
+        if !ready {
             bail!("task remains paused: {id} is not ready to resume");
         }
     }
     task.transaction(|tx| {
+        if state.recovery.contains_key(LEADER) {
+            tx.state.leader_wait = crate::state::LeaderWait::No;
+        }
         for id in state.recovery.keys() {
             if tx.state.agent(id).is_some_and(|agent| !agent.live) {
                 tx.state.recovery.remove(id);

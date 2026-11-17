@@ -67,9 +67,13 @@ esac
 # changed range; all of them are marked.
 ranges="$("$scripts/agent_changes.sh" changes "$project" "$snapshot")"
 if [ -n "$ranges" ]; then
+  # Each file's modification time with its fraction: GNU stat's -c first, as
+  # GNU's -f is about the filesystem; BSD's (macOS) has no -c and prints
+  # nothing. C locale: a "." in both the times and the sort.
   latest="$(cut -f1 <<<"$ranges" | sort -u | while IFS= read -r changed_file; do
-    [ -e "$changed_file" ] && printf '%s\t%s\n' "$(stat -f %Fm "$changed_file")" "$changed_file"
-  done | sort -rn | head -n 1 | cut -f2-)"
+    [ -e "$changed_file" ] && printf '%s\t%s\n' \
+      "$(LC_ALL=C stat -c %.9Y "$changed_file" 2>/dev/null || LC_ALL=C stat -f %Fm "$changed_file")" "$changed_file"
+  done | LC_ALL=C sort -rn | head -n 1 | cut -f2-)"
   if [ -n "$latest" ]; then
     first="$(awk -F '\t' -v file="$latest" '$1 == file { print $2; exit }' <<<"$ranges")"
     printf '%s\n' "$ranges" | "$open" --follow-changes "$latest:$first"

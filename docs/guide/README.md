@@ -69,7 +69,7 @@ The menu's **Help** tab opens each one, as does `devws help <page>`.
 
 | Page | What it covers |
 | ---- | -------------- |
-| [Workspaces](workspaces.md) | The start screen, GitHub branches, worktrees, closing, detaching, tidy, restore, pausing |
+| [Workspaces](workspaces.md) | The start screen, GitHub branches, worktrees, the system monitor, templates, closing, detaching, tidy, restore, pausing |
 | [Layout](layout.md) | Layouts, panels, minimize, the header, the editor, following the agent |
 | [Agents](agents.md) | Agents and accounts, status, switch and restart, ai-memory |
 | [Agent teams](agentic.md) | A leader that opens and drives other agents (`devagentics`) |

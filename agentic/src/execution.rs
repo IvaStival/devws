@@ -64,6 +64,28 @@ pub struct Contract {
     pub questions: Vec<String>,
     pub standards: String,
     pub data_effects: Vec<String>,
+    /// Test files (globs) that judge this item: an implementation may read
+    /// them but not change them, so it cannot pass by weakening its tests.
+    pub protected_tests: Vec<String>,
+    /// This item writes the protected tests (of the items that depend on it).
+    pub writes_tests: bool,
+}
+
+impl Contract {
+    /// What an order for this item may not change: the leader's `requested`
+    /// globs, and, unless the item writes them, its protected tests.
+    pub fn forbidden_for_order(&self, requested: &[String]) -> Vec<String> {
+        let mut forbidden = requested.to_vec();
+        if self.writes_tests {
+            return forbidden;
+        }
+        for glob in &self.protected_tests {
+            if !forbidden.contains(glob) {
+                forbidden.push(glob.clone());
+            }
+        }
+        forbidden
+    }
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -207,6 +229,8 @@ impl Application {
             );
             paths(&item.allowed)?;
             paths(&item.supporting_files)?;
+            paths(&item.protected_tests)?;
+            self.validate_protected_tests(id, item)?;
         }
         acyclic(
             &self
@@ -264,6 +288,34 @@ impl Application {
                 .map(|(id, milestone)| (id.clone(), milestone.dependencies.clone()))
                 .collect(),
         )?;
+        Ok(())
+    }
+    /// A test-writing item can write its tests; an item judged by protected
+    /// tests depends on the item that writes them, so they land first.
+    fn validate_protected_tests(&self, id: &str, item: &Contract) -> Result<()> {
+        if item.writes_tests || item.protected_tests.is_empty() {
+            return Ok(());
+        }
+        let writers: Vec<&Contract> = item
+            .dependencies
+            .iter()
+            .filter_map(|dependency| self.items.get(dependency))
+            .filter(|dependency| dependency.writes_tests)
+            .collect();
+        ensure!(
+            !writers.is_empty(),
+            "{id}: must depend on the item that writes its protected tests"
+        );
+        for glob in &item.protected_tests {
+            let mut writable = false;
+            for writer in &writers {
+                writable |= crate::checks::within(&writer.allowed, glob)?;
+            }
+            ensure!(
+                writable,
+                "{id}: the test-writing item may not write its protected tests ({glob})"
+            );
+        }
         Ok(())
     }
     pub fn resolved(&self) -> bool {
@@ -363,6 +415,98 @@ pub fn store(task: &Task, mut proposal: Application, reason: &str) -> Result<Vec
         Ok(affected.into_iter().collect())
     })
 }
+/// The changes to a baseline, and only those: what an amendment sends
+/// instead of the whole application, which may be too big for one call.
+/// `None` in a map removes that entry; a decision replaces the one with its id.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Amendment {
+    pub goal: Option<String>,
+    pub non_goals: Option<Vec<String>>,
+    pub scopes: BTreeMap<String, Option<String>>,
+    pub items: BTreeMap<String, Option<Contract>>,
+    pub milestones: BTreeMap<String, Option<Milestone>>,
+    pub decisions: Vec<Decision>,
+    pub check_configuration: BTreeMap<String, Option<crate::check_profiles::RepositoryChecks>>,
+}
+
+/// Applies `changes` to `base` as the next revision after `current`.
+fn amended(base: &Application, current: u64, changes: Amendment) -> Application {
+    fn apply<T>(entries: &mut BTreeMap<String, T>, changes: BTreeMap<String, Option<T>>) {
+        for (id, change) in changes {
+            match change {
+                Some(value) => entries.insert(id, value),
+                None => entries.remove(&id),
+            };
+        }
+    }
+    let mut next = base.clone();
+    next.revision = current + 1;
+    if let Some(goal) = changes.goal {
+        next.goal = goal;
+    }
+    if let Some(non_goals) = changes.non_goals {
+        next.non_goals = non_goals;
+    }
+    apply(&mut next.scopes, changes.scopes);
+    apply(&mut next.items, changes.items);
+    apply(&mut next.milestones, changes.milestones);
+    apply(&mut next.check_configuration, changes.check_configuration);
+    for decision in changes.decisions {
+        match next.decisions.iter_mut().find(|old| old.id == decision.id) {
+            Some(old) => *old = decision,
+            None => next.decisions.push(decision),
+        }
+    }
+    next
+}
+
+/// Proposes the next revision as `changes` to the pending proposal, when
+/// there is one, so amendments add up, or to the baseline. It is checked and
+/// stored as any proposal is.
+pub fn amend(task: &Task, changes: Amendment, reason: &str) -> Result<Vec<String>> {
+    let state = task.state()?;
+    let current = state.application.revision;
+    let base = state
+        .application_proposal
+        .as_ref()
+        .filter(|proposal| proposal.revision == current + 1)
+        .unwrap_or(&state.application);
+    store(task, amended(base, current, changes), reason)
+}
+
+/// The baseline without its contracts' bodies, small enough to read in one
+/// call: each item is its title, scope, role, lane and dependencies; `read`
+/// gives the full contracts asked for.
+pub fn outline(application: &Application) -> serde_json::Value {
+    let mut outline = serde_json::to_value(application).unwrap_or_default();
+    outline["items"] = application
+        .items
+        .iter()
+        .map(|(id, item)| {
+            (
+                id.clone(),
+                serde_json::json!({"title":item.title,"scope":item.scope,"role":item.role,"lane":item.lane,"dependencies":item.dependencies}),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>()
+        .into();
+    outline
+}
+
+/// The full contracts of `ids`, with the revision they belong to.
+pub fn items(application: &Application, ids: &[String]) -> Result<serde_json::Value> {
+    let mut contracts = serde_json::Map::new();
+    for id in ids {
+        let item = application
+            .items
+            .get(id)
+            .with_context(|| format!("revision {} has no item {id}", application.revision))?;
+        contracts.insert(id.clone(), serde_json::to_value(item)?);
+    }
+    Ok(serde_json::json!({"revision":application.revision,"items":contracts}))
+}
+
 pub fn confirm(task: &Task, revision: u64, approve: bool) -> Result<()> {
     let _control = task.control_lock()?;
     task.transaction(|tx| {
@@ -519,6 +663,75 @@ pub mod tests {
         }
     }
     #[test]
+    fn the_outline_keeps_ids_and_titles_without_contract_bodies() {
+        let outline = outline(&baseline());
+        assert_eq!(outline["items"]["S01-B01"]["title"], "Token service");
+        assert_eq!(outline["items"]["S01-B01"]["lane"], "back");
+        assert!(outline["items"]["S01-B01"].get("acceptance").is_none());
+        assert_eq!(outline["milestones"]["M01"]["title"], "Accounts ready");
+        assert_eq!(outline["revision"], 1);
+
+        let read = items(&baseline(), &["S01-B01".into()]).unwrap();
+        assert_eq!(read["items"]["S01-B01"]["acceptance"][0], "Service contract passes");
+        let error = items(&baseline(), &["S09".into()]).unwrap_err().to_string();
+        assert!(error.contains("no item S09"), "{error}");
+    }
+
+    #[test]
+    fn an_amendment_changes_only_what_it_names_on_the_next_revision() {
+        let mut base = baseline();
+        base.items.insert("S01-B02".into(), base.items["S01-B01"].clone());
+        let mut added = base.items["S01-B01"].clone();
+        added.title = "Token refresh".into();
+        let mut renamed = base.items["S01-B01"].clone();
+        renamed.title = "Token issue".into();
+        let changes = Amendment {
+            items: BTreeMap::from([
+                ("S01-B03".into(), Some(added)),
+                ("S01-B01".into(), Some(renamed)),
+                ("S01-B02".into(), None),
+            ]),
+            ..Default::default()
+        };
+        let next = amended(&base, 3, changes);
+        assert_eq!(next.revision, 4);
+        assert_eq!(next.items["S01-B03"].title, "Token refresh");
+        assert_eq!(next.items["S01-B01"].title, "Token issue");
+        assert!(!next.items.contains_key("S01-B02"));
+        assert_eq!((&next.goal, &next.milestones), (&base.goal, &base.milestones));
+    }
+
+    #[test]
+    fn amendments_add_up_on_the_pending_proposal_and_are_checked() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        store(&task, baseline(), "first").unwrap();
+        confirm(&task, 1, false).unwrap();
+        confirm(&task, 1, true).unwrap();
+        let goal = Amendment {
+            goal: Some("Application with billing".into()),
+            ..Default::default()
+        };
+        amend(&task, goal, "billing goal").unwrap();
+        let non_goals = Amendment {
+            non_goals: Some(vec!["No payments".into()]),
+            ..Default::default()
+        };
+        amend(&task, non_goals, "no payments").unwrap();
+        let proposal = task.state().unwrap().application_proposal.unwrap();
+        assert_eq!(proposal.revision, 2);
+        assert_eq!(proposal.goal, "Application with billing", "the first amendment stays");
+        assert_eq!(proposal.non_goals, ["No payments"]);
+        assert!(proposal.approved_revision.is_none());
+
+        let broken = Amendment {
+            items: BTreeMap::from([("S01-B01".into(), Some(Contract::default()))]),
+            ..Default::default()
+        };
+        assert!(amend(&task, broken, "empty contract").is_err());
+        assert_eq!(task.state().unwrap().application_proposal.unwrap(), proposal);
+    }
+    #[test]
     fn contracts_reject_incomplete_escaping_and_cyclic_work() {
         let mut application = baseline();
         application.validate().unwrap();
@@ -536,6 +749,82 @@ pub mod tests {
             .clear();
         assert!(application.validate().is_err());
     }
+    /// The baseline with its acceptance tests written by an item of their
+    /// own, which the implementation depends on.
+    fn with_protected_tests() -> Application {
+        let mut application = baseline();
+        let implementation = application.items.get_mut("S01-B01").unwrap();
+        implementation.protected_tests = vec!["backend/tests/acceptance/**".into()];
+        implementation.dependencies = vec!["S01-T01".into()];
+        let tests = Contract {
+            title: "Acceptance tests for the token service".into(),
+            allowed: vec!["backend/tests/acceptance/**".into()],
+            writes_tests: true,
+            dependencies: vec![],
+            protected_tests: vec![],
+            ..implementation.clone()
+        };
+        application.items.insert("S01-T01".into(), tests);
+        application
+            .milestones
+            .get_mut("M01")
+            .unwrap()
+            .required
+            .push("S01-T01".into());
+        application
+    }
+
+    #[test]
+    fn protected_tests_come_from_an_item_that_writes_them_first() {
+        with_protected_tests().validate().unwrap();
+
+        let mut application = with_protected_tests();
+        application
+            .items
+            .get_mut("S01-B01")
+            .unwrap()
+            .dependencies
+            .clear();
+        let error = application.validate().unwrap_err().to_string();
+        assert!(error.contains("depend on the item that writes"), "{error}");
+
+        let mut application = with_protected_tests();
+        application.items.get_mut("S01-T01").unwrap().allowed = vec!["backend/src/**".into()];
+        let error = application.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("may not write its protected tests"),
+            "{error}"
+        );
+
+        let mut application = with_protected_tests();
+        application
+            .items
+            .get_mut("S01-B01")
+            .unwrap()
+            .protected_tests = vec!["../escape/**".into()];
+        assert!(application.validate().is_err());
+    }
+
+    #[test]
+    fn an_implementation_order_may_not_touch_its_protected_tests() {
+        let application = with_protected_tests();
+        let implementation = &application.items["S01-B01"];
+        assert_eq!(
+            implementation.forbidden_for_order(&["secrets/**".into()]),
+            ["secrets/**", "backend/tests/acceptance/**"]
+        );
+        assert_eq!(
+            implementation.forbidden_for_order(&["backend/tests/acceptance/**".into()]),
+            ["backend/tests/acceptance/**"],
+            "listed once"
+        );
+        let tests = &application.items["S01-T01"];
+        assert!(
+            tests.forbidden_for_order(&[]).is_empty(),
+            "the item that writes the tests may change them"
+        );
+    }
+
     #[test]
     fn interview_only_asks_settled_frontier_and_approval_is_revision_bound() {
         let mut application = baseline();

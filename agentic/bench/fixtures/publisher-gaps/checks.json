@@ -1,0 +1,10 @@
+{
+  "environments": {"testing": {}},
+  "checks": {
+    "lint": {"command": "cd web && npm run lint", "environment": "testing", "timeout_seconds": 180},
+    "typecheck": {"command": "cd web && npm run typecheck", "environment": "testing", "timeout_seconds": 300},
+    "test": {"command": "cd web && npm test -- --configLoader runner", "environment": "testing", "timeout_seconds": 900}
+  },
+  "selected": ["lint", "typecheck", "test"],
+  "candidate": ["lint", "typecheck"]
+}

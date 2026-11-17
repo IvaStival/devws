@@ -181,9 +181,10 @@ test_the_bar() {
 # ---------------------------------------------------------------- tokens
 
 # A Wednesday noon: Monday and last week are both before it.
-NOW="$(date -j -f '%Y-%m-%d %H:%M:%S' '2026-10-14 12:00:00' +%s)"
+# BSD date (macOS) first, else GNU's (Linux).
+NOW="$(date -j -f '%Y-%m-%d %H:%M:%S' '2026-10-14 12:00:00' +%s 2>/dev/null || date -d '2026-10-14 12:00:00' +%s)"
 iso() {
-  date -u -r "$1" +%Y-%m-%dT%H:%M:%S.000Z
+  date -u -r "$1" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -u -d "@$1" +%Y-%m-%dT%H:%M:%S.000Z
 }
 TODAY="$(iso $((NOW - 3600)))"
 MONDAY="$(iso $((NOW - 2 * 86400)))"
@@ -445,6 +446,8 @@ STUB
 test_system_usage() {
   local stubs output history="$TEST_ROOT/cpu.history"
   stubs="$(stub_system)"
+  # macOS has no /proc: its own tools are the sources.
+  export DEVWS_PROC="$TEST_ROOT/no-proc"
   PATH="$stubs:$PATH" "$SCRIPTS/header_system.sh" "$history" >/dev/null
   PATH="$stubs:$PATH" "$SCRIPTS/header_system.sh" "$history" >/dev/null
   output="$(PATH="$stubs:$PATH" "$SCRIPTS/header_system.sh" "$history" | plain)"
@@ -460,6 +463,28 @@ test_system_usage() {
     PATH="$stubs:$PATH" "$SCRIPTS/header_system.sh" "$history" >/dev/null
   done
   [ "$(wc -w < "$history" | tr -d ' ')" -eq 12 ] || fail "the CPU history keeps more than 12 samples"
+  unset DEVWS_PROC
+}
+
+# Linux: /proc and /sys, with fixed numbers. Between two samples of
+# /proc/stat 25 of 100 ticks were busy (iowait counts as idle); 16 GiB of
+# memory with 4 available; a battery at 64%; a pt_BR locale, which must not
+# turn the decimal point into a comma.
+test_system_usage_on_linux() {
+  local root="$TEST_ROOT/linux" output history="$TEST_ROOT/linux-cpu.history"
+  mkdir -p "$root/proc" "$root/sys/class/power_supply/BAT0" "$root/bin"
+  printf 'cpu  100 0 100 700 100 0 0 0 0 0\ncpu0 1 1 1 1 1 0 0 0 0 0\n' > "$root/proc/stat"
+  printf 'MemTotal:       16777216 kB\nMemFree:         1000000 kB\nMemAvailable:    4194304 kB\n' > "$root/proc/meminfo"
+  printf '0.52 0.61 0.70 1/300 4242\n' > "$root/proc/loadavg"
+  printf '64\n' > "$root/sys/class/power_supply/BAT0/capacity"
+  printf '#!/usr/bin/env bash\nprintf "Filesystem 1K-blocks Used Available Use%%%% Mounted\\n/dev/nvme0n1p2 1000 700 250 74%%%% /\\n"\n' > "$root/bin/df"
+  chmod +x "$root/bin/df"
+  local run=(env DEVWS_PROC="$root/proc" DEVWS_SYS="$root/sys" LC_ALL=pt_BR.UTF-8 PATH="$root/bin:$PATH" "$SCRIPTS/header_system.sh" "$history")
+  "${run[@]}" >/dev/null 2>&1
+  printf 'cpu  120 0 105 770 105 0 0 0 0 0\ncpu0 1 1 1 1 1 0 0 0 0 0\n' > "$root/proc/stat"
+  output="$("${run[@]}" 2>&1 | plain)"
+  [ "$output" = $'CPU ▓▓▓░░░░░░░  25%  ▂▂\nMEM ▓▓▓▓▓▓▓▓░░  75%  12.0/16.0G\nDSK ▓▓▓▓▓▓▓▓░░  75%  BAT 64%  LOAD 0.52' ] ||
+    fail "unexpected Linux system rows: $output"
 }
 
 # ---------------------------------------------------------------- network
@@ -980,6 +1005,7 @@ test_claude_limits_come_from_its_status_line
 test_usage_bar_shows_what_was_used
 test_one_column_for_the_agents
 test_system_usage
+test_system_usage_on_linux
 test_network
 test_the_wifi_row_asks_corewlan_first
 test_weather

@@ -244,3 +244,14 @@ Verification:
 The full plan remains in progress for evaluation rather than implementation expansion: a representative two-writer shared-interface replay, the full three-agent staffing scenario, and the fixed-scope legacy-versus-reviewed comparison have not been demonstrated. No measured application speed-up or complete coverage of every race scenario is claimed. Existing timing reports cover recorded intervals and preserve unknown historical timings; they do not establish exact coding time or a critical path. Keep these acceptance items open rather than presenting the whole ten-step plan as executed.
 
 Operational limitations: reviewed mode currently supports only the verified Claude adapter; unsupported provider routes remain blocked. A suitable local toolchain image and explicit source/protected roots are required. Existing tasks need explicit adoption. Divergent lane catch-up is blocked pending reviewed conflict resolution. Version readiness never performs a release or deployment.
+
+### Follow-up: team delivery gates (15-11-2026)
+
+[Team delivery gates](../2026-11-15-201636_team-delivery-gates/plan.md) adds, on
+`feat/team-delivery-gates`: an enforced attempt budget, protected acceptance
+tests, candidate checks on each merge candidate before review, opt-in Codex
+read-only reviewers, and the Step 10 measurement tooling (`devagentics bench`,
+correction categories, review wait timing, the `notes` fixture and
+`scripts/bench_team.sh`). The fixed-scope legacy-versus-reviewed comparison
+itself has still not been run: it needs real agent runs on the user's accounts.
+The tracking boxes above stay as they were.

@@ -12,8 +12,8 @@ use crate::task::Task;
 use crate::watch::{self, Dispatcher};
 use anyhow::Result;
 use ratatui::crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
-    MouseEventKind,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind,
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
@@ -92,7 +92,7 @@ fn dispatch(
         return;
     };
     let mut dispatcher = Dispatcher::new(task, devws, home, watch::STALL_GRACE);
-    let command = std::env::current_exe()
+    let command = crate::executable::own()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|_| "devagentics".to_string());
     let mut leader_seen: Option<Instant> = None;
@@ -176,6 +176,13 @@ enum Action {
     Zoom,
     Leader,
     Visit { pane: String, peek: bool },
+    /// Turn this account on or off for the task.
+    ToggleAccount(String),
+    /// What the user wrote to the leader in a dialog, about a step or not.
+    TellLeader {
+        about: crate::leader::About,
+        text: String,
+    },
 }
 
 struct Interaction {
@@ -186,7 +193,7 @@ struct Interaction {
     map: ScreenMap,
 }
 
-const HELP: &str = "Board navigation\n\nTab / Shift-Tab: next / previous view\nj/k or arrows: select row; scroll details\nPgUp/PgDn: move a page\ng/G or Home/End: first / last\nEnter: full details\nClick: select a row; click it again for details\nClick a view's name: show that view\nClick outside details: close them\nEsc: close details or cancel peek\no: go to selected agent\nv: peek selected agent\n1–9: go to numbered agent\np then 1–9: peek numbered agent\nL: return to leader\nl: toggle Activity\nc: toggle completed steps or inactive role catalog\nr: refresh\nz: zoom\n?: help\nq: close details, or quit board (dispatcher stops)";
+const HELP: &str = "Board navigation\n\nTab / Shift-Tab: next / previous view\nj/k or arrows: select row; scroll details\nPgUp/PgDn: move a page\ng/G or Home/End: first / last\nEnter: full details (JSON laid out, lists one item per line); a NEEDS YOU row you opened turns grey, one you answered shows ✉\nIn the details of a NEEDS YOU row, a step or the leader: Enter, m, a click in its box or a paste starts a message to the leader (Enter sends it, nothing when empty; Esc cancels)\nSpace on an account: turn it on/off for this task\nClick: select a row; click it again for details\nClick a view's name: show that view\nClick outside details: close them\nEsc: close details or cancel peek\no: go to selected agent\nv: peek selected agent\n1–9: go to numbered agent\np then 1–9: peek numbered agent\nL: return to leader\nl: toggle Activity\nc: toggle completed steps or inactive role catalog\nr: refresh\nz: zoom\n?: help\nq: close details, or quit board (dispatcher stops)";
 
 impl Interaction {
     /// One event from the terminal: a key, or the wheel, which moves `WHEEL`
@@ -200,7 +207,7 @@ impl Interaction {
     ) -> Action {
         self.clamp_scroll(entries, size);
         let page = if let Some(content) = self.dialog_content(entries) {
-            board_view::dialog_body(content, size.width, size.height).height
+            board_view::dialog_body(content, size.width, size.height, self.dialog_input(entries)).height
         } else {
             size.height.saturating_sub(
                 board_view::header_rows(board, &self.nav, size.width, size.height) + 1,
@@ -210,6 +217,10 @@ impl Interaction {
         let action = match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 self.key(key.code, board, entries, page)
+            }
+            Event::Paste(text) => {
+                self.paste(&text, entries);
+                Action::None
             }
             Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
                 self.click(mouse.column, mouse.row, entries);
@@ -233,6 +244,16 @@ impl Interaction {
     }
 
     /// What the open dialog shows: the help, or the selected row's details.
+    /// Whether the open dialog has the input box: the details of a row a
+    /// message to the leader can be about.
+    fn dialog_input(&self, entries: &[board_view::Entry]) -> bool {
+        !self.help
+            && self.nav.detail
+            && entries
+                .get(self.nav.index)
+                .is_some_and(|entry| board_view::message_about(&entry.id).is_some())
+    }
+
     fn dialog_content<'a>(&self, entries: &'a [board_view::Entry]) -> Option<&'a str> {
         if self.help {
             Some(HELP)
@@ -248,7 +269,32 @@ impl Interaction {
     /// A left click: outside an open dialog closes it; on a view's name
     /// shows that view; on a row selects it, and on the selected row opens
     /// its details, as Enter does. Anything else does nothing.
+    /// Whether the open details are of a row the user can write about.
+    fn takes_message(&self, entries: &[board_view::Entry]) -> bool {
+        self.nav.detail
+            && !self.help
+            && entries
+                .get(self.nav.index)
+                .is_some_and(|entry| board_view::message_about(&entry.id).is_some())
+    }
+
+    /// Pasted text goes into the message, which it starts when none is open.
+    fn paste(&mut self, text: &str, entries: &[board_view::Entry]) {
+        if self.nav.compose.is_none() && !self.takes_message(entries) {
+            return;
+        }
+        let message = self.nav.compose.get_or_insert_with(String::new);
+        // One line: the box sends on Enter, so line breaks become spaces.
+        message.push_str(&text.replace(['\r', '\n'], " "));
+    }
+
     fn click(&mut self, column: u16, row: u16, entries: &[board_view::Entry]) {
+        let position = ratatui::layout::Position::new(column, row);
+        if self.map.input.is_some_and(|area| area.contains(position)) && self.takes_message(entries)
+        {
+            self.nav.compose.get_or_insert_with(String::new);
+            return;
+        }
         if self.help || self.nav.detail {
             let inside = self
                 .map
@@ -283,6 +329,7 @@ impl Interaction {
                 content,
                 size.width,
                 size.height,
+                self.dialog_input(entries),
             ));
         }
     }
@@ -304,6 +351,7 @@ impl Interaction {
                 HELP,
                 self.nav.detail_scroll,
                 None,
+                board_view::Message::None,
             ));
         }
         (screen, map)
@@ -325,7 +373,34 @@ impl Interaction {
         entries: &[board_view::Entry],
         page: u16,
     ) -> Action {
+        self.nav.sent = false;
+        if let Some(text) = self.nav.compose.as_mut() {
+            // Writing to the leader: every key is text, but these.
+            match code {
+                KeyCode::Char(character) => text.push(character),
+                KeyCode::Backspace => {
+                    text.pop();
+                }
+                KeyCode::Esc => self.nav.compose = None,
+                KeyCode::Enter if !text.trim().is_empty() => {
+                    let text = text.trim().to_string();
+                    self.nav.compose = None;
+                    let about = entries
+                        .get(self.nav.index)
+                        .and_then(|entry| board_view::message_about(&entry.id))
+                        .unwrap_or(crate::leader::About::General);
+                    return Action::TellLeader { about, text };
+                }
+                _ => {}
+            }
+            return Action::None;
+        }
         match code {
+            // In details that take a message, Enter (or m) starts writing it;
+            // the next Enter sends it.
+            KeyCode::Char('m') | KeyCode::Enter if self.takes_message(entries) => {
+                self.nav.compose = Some(String::new());
+            }
             KeyCode::Esc | KeyCode::Char('q') if self.help || self.nav.detail => {
                 self.help = false;
                 self.nav.detail = false;
@@ -360,6 +435,17 @@ impl Interaction {
             KeyCode::Enter if !self.help && self.nav.selected.is_some() => {
                 self.nav.detail = true;
                 self.nav.detail_scroll = 0;
+            }
+            KeyCode::Char(' ') if !self.help && !self.nav.detail => {
+                if let Some(account) = self
+                    .nav
+                    .selected
+                    .as_deref()
+                    .and_then(|id| id.strip_prefix("account:"))
+                {
+                    return Action::ToggleAccount(account.to_string());
+                }
+                self.nav.move_by(entries, page as isize);
             }
             KeyCode::Char('p') => self.peeking = true,
             KeyCode::Char(digit @ '1'..='9') => {
@@ -535,9 +621,14 @@ fn screen_loop(
     let mut entries = Vec::new();
     let mut entries_dirty = true;
     let mut entries_key = None;
+    let mut marks = crate::seen::Marks::load(task.dir())?;
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
-        execute!(std::io::stdout(), EnableMouseCapture)?;
+        execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
+        // A pane left on the alternate screen (a board that was killed) keeps
+        // its old text there; the first frame would draw only over its own
+        // cells and leave the rest showing through.
+        terminal.clear()?;
         loop {
             match loader.take() {
                 Some(Ok(fresh)) => {
@@ -585,6 +676,7 @@ fn screen_loop(
                     &activity.lines,
                     notice,
                 );
+                marks.apply(&mut entries);
                 entries_key = Some(key);
                 entries_dirty = false;
             }
@@ -648,18 +740,62 @@ fn screen_loop(
                             devws.go(&pane)
                         }
                     }
+                    Action::TellLeader { about, text } => crate::leader::tell(task, &about, &text)
+                        .and_then(|()| {
+                            ui.nav.sent = true;
+                            match selected_entry(&ui.nav, &entries) {
+                                Some(entry) => marks.told(entry).map(|added| entries_dirty |= added),
+                                None => Ok(()),
+                            }
+                        }),
+                    Action::ToggleAccount(account) => {
+                        let enabled = board
+                            .switches
+                            .iter()
+                            .any(|switch| switch.name == account && switch.enabled);
+                        crate::accounts::set_enabled(task, devws, &account, !enabled).map(|()| {
+                            // Shown at once: the reload asks every account for its
+                            // limits, and a switch that lags gets pressed twice.
+                            if let Some(switch) =
+                                board.switches.iter_mut().find(|switch| switch.name == account)
+                            {
+                                switch.enabled = !enabled;
+                            }
+                            loader.refresh();
+                            refreshed = Instant::now() - REFRESH;
+                        })
+                    }
                 };
                 if let Err(error) = outcome {
-                    local_problem = Some(format!("Navigation failed: {error:#}"));
+                    local_problem = Some(format!("Board action failed: {error:#}"));
+                }
+            }
+            // Opening a NEEDS YOU row's details is reading it.
+            if ui.nav.detail {
+                if let Some(entry) = selected_entry(&ui.nav, &entries) {
+                    match marks.opened(entry) {
+                        Ok(added) => entries_dirty |= added,
+                        Err(error) => local_problem = Some(format!("Board action failed: {error:#}")),
+                    }
                 }
             }
         }
     })();
-    let mouse_result = execute!(std::io::stdout(), DisableMouseCapture);
+    let mouse_result = execute!(
+        std::io::stdout(),
+        DisableMouseCapture,
+        DisableBracketedPaste
+    );
     ratatui::restore();
     result?;
     mouse_result?;
     Ok(())
+}
+
+/// The row the selection is on.
+fn selected_entry<'a>(nav: &Navigation, entries: &'a [board_view::Entry]) -> Option<&'a board_view::Entry> {
+    let id = nav.selected.as_deref()?;
+    entries.iter().find(|entry| entry.id == id)
 }
 
 fn pane_of(board: &Board, digit: char) -> Option<String> {
@@ -725,10 +861,10 @@ mod tests {
         ui.apply(key(KeyCode::PageDown), &board, &entries, size);
         assert_eq!(
             ui.nav.detail_scroll,
-            board_view::dialog_body(&entries[0].detail, 30, 16).height
+            board_view::dialog_body(&entries[0].detail, 30, 16, false).height
         );
         ui.apply(key(KeyCode::End), &board, &entries, size);
-        let maximum = board_view::dialog_scroll_max(&entries[0].detail, 30, 16);
+        let maximum = board_view::dialog_scroll_max(&entries[0].detail, 30, 16, false);
         assert_eq!(ui.nav.detail_scroll, maximum);
         ui.apply(key(KeyCode::Up), &board, &entries, size);
         assert_eq!(
@@ -760,6 +896,126 @@ mod tests {
     }
 
     #[test]
+    fn m_in_a_steps_details_writes_to_the_leader_and_keys_become_text() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (home, devws, task, _repo) = crate::board::tests::started(&dir);
+        let board = load(&task, &devws, &home, &mut UsageReader::new(Duration::ZERO)).unwrap();
+        let row = |id: &str| board_view::Entry::text(id.into(), id.into(), "details".into(), true);
+        let entries = vec![row("step:B1-1-AT"), row("agent:hammer-3")];
+        let mut ui = Interaction::new(View::Overview);
+        ui.nav.reconcile(&entries);
+        let press = |ui: &mut Interaction, code| ui.key(code, &board, &entries, 10);
+
+        press(&mut ui, KeyCode::Enter);
+        press(&mut ui, KeyCode::Char('m'));
+        assert_eq!(ui.nav.compose.as_deref(), Some(""));
+        for character in "ok qj".chars() {
+            press(&mut ui, KeyCode::Char(character));
+        }
+        press(&mut ui, KeyCode::Backspace);
+        assert_eq!(ui.nav.compose.as_deref(), Some("ok q"), "q and j are text while writing");
+        assert!(ui.nav.detail, "q did not close the details");
+        assert_eq!(
+            press(&mut ui, KeyCode::Enter),
+            Action::TellLeader {
+                about: crate::leader::About::Step("B1-1-AT".into()),
+                text: "ok q".into()
+            }
+        );
+        assert_eq!(ui.nav.compose, None);
+        assert!(ui.nav.detail, "the details stay open");
+
+        press(&mut ui, KeyCode::Char('m'));
+        press(&mut ui, KeyCode::Char('x'));
+        press(&mut ui, KeyCode::Esc);
+        assert_eq!(ui.nav.compose, None);
+        assert!(ui.nav.detail, "Esc cancels the message only");
+
+        press(&mut ui, KeyCode::Esc);
+        press(&mut ui, KeyCode::Char('j'));
+        press(&mut ui, KeyCode::Enter);
+        press(&mut ui, KeyCode::Char('m'));
+        assert_eq!(ui.nav.compose, None, "an agent's details take no message");
+    }
+
+    #[test]
+    fn enter_a_click_or_a_paste_starts_the_message_and_an_empty_one_is_never_sent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (home, devws, task, _repo) = crate::board::tests::started(&dir);
+        let board = load(&task, &devws, &home, &mut UsageReader::new(Duration::ZERO)).unwrap();
+        let row = |id: &str| board_view::Entry::text(id.into(), id.into(), "details".into(), true);
+        let entries = vec![row("leader-asks")];
+        let mut ui = Interaction::new(View::Overview);
+        ui.nav.reconcile(&entries);
+        let press = |ui: &mut Interaction, code| ui.key(code, &board, &entries, 10);
+
+        press(&mut ui, KeyCode::Enter);
+        assert!(ui.nav.detail);
+        press(&mut ui, KeyCode::Enter);
+        assert_eq!(ui.nav.compose.as_deref(), Some(""), "Enter starts writing");
+        assert_eq!(
+            press(&mut ui, KeyCode::Enter),
+            Action::None,
+            "nothing written, nothing sent"
+        );
+        press(&mut ui, KeyCode::Char(' '));
+        assert_eq!(
+            press(&mut ui, KeyCode::Enter),
+            Action::None,
+            "blanks are nothing"
+        );
+        assert_eq!(ui.nav.compose.as_deref(), Some(" "), "still writing");
+        press(&mut ui, KeyCode::Esc);
+
+        ui.paste("yes to 1\nand 3", &entries);
+        assert_eq!(
+            ui.nav.compose.as_deref(),
+            Some("yes to 1 and 3"),
+            "a paste starts it"
+        );
+        assert_eq!(
+            press(&mut ui, KeyCode::Enter),
+            Action::TellLeader {
+                about: crate::leader::About::General,
+                text: "yes to 1 and 3".into()
+            }
+        );
+
+        let size = Rect::new(0, 0, 80, 30);
+        let drawn = ui.screen(&board, &entries, size.width, size.height, None).1;
+        ui.map = drawn;
+        let input = ui.map.input.expect("the dialog has its message box");
+        ui.click(input.x + 1, input.y + 1, &entries);
+        assert_eq!(
+            ui.nav.compose.as_deref(),
+            Some(""),
+            "a click in the box starts writing"
+        );
+        assert!(ui.nav.detail, "and keeps the details open");
+    }
+
+    #[test]
+    fn space_switches_the_selected_account_and_pages_anywhere_else() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (home, devws, task, _repo) = crate::board::tests::started(&dir);
+        let board = load(&task, &devws, &home, &mut UsageReader::new(Duration::ZERO)).unwrap();
+        let row = |id: &str| board_view::Entry::text(id.into(), id.into(), String::new(), false);
+        let entries = vec![row("leader"), row("account:claude"), row("agent:1")];
+        let mut ui = Interaction::new(View::Overview);
+        ui.nav.reconcile(&entries);
+        ui.key(KeyCode::Char('j'), &board, &entries, 10);
+        assert_eq!(ui.nav.selected.as_deref(), Some("account:claude"));
+        assert_eq!(
+            ui.key(KeyCode::Char(' '), &board, &entries, 10),
+            Action::ToggleAccount("claude".into())
+        );
+        assert_eq!(ui.nav.selected.as_deref(), Some("account:claude"), "it stays put");
+        ui.key(KeyCode::Char('k'), &board, &entries, 10);
+        assert_eq!(ui.key(KeyCode::Char(' '), &board, &entries, 1), Action::None);
+        assert_ne!(ui.nav.selected.as_deref(), Some("leader"), "Space still pages");
+    }
+
+    #[test]
     fn keys_open_details_and_navigate_without_a_nine_agent_limit() {
         let dir = tempfile::TempDir::new().unwrap();
         let (home, devws, task, _repo) = crate::board::tests::started(&dir);
@@ -774,6 +1030,7 @@ mod tests {
                 kind: board_view::Kind::Row,
                 parts: Vec::new(),
                 tail: String::new(),
+                seen: board_view::Seen::New,
             })
             .collect();
         let mut ui = Interaction::new(View::Agents);
@@ -815,6 +1072,7 @@ mod tests {
                 kind: board_view::Kind::Row,
                 parts: Vec::new(),
                 tail: String::new(),
+                seen: board_view::Seen::New,
             })
             .collect();
         let mut ui = Interaction::new(View::Steps);

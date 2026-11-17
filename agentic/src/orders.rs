@@ -6,7 +6,7 @@
 use crate::checks::{self, CheckRun, Work};
 use crate::log::Kind;
 use crate::roles::Group;
-use crate::state::{LEADER, Order, OrderStatus, Step, StepStatus};
+use crate::state::{LEADER, Order, OrderStatus, State, Step, StepStatus};
 use crate::task::{Repo, Task};
 use anyhow::{Context, Result, bail};
 use std::time::Duration;
@@ -38,6 +38,53 @@ pub struct OrderRequest {
     pub spec: Option<String>,
 }
 
+/// The attempts a step gets: the task's, or what the user allowed it.
+pub fn attempt_limit(state: &State, step: &str, max_attempts: u32) -> u32 {
+    state
+        .attempt_limits
+        .get(step)
+        .copied()
+        .unwrap_or(max_attempts)
+}
+
+/// Refuses another try at a step that has had `used` of its attempts: the
+/// leader escalates instead, and only the user allows more.
+pub fn ensure_attempt_left(state: &State, used: u32, step: &str, max_attempts: u32) -> Result<()> {
+    let limit = attempt_limit(state, step, max_attempts);
+    if used >= limit {
+        bail!(
+            "step {step} has had {used} attempts, the most it is allowed: escalate it to the user \
+             (they can allow more with `devagentics task attempts <task> {step} <limit>`)"
+        );
+    }
+    Ok(())
+}
+
+/// The user allows a step `limit` attempts in all, more than it has had.
+pub fn allow_attempts(task: &Task, step: &str, limit: u32) -> Result<()> {
+    task.transaction(|tx| {
+        let used = tx
+            .state
+            .steps
+            .iter()
+            .find(|found| found.id == step)
+            .with_context(|| format!("there is no step {step}"))?
+            .attempts;
+        if limit <= used {
+            bail!("step {step} has had {used} attempts already: allow more than that");
+        }
+        tx.state.attempt_limits.insert(step.to_string(), limit);
+        tx.state.step_retries.remove(step);
+        tx.log(
+            Kind::Review,
+            None,
+            Some(step),
+            &format!("the user allowed {limit} attempts"),
+        );
+        Ok(())
+    })
+}
+
 /// Gives an agent an order: records it, and queues the message that tells the
 /// agent (the dispatcher types it in when the agent can take it).
 pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
@@ -49,6 +96,7 @@ pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
         .filter(|agent| agent.live)
         .cloned()
         .with_context(|| format!("there is no live agent {}", request.agent))?;
+    let max_attempts = task.config()?.max_attempts;
     let reviewed = task.state()?.workflow == crate::execution::Workflow::Reviewed;
     let contract = if reviewed && agent.writes {
         let state = task.state()?;
@@ -68,6 +116,7 @@ pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
         );
         request.allowed = item.allowed.clone();
         request.profiles = item.profiles.clone();
+        request.forbidden = item.forbidden_for_order(&request.forbidden);
         Some(item)
     } else {
         None
@@ -101,7 +150,10 @@ pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
     crate::check_profiles::validate(&profiles)?;
     let check = request.check.clone().or(repo.check.clone());
     if check.is_some() && !profiles.selected.is_empty() {
-        bail!("legacy check and named profiles cannot be mixed");
+        bail!(
+            "this repo checks with named profiles ({}): leave out check, or choose profiles",
+            profiles.selected.join(", ")
+        );
     }
     let allowed = match &lane {
         Some(lane) if request.allowed.is_empty() => lane.globs.clone(),
@@ -146,6 +198,9 @@ pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
                 bail!("step {} is already accepted", step.id)
             }
             _ => {}
+        }
+        if let Some(step) = tx.state.steps.iter().find(|step| step.id == request.step) {
+            ensure_attempt_left(&tx.state, step.attempts, &step.id, max_attempts)?;
         }
         match tx.state.step_mut(&request.step) {
             Some(step) => {
@@ -329,8 +384,8 @@ pub(crate) fn order_message(order: &Order, title: &str, profiles: &[String]) -> 
     };
     let plan = order.plan.as_ref().map_or_else(String::new, |plan| {
         format!(
-            "Follow the plan of step {plan}: `devagentics plan show {plan}`. \
-             If something in it is unclear, ask: `devagentics ask \"<your question>\"`, then end your turn and wait for the answer.\n\n"
+            "Follow the plan of step {plan}: `devagentics plan show {plan}` (in an isolated team: worker action=plan_read). \
+             If something in it is unclear, ask: `devagentics ask \"<your question>\"` (worker action=ask), then end your turn and wait for the answer.\n\n"
         )
     });
     let files = if order.forbidden.iter().any(|glob| glob == "**") {
@@ -514,7 +569,9 @@ pub(crate) fn authoritative<'a>(
     }
     let current = state
         .open_order_of(agent)
-        .context("no open order to report on")?;
+        .with_context(|| {
+            format!("order {id} is not open ({agent} has no open order): a new order for its step runs its checks again")
+        })?;
     if current.id != id || current.agent != agent || !current.delivered {
         bail!(
             "order {id} is stale, foreign or undelivered; current order is {}",
@@ -537,6 +594,33 @@ pub(crate) fn validate_snapshot(
         );
     }
     Ok(())
+}
+
+/// A read-only adviser's (a planner's) answer to its order: it wrote no code,
+/// so there is nothing to check; the order closes and the leader hears it.
+/// Without this, an order that asked for findings, not a baseline, ended in
+/// a stall and the findings were lost.
+pub fn report_findings(
+    task: &Task,
+    agent: &str,
+    order_id: &str,
+    outcome: Outcome,
+    summary: &str,
+) -> Result<String> {
+    task.transaction(|tx| {
+        let order = authoritative(&tx.state, agent, order_id)?.clone();
+        let (status, verb) = match outcome {
+            Outcome::Done => (StepStatus::Reported, "reports"),
+            Outcome::Blocked => (StepStatus::Blocked, "is blocked"),
+        };
+        close(tx, &order, status);
+        tx.state.say(
+            LEADER,
+            format!("{agent} {verb} on step {} (order {}): {summary}", order.step, order.id),
+        );
+        tx.log(Kind::Report, Some(agent), Some(&order.step), summary);
+        Ok("Reported to the leader. Wait for the next order.".to_string())
+    })
 }
 
 fn close(tx: &mut crate::task::Tx, order: &Order, step_status: StepStatus) {
@@ -719,6 +803,19 @@ pub fn reject_step(task: &Task, step: &str, reason: &str) -> Result<()> {
     })
 }
 
+/// What a contract may write stays in its lane; the files it only reads
+/// (`supporting_files`) need to be in the runner's source, not in the lane:
+/// a docs step reads the code it documents.
+fn writes_within_lane(lane: &[String], item: &crate::execution::Contract) -> Result<()> {
+    for path in &item.allowed {
+        anyhow::ensure!(
+            checks::within(lane, path)?,
+            "planned file scope exceeds lane: {path}"
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn ensure_contract(
     task: &Task,
     agent: &crate::state::Agent,
@@ -741,12 +838,16 @@ pub(crate) fn ensure_contract(
             "planned source path is unavailable in the isolated runner"
         );
     }
-    for path in item.allowed.iter().chain(&item.supporting_files) {
+    // The implementer reads its protected tests: they must be in its source
+    // snapshot, which leaves the runner's protected paths out entirely.
+    for path in &item.protected_tests {
         anyhow::ensure!(
-            checks::within(&lane.globs, path)?,
-            "planned file scope exceeds lane"
+            checks::within(&runner.source_paths, path)?
+                && !checks::within(&runner.protected_paths, path)?,
+            "protected tests {path} must be runner source the implementer can read"
         );
     }
+    writes_within_lane(&lane.globs, item)?;
     let profiles = task
         .config()?
         .check_profiles
@@ -789,6 +890,7 @@ mod tests {
             branch: "feat/x".to_string(),
             workspace: "dev-app".to_string(),
             max_agents: 3,
+            max_attempts: 3,
             check_profiles: Default::default(),
             lanes: Vec::new(),
             repos: vec![Repo {
@@ -954,6 +1056,52 @@ mod tests {
     }
 
     #[test]
+    fn a_planners_findings_close_its_order_and_reach_the_leader() {
+        let f = fixture(None);
+        let id = send_order(&f.task, request("s1")).unwrap();
+        let agent = f.task.state().unwrap().agent_in_pane("%5").unwrap().id.clone();
+        assert!(
+            report_findings(&f.task, &agent, &id, Outcome::Done, "early").is_err(),
+            "an undelivered order was reported"
+        );
+        f.task
+            .transaction(|tx| {
+                tx.state.orders[0].delivered = true;
+                Ok(())
+            })
+            .unwrap();
+
+        report_findings(&f.task, &agent, &id, Outcome::Done, "H1-AT fits docs/**").unwrap();
+
+        let state = f.task.state().unwrap();
+        assert_eq!(state.orders[0].status, OrderStatus::Closed);
+        assert!(state.steps.iter().any(|step| step.id == "s1" && step.status == StepStatus::Reported));
+        assert!(
+            state
+                .queue
+                .iter()
+                .any(|message| message.to == LEADER && message.text.contains("H1-AT fits docs/**")),
+            "{:?}",
+            state.queue
+        );
+        assert!(report_findings(&f.task, &agent, &id, Outcome::Done, "again").is_err());
+    }
+
+    #[test]
+    fn a_contract_writes_only_in_its_lane_but_reads_outside_it() {
+        let lane = vec!["docs/**".to_string(), "CLAUDE.md".to_string()];
+        let mut item = crate::execution::Contract {
+            allowed: vec!["docs/plans/x/acceptance/H1.md".into()],
+            supporting_files: vec!["web/src/hooks/business/observe/useReplayPlayer.ts".into()],
+            ..Default::default()
+        };
+        writes_within_lane(&lane, &item).unwrap();
+        item.allowed.push("web/src/new.ts".into());
+        let error = writes_within_lane(&lane, &item).unwrap_err().to_string();
+        assert!(error.contains("exceeds lane: web/src/new.ts"), "{error}");
+    }
+
+    #[test]
     fn reports_reject_undelivered_and_obsolete_order_ids_without_mutation() {
         let f = fixture(None);
         let id = send_order(&f.task, request("s1")).unwrap();
@@ -1065,6 +1213,29 @@ mod tests {
         assert!(worker.join().unwrap().is_err());
         assert_eq!(status(&f, "s1"), StepStatus::Ordered);
         assert!(f.task.state().unwrap().check_evidence.is_empty());
+    }
+
+    #[test]
+    fn order_and_check_errors_say_what_to_do() {
+        let f = fixture(None);
+        let profiles = serde_json::json!({"environments":{"testing":{}}, "checks":{"unit":{"command":"true","environment":"testing"}}, "selected":["unit"]});
+        crate::check_profiles::configure(&f.task, "app", serde_json::from_value(profiles).unwrap())
+            .unwrap();
+        let mut with_check = request("s1");
+        with_check.check = Some("true".into());
+        let error = send_order(&f.task, with_check).unwrap_err().to_string();
+        assert!(error.contains("named profiles (unit): leave out check"), "{error}");
+
+        let id = send_order(&f.task, request("s1")).unwrap();
+        f.task
+            .transaction(|tx| {
+                tx.state.orders[0].status = OrderStatus::Closed;
+                Ok(())
+            })
+            .unwrap();
+        let error = crate::check_profiles::run(&f.task, &id, None).unwrap_err().to_string();
+        assert!(error.contains(&format!("order {id} is not open")), "{error}");
+        assert!(error.contains("a new order for its step"), "{error}");
     }
 
     #[test]
@@ -1361,6 +1532,46 @@ mod tests {
                 .to_string()
                 .contains("no open order")
         );
+    }
+
+    /// Reports s1 done and sends it back, as a leader does with work it
+    /// does not accept.
+    fn send_back(f: &Fixture, file: &str) {
+        commit_file(f.repo.path(), file, "x\n", file);
+        delivered_report(&f.task, "%5", Outcome::Done, "done", SHORT).unwrap();
+        reject_step(&f.task, "s1", "not yet").unwrap();
+    }
+
+    #[test]
+    fn a_step_gets_at_most_the_tasks_attempts_until_the_user_allows_more() {
+        let f = fixture(None);
+        for (attempt, file) in ["src/a.rs", "src/b.rs", "src/c.rs"].iter().enumerate() {
+            send_order(&f.task, request("s1")).unwrap();
+            assert_eq!(status(&f, "s1"), StepStatus::Ordered, "attempt {attempt}");
+            send_back(&f, file);
+        }
+
+        let error = send_order(&f.task, request("s1")).unwrap_err().to_string();
+        assert!(
+            error.contains("3 attempts") && error.contains("devagentics task attempts"),
+            "{error}"
+        );
+        assert_eq!(
+            status(&f, "s1"),
+            StepStatus::Rejected,
+            "a refused order leaves the step as it was"
+        );
+
+        assert!(
+            allow_attempts(&f.task, "s1", 3).is_err(),
+            "a limit the step already reached allows nothing"
+        );
+        allow_attempts(&f.task, "s1", 4).unwrap();
+        send_order(&f.task, request("s1")).unwrap();
+        assert_eq!(f.task.state().unwrap().steps[1].attempts, 4);
+        send_back(&f, "src/d.rs");
+        assert!(send_order(&f.task, request("s1")).is_err());
+        assert!(allow_attempts(&f.task, "nope", 9).is_err());
     }
 
     #[test]

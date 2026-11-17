@@ -40,6 +40,7 @@ Core dependencies:
 - Neovim 0.11.2 or newer, set up with [LazyVim](https://www.lazyvim.org)
 - ripgrep, fd, and the tree-sitter CLI (used by LazyVim)
 - `tree`
+- btop and lazydocker, for the system monitor workspace
 - Ruby (used by tmuxinator)
 - one AI agent: [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
   or [Codex](https://developers.openai.com/codex/)
@@ -101,6 +102,13 @@ It also prepares Rust with rustup when needed and builds `devagentics` and
 `devws-ui`. A failed build stops the normal install instead of leaving a team
 panel that cannot start. An older Rust managed without rustup must be updated
 with its package manager before rerunning installation.
+
+The installer prints one line per step (`✓ Configuration links`), with any
+warning indented under its step, and asks its questions on the terminal. What
+the tools themselves print (brew, cargo, uv, git, the reload) goes to
+`~/.devws-state/install.log`, rewritten on every run. A failed step is marked
+`✗` and followed by the end of that log. `./install.sh --verbose` shows
+everything instead.
 
 Every install upgrades an outdated Homebrew-managed tmuxinator automatically.
 A tmuxinator installed by another package manager is left unchanged. `--deps`

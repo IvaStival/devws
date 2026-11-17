@@ -439,17 +439,20 @@ start_workspace_at() {
   refresh_pickers
 }
 
-new_workspace() {
-  local entered_path project_root
+# Asks for a folder (Tab completes, ~ is home) and prints it absolute; fails
+# on Ctrl-C, nothing typed, or a folder that does not exist.
+#   ask_folder <title>
+ask_folder() {
+  local entered_path folder
 
-  printf '\033c'
-  printf 'New workspace\n\n'
-  # Keep Ctrl-C local to this prompt so cancelling workspace creation returns
-  # to the picker instead of terminating the sidebar.
-  trap 'trap - INT; printf "\n"; return 130' INT
+  printf '\033c' >&2
+  printf '%s\n\n' "$1" >&2
+  # Keep Ctrl-C local to this prompt so cancelling returns to the picker
+  # instead of terminating the sidebar.
+  trap 'trap - INT; printf "\n" >&2; return 130' INT
   read -e -r -p 'Folder path (Ctrl-C to cancel): ' entered_path
   trap - INT
-  [ -n "$entered_path" ] || return
+  [ -n "$entered_path" ] || return 1
 
   # Bash readline supplies Tab completion. Resolve the result before passing it
   # to tmuxinator so relative paths and a leading "~/" behave as expected.
@@ -457,12 +460,17 @@ new_workspace() {
     "~") entered_path="$HOME" ;;
     "~/"*) entered_path="$HOME/${entered_path#\~/}" ;;
   esac
-  if ! project_root="$(cd "$entered_path" 2>/dev/null && pwd -P)"; then
-    printf 'Folder does not exist: %s\nPress Enter to return…' "$entered_path"
-    read -r
-    return
+  if ! folder="$(cd "$entered_path" 2>/dev/null && pwd -P)"; then
+    printf 'Folder does not exist: %s\n' "$entered_path" >&2
+    pause >&2
+    return 1
   fi
+  printf '%s\n' "$folder"
+}
 
+new_workspace() {
+  local project_root
+  project_root="$(ask_folder 'New workspace')" || return
   start_workspace_at "$project_root"
 }
 
@@ -487,6 +495,142 @@ new_github_workspace() {
 open_agentic_team() {
   printf '\033c'
   "$HOME/.tmuxinator/agentic.sh" || pause
+}
+
+# System monitor: btop, lazydocker and a log (system.yml). It opens at once;
+# its log pane asks for the log there (choose=1) while the other panels run.
+# Already open, the client goes to it: Ctrl-C in its log pane changes the log.
+open_system_workspace() {
+  local session=dev-system
+  if tmux has-session -t "=$session" 2>/dev/null; then
+    tmux switch-client -t "=$session" 2>/dev/null
+    return 0
+  fi
+  tmuxinator start system choose=1
+  save_state
+  refresh_pickers
+}
+
+workspace_template() {
+  "$HOME/.tmuxinator/workspace_template.sh" "$@"
+}
+
+# The new workspace's name, the folder's by default; prints its session
+# (dev-<name>). Fails on Ctrl-C, a name tmux cannot take, or one taken.
+#   ask_workspace_name <folder>
+ask_workspace_name() {
+  local name
+  trap 'trap - INT; printf "\n" >&2; return 130' INT
+  read -e -r -i "$(basename "$1" | tr -c 'A-Za-z0-9_\n-' '-')" -p 'Workspace name: ' name
+  trap - INT
+  case "$name" in
+    '') return 1 ;;
+    *[!A-Za-z0-9_-]*)
+      printf 'A name is letters, digits, - and _: %s\n' "$name" >&2
+      pause >&2
+      return 1
+      ;;
+  esac
+  if tmux has-session -t "=dev-$name" 2>/dev/null; then
+    printf 'A workspace is already called %s.\n' "$name" >&2
+    pause >&2
+    return 1
+  fi
+  printf 'dev-%s\n' "$name"
+}
+
+# Opens a saved <template> on a folder asked for.
+#   open_template_on_a_folder <template> <title>
+open_template_on_a_folder() {
+  local folder session
+  folder="$(ask_folder "$2")" || return 0
+  session="$(ask_workspace_name "$folder")" || return 0
+  workspace_template start "$1" "$folder" "$session" || { pause; return 1; }
+  save_state
+  refresh_pickers
+}
+
+# The sidebar and one shell, to arrange as you like and save as a template.
+# It asks nothing: it opens in the home folder (a shell cds anywhere), as
+# dev-empty, or dev-empty-2… when that is taken.
+new_empty_workspace() {
+  local session=dev-empty number=2
+  while tmux has-session -t "=$session" 2>/dev/null; do
+    session="dev-empty-$number"
+    number=$((number + 1))
+  done
+  workspace_template start blank "$HOME" "$session" || { pause; return 1; }
+  save_state
+  refresh_pickers
+}
+
+# The current workspace's panes, their commands and layout, as a template.
+save_workspace_template() {
+  local session current name
+  session="$(tmux display-message -p '#S')"
+  current="$(tmux show-options -qv -t "=$session:" @devws_template)"
+  case "$current" in blank | agentic | system) current="" ;; esac
+  printf '\033c'
+  printf 'Save %s as a template: its panes, what runs in them and their layout,\nto open again on any folder (Templates › Open a template).\n\n' "${session#dev-}"
+  trap 'trap - INT; printf "\n"; return 130' INT
+  read -e -r -i "$current" -p 'Template name (Ctrl-C to cancel): ' name
+  trap - INT
+  [ -n "$name" ] || return 0
+  if [ "$name" != "$current" ] && workspace_template list | grep -qxF "$name"; then
+    [ "$(printf 'Keep the saved one\nReplace it\n' | pick "Template $name" 'A template is already called that')" = 'Replace it' ] || return 0
+  fi
+  if workspace_template save "$session" "$name"; then
+    printf 'Saved: Templates › Open a template opens it, Edit a template changes its commands.\n'
+    save_state
+  fi
+  pause
+}
+
+# [header]: a saved template, from the list; fails when there is none.
+choose_template() {
+  local templates
+  templates="$(workspace_template list)"
+  if [ -z "$templates" ]; then
+    printf '\033cNo templates yet: Templates › Save as template keeps a workspace as one.\n'
+    pause
+    return 1
+  fi
+  printf '%s\n' "$templates" | pick Template "$1"
+}
+
+# devws's own templates first, each opened as its own action opens it, then
+# the saved ones.
+open_workspace_template() {
+  local choice name
+  choice="$({
+    workspace_template builtins | awk -F '\t' '{ printf "%s · %s\t%s\n", $1, $2, $1 }'
+    workspace_template list | awk '{ printf "%s · saved\t%s\n", $0, $0 }'
+  } | pick Template 'The template to open' --delimiter=$'\t' --with-nth=1)" || return 0
+  [ -n "$choice" ] || return 0
+  name="${choice##*$'\t'}"
+  case "$name" in
+    dev) new_workspace ;;
+    system) open_system_workspace ;;
+    agentic) open_agentic_team ;;
+    blank) new_empty_workspace ;;
+    *) open_template_on_a_folder "$name" "Open the template $name" ;;
+  esac
+}
+
+# The template's file in the editor: its panes' commands, one a line.
+edit_workspace_template() {
+  local name
+  name="$(choose_template 'The template to edit')" || return 0
+  [ -n "$name" ] || return 0
+  "${EDITOR:-nvim}" "$(workspace_template file "$name")"
+}
+
+delete_workspace_template() {
+  local name
+  name="$(choose_template 'The template to delete')" || return 0
+  [ -n "$name" ] || return 0
+  [ "$(printf 'Keep it\nDelete it\n' | pick "Delete $name" 'Workspaces open from it stay open')" = 'Delete it' ] || return 0
+  workspace_template delete "$name" || pause
 }
 
 # Resolve group workspaces through their team before looking up panes or
@@ -1149,20 +1293,52 @@ detach_client() {
   tmux detach-client
 }
 
+# "<group workspace><TAB><team><TAB><group>" for each agent team's group
+# workspace (team_groups.sh marks them @devws_team_of / @devws_group).
+team_group_sessions() {
+  tmux list-sessions -F "#{session_name}$(printf '\t')#{@devws_team_of}$(printf '\t')#{@devws_group}" 2>/dev/null |
+    awk -F '\t' '$2 != ""'
+}
+
+# The workspaces to offer for closing: a team's groups go with the team, so
+# they are not offered on their own; the team says which go with it.
+closable_workspaces() {
+  local current="$1" groups
+  groups="$(team_group_sessions)"
+  dev_sessions | while IFS= read -r session; do
+    awk -F '\t' -v session="$session" '$1 == session { found = 1 } END { exit !found }' <<<"$groups" && continue
+    local with
+    # Seniors first, then the Floor's, as the sidebar lists them.
+    with="$(awk -F '\t' -v team="$session" '$2 == team {
+        rank = tolower($3) == "seniors" ? 1 : (tolower($3) ~ /^floor/ ? 2 : 3)
+        print rank "\t" $3
+      }' <<<"$groups" | LC_ALL=C sort -t "$(printf '\t')" -k1,1n -k2,2 | cut -f2 | paste -sd ',' - | sed 's/,/, /g')"
+    printf '%s %s%s\n' "$([ "$session" = "$current" ] && printf '*' || printf ' ')" "$session" \
+      "${with:+  (team: $with)}"
+  done
+}
+
 close_workspace() {
   local current selected target quoted_target root quoted_root remove_worktree="" move_apps="" move_clients
+  local group closing="" kill_groups=""
   # Set by ask_to_remove_worktree when the untracked files go too.
   local remove_untracked=""
   current="$(tmux display-message -p '#S' 2>/dev/null)"
   selected="$(
-    dev_sessions |
-      awk -v cur="$current" '{ print ($0 == cur ? "* " : "  ") $0 }' |
-      pick Close 'Close a workspace (* the one you are in)' --height=100%
+    closable_workspaces "$current" |
+      pick Close 'Close a workspace (* the one you are in; a team closes with its groups)' --height=100%
   )"
   [ -n "$selected" ] || return
 
   target="${selected#??}"
+  target="${target%% *}"
   printf -v quoted_target '%q' "$target"
+  # A team's group workspaces close with it, before it: their agents are its.
+  while IFS="$(printf '\t')" read -r group _ _; do
+    printf -v group '%q' "$group"
+    closing="$closing --closing $group"
+    kill_groups="$kill_groups tmux kill-session -t $group;"
+  done < <(team_group_sessions | awk -F '\t' -v team="$target" '$2 == team')
   # Asked before closing, while this pane is sure to be there to ask; the
   # folder goes once the workspace no longer runs in it, and git still refuses
   # if changes appeared meanwhile.
@@ -1184,5 +1360,5 @@ close_workspace() {
   # Run through the tmux server so closing the workspace containing this
   # sidebar does not terminate the refresh command along with the pane.
   tmux run-shell -b \
-    "$move_clients '$HOME/.tmuxinator/save_state.sh' --closing $quoted_target; tmux kill-session -t $quoted_target; $move_apps $remove_worktree '$HOME/.tmuxinator/save_state.sh'; '$HOME/.tmuxinator/refresh_devws_pickers.sh'"
+    "$move_clients '$HOME/.tmuxinator/save_state.sh' --closing $quoted_target$closing;$kill_groups tmux kill-session -t $quoted_target; $move_apps $remove_worktree '$HOME/.tmuxinator/save_state.sh'; '$HOME/.tmuxinator/refresh_devws_pickers.sh'"
 }

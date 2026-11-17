@@ -14,6 +14,14 @@ fn default_max_agents() -> usize {
     DEFAULT_MAX_AGENTS
 }
 
+/// Orders a step may have. When they are used, devAgentics waits and gives it
+/// one more (`watch::RETRY_AFTER_SECS`); a step that still fails needs a person.
+pub const DEFAULT_MAX_ATTEMPTS: u32 = 5;
+
+fn default_max_attempts() -> u32 {
+    DEFAULT_MAX_ATTEMPTS
+}
+
 /// A task's settings, in `task.toml`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TaskConfig {
@@ -23,6 +31,10 @@ pub struct TaskConfig {
     pub workspace: String,
     #[serde(default = "default_max_agents")]
     pub max_agents: usize,
+    /// Orders (and reviews asking for changes) a step gets; the user allows
+    /// more for one step (`devagentics task attempts`).
+    #[serde(default = "default_max_attempts")]
+    pub max_attempts: u32,
     #[serde(default)]
     pub check_profiles: std::collections::BTreeMap<String, crate::check_profiles::RepositoryChecks>,
     #[serde(default)]
@@ -220,6 +232,7 @@ mod tests {
             branch: "feat/login".to_string(),
             workspace: "dev-app".to_string(),
             max_agents: 3,
+            max_attempts: crate::task::DEFAULT_MAX_ATTEMPTS,
             check_profiles: Default::default(),
             lanes: Vec::new(),
             repos: vec![Repo {
@@ -243,6 +256,14 @@ mod tests {
         }
         assert_eq!(fs::read(&path).unwrap(), contents);
         assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+    }
+
+    #[test]
+    fn a_task_toml_from_before_the_attempt_limit_gets_the_default() {
+        let config: TaskConfig =
+            toml::from_str("id = \"t\"\nbranch = \"feat/x\"\nworkspace = \"dev\"\n").unwrap();
+        assert_eq!(config.max_attempts, DEFAULT_MAX_ATTEMPTS);
+        assert_eq!(config.max_agents, DEFAULT_MAX_AGENTS);
     }
 
     #[test]

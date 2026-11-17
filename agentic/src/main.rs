@@ -1,14 +1,21 @@
+mod accounts;
 mod agent_args;
+mod bench;
 mod board;
 mod board_tui;
 mod board_usage;
 mod board_view;
+mod details_view;
+mod seen;
 mod check_profiles;
 mod checks;
 mod devws;
+mod executable;
 mod execution;
+mod graph;
 mod history;
 mod home;
+mod images;
 mod integration;
 mod lanes;
 mod leader;
@@ -16,6 +23,7 @@ mod log;
 mod mcp;
 mod milestones;
 mod orders;
+mod panel_view;
 mod performance;
 mod plans;
 mod prs;
@@ -100,6 +108,12 @@ enum Command {
         #[command(subcommand)]
         action: HistoryAction,
     },
+    /// Measure a team run: first-pass acceptance, corrections and their
+    /// causes, waits, what you had to do and the cost
+    Bench {
+        #[command(subcommand)]
+        action: BenchAction,
+    },
     /// Run checks for an exact delivered order
     Check {
         #[command(subcommand)]
@@ -165,6 +179,25 @@ enum Command {
     },
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum Switch {
+    On,
+    Off,
+}
+
+#[derive(Subcommand)]
+enum BenchAction {
+    /// A task's run
+    Report {
+        task: String,
+        /// As JSON, to collect runs
+        #[arg(long)]
+        json: bool,
+    },
+    /// Two tasks' runs side by side (a legacy and a reviewed one)
+    Compare { first: String, second: String },
+}
+
 #[derive(Subcommand)]
 enum HistoryAction {
     /// Write what the task accepted, its plan and execution plans into the
@@ -227,6 +260,26 @@ enum TaskAction {
     Resume { task: String },
     /// Stop every agent (the worktrees stay)
     Cancel { task: String },
+    /// You let Codex run this task's read-only code reviewers (on) or not
+    /// (off). In its read-only sandbox it cannot write, but its shell can
+    /// read host files; writers always run on Claude.
+    CodexReviewers { task: String, switch: Switch },
+    /// You put this reviewed task's whole team, leader included, on Codex
+    /// (on) or not (off). Codex cannot turn its shell off: a worker's writes
+    /// stay in its snapshot and nothing has network, but its shell can read
+    /// host files. Restart the leader to move it
+    CodexTeam { task: String, switch: Switch },
+    /// You turn the code graph (Graphify, code only and offline) on or off
+    /// for this task's leader and workers: built per commit in the task
+    /// folder, never in the project
+    Graph { task: String, switch: Switch },
+    /// You allow a step more attempts than the task's limit (orders and
+    /// reviews asking for changes): `limit` in all. The leader cannot.
+    Attempts {
+        task: String,
+        step: String,
+        limit: u32,
+    },
     /// The tasks
     List,
 }
@@ -456,7 +509,7 @@ fn run() -> Result<()> {
                 leader,
                 legacy,
             } => {
-                let command = std::env::current_exe()?.display().to_string();
+                let command = executable::own()?.display().to_string();
                 let started = if legacy {
                     start::start_task(&home, &devws, &folder, &command, leader.as_deref())?
                 } else {
@@ -523,6 +576,89 @@ fn run() -> Result<()> {
                 }
                 .cancel()?;
                 println!("Every agent is stopped; the worktrees stay.");
+            }
+            TaskAction::CodexReviewers { task, switch } => {
+                let enabled = matches!(switch, Switch::On);
+                open(&task)?.transaction(|tx| {
+                    tx.state.codex_reviewers = enabled;
+                    tx.log(
+                        log::Kind::Review,
+                        None,
+                        None,
+                        if enabled {
+                            "the user let Codex run read-only code reviewers"
+                        } else {
+                            "code reviewers run on Claude"
+                        },
+                    );
+                    Ok(())
+                })?;
+                println!(
+                    "{}",
+                    if enabled {
+                        "Code reviewers started from now on may run on Codex (read-only)."
+                    } else {
+                        "Code reviewers started from now on run on Claude."
+                    }
+                );
+            }
+            TaskAction::CodexTeam { task, switch } => {
+                let enabled = matches!(switch, Switch::On);
+                open(&task)?.transaction(|tx| {
+                    tx.state.codex_team = enabled;
+                    tx.state.codex_reviewers |= enabled;
+                    tx.log(
+                        log::Kind::Review,
+                        None,
+                        None,
+                        if enabled {
+                            "the user put the whole team on Codex (its shell can read the host)"
+                        } else {
+                            "the team's writers and leader run on Claude again"
+                        },
+                    );
+                    Ok(())
+                })?;
+                println!(
+                    "{}",
+                    if enabled {
+                        "The team runs on Codex from now on: agents started from now, and the leader once restarted."
+                    } else {
+                        "Writers and the leader run on Claude from now on; reviewers stay as codex-reviewers says."
+                    }
+                );
+            }
+            TaskAction::Graph { task, switch } => {
+                let enabled = matches!(switch, Switch::On);
+                if enabled {
+                    graph::Graphify::from_env()?.available()?;
+                }
+                open(&task)?.transaction(|tx| {
+                    tx.state.graph_enabled = enabled;
+                    tx.log(
+                        log::Kind::Review,
+                        None,
+                        None,
+                        if enabled {
+                            "the user turned the code graph on"
+                        } else {
+                            "the user turned the code graph off"
+                        },
+                    );
+                    Ok(())
+                })?;
+                println!(
+                    "{}",
+                    if enabled {
+                        "The code graph is on: the leader and workers can ask it (graph)."
+                    } else {
+                        "The code graph is off."
+                    }
+                );
+            }
+            TaskAction::Attempts { task, step, limit } => {
+                orders::allow_attempts(&open(&task)?, &step, limit)?;
+                println!("Step {step} may have {limit} attempts in all.");
             }
             TaskAction::List => println!("{}", task_list(&home)?),
         },
@@ -650,6 +786,23 @@ fn run() -> Result<()> {
                 "{}",
                 questions::answer(&task, questions::Answerer::Pane(&pane), &question, &answer)?
             );
+        }
+        Command::Bench {
+            action: BenchAction::Report { task, json },
+        } => {
+            let report = bench::report(&open(&task)?, &devws)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print!("{}", bench::render(&report));
+            }
+        }
+        Command::Bench {
+            action: BenchAction::Compare { first, second },
+        } => {
+            let first = bench::report(&open(&first)?, &devws)?;
+            let second = bench::report(&open(&second)?, &devws)?;
+            print!("{}", bench::compare(&first, &second));
         }
         Command::History {
             action: HistoryAction::Save { task },

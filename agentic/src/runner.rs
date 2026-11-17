@@ -1,6 +1,6 @@
 //! Containers see disposable source snapshots, never host projects or data volumes.
 use crate::{checks, execution::Workflow, state::LEADER, task::Task};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -22,6 +22,132 @@ pub struct Configuration {
     pub source_paths: Vec<String>,
     pub protected_paths: Vec<String>,
     pub timeout_seconds: u64,
+    /// The rootless Docker daemon every container runs on (`unix://…`);
+    /// None is the user's own, `$XDG_RUNTIME_DIR/docker.sock`. Never a shared
+    /// or root daemon: a host's other containers stay out of reach.
+    #[serde(default)]
+    pub docker_host: Option<String>,
+    /// Folders of the image mounted read-only inside the workspace: the
+    /// dependencies a project keeps untracked (`node_modules`), which the
+    /// tracked-source snapshot lacks and a no-network run cannot fetch.
+    #[serde(default)]
+    pub image_mounts: Vec<ImageMount>,
+    /// Each container's memory in MiB (default 512) and CPUs (default 1).
+    /// Bounded: the runner shares the host with everything else on it.
+    #[serde(default)]
+    pub memory_mb: Option<u32>,
+    #[serde(default)]
+    pub cpus: Option<u32>,
+    /// A lane's own image, for work the main image cannot run (a PHP
+    /// backend beside a Node frontend). Left out when empty, so a task
+    /// without lane images keeps its evidence signatures.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lanes: BTreeMap<String, LaneImage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaneImage {
+    /// A local immutable image ID, like the main one.
+    pub image: String,
+    #[serde(default)]
+    pub image_mounts: Vec<ImageMount>,
+}
+
+impl Configuration {
+    /// What a container of `lane` runs with: the lane's image and mounts when
+    /// it has its own, the main ones otherwise.
+    pub fn for_lane(&self, lane: Option<&str>) -> Configuration {
+        let mut config = self.clone();
+        config.lanes = BTreeMap::new();
+        if let Some(own) = lane.and_then(|name| self.lanes.get(name)) {
+            config.image = own.image.clone();
+            config.image_mounts = own.image_mounts.clone();
+        }
+        config
+    }
+
+    /// The configuration without its lane images: what a lane-only change
+    /// leaves as it was.
+    fn without_lanes(&self) -> Configuration {
+        let mut config = self.clone();
+        config.lanes = BTreeMap::new();
+        config
+    }
+}
+
+const MEMORY_MB: std::ops::RangeInclusive<u32> = 128..=8192;
+const CPUS: std::ops::RangeInclusive<u32> = 1..=4;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageMount {
+    /// An absolute folder in the image (`/node_modules`).
+    pub path: String,
+    /// Where it appears, relative to the workspace (`web/node_modules`).
+    pub target: String,
+}
+
+/// The Docker endpoint of `config`: its pinned one, or the user's rootless
+/// socket in `runtime_dir` (their `$XDG_RUNTIME_DIR`).
+pub fn endpoint(config: &Configuration, runtime_dir: Option<&str>) -> Result<String> {
+    match &config.docker_host {
+        Some(host) => Ok(host.clone()),
+        None => user_endpoint(runtime_dir),
+    }
+}
+
+/// The user's rootless Docker socket in `runtime_dir`.
+fn user_endpoint(runtime_dir: Option<&str>) -> Result<String> {
+    let runtime_dir = runtime_dir
+        .filter(|folder| !folder.is_empty())
+        .context("no XDG_RUNTIME_DIR: name the rootless Docker socket in docker_host")?;
+    Ok(format!("unix://{runtime_dir}/docker.sock"))
+}
+
+fn runtime_dir() -> Option<String> {
+    let uid = unsafe { libc::geteuid() };
+    runtime_dir_from(
+        std::env::var("XDG_RUNTIME_DIR").ok(),
+        Path::new(&format!("/run/user/{uid}")),
+    )
+}
+
+/// `$XDG_RUNTIME_DIR`, else the standard `/run/user/<uid>` when it exists: a
+/// process an agent's provider starts (Codex's MCP servers) may get only a
+/// few variables, without it.
+fn runtime_dir_from(variable: Option<String>, standard: &Path) -> Option<String> {
+    variable.filter(|folder| !folder.is_empty()).or_else(|| {
+        standard
+            .is_dir()
+            .then(|| standard.to_string_lossy().into_owned())
+    })
+}
+
+/// The user's own rootless Docker socket, never a pinned or shared one.
+pub(crate) fn user_docker_endpoint() -> Result<String> {
+    user_endpoint(runtime_dir().as_deref())
+}
+
+fn configured_endpoint(config: &Configuration) -> Result<String> {
+    endpoint(config, runtime_dir().as_deref())
+}
+
+/// A `docker` command bound to `endpoint`, whatever the environment or the
+/// user's current Docker context would choose.
+pub fn docker(endpoint: &str) -> Command {
+    let mut command = Command::new("docker");
+    command
+        .env("DOCKER_HOST", endpoint)
+        .env_remove("DOCKER_CONTEXT");
+    command
+}
+
+/// Whether `docker info`'s security options name a rootless daemon.
+pub fn rootless(security_options: &str) -> bool {
+    security_options
+        .split([' ', '[', ']'])
+        .any(|option| option == "name=rootless")
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Workspace {
@@ -71,7 +197,7 @@ fn protected(path: &str, config: &Configuration) -> Result<bool> {
         .any(|extension| lower.ends_with(extension))
         || checks::glob_set(&config.protected_paths)?.is_match(path))
 }
-fn source_path(path: &str, config: &Configuration) -> Result<bool> {
+pub(crate) fn source_path(path: &str, config: &Configuration) -> Result<bool> {
     Ok(!protected(path, config)? && checks::glob_set(&config.source_paths)?.is_match(path))
 }
 fn relative(path: &Path) -> Result<String> {
@@ -89,7 +215,7 @@ fn relative(path: &Path) -> Result<String> {
     );
     Ok(text.into())
 }
-fn regular(root: &Path, path: &str) -> Result<PathBuf> {
+pub(crate) fn regular(root: &Path, path: &str) -> Result<PathBuf> {
     let relative = relative(Path::new(path))?;
     let mut current = root.to_path_buf();
     ensure!(
@@ -107,7 +233,7 @@ fn regular(root: &Path, path: &str) -> Result<PathBuf> {
     }
     Ok(current)
 }
-fn bytes(path: &Path) -> Result<Vec<u8>> {
+pub(crate) fn bytes(path: &Path) -> Result<Vec<u8>> {
     let metadata = fs::symlink_metadata(path)?;
     ensure!(
         metadata.is_file() && !metadata.file_type().is_symlink() && metadata.len() <= FILE_LIMIT,
@@ -125,19 +251,63 @@ pub(crate) fn content_hash(content: &[u8]) -> Result<String> {
     Ok(format!("{:x}", sha2::Sha256::digest(content)))
 }
 
-pub fn validate_configuration(config: &Configuration) -> Result<()> {
+pub(crate) fn validate_image(image: &str) -> Result<()> {
     ensure!(
-        config.image.starts_with("sha256:")
-            && config.image.len() == 71
-            && config.image[7..]
+        image.starts_with("sha256:")
+            && image.len() == 71
+            && image[7..]
                 .chars()
                 .all(|character| character.is_ascii_hexdigit()),
         "runner image must be an immutable local sha256 image ID"
     );
+    Ok(())
+}
+
+pub(crate) fn validate_mounts(mounts: &[ImageMount]) -> Result<()> {
+    for mount in mounts {
+        let inside = mount
+            .path
+            .strip_prefix('/')
+            .context("an image mount's path is absolute in the image")?;
+        relative(Path::new(inside)).context("an image mount's path")?;
+        relative(Path::new(&mount.target)).context("an image mount's target")?;
+        ensure!(
+            !mount.path.contains(',') && !mount.target.contains(','),
+            "an image mount path contains a comma"
+        );
+    }
+    Ok(())
+}
+
+pub fn validate_configuration(config: &Configuration) -> Result<()> {
+    validate_image(&config.image)?;
+    validate_mounts(&config.image_mounts)?;
+    for (lane, own) in &config.lanes {
+        validate_image(&own.image).with_context(|| format!("lane {lane}'s image"))?;
+        validate_mounts(&own.image_mounts).with_context(|| format!("lane {lane}'s mounts"))?;
+    }
     ensure!(
         (1..=900).contains(&config.timeout_seconds),
         "runner timeout must be 1–900 seconds"
     );
+    ensure!(
+        MEMORY_MB.contains(&config.memory_mb.unwrap_or(512)),
+        "runner memory must be {}–{} MiB",
+        MEMORY_MB.start(),
+        MEMORY_MB.end()
+    );
+    ensure!(
+        CPUS.contains(&config.cpus.unwrap_or(1)),
+        "runner CPUs must be {}–{}",
+        CPUS.start(),
+        CPUS.end()
+    );
+    if let Some(host) = &config.docker_host {
+        ensure!(
+            host.starts_with("unix://") && host.len() > "unix://".len(),
+            "the runner's Docker daemon must be a local Unix socket"
+        );
+    }
     ensure!(
         !config
             .source_paths
@@ -158,35 +328,35 @@ pub fn validate_configuration(config: &Configuration) -> Result<()> {
 }
 pub fn probe(config: &Configuration) -> Result<()> {
     validate_configuration(config)?;
-    if let Ok(endpoint) = std::env::var("DOCKER_HOST") {
+    let endpoint = configured_endpoint(config)?;
+    ensure!(
+        endpoint.starts_with("unix://"),
+        "reviewed execution requires a local Unix-socket Docker endpoint"
+    );
+    // A root daemon may run other people's containers (production): reviewed
+    // source never goes there.
+    let info = docker(&endpoint)
+        .args(["info", "--format", "{{.SecurityOptions}}"])
+        .output()
+        .context("Docker must be installed")?;
+    ensure!(
+        info.status.success(),
+        "the rootless Docker daemon at {endpoint} is not running (systemctl --user start docker)"
+    );
+    ensure!(
+        rootless(&String::from_utf8_lossy(&info.stdout)),
+        "the Docker daemon at {endpoint} is not rootless: reviewed work runs only on your own rootless daemon"
+    );
+    for image in std::iter::once(&config.image).chain(config.lanes.values().map(|own| &own.image)) {
+        let result = docker(&endpoint)
+            .args(["image", "inspect", "--format", "{{.Id}}", image])
+            .output()
+            .context("Docker must be installed and running")?;
         ensure!(
-            endpoint.starts_with("unix://"),
-            "reviewed execution requires a local Unix-socket Docker endpoint"
+            result.status.success() && String::from_utf8_lossy(&result.stdout).trim() == image,
+            "configured local Docker image {image} is unavailable; no pull or daemon changes were attempted"
         );
     }
-    let endpoint = Command::new("docker")
-        .args([
-            "context",
-            "inspect",
-            "--format",
-            r#"{{(index .Endpoints "docker").Host}}"#,
-        ])
-        .output()?;
-    ensure!(
-        endpoint.status.success()
-            && String::from_utf8_lossy(&endpoint.stdout)
-                .trim()
-                .starts_with("unix://"),
-        "remote Docker contexts are not allowed for reviewed source mounts"
-    );
-    let result = Command::new("docker")
-        .args(["image", "inspect", "--format", "{{.Id}}", &config.image])
-        .output()
-        .context("Docker must be installed and running")?;
-    ensure!(
-        result.status.success() && String::from_utf8_lossy(&result.stdout).trim() == config.image,
-        "configured local Docker image is unavailable; no pull or daemon changes were attempted"
-    );
     Ok(())
 }
 pub fn available(task: &Task) -> Result<()> {
@@ -199,31 +369,88 @@ pub fn available(task: &Task) -> Result<()> {
         .context("configure and verify the approved container runner before execution")?;
     probe(&config)
 }
+/// The lanes a runner change touches, when it touches only lane images;
+/// `None` when the main configuration changes too, which every live worker
+/// depends on. Workers of other lanes may keep running.
+fn changed_lanes(
+    current: Option<&Configuration>,
+    requested: &Configuration,
+) -> Option<std::collections::BTreeSet<String>> {
+    let current = current?;
+    if current.without_lanes() != requested.without_lanes() {
+        return None;
+    }
+    Some(
+        current
+            .lanes
+            .keys()
+            .chain(requested.lanes.keys())
+            .filter(|lane| current.lanes.get(*lane) != requested.lanes.get(*lane))
+            .cloned()
+            .collect(),
+    )
+}
+
+/// The folders the image mounts go over: Docker cannot create them in a
+/// read-only workspace.
+fn mount_points(workspace: &Path, config: &Configuration) -> Result<()> {
+    for dependency in &config.image_mounts {
+        fs::create_dir_all(workspace.join(&dependency.target))?;
+    }
+    Ok(())
+}
+
 pub fn configure(task: &Task, config: Configuration) -> Result<()> {
     probe(&config)?;
-    // Verify the isolation flags in a real disposable container before enabling.
-    let root = task.dir().join("runner-probe");
-    fs::create_dir_all(&root)?;
-    let result = run_container(
-        &config,
-        &root,
-        true,
-        "test ! -e /var/run/docker.sock && test ! -e /host && test ! -e /root/.ssh && test ! -w /etc && test -r /proc/net/route",
-    )?;
-    ensure!(
-        result.success,
-        "container isolation preflight failed: {}",
-        result.stderr
-    );
+    let lanes = task.config()?.lanes;
+    for lane in config.lanes.keys() {
+        ensure!(
+            lanes.iter().any(|found| found.name == *lane),
+            "the task has no lane {lane}: add_lane it first"
+        );
+    }
+    // Verify the isolation flags in a real disposable container of every
+    // image before enabling.
+    for lane in std::iter::once(None).chain(config.lanes.keys().map(|lane| Some(lane.as_str()))) {
+        let own = config.for_lane(lane);
+        let root = task.dir().join("runner-probe").join(lane.unwrap_or("main"));
+        fs::create_dir_all(&root)?;
+        mount_points(&root, &own)?;
+        let result = run_container(
+            &own,
+            &root,
+            true,
+            // A real write: `test -w` answers yes for uid 0 whatever the mount.
+            "test ! -e /var/run/docker.sock && test ! -e /host && test ! -e /root/.ssh && ! touch /etc/.devagentics-probe 2>/dev/null && test -r /proc/net/route",
+        )?;
+        ensure!(
+            result.success,
+            "container isolation preflight failed: {}",
+            result.stderr
+        );
+    }
     let _control = task.control_lock()?;
     task.transaction(|tx| {
-        ensure!(
-            !tx.state
+        if tx.state.workflow == Workflow::Reviewed {
+            let changed = changed_lanes(tx.state.runner.as_ref(), &config);
+            let busy = tx
+                .state
                 .agents
                 .iter()
-                .any(|agent| agent.live && tx.state.workflow == Workflow::Reviewed),
-            "pause and close reviewed workers before changing runner policy"
-        );
+                .filter(|agent| agent.live)
+                .find(|agent| match (&changed, &agent.lane) {
+                    (None, _) => true,
+                    (Some(lanes), Some(lane)) => lanes.contains(lane),
+                    (Some(_), None) => false,
+                });
+            if let Some(agent) = busy {
+                bail!(
+                    "pause and close reviewed workers before changing runner policy ({} is live); \
+                     a change of lane images only waits for that lane's workers",
+                    agent.id
+                );
+            }
+        }
         tx.state.runner = Some(config);
         tx.log(
             crate::log::Kind::Review,
@@ -299,6 +526,18 @@ pub fn prepare(task: &Task, agent: &str, source: &Path, readonly: bool) -> Resul
         }
         original.insert(path.into(), content_hash(&content)?);
     }
+    // Tracked source under an image mount would be hidden by it.
+    for dependency in &config.image_mounts {
+        let prefix = format!("{}/", dependency.target);
+        ensure!(
+            !original
+                .keys()
+                .any(|path: &String| path.starts_with(&prefix)),
+            "the image mount at {} would hide tracked source under it",
+            dependency.target
+        );
+    }
+    mount_points(&snapshot, &config)?;
     #[cfg(unix)]
     if unsafe { libc::geteuid() } == 0 {
         fn allow_snapshot(path: &Path) -> Result<()> {
@@ -454,6 +693,105 @@ pub fn assert_checkpointed(task: &Task, agent: &str) -> Result<()> {
     Ok(())
 }
 
+/// Copies a checkpoint's files from the snapshot into the source and commits
+/// them, or leaves the source as it was: a half-done checkpoint (files copied,
+/// the commit refused) would block every retry with edits it did not make.
+fn write_checkpoint(
+    source: &Path,
+    snapshot: &Path,
+    changed: &[String],
+    files: &BTreeMap<String, Vec<u8>>,
+    subject: &str,
+) -> Result<()> {
+    if changed.is_empty() {
+        return Ok(());
+    }
+    ensure!(
+        safe_git(source, &["var", "GIT_AUTHOR_IDENT"]).is_ok(),
+        "no git author for {}: set user.name and user.email (git config --global) on this host",
+        source.display()
+    );
+    let written = copy_and_commit(source, snapshot, changed, files, subject);
+    if written.is_err() {
+        undo_copy(source, changed)?;
+    }
+    written
+}
+
+fn copy_and_commit(
+    source: &Path,
+    snapshot: &Path,
+    changed: &[String],
+    files: &BTreeMap<String, Vec<u8>>,
+    subject: &str,
+) -> Result<()> {
+    for path in changed {
+        let destination = regular(source, path)?;
+        if let Some(content) = files.get(path) {
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = fs::metadata(&destination)
+                    .map(|metadata| metadata.permissions().mode() & 0o666)
+                    .unwrap_or(0o644);
+                let executable = fs::metadata(regular(snapshot, path)?)?
+                    .permissions()
+                    .mode()
+                    & 0o111
+                    != 0;
+                fs::write(&destination, content)?;
+                fs::set_permissions(
+                    &destination,
+                    fs::Permissions::from_mode(
+                        mode | if executable { (mode & 0o444) >> 2 } else { 0 },
+                    ),
+                )?;
+            }
+            #[cfg(not(unix))]
+            fs::write(destination, content)?;
+        } else {
+            fs::remove_file(destination)?;
+        }
+    }
+    let mut arguments = vec!["add", "--"];
+    arguments.extend(changed.iter().map(String::as_str));
+    safe_git(source, &arguments)?;
+    let mut arguments = vec![
+        "-c",
+        "core.hooksPath=/dev/null",
+        "commit",
+        "--only",
+        "-m",
+        subject,
+        "--",
+    ];
+    arguments.extend(changed.iter().map(String::as_str));
+    safe_git(source, &arguments)?;
+    Ok(())
+}
+
+/// Puts the checkpoint's paths back to the source's HEAD (the checkpoint's
+/// base): files it had are restored, files it added are removed.
+fn undo_copy(source: &Path, changed: &[String]) -> Result<()> {
+    let mut arguments = vec!["reset", "-q", "--"];
+    arguments.extend(changed.iter().map(String::as_str));
+    safe_git(source, &arguments)?;
+    for path in changed {
+        if safe_git(source, &["cat-file", "-e", &format!("HEAD:{path}")]).is_ok() {
+            safe_git(source, &["checkout", "HEAD", "--", path])?;
+        } else {
+            let destination = regular(source, path)?;
+            if destination.exists() {
+                fs::remove_file(destination)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn checkpoint(task: &Task, agent: &str, summary: &str) -> Result<Vec<String>> {
     let _control = task.control_lock()?;
     let state = task.state()?;
@@ -500,11 +838,16 @@ pub fn checkpoint(task: &Task, agent: &str, summary: &str) -> Result<Vec<String>
     let forbidden = checks::glob_set(&order.forbidden)?;
     let mut files = BTreeMap::new();
     collect(&worker.snapshot, &worker.snapshot, &mut files, &mut 0)?;
+    let build_output = ignored(
+        &worker.source,
+        files.keys().filter(|path| !worker.original.contains_key(*path)),
+    )?;
     let mut changed = Vec::new();
     for path in worker
         .original
         .keys()
         .chain(files.keys())
+        .filter(|path| !build_output.contains(*path))
         .collect::<std::collections::BTreeSet<_>>()
     {
         let new_hash = files
@@ -545,58 +888,17 @@ pub fn checkpoint(task: &Task, agent: &str, summary: &str) -> Result<Vec<String>
         !summary.trim().is_empty() && summary.len() <= 500,
         "checkpoint summary required (maximum 500 characters)"
     );
-    for path in &changed {
-        let destination = regular(&worker.source, path)?;
-        if let Some(content) = files.get(path) {
-            if let Some(parent) = destination.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mode = fs::metadata(&destination)
-                    .map(|metadata| metadata.permissions().mode() & 0o666)
-                    .unwrap_or(0o644);
-                let executable = fs::metadata(regular(&worker.snapshot, path)?)?
-                    .permissions()
-                    .mode()
-                    & 0o111
-                    != 0;
-                fs::write(&destination, content)?;
-                fs::set_permissions(
-                    &destination,
-                    fs::Permissions::from_mode(
-                        mode | if executable { (mode & 0o444) >> 2 } else { 0 },
-                    ),
-                )?;
-            }
-            #[cfg(not(unix))]
-            fs::write(destination, content)?;
-        } else {
-            fs::remove_file(destination)?;
-        }
-    }
-    if !changed.is_empty() {
-        let mut arguments = vec!["add", "--"];
-        arguments.extend(changed.iter().map(String::as_str));
-        safe_git(&worker.source, &arguments)?;
-        let subject = format!("feat: implement {}", order.step);
-        let mut arguments = vec![
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--only",
-            "-m",
-            &subject,
-            "--",
-        ];
-        arguments.extend(changed.iter().map(String::as_str));
-        safe_git(&worker.source, &arguments)?;
-    }
+    write_checkpoint(
+        &worker.source,
+        &worker.snapshot,
+        &changed,
+        &files,
+        &format!("feat: implement {}", order.step),
+    )?;
     let new_base = checks::head(&worker.source)?;
     let mut original = BTreeMap::new();
     for (path, content) in files {
-        if source_path(&path, config)? {
+        if source_path(&path, config)? && !build_output.contains(&path) {
             original.insert(path, content_hash(&content)?);
         }
     }
@@ -663,14 +965,12 @@ fn docker_arguments(
         "type=bind,src={source},dst=/workspace{}",
         if readonly { ",readonly" } else { "" }
     );
-    let uid = unsafe { libc::geteuid() };
-    let gid = unsafe { libc::getegid() };
-    let user = if uid == 0 {
-        "65534:65534".into()
-    } else {
-        format!("{uid}:{gid}")
-    };
-    Ok(vec![
+    // The daemon is rootless (`probe` refuses any other): its container root
+    // is the user who owns the snapshot, without capabilities or a way to
+    // gain any. A container uid of the user's own would map to one of their
+    // subordinate ids instead, which cannot write the snapshot.
+    let user = "0:0".to_string();
+    let mut arguments: Vec<String> = vec![
         "run".into(),
         "--rm".into(),
         "--pull=never".into(),
@@ -681,12 +981,26 @@ fn docker_arguments(
         "--cap-drop=ALL".into(),
         "--security-opt=no-new-privileges".into(),
         "--pids-limit=128".into(),
-        "--memory=512m".into(),
-        "--cpus=1".into(),
+        format!("--memory={}m", config.memory_mb.unwrap_or(512)),
+        format!("--cpus={}", config.cpus.unwrap_or(1)),
         "--user".into(),
         user,
         "--mount".into(),
         mount,
+    ];
+    // Read-only image folders over the workspace mount, never under it.
+    for dependency in &config.image_mounts {
+        arguments.extend([
+            "--mount".into(),
+            format!(
+                "type=image,source={},target=/workspace/{},image-subpath={}",
+                config.image,
+                dependency.target,
+                dependency.path.trim_start_matches('/')
+            ),
+        ]);
+    }
+    arguments.extend([
         "--tmpfs=/tmp:rw,noexec,nosuid,size=64m".into(),
         "--workdir=/workspace".into(),
         "--env=HOME=/tmp".into(),
@@ -694,7 +1008,8 @@ fn docker_arguments(
         config.image.clone(),
         "-lc".into(),
         command.into(),
-    ])
+    ]);
+    Ok(arguments)
 }
 pub fn run_container(
     config: &Configuration,
@@ -732,7 +1047,8 @@ pub(crate) fn run_container_artifacts(
             ],
         );
     }
-    let mut child = Command::new("docker")
+    let endpoint = configured_endpoint(config)?;
+    let mut child = docker(&endpoint)
         .args(&arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -751,7 +1067,7 @@ pub(crate) fn run_container_artifacts(
         if started.elapsed() > Duration::from_secs(config.timeout_seconds) {
             timed_out = true;
             let _ = child.kill();
-            let _ = Command::new("docker")
+            let _ = docker(&endpoint)
                 .args(["rm", "--force", &name])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -778,12 +1094,36 @@ pub fn execute(task: &Task, agent: &str, command: &str) -> Result<Output> {
         .runner_workspaces
         .get(agent)
         .context("worker source missing")?;
-    let config = state.runner.context("runner missing")?;
+    let config = state
+        .runner
+        .as_ref()
+        .context("runner missing")?
+        .for_lane(container_lane(&state, agent).as_deref());
     run_container(&config, &workspace.snapshot, workspace.readonly, command)
 }
 
+/// The lane whose image `agent`'s containers use: its own, or for a reviewer
+/// the lane of the work it reviews now. None for the main image.
+pub fn container_lane(state: &crate::state::State, agent: &str) -> Option<String> {
+    if let Some(lane) = state.agent(agent).and_then(|found| found.lane.clone()) {
+        return Some(lane);
+    }
+    let review = state
+        .reviews
+        .iter()
+        .rev()
+        .find(|review| review.reviewer == agent && review.verdict.is_none())?;
+    lane_of_order(state, &review.order)
+}
+
+/// The lane of the agent an order was given to.
+pub fn lane_of_order(state: &crate::state::State, order: &str) -> Option<String> {
+    let order = state.orders.iter().find(|found| found.id == order)?;
+    state.agent(&order.agent)?.lane.clone()
+}
+
 /// Git plumbing must not execute repository hooks, filters or fsmonitor programs.
-pub(crate) fn safe_git(root: &Path, args: &[&str]) -> Result<String> {
+fn safe_git_output(root: &Path, args: &[&str]) -> Result<std::process::Output> {
     let configured = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -817,13 +1157,40 @@ pub(crate) fn safe_git(root: &Path, args: &[&str]) -> Result<String> {
         };
         command.args(["-c", &format!("{key}={value}")]);
     }
-    let result = command.args(args).output()?;
+    Ok(command.args(args).output()?)
+}
+
+pub(crate) fn safe_git(root: &Path, args: &[&str]) -> Result<String> {
+    let result = safe_git_output(root, args)?;
     ensure!(
         result.status.success(),
         "controlled Git operation failed: {}",
         String::from_utf8_lossy(&result.stderr)
     );
     Ok(String::from_utf8(result.stdout)?.trim().into())
+}
+
+/// The new snapshot files the source repository ignores (build output such
+/// as `web/.next/`): a worker's checks make them, and they are never source.
+fn ignored<'a>(
+    source: &Path,
+    paths: impl Iterator<Item = &'a String>,
+) -> Result<std::collections::BTreeSet<String>> {
+    let paths: Vec<&str> = paths.map(String::as_str).collect();
+    let mut found = std::collections::BTreeSet::new();
+    for chunk in paths.chunks(200) {
+        let mut arguments = vec!["check-ignore", "--"];
+        arguments.extend(chunk);
+        let result = safe_git_output(source, &arguments)?;
+        // 1: none of them is ignored.
+        ensure!(
+            matches!(result.status.code(), Some(0 | 1)),
+            "controlled Git operation failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        found.extend(String::from_utf8(result.stdout)?.lines().map(str::to_string));
+    }
+    Ok(found)
 }
 
 /// Prerequisites run before dispatch in their own source generation, never the worker's edits.
@@ -839,10 +1206,11 @@ pub fn preflight(task: &Task, item_id: &str, source: &Path) -> Result<()> {
         .get(item_id)
         .context("unknown contract")?;
     let configuration = task.config()?;
-    let definitions = configuration
+    let definitions = &configuration
         .check_profiles
         .get(&item.repo)
-        .context("named checks not configured")?;
+        .context("named checks not configured")?
+        .for_lane(Some(&item.lane));
     let fingerprint = content_hash(&serde_json::to_vec(&(
         item,
         definitions,
@@ -880,7 +1248,10 @@ pub fn preflight(task: &Task, item_id: &str, source: &Path) -> Result<()> {
             .context("environment missing")?;
         let phase = crate::check_profiles::run_container_profile(
             task,
-            &worker,
+            crate::check_profiles::Container {
+                agent: &worker,
+                lane: Some(&item.lane),
+            },
             name,
             &profile,
             environment,
@@ -922,7 +1293,8 @@ pub struct Preflight {
 
 /// Coordinator discovery is read-only and never invokes project scripts.
 pub fn images() -> Result<serde_json::Value> {
-    let output = Command::new("docker")
+    let endpoint = user_endpoint(runtime_dir().as_deref())?;
+    let output = docker(&endpoint)
         .args(["image", "ls", "--no-trunc", "--format", "{{json .}} "])
         .output()?;
     ensure!(
@@ -965,16 +1337,277 @@ pub fn overview(task: &Task) -> Result<serde_json::Value> {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
+
+    #[test]
+    fn the_runner_uses_the_pinned_daemon_or_the_users_rootless_one() {
+        let mut config = configuration();
+        assert_eq!(
+            endpoint(&config, Some("/run/user/1001")).unwrap(),
+            "unix:///run/user/1001/docker.sock"
+        );
+        assert!(
+            endpoint(&config, None).is_err(),
+            "no runtime folder: no rootless socket to default to"
+        );
+        config.docker_host = Some("unix:///home/iva/docker.sock".into());
+        assert_eq!(
+            endpoint(&config, Some("/run/user/1001")).unwrap(),
+            "unix:///home/iva/docker.sock"
+        );
+        config.docker_host = Some("tcp://10.0.0.5:2375".into());
+        assert!(
+            validate_configuration(&config).is_err(),
+            "only a local socket"
+        );
+    }
+
+    fn with_dependencies() -> Configuration {
+        Configuration {
+            image_mounts: vec![ImageMount {
+                path: "/node_modules".into(),
+                target: "web/node_modules".into(),
+            }],
+            ..configuration()
+        }
+    }
+
+    #[test]
+    fn the_image_provides_dependency_folders_read_only_inside_the_workspace() {
+        let root = tempfile::TempDir::new().unwrap();
+        let config = with_dependencies();
+        validate_configuration(&config).unwrap();
+        let args = docker_arguments(&config, root.path(), false, "n", "true").unwrap();
+        let workspace = args
+            .iter()
+            .position(|argument| argument.contains("dst=/workspace"))
+            .unwrap();
+        let dependencies = args
+            .iter()
+            .position(|argument| {
+                argument
+                    == &format!(
+                        "type=image,source={},target=/workspace/web/node_modules,image-subpath=node_modules",
+                        config.image
+                    )
+            })
+            .expect("an image mount of the dependencies");
+        assert!(
+            workspace < dependencies,
+            "mounted over the workspace, not under it"
+        );
+        assert_eq!(args[dependencies - 1], "--mount");
+
+        for (path, target) in [
+            ("node_modules", "web/node_modules"),
+            ("/node_modules/../etc", "web/node_modules"),
+            ("/node_modules", "../outside"),
+            ("/node_modules", "/abs"),
+            ("/node,modules", "web/node_modules"),
+        ] {
+            let config = Configuration {
+                image_mounts: vec![ImageMount {
+                    path: path.into(),
+                    target: target.into(),
+                }],
+                ..configuration()
+            };
+            assert!(
+                validate_configuration(&config).is_err(),
+                "{path} -> {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_container_gets_the_configured_memory_and_cpus_within_bounds() {
+        let root = tempfile::TempDir::new().unwrap();
+        let defaults = docker_arguments(&configuration(), root.path(), false, "n", "true").unwrap();
+        assert!(
+            defaults.contains(&"--memory=512m".into()) && defaults.contains(&"--cpus=1".into())
+        );
+        let larger = Configuration {
+            memory_mb: Some(2048),
+            cpus: Some(2),
+            ..configuration()
+        };
+        let args = docker_arguments(&larger, root.path(), false, "n", "true").unwrap();
+        assert!(args.contains(&"--memory=2048m".into()) && args.contains(&"--cpus=2".into()));
+        for (memory_mb, cpus) in [
+            (Some(64), None),
+            (Some(16_384), None),
+            (None, Some(0)),
+            (None, Some(8)),
+        ] {
+            let config = Configuration {
+                memory_mb,
+                cpus,
+                ..configuration()
+            };
+            assert!(
+                validate_configuration(&config).is_err(),
+                "{memory_mb:?} {cpus:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mount_points_exist_before_a_read_only_workspace_is_mounted() {
+        let root = tempfile::TempDir::new().unwrap();
+        mount_points(root.path(), &with_dependencies()).unwrap();
+        assert!(root.path().join("web/node_modules").is_dir());
+        mount_points(root.path(), &with_dependencies()).unwrap();
+    }
+
+    #[test]
+    fn a_snapshot_gets_the_mount_points_and_no_source_is_hidden_under_them() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, repo) = crate::board::tests::started(&directory);
+        crate::checks::tests::commit_file(repo.path(), "src/app.rs", "app\n", "app");
+        task.transaction(|tx| {
+            tx.state.runner = Some(Configuration {
+                image_mounts: vec![ImageMount {
+                    path: "/node_modules".into(),
+                    target: "src/deps".into(),
+                }],
+                ..configuration()
+            });
+            Ok(())
+        })
+        .unwrap();
+        prepare(&task, "worker-1", repo.path(), false).unwrap();
+        let snapshot = task.state().unwrap().runner_workspaces["worker-1"]
+            .snapshot
+            .clone();
+        assert!(snapshot.join("src/deps").is_dir());
+        assert!(snapshot.join("src/app.rs").is_file());
+
+        crate::checks::tests::commit_file(
+            repo.path(),
+            "src/deps/left.js",
+            "x\n",
+            "a tracked file under the mount",
+        );
+        let error = prepare(&task, "worker-2", repo.path(), false)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("src/deps"), "{error}");
+    }
+
+    #[test]
+    fn without_xdg_runtime_dir_the_standard_user_folder_is_used() {
+        let standard = tempfile::TempDir::new().unwrap();
+        let folder = standard.path().to_string_lossy().into_owned();
+        assert_eq!(
+            runtime_dir_from(Some("/run/user/7".into()), standard.path()),
+            Some("/run/user/7".into())
+        );
+        assert_eq!(
+            runtime_dir_from(None, standard.path()),
+            Some(folder.clone())
+        );
+        assert_eq!(
+            runtime_dir_from(Some(String::new()), standard.path()),
+            Some(folder)
+        );
+        assert_eq!(
+            runtime_dir_from(None, &standard.path().join("missing")),
+            None
+        );
+    }
+
+    #[test]
+    fn every_docker_command_goes_to_the_pinned_daemon() {
+        let command = docker("unix:///run/user/1001/docker.sock");
+        let environment: Vec<_> = command.get_envs().collect();
+        assert!(environment.contains(&(
+            std::ffi::OsStr::new("DOCKER_HOST"),
+            Some(std::ffi::OsStr::new("unix:///run/user/1001/docker.sock"))
+        )));
+        assert!(
+            environment.contains(&(std::ffi::OsStr::new("DOCKER_CONTEXT"), None)),
+            "a selected context cannot redirect it"
+        );
+        assert_eq!(command.get_program(), "docker");
+    }
+
+    #[test]
+    fn only_a_rootless_daemon_runs_reviewed_work() {
+        assert!(rootless(
+            "[name=seccomp,profile=builtin name=rootless name=cgroupns]"
+        ));
+        assert!(!rootless(
+            "[name=apparmor name=seccomp,profile=builtin name=cgroupns]"
+        ));
+        assert!(!rootless(""));
+    }
+
     pub fn configuration() -> Configuration {
         Configuration {
             image: format!("sha256:{}", "a".repeat(64)),
             source_paths: vec!["src/**".into(), "tests/**".into()],
             protected_paths: vec!["data/**".into()],
             timeout_seconds: 5,
+            docker_host: None,
+            image_mounts: vec![],
+            memory_mb: None,
+            cpus: None,
+            lanes: BTreeMap::new(),
         }
     }
+    fn back_lane() -> LaneImage {
+        LaneImage {
+            image: format!("sha256:{}", "b".repeat(64)),
+            image_mounts: vec![ImageMount {
+                path: "/vendor".into(),
+                target: "backend/vendor".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn a_lane_with_its_own_image_runs_in_it_and_the_others_in_the_main_one() {
+        let mut config = configuration();
+        config.lanes.insert("back".into(), back_lane());
+        validate_configuration(&config).unwrap();
+        let back = config.for_lane(Some("back"));
+        assert_eq!(back.image, back_lane().image);
+        assert_eq!(back.image_mounts, back_lane().image_mounts);
+        assert!(back.lanes.is_empty());
+        assert_eq!(config.for_lane(Some("front")).image, configuration().image);
+        assert_eq!(config.for_lane(None).image, configuration().image);
+
+        config.lanes.get_mut("back").unwrap().image = "php:8.4".into();
+        let error = validate_configuration(&config).unwrap_err();
+        assert!(format!("{error:#}").contains("lane back"), "{error:#}");
+        assert!(
+            !serde_json::to_string(&configuration())
+                .unwrap()
+                .contains("lanes"),
+            "a task without lane images keeps its evidence signatures"
+        );
+    }
+
+    #[test]
+    fn a_change_of_lane_images_only_waits_for_that_lanes_workers() {
+        let current = configuration();
+        let mut added = current.clone();
+        added.lanes.insert("back".into(), back_lane());
+        assert_eq!(
+            changed_lanes(Some(&current), &added),
+            Some(std::collections::BTreeSet::from(["back".to_string()]))
+        );
+        let mut main = added.clone();
+        main.timeout_seconds = 60;
+        assert_eq!(
+            changed_lanes(Some(&current), &main),
+            None,
+            "the main image changed"
+        );
+        assert_eq!(changed_lanes(None, &added), None, "a first configuration");
+    }
+
     #[test]
     fn policy_distinguishes_source_deletion_from_data_and_path_escapes() {
         let config = configuration();
@@ -1012,6 +1645,16 @@ mod tests {
                 .any(|argument| argument.ends_with("dst=/workspace,readonly"))
         );
         assert_eq!(args.last().unwrap(), "echo --privileged --network host");
+        let user = args
+            .iter()
+            .position(|argument| argument == "--user")
+            .unwrap();
+        assert_eq!(
+            args[user + 1],
+            "0:0",
+            "on a rootless daemon the container's root is the user, unprivileged"
+        );
+        assert!(args.contains(&"--cap-drop=ALL".into()));
     }
     #[test]
     fn symlinks_never_cross_snapshot_or_project_roots() {
@@ -1035,6 +1678,11 @@ mod docker_tests {
             source_paths: vec!["src/**".into(), "tests/**".into()],
             protected_paths: vec!["data/**".into()],
             timeout_seconds: 30,
+            docker_host: None,
+            image_mounts: vec![],
+            memory_mb: None,
+            cpus: None,
+            lanes: BTreeMap::new(),
         }
     }
     #[test]
@@ -1067,6 +1715,9 @@ mod docker_tests {
         let mut definitions = serde_json::json!({"environments":{"testing":{}},"checks":{"unit":{"command":"test -f src/new.rs && test ! -e src/old.rs && printf '{\"tests\":1,\"failures\":0,\"required_skipped\":0}' > \"$DEVAGENTICS_RESULT\"","environment":"testing","test_evidence":true}},"selected":["unit"]});
         definitions["environments"]["testing"]["values"] =
             serde_json::json!({"RUNNER_TEXT":"value with 'quote"});
+        definitions["checks"]["smoke"] =
+            serde_json::json!({"command":"test -f src/new.rs","environment":"testing"});
+        definitions["candidate"] = serde_json::json!(["smoke"]);
         let original = definitions["checks"]["unit"]["command"].as_str().unwrap();
         definitions["checks"]["unit"]["command"] = serde_json::json!(format!(
             "test \"$RUNNER_TEXT\" = \"value with 'quote\" && {original}"
@@ -1237,6 +1888,12 @@ mod docker_tests {
         .unwrap();
         assert!(crate::orders::accept_step(&task, "S01-B01").is_err());
         let final_review = crate::reviews::request(&task, &order, &reviewer.id).unwrap();
+        crate::checks::tests::commit_file(
+            repo.path(),
+            ".devagentics/history/feat-x/history.json",
+            "{}\n",
+            "chore(team): record a plan while the review is open",
+        );
         crate::reviews::submit(
             &task,
             &reviewer.pane,
@@ -1246,6 +1903,18 @@ mod docker_tests {
             "Exact refreshed integration context reviewed",
         )
         .unwrap();
+        assert!(
+            task.state().unwrap().queue.iter().any(|message| {
+                message.to == crate::state::LEADER
+                    && message.text.contains(&final_review.id)
+                    && message.text.contains("accept_step S01-B01")
+            }),
+            "the leader hears of the submitted review"
+        );
+        assert!(
+            !final_review.candidate_evidence.is_empty(),
+            "the merge candidate passed its candidate check before review"
+        );
         crate::orders::accept_step(&task, "S01-B01").unwrap();
         let merged = checks::head(repo.path()).unwrap();
         task.transaction(|tx| {
@@ -1264,6 +1933,12 @@ mod docker_tests {
         assert_eq!(
             fs::read_to_string(repo.path().join("src/new.rs")).unwrap(),
             "new\n"
+        );
+        assert!(
+            repo.path()
+                .join(".devagentics/history/feat-x/history.json")
+                .exists(),
+            "the history recorded during the review is kept beside the reviewed code"
         );
         let final_check = crate::milestones::validate(&task, "M01").unwrap();
         assert!(
@@ -1319,6 +1994,82 @@ mod policy_regressions {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
+    #[test]
+    fn a_checkpoint_that_cannot_commit_leaves_the_source_as_it_was() {
+        let source = crate::checks::tests::repo();
+        let snapshot = tempfile::TempDir::new().unwrap();
+        // No author: the commit must fail, as on a host without a git identity.
+        crate::checks::tests::run(source.path(), &["config", "user.name", ""]);
+        fs::write(snapshot.path().join("README.md"), "changed\n").unwrap();
+        fs::write(snapshot.path().join("new.txt"), "new\n").unwrap();
+        let changed = vec!["README.md".to_string(), "new.txt".to_string()];
+        let files = BTreeMap::from([
+            ("README.md".to_string(), b"changed\n".to_vec()),
+            ("new.txt".to_string(), b"new\n".to_vec()),
+        ]);
+
+        let error = write_checkpoint(source.path(), snapshot.path(), &changed, &files, "feat: x")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("user.name"), "{error}");
+        assert!(
+            checks::inspect(source.path(), "HEAD", &[], &[])
+                .unwrap()
+                .uncommitted
+                .is_empty(),
+            "the failed checkpoint left edits behind"
+        );
+        assert_eq!(
+            fs::read_to_string(source.path().join("README.md")).unwrap(),
+            "hello\n"
+        );
+        assert!(!source.path().join("new.txt").exists());
+    }
+
+    #[test]
+    fn build_output_the_repository_ignores_is_not_part_of_a_checkpoint() {
+        let source = crate::checks::tests::repo();
+        fs::create_dir_all(source.path().join("web")).unwrap();
+        fs::write(source.path().join("web/.gitignore"), "/.next/\n").unwrap();
+        let paths = [
+            "web/.next/types/cache-life.d.ts".to_string(),
+            "web/src/new.test.ts".to_string(),
+        ];
+        assert_eq!(
+            ignored(source.path(), paths.iter()).unwrap(),
+            std::collections::BTreeSet::from(["web/.next/types/cache-life.d.ts".to_string()])
+        );
+        assert!(
+            ignored(source.path(), paths[1..].iter()).unwrap().is_empty(),
+            "nothing ignored is not an error"
+        );
+    }
+
+    #[test]
+    fn undoing_a_copied_checkpoint_restores_changed_files_and_removes_new_ones() {
+        let source = crate::checks::tests::repo();
+        fs::write(source.path().join("README.md"), "changed\n").unwrap();
+        fs::create_dir_all(source.path().join("web/src")).unwrap();
+        fs::write(source.path().join("web/src/new.ts"), "new\n").unwrap();
+        let changed = vec!["README.md".to_string(), "web/src/new.ts".to_string()];
+        safe_git(source.path(), &["add", "--", "README.md", "web/src/new.ts"]).unwrap();
+
+        undo_copy(source.path(), &changed).unwrap();
+
+        assert!(
+            checks::inspect(source.path(), "HEAD", &[], &[])
+                .unwrap()
+                .uncommitted
+                .is_empty()
+        );
+        assert_eq!(
+            fs::read_to_string(source.path().join("README.md")).unwrap(),
+            "hello\n"
+        );
+        assert!(!source.path().join("web/src/new.ts").exists());
+    }
+
     #[test]
     fn checkpoints_do_not_execute_source_controlled_git_filters() {
         let repo = crate::checks::tests::repo();

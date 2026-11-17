@@ -110,7 +110,7 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
     let versions = crate::specs::step_versions(&state.steps);
 
     Ok(json!({
-        "reviewed_workflow": crate::workflow::status(task)?,
+        "reviewed_workflow": crate::workflow::brief(task)?,
         "recovery": state.recovery,
         "amendments": state.amendments,
         "permissions": state.permissions,
@@ -133,7 +133,7 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
         "lanes": config.lanes.iter().map(|lane| json!({ "name": lane.name, "repo": lane.repo, "files": lane.globs, "branch": lane.branch, "worktree": lane.worktree })).collect::<Vec<_>>(),
         "roles": roles,
         "agents": agents,
-        "steps": state.steps.iter().map(|step| json!({ "id": step.id, "version": if state.workflow==crate::execution::Workflow::Reviewed {None}else{versions.get(&step.id)}, "title": step.title, "status": step.status, "attempts": step.attempts })).collect::<Vec<_>>(),
+        "steps": state.steps.iter().map(|step| json!({ "id": step.id, "version": if state.workflow==crate::execution::Workflow::Reviewed {None}else{versions.get(&step.id)}, "title": step.title, "status": step.status, "attempts": step.attempts, "attempt_limit": crate::orders::attempt_limit(&state, &step.id, config.max_attempts) })).collect::<Vec<_>>(),
         // What a new plan part is named; its steps are next_version.1, .2…
         "next_version": if state.workflow==crate::execution::Workflow::Reviewed {None}else{Some(crate::specs::next_version(&state.steps))},
         "execution_plans": state.plans.iter().map(|plan| json!({ "step": plan.step, "author": plan.author })).collect::<Vec<_>>(),
@@ -142,6 +142,12 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
             + state.permissions.iter().filter(|request| request.status == crate::state::PermissionStatus::Pending).count(),
         "pending_permissions": state.permissions.iter().filter(|request| request.status == crate::state::PermissionStatus::Pending).count(),
         "limits": limits,
+        // The user's switches: new agents start only on accounts that are on.
+        "accounts": devws.accounts()?.into_iter().map(|(name, kind)| json!({
+            "name": name,
+            "kind": match kind { crate::agent_args::Kind::Claude => "claude", crate::agent_args::Kind::Codex => "codex" },
+            "enabled": crate::accounts::is_enabled(&state, &name),
+        })).collect::<Vec<_>>(),
         "leader": crate::leader::status(home, task, devws)?,
         "recent_log": recent,
     }))
@@ -244,6 +250,15 @@ mod tests {
         assert_eq!(summary["waiting_for_you"], 1);
         assert_eq!(summary["pending_permissions"], 0);
         assert_eq!(summary["limits"]["claude"]["five_hour_percent"], 40);
+        assert!(
+            summary["accounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|account| account["enabled"] == true && account["name"].is_string()),
+            "{}",
+            summary["accounts"]
+        );
         assert_eq!(summary["repos"][0]["check"], Value::Null);
         assert_eq!(
             summary["leader"],

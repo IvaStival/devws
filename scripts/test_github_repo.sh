@@ -60,7 +60,7 @@ chmod +x "$FAKE_BIN/gh"
 cat > "$FAKE_BIN/fzf" <<EOF
 #!/usr/bin/env bash
 answer="\$(head -n 1 "$TEST_ROOT/fzf.answers")"
-sed -i '' 1d "$TEST_ROOT/fzf.answers"
+sed -i.bak 1d "$TEST_ROOT/fzf.answers" && rm -f "$TEST_ROOT/fzf.answers.bak"
 input="\$(cat)"
 # The owners list, for the tests to look at.
 case "\$input" in *"My repos"*) printf '%s\n' "\$input" > "$TEST_ROOT/fzf.owners" ;; esac

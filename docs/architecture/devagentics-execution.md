@@ -162,6 +162,8 @@ Add a new named profile through repository configuration. For another test frame
 | [mcp.rs](../../agentic/src/mcp.rs) | Tool effect catalog and one-use approval gate |
 | [status.rs](../../agentic/src/status.rs) | Role permission summaries and pending requests |
 | [board.rs](../../agentic/src/board.rs) | Team board role permission summaries |
+| [integration.rs](../../agentic/src/integration.rs) | Merge candidates, candidate checks and their evidence binding |
+| [bench.rs](../../agentic/src/bench.rs) | Run measurement and comparison |
 
 See [user commands and configuration](../user/devagentics-execution.md).
 
@@ -249,3 +251,48 @@ union of elapsed intervals, and unavailable historical timing remains unknown.
 fingerprints use in-process SHA-256 rather than per-file Git processes. Readiness,
 capacity and review details are available through status and the leader's board
 dialog. No automatic staffing change or fixed speed claim follows from a snapshot.
+
+## Delivery gates
+
+Four gates keep a team from finishing tasks without a working system, and one
+measurement shows whether they help.
+
+- **Attempt budget.** `TaskConfig.max_attempts` (default 3) bounds a step's
+  orders and its reviews asking for changes. `send_order` and `review_request`
+  refuse past it; `State.attempt_limits` holds per-step raises, written only by
+  the user's CLI command, never by an MCP tool.
+- **Protected tests.** A contract's `protected_tests` are appended to every
+  implementation order's `forbidden` globs (`Contract::forbidden_for_order`), so
+  the existing file-policy, checkpoint-import and review-evidence checks refuse
+  changes to them. A `writes_tests` item writes them; validation requires the
+  implementation to depend on it, and the runner to expose the tests as source.
+- **Candidate checks.** `RepositoryChecks.candidate` names profiles run on each
+  merge candidate before its review. `integration::check_candidate` checks the
+  candidate commit out detached, prepares a runner snapshot under a synthetic
+  worker identity and runs the profiles outside the control lock. Evidence is
+  keyed by candidate tree, because `commit-tree` stamps a time and the commit id
+  changes on every computation. `review_request` re-derives the candidate under
+  the lock, requires the same source, target and tree, and stores the evidence
+  hash in the review. `reviews::validate` (merge and acceptance) and
+  `integration::recover` require passing evidence for the exact candidate and
+  the current candidate configuration. A failing candidate fails the step and
+  tells the leader. Legacy tasks have no runner and skip the gate.
+- **Codex reviewers.** `team::reviewed_adapter` admits Codex only for the
+  read-only `code-reviewer` role of a task whose user set
+  `State.codex_reviewers`; a refusal is a model failure, so startup falls back
+  to Claude. `worker_tools::codex_turn` runs `codex exec --json` with
+  `--ignore-user-config --ignore-rules`, `sandbox_mode="read-only"` and
+  `approval_policy="never"` as config (resume takes no sandbox flag), the worker
+  MCP server as its only server with its tools pre-approved
+  (`default_tools_approval_mode="approve"`: under `never`, Codex refuses any
+  MCP call not pre-approved), in the reviewer's read-only snapshot. Stdin is
+  null: Codex otherwise waits for more input on an open pipe. The
+  thread id from the first JSON event is kept in `State.worker_sessions`. The
+  boundary is weaker than Claude's: the shell cannot write but can read host
+  files, which status and docs state.
+- **Measurement.** `bench::build` derives a report from state and log alone:
+  first-pass acceptance (one order, no review asking changes), corrections by
+  `Category` (required on blocking findings; failed candidate checks count as
+  integration defects), timing aggregates and their overlap-free union, user
+  interventions and usage. `review_wait` intervals come from the review's
+  request and submit times.

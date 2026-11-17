@@ -49,7 +49,7 @@ make_rustup() {
   cat > "$bin/rustup" <<EOF
 #!/usr/bin/env bash
 printf 'rustup %s\n' "\$*" >> "\$LOG"
-[ "\$1 \$2" = "update stable" ] && sed -i '' 's/cargo [0-9.]* (stub)/cargo $NEEDED.0 (stub)/' "$bin/cargo"
+[ "\$1 \$2" = "update stable" ] && sed -i.bak 's/cargo [0-9.]* (stub)/cargo $NEEDED.0 (stub)/' "$bin/cargo" && rm -f "$bin/cargo.bak"
 exit 0
 EOF
   chmod +x "$bin/rustup"

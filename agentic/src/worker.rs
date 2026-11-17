@@ -8,7 +8,7 @@ use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-const LIMIT_PERCENT: u32 = 85;
+const LIMIT_PERCENT: u32 = 95;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PercentageBlock {
@@ -82,10 +82,20 @@ impl LaunchState {
         }
     }
 
-    pub fn next_available(&mut self, devws: &dyn Devws, approved: bool) -> Result<Role> {
+    pub fn next_available(
+        &mut self,
+        devws: &dyn Devws,
+        approved: bool,
+        disabled: &std::collections::BTreeSet<String>,
+    ) -> Result<Role> {
         self.selected = None;
         while let Some(candidate) = self.candidates.get(self.next).cloned() {
             self.next += 1;
+            if disabled.contains(&candidate.agent) {
+                self.failures
+                    .push(format!("{} is turned off for this task", candidate.agent));
+                continue;
+            }
             if self.blocked_accounts.contains(&candidate.agent) {
                 self.failures
                     .push(format!("{}: account unavailable", program_name(&candidate)));
@@ -125,7 +135,10 @@ impl LaunchState {
             self.selected = Some(candidate);
             return Ok(role);
         }
-        if self.percentage_blocks.len() >= 2 {
+        // Nothing could start. When an account was held back only by its
+        // percentage, the user's consent starts it, whatever kept the others
+        // out: their usage too, or the user switching them off.
+        if !self.percentage_blocks.is_empty() {
             return Err(anyhow::Error::new(UsageLimitRequired).context(format!(
                 "usage-limit approval required: {}. Ask the user whether workers may exceed the percentage threshold for this task; record explicit consent with set_usage_limit_approval, then resume_task",
                 self.failures.join("; ")
@@ -223,6 +236,36 @@ pub fn transcript_failure(path: &Path) -> Result<Option<StartupFailure>> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_account_the_user_turned_off_is_never_chosen() {
+        let role = crate::roles::parse(
+            "planner",
+            "+++\nagent = \"claude\"\n+++\nPlan.\n",
+            crate::roles::Source::Home,
+            "test",
+        )
+        .unwrap();
+        let folder = tempfile::TempDir::new().unwrap();
+        let devws = crate::devws::fake::FakeDevws::new(folder.path())
+            .with_kind("claude", Kind::Claude)
+            .with_kind("codex", Kind::Codex);
+
+        let mut launch = LaunchState::new(&role, Kind::Claude);
+        let off = std::collections::BTreeSet::from(["claude".to_string()]);
+        let chosen = launch.next_available(&devws, false, &off).unwrap();
+        assert_eq!(chosen.agent, "codex");
+        assert!(
+            launch.failures.iter().any(|failure| failure.contains("claude is turned off for this task")),
+            "{:?}",
+            launch.failures
+        );
+
+        let mut launch = LaunchState::new(&role, Kind::Claude);
+        let all_off = std::collections::BTreeSet::from(["claude".to_string(), "codex".to_string()]);
+        let error = launch.next_available(&devws, false, &all_off).unwrap_err().to_string();
+        assert!(error.contains("codex is turned off for this task"), "{error}");
+    }
 
     #[test]
     fn only_structured_provider_errors_can_trigger_fallback() {

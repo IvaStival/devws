@@ -301,6 +301,40 @@ gone() {
   ! tmux has-session -t "=$1" 2>/dev/null
 }
 
+# An agent whose program died leaves its group workspace with the sidebar
+# alone until it is tidied. A new agent of that group goes there, never into
+# the workspace of whoever asked (a leader's, or a shell elsewhere).
+test_a_group_workspace_left_with_its_sidebar_alone_takes_the_next_agent() {
+  local team=dev-lone senior next sidebar
+  tmux new-session -d -s "$team" -n workspace -x 200 -y 50 -c "$TEST_ROOT/project" 'sleep 600'
+  tmux set-option -t "$team" @devws_root "$TEST_ROOT/project"
+  senior="$("$NEW_PANEL" "$team" right agent work --group Seniors --no-focus)" || fail "a senior did not open"
+  sidebar="$(tmux list-panes -t "=$team-seniors:" -F '#{pane_id} #{@devws_sidebar}' | awk '$2 == 1 { print $1 }')"
+  [ -n "$sidebar" ] || fail "the Seniors workspace has no sidebar"
+  # The senior's pane gone without the stop that tidies its workspace.
+  tmux set-hook -t "=$team-seniors" -u pane-exited 2>/dev/null || true
+  tmux set-hook -t "=$team-seniors" -u after-kill-pane 2>/dev/null || true
+  tmux kill-pane -t "$senior"
+  tmux has-session -t "=$team-seniors" 2>/dev/null || fail "setup: the Seniors workspace closed"
+
+  next="$("$NEW_PANEL" "$team" right agent work --group Seniors --no-focus)" || fail "the next senior did not open"
+  [ "$(tmux display-message -p -t "$next" '#{session_name}')" = "$team-seniors" ] ||
+    fail "the next senior opened in $(tmux display-message -p -t "$next" '#{session_name}'), not in Seniors"
+  [ "$(group_panes "$team")" = 1 ] || fail "an agent opened in the team's workspace"
+
+  # And an agent that ended up outside its group is placed back there.
+  tmux kill-pane -t "$next"
+  tmux has-session -t "=$team-seniors" 2>/dev/null || fail "setup: the Seniors workspace closed"
+  next="$(tmux split-window -d -t "=$team:" -P -F '#{pane_id}' 'sleep 600')"
+  tmux set-option -p -t "$next" @devws_tab Seniors
+  tmux set-option -p -t "$next" @devws_team_of "$team"
+  "$SCRIPTS/team_groups.sh" place "$next" || fail "place failed"
+  [ "$(tmux display-message -p -t "$next" '#{session_name}')" = "$team-seniors" ] ||
+    fail "place left it in $(tmux display-message -p -t "$next" '#{session_name}')"
+  tmux kill-session -t "=$team-seniors" 2>/dev/null || true
+  tmux kill-session -t "=$team"
+}
+
 test_agents_open_in_their_groups_workspaces
 test_an_extra_agent
 test_a_terminal_and_a_neovim
@@ -308,6 +342,7 @@ test_left_and_above
 test_not_beside_the_sidebar
 test_from_the_sidebar_without_a_terminal
 test_a_minimized_group_is_expanded_first
+test_a_group_workspace_left_with_its_sidebar_alone_takes_the_next_agent
 test_new_panels_are_saved
 
 printf 'New panel tests passed.\n'

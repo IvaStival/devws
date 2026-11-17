@@ -86,6 +86,9 @@ impl Usage {
 
 pub trait Devws: Send + Sync {
     fn agent_kind(&self, agent: &str) -> Result<Kind>;
+    /// Every registered agent account and the program it runs, in the
+    /// registry's order (`DEVWS_AGENTS`).
+    fn accounts(&self) -> Result<Vec<(String, Kind)>>;
     /// The folder of the branch's worktree of a repo (`owner/repo`, a URL or a
     /// folder), made when needed. Opens nothing.
     fn ensure_worktree(&self, repo: &str, branch: &str) -> Result<PathBuf>;
@@ -214,6 +217,17 @@ impl Devws for CommandDevws {
         let name = self.devws(&["agent", "kind", agent])?;
         Kind::parse(&name)
             .with_context(|| format!("devAgentics does not run {name} agents yet ({agent})"))
+    }
+
+    fn accounts(&self) -> Result<Vec<(String, Kind)>> {
+        Ok(self
+            .devws(&["agent", "accounts"])?
+            .lines()
+            .filter_map(|line| {
+                let (name, kind) = line.split_once(' ')?;
+                Some((name.to_string(), Kind::parse(kind)?))
+            })
+            .collect())
     }
 
     fn ensure_worktree(&self, repo: &str, branch: &str) -> Result<PathBuf> {
@@ -550,6 +564,17 @@ pub mod fake {
     }
 
     impl Devws for FakeDevws {
+        fn accounts(&self) -> Result<Vec<(String, Kind)>> {
+            let inner = self.record("accounts".into());
+            let mut accounts: Vec<_> = inner
+                .kinds
+                .iter()
+                .map(|(name, kind)| (name.clone(), *kind))
+                .collect();
+            accounts.sort_by(|left, right| left.0.cmp(&right.0));
+            Ok(accounts)
+        }
+
         fn agent_kind(&self, agent: &str) -> Result<Kind> {
             let inner = self.record(format!("kind {agent}"));
             inner
@@ -739,8 +764,8 @@ pub mod fake {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::tests::write_script;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     /// A `devws` and a `tmux` that record how they were called and answer from
@@ -748,9 +773,9 @@ mod tests {
     fn command_devws(dir: &TempDir) -> (CommandDevws, PathBuf) {
         let log = dir.path().join("calls");
         let devws = dir.path().join("devws");
-        fs::write(
+        write_script(
             &devws,
-            format!(
+            &format!(
                 r#"#!/bin/sh
 echo "devws $*" >> "{log}"
 case "$1 $2" in
@@ -767,12 +792,11 @@ esac
 "#,
                 log = log.display()
             ),
-        )
-        .unwrap();
+        );
         let tmux = dir.path().join("tmux");
-        fs::write(
+        write_script(
             &tmux,
-            format!(
+            &format!(
                 r#"#!/bin/sh
 echo "tmux $*" >> "{log}"
 case "$1" in
@@ -781,11 +805,7 @@ esac
 "#,
                 log = log.display()
             ),
-        )
-        .unwrap();
-        for script in [&devws, &tmux] {
-            fs::set_permissions(script, fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        );
         (
             CommandDevws::new(devws.display().to_string(), tmux.display().to_string()),
             log,
@@ -806,7 +826,10 @@ esac
         let (devws, _) = command_devws(&dir);
         let tmux = dir.path().join("tmux");
         // Keep the leading empty transcript field: a missing binary has no transcript.
-        fs::write(&tmux, "#!/bin/sh\nprintf '\\n%s\\n' '{\"type\":\"error\",\"error\":{\"code\":\"provider_unavailable\"}}'\n").unwrap();
+        write_script(
+            &tmux,
+            "#!/bin/sh\nprintf '\\n%s\\n' '{\"type\":\"error\",\"error\":{\"code\":\"provider_unavailable\"}}'\n",
+        );
         assert_eq!(
             devws.startup_failure("%7").unwrap().unwrap().scope,
             crate::worker::FailureScope::Account
@@ -817,7 +840,13 @@ esac
             "{\"type\":\"assistant\",\"isApiErrorMessage\":true,\"error\":\"model_not_found\"}\n",
         )
         .unwrap();
-        fs::write(&tmux, format!("#!/bin/sh\nprintf '%s\\n%s\\n' '{}' '{{\"type\":\"error\",\"error\":{{\"code\":\"provider_exit\"}}}}'\n", transcript.display())).unwrap();
+        write_script(
+            &tmux,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n%s\\n' '{}' '{{\"type\":\"error\",\"error\":{{\"code\":\"provider_exit\"}}}}'\n",
+                transcript.display()
+            ),
+        );
         assert_eq!(
             devws.startup_failure("%7").unwrap().unwrap().scope,
             crate::worker::FailureScope::Model

@@ -169,7 +169,7 @@ fn codex(context: &Launch) -> Vec<String> {
 }
 
 /// Codex's `-c` values are TOML: a string is quoted.
-fn toml_string(value: &str) -> String {
+pub(crate) fn toml_string(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
