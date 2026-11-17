@@ -1703,6 +1703,12 @@ mod docker_tests {
         .unwrap();
         assert!(crate::orders::accept_step(&task, "S01-B01").is_err());
         let final_review = crate::reviews::request(&task, &order, &reviewer.id).unwrap();
+        crate::checks::tests::commit_file(
+            repo.path(),
+            ".devagentics/history/feat-x/history.json",
+            "{}\n",
+            "chore(team): record a plan while the review is open",
+        );
         crate::reviews::submit(
             &task,
             &reviewer.pane,
@@ -1734,6 +1740,12 @@ mod docker_tests {
         assert_eq!(
             fs::read_to_string(repo.path().join("src/new.rs")).unwrap(),
             "new\n"
+        );
+        assert!(
+            repo.path()
+                .join(".devagentics/history/feat-x/history.json")
+                .exists(),
+            "the history recorded during the review is kept beside the reviewed code"
         );
         let final_check = crate::milestones::validate(&task, "M01").unwrap();
         assert!(

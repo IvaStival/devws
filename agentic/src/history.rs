@@ -52,6 +52,24 @@ fn git(worktree: &Path, arguments: &[&str]) -> Result<String> {
     crate::runner::safe_git(worktree, arguments)
 }
 
+/// Whether `worktree`'s HEAD is `commit` followed only by history commits:
+/// the team records an accepted step or plan on the branch while reviews of
+/// other work are open, and that must not make their reviewed code stale.
+pub fn only_history_since(worktree: &Path, commit: &str) -> Result<bool> {
+    if git(worktree, &["rev-parse", "HEAD"])?.trim() == commit {
+        return Ok(true);
+    }
+    if git(worktree, &["merge-base", "--is-ancestor", commit, "HEAD"]).is_err() {
+        return Ok(false);
+    }
+    let changed = git(
+        worktree,
+        &["diff", "--name-only", &format!("{commit}..HEAD")],
+    )?;
+    let history = format!("{FOLDER}/");
+    Ok(changed.lines().all(|path| path.starts_with(&history)))
+}
+
 /// Copies every `*.md` of `from` into `to`; nothing when `from` is missing.
 fn copy_plans(from: &Path, to: &Path) -> Result<()> {
     let Ok(entries) = fs::read_dir(from) else {
@@ -402,6 +420,26 @@ mod tests {
         );
         let args = fs::read_to_string(&started.args_file).unwrap();
         assert!(args.contains("continues from the team history"), "{args}");
+    }
+
+    #[test]
+    fn only_history_commits_keep_a_reviewed_target_current() {
+        let repo = crate::checks::tests::repo();
+        commit_file(repo.path(), "src/app.rs", "fn app() {}\n", "app");
+        let reviewed = crate::checks::head(repo.path()).unwrap();
+        assert!(only_history_since(repo.path(), &reviewed).unwrap());
+        commit_file(
+            repo.path(),
+            ".devagentics/history/t/history.json",
+            "{}\n",
+            "history",
+        );
+        assert!(only_history_since(repo.path(), &reviewed).unwrap());
+        commit_file(repo.path(), "src/other.rs", "fn other() {}\n", "code");
+        assert!(
+            !only_history_since(repo.path(), &reviewed).unwrap(),
+            "new code"
+        );
     }
 
     #[test]

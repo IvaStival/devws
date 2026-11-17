@@ -137,7 +137,14 @@ pub fn brief(task: &Task) -> Result<Value> {
     if let Some(proposal) = &state.application_proposal {
         status["proposal"] = size(proposal);
     }
-    status["read_more"] = json!("application_workflow status: the baseline's outline; section and items for the rest");
+    // Reviews and accepted items only grow as the team works: the brief keeps
+    // each review's outcome and the work still to do, the section the rest.
+    status["reviews"] = json!(state.reviews.iter().map(|review| json!({"id":review.id,"order":review.order,"author":review.author,"reviewer":review.reviewer,"verdict":review.verdict,"findings":review.findings.len(),"submitted_at":review.submitted_at})).collect::<Vec<_>>());
+    let ready_work = status["ready_work"].as_array().cloned().unwrap_or_default();
+    let (accepted, open): (Vec<_>, Vec<_>) = ready_work.into_iter().partition(|item| item["stage"] == "accepted");
+    status["ready_work"] = json!(open);
+    status["accepted_items"] = json!(accepted.len());
+    status["read_more"] = json!("application_workflow status: the baseline's outline; section (reviews, ready_work, runner, …) for the full part, and items for contracts");
     Ok(status)
 }
 
@@ -431,6 +438,29 @@ mod tests {
         assert_eq!(contracts["items"]["S01-B01"]["acceptance"][0], "Service contract passes");
         assert!(call(&task, "status", &json!({"section":"nothing"})).is_err());
         assert!(call(&task, "status", &json!({"section":"proposal","items":["S9"]})).is_err());
+    }
+
+    #[test]
+    fn the_brief_keeps_review_outcomes_and_leaves_their_text_to_the_section() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        crate::execution::store(&task, baseline(), "first").unwrap();
+        task.transaction(|tx| {
+            tx.state.reviews.push(crate::reviews::Review {
+                id: "r1".into(),
+                order: "o1".into(),
+                summary: Some("a long reviewed account ".repeat(100)),
+                ..Default::default()
+            });
+            Ok(())
+        })
+        .unwrap();
+        let brief = brief(&task).unwrap();
+        assert_eq!(brief["reviews"][0]["id"], "r1");
+        assert!(brief["reviews"][0].get("summary").is_none());
+        assert_eq!(brief["accepted_items"], 0);
+        let reviews = call(&task, "status", &json!({"section":"reviews"})).unwrap();
+        assert!(reviews["reviews"][0]["summary"].as_str().unwrap().starts_with("a long"));
     }
 
     #[test]

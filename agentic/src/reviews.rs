@@ -415,8 +415,8 @@ pub fn validate(task: &Task, review: &Review) -> Result<()> {
         .find(|repo| repo.name == author.repo)
         .context("unknown repo")?;
     ensure!(
-        checks::head(&repo.worktree)? == review.target,
-        "review target changed"
+        crate::history::only_history_since(&repo.worktree, &review.target)?,
+        "review target changed beyond the team's history: request a fresh review"
     );
     ensure!(
         review.candidate.source == review.source

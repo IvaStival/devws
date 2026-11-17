@@ -101,7 +101,7 @@ pub fn merge(task: &Task, lane: &crate::task::Lane, step: &str, review: &Review)
         "integration branch changed"
     );
     ensure!(
-        checks::head(&repo.worktree)? == candidate.target
+        crate::history::only_history_since(&repo.worktree, &candidate.target)?
             && checks::head(&lane.worktree)? == candidate.source,
         "review source or target is stale"
     );
@@ -126,10 +126,25 @@ pub fn merge(task: &Task, lane: &crate::task::Lane, step: &str, review: &Review)
         );
         Ok(())
     })?;
-    crate::runner::safe_git(
-        &repo.worktree,
-        &["merge", "--ff-only", "--no-edit", &candidate.commit],
-    )?;
+    // History recorded since the review sits beside the reviewed code, so the
+    // exact candidate is merged next to it rather than fast-forwarded.
+    if checks::head(&repo.worktree)? == candidate.target {
+        crate::runner::safe_git(
+            &repo.worktree,
+            &["merge", "--ff-only", "--no-edit", &candidate.commit],
+        )?;
+    } else {
+        crate::runner::safe_git(
+            &repo.worktree,
+            &[
+                "merge",
+                "--no-ff",
+                "-m",
+                "Merge independently reviewed implementation beside the team's history",
+                &candidate.commit,
+            ],
+        )?;
+    }
     task.transaction(|tx| {
         tx.state
             .integrations
@@ -167,21 +182,21 @@ pub fn recover(task: &Task, step: &str) -> Result<bool> {
         .iter()
         .find(|repo| repo.name == journal.repo)
         .context("integration repo missing")?;
-    let head = checks::head(&repo.worktree)?;
-    if head == journal.candidate.target {
+    let merged = crate::runner::safe_git(
+        &repo.worktree,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &journal.candidate.commit,
+            "HEAD",
+        ],
+    )
+    .is_ok();
+    if !merged && crate::history::only_history_since(&repo.worktree, &journal.candidate.target)? {
         return Ok(false);
     }
     ensure!(
-        crate::runner::safe_git(
-            &repo.worktree,
-            &[
-                "merge-base",
-                "--is-ancestor",
-                &journal.candidate.commit,
-                "HEAD"
-            ]
-        )
-        .is_ok(),
+        merged,
         "integration recovery found unrelated branch advancement; inspect before recovery"
     );
     let changed = crate::runner::safe_git(
