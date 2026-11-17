@@ -71,6 +71,7 @@ pub(crate) fn board() -> Board {
         questions: vec!["q9 executor-1 → tester: which file?".into()],
         leader_question: Some("A or B for the runner?".into()),
         done: vec![],
+        progress: crate::board::Progress::default(),
         done_specs: vec![],
         usage: vec![
             (
@@ -204,6 +205,11 @@ fn board_with_history() -> Board {
             attempts: step.attempts,
         })
         .collect();
+    board.progress = crate::board::Progress {
+        done: 99,
+        total: 101,
+        helpers: 0,
+    };
     board.done_specs = board
         .done
         .iter()
@@ -473,6 +479,17 @@ fn the_header_has_the_count_the_tabs_the_progress_and_limit_bars() {
     assert!(row("[overview]").contains("usage"));
     let progress = row("PROGRESS");
     assert!(progress.contains("99/101 · 98%"), "{progress:?}");
+    assert!(!progress.contains("helper"), "{progress:?}");
+    board.progress = crate::board::Progress {
+        done: 4,
+        total: 56,
+        helpers: 24,
+    };
+    let reviewed = plain(&screen(&board, &nav, &rows, 84, 40, None));
+    assert!(
+        reviewed.contains("4/56 · 7% · +24 helper steps"),
+        "baseline items, helpers apart: {reviewed}"
+    );
     assert!(
         progress.contains('⣿') && progress.contains('⣀'),
         "dots: {progress:?}"

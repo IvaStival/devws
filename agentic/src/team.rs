@@ -180,9 +180,9 @@ impl Team<'_> {
             if role.writes && !tx.state.approved {
                 bail!("the plan is not approved: the user approves it (the leader calls approve_plan once they say yes, or `devagentics task approve {task_id}`); until then only roles that do not write may start");
             }
-            let counted = tx.state.agents.iter().filter(|agent| agent.live).count();
+            let counted = tx.state.live_agents(role.writes);
             if counted >= config.max_agents {
-                bail!("{counted} agents are running, the most this task allows: stop one first");
+                bail!("{counted} {} are running, the most this task allows: stop one first", kind_of_agents(role.writes));
             }
             let lane_name = lane.as_ref().map(|lane| lane.name.clone());
             if role.writes
@@ -670,14 +670,12 @@ impl Team<'_> {
             }
             if !agent.live {
                 let state = self.task.state()?;
-                if state
-                    .agents
-                    .iter()
-                    .filter(|candidate| candidate.live)
-                    .count()
-                    >= config.max_agents
-                {
-                    bail!("cannot resume {}: agent capacity is full", agent.id);
+                if state.live_agents(agent.writes) >= config.max_agents {
+                    bail!(
+                        "cannot resume {}: the places for {} are full",
+                        agent.id,
+                        kind_of_agents(agent.writes)
+                    );
                 }
                 if agent.writes
                     && state.agents.iter().any(|candidate| {
@@ -888,6 +886,11 @@ fn reviewed_adapter(
             "reviewed execution requires the verified Claude MCP-only adapter; native Codex tools are not an isolation boundary",
         ),
     }
+}
+
+/// What a capacity place is for: writers and read-only agents count apart.
+fn kind_of_agents(writes: bool) -> &'static str {
+    if writes { "writers" } else { "read-only agents" }
 }
 
 #[cfg(test)]
@@ -1131,29 +1134,48 @@ mod tests {
             .to_string();
         assert!(error.contains("executor-1 already writes"), "{error}");
 
-        // A reader counts as an agent too.
+        // Readers have places of their own: idle ones never block a writer.
         std::fs::create_dir_all(f.home.roles_dir()).unwrap();
         std::fs::write(
             f.home.roles_dir().join("reviewer.md"),
             "+++\nagent = \"claude\"\n+++\nReview.\n",
         )
         .unwrap();
-        f.team().spawn_agent("reviewer", None).unwrap();
-        f.team().spawn_agent("reviewer", None).unwrap();
+        for _ in 0..3 {
+            f.team().spawn_agent("reviewer", None).unwrap();
+        }
         let error = f
             .team()
             .spawn_agent("reviewer", None)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("3 agents are running"), "{error}");
+        assert!(error.contains("3 read-only agents are running"), "{error}");
 
         // Stopping an agent frees its place and, for a writer, its worktree.
         f.team().stop_agent("executor-1").unwrap();
-        assert!(f.team().spawn_agent("executor", None).is_ok());
+        assert!(
+            f.team().spawn_agent("executor", None).is_ok(),
+            "three readers leave a writer's place free"
+        );
         assert!(
             f.team().spawn_agent("reviewer", None).is_err(),
-            "the place was taken again"
+            "the readers' places are still taken"
         );
+
+        // Writers are still capped: three lanes, three writers, no fourth.
+        f.team().stop_agent("executor-2").unwrap();
+        for lane in ["one", "two", "three", "four"] {
+            crate::lanes::add(&f.task, lane, &[format!("{lane}/**")], None).unwrap();
+        }
+        for lane in ["one", "two", "three"] {
+            f.team().spawn_agent_in("executor", None, Some(lane)).unwrap();
+        }
+        let error = f
+            .team()
+            .spawn_agent_in("executor", None, Some("four"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("3 writers are running"), "{error}");
     }
 
     #[test]

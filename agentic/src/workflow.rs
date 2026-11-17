@@ -18,7 +18,6 @@ pub fn status(task: &Task) -> Result<Value> {
             .context("task home missing")?
             .to_path_buf(),
     );
-    let live = state.agents.iter().filter(|agent| agent.live).count();
     for (id, item) in &state.application.items {
         let stage = state
             .steps
@@ -77,8 +76,8 @@ pub fn status(task: &Task) -> Result<Value> {
                 "required named profile missing"
             );
             ensure!(
-                reusable || live < config.max_agents,
-                "agent capacity occupied; reuse/release idle staffing before adding a writer"
+                reusable || state.live_agents(true) < config.max_agents,
+                "writer capacity occupied; reuse an idle writer or stop one before adding a writer"
             );
             Ok(())
         })()
@@ -107,7 +106,7 @@ pub fn status(task: &Task) -> Result<Value> {
         })
         .collect();
     Ok(
-        json!({"workflow":state.workflow,"candidate_checks":candidate_checks,"application":state.application,"proposal":state.application_proposal,"interview_frontier":execution::question_frontier(state.application_proposal.as_ref().unwrap_or(&state.application)),"ready_work":items,"reviews":state.reviews,"performance":performance::update(task)?,"capacity":{"limit":config.max_agents,"live":state.agents.iter().filter(|agent|agent.live).count()},"runner":{"configured":state.runner.is_some(),"available":state.runner.is_some(),"adapter":if state.codex_team {"claude_mcp_only or codex_sandbox: the user put the whole team on Codex (task codex-team); Codex workers write only their snapshot, without network"} else {"claude_mcp_only"},"worker_programs":if state.codex_team {vec!["claude","codex"]} else {vec!["claude"]},"reviewer_adapter":if state.codex_reviewers || state.codex_team {"codex_read_only_sandbox: cannot write; its shell can read host files"} else {"claude_mcp_only"},"network":"none","live_project_mounts":false,"configuration":state.runner}}),
+        json!({"workflow":state.workflow,"candidate_checks":candidate_checks,"application":state.application,"proposal":state.application_proposal,"interview_frontier":execution::question_frontier(state.application_proposal.as_ref().unwrap_or(&state.application)),"ready_work":items,"reviews":state.reviews,"performance":performance::update(task)?,"capacity":{"limit":config.max_agents,"writers":state.live_agents(true),"read_only":state.live_agents(false)},"runner":{"configured":state.runner.is_some(),"available":state.runner.is_some(),"adapter":if state.codex_team {"claude_mcp_only or codex_sandbox: the user put the whole team on Codex (task codex-team); Codex workers write only their snapshot, without network"} else {"claude_mcp_only"},"worker_programs":if state.codex_team {vec!["claude","codex"]} else {vec!["claude"]},"reviewer_adapter":if state.codex_reviewers || state.codex_team {"codex_read_only_sandbox: cannot write; its shell can read host files"} else {"claude_mcp_only"},"network":"none","live_project_mounts":false,"configuration":state.runner}}),
     )
 }
 /// The status small enough to come back in one call: the baseline and the

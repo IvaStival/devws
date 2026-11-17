@@ -1,7 +1,7 @@
 //! Pure board navigation and rendering. Stable row identities keep a refresh
 //! from moving the user's focus to a different agent or task.
 
-use crate::board::{AgentRow, Board, PermissionRow, RoleRow, SpecRow, StaleReview, StepRow};
+use crate::board::{AgentRow, Board, PermissionRow, Progress, RoleRow, SpecRow, StaleReview, StepRow};
 use crate::devws::{PaneState, Usage};
 use crate::roles::Group;
 use crate::state::StepStatus;
@@ -1500,10 +1500,18 @@ fn header(
     };
     rows.push(Line::from(tabs));
 
-    let total = board.steps.len() as u32;
-    let done = board.done.len() as u32;
+    let Progress {
+        done,
+        total,
+        helpers,
+    } = board.progress;
     let percent = (done * 100).checked_div(total).unwrap_or(0);
-    let summary = format!(" {done}/{total} · {percent}% · {}", board.phase);
+    let helpers = if helpers > 0 {
+        format!(" · +{helpers} helper steps")
+    } else {
+        String::new()
+    };
+    let summary = format!(" {done}/{total} · {percent}%{helpers} · {}", board.phase);
     let cells = width
         .saturating_sub(11 + summary.chars().count())
         .clamp(4, 40);

@@ -189,6 +189,18 @@ baseline revision to approve, an exact-call consent, more attempts), call
 `escalate` first: it marks you as needing them until they answer, and nothing
 else tells them.
 
+Keep the team moving while the user decides; their answer can take hours:
+- Before you wait, start every ready item the pending decision does not touch
+  (`ready_work`), in every lane with room. Waiting stops only the work that
+  needs the answer.
+- Ask for every decision you need at once, in one `escalate` with numbered
+  items, each ending in what a yes and a no would do. Do not send a second
+  escalation while the first is unanswered unless something new blocks.
+- Propose a runner change together with the baseline revision that needs it,
+  and say so, so the user approves them in one answer.
+- Plan items so they can run side by side: an acceptance-test item depends on
+  its contract and interfaces, not on the previous item being accepted.
+
 When ai-memory tools are available, save a short handoff after each accepted
 step and record decisions there: a repo's in that repo's project, the task's in
 the "devagentics-tasks" project.

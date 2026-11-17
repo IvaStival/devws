@@ -54,10 +54,49 @@ pub struct Board {
     /// Orders waiting to be typed into an agent.
     pub queue: Vec<QueueRow>,
     pub done: Vec<StepRow>,
+    /// What the PROGRESS bar counts.
+    pub progress: Progress,
     /// The specs whose steps are all accepted, newest first: DONE's rows.
     pub done_specs: Vec<SpecRow>,
     /// The leader and each agent: what they used.
     pub usage: Vec<(String, Usage)>,
+}
+
+/// The work done out of the work there is. A reviewed task counts its
+/// baseline's items, so the leader's own plans, preflights and corrections
+/// (`helpers`) never look like progress; a legacy task counts its steps.
+#[derive(Debug, Default, PartialEq)]
+pub struct Progress {
+    pub done: u32,
+    pub total: u32,
+    pub helpers: u32,
+}
+
+impl Progress {
+    fn of(state: &crate::state::State) -> Self {
+        let accepted = |step: &Step| step.status == StepStatus::Accepted;
+        if state.workflow != crate::execution::Workflow::Reviewed {
+            return Self {
+                done: state.steps.iter().filter(|step| accepted(step)).count() as u32,
+                total: state.steps.len() as u32,
+                helpers: 0,
+            };
+        }
+        let items = &state.application.items;
+        Self {
+            done: state
+                .steps
+                .iter()
+                .filter(|step| items.contains_key(&step.id) && accepted(step))
+                .count() as u32,
+            total: items.len() as u32,
+            helpers: state
+                .steps
+                .iter()
+                .filter(|step| !items.contains_key(&step.id))
+                .count() as u32,
+        }
+    }
 }
 
 /// How long a step may wait for an idle leader before it needs you.
@@ -615,6 +654,7 @@ impl Board {
             approved: state.approved,
             paused: state.paused,
             permissions,
+            progress: Progress::of(&state),
             steps: state.steps.iter().map(step_row).collect(),
             details,
             task: config.id,
@@ -707,6 +747,46 @@ pub(crate) mod tests {
     use crate::team::Team;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn a_reviewed_task_counts_baseline_items_and_its_helper_steps_apart() {
+        let step = |id: &str, status| Step {
+            id: id.into(),
+            title: id.into(),
+            status,
+            attempts: 1,
+            spec: None,
+            review_since: None,
+        };
+        let mut state = crate::state::State {
+            application: crate::execution::tests::baseline(),
+            steps: vec![
+                step("S01-B01", StepStatus::Accepted),
+                step("S01-B01-plan", StepStatus::Accepted),
+                step("preflight", StepStatus::Blocked),
+            ],
+            ..Default::default()
+        };
+        state.workflow = crate::execution::Workflow::Reviewed;
+        let items = state.application.items.len() as u32;
+        assert_eq!(
+            Progress::of(&state),
+            Progress {
+                done: 1,
+                total: items,
+                helpers: 2
+            }
+        );
+        state.workflow = crate::execution::Workflow::Legacy;
+        assert_eq!(
+            Progress::of(&state),
+            Progress {
+                done: 2,
+                total: 3,
+                helpers: 0
+            }
+        );
+    }
 
     /// A started task on a repo, with a claude agent that has 40% of its five
     /// hours used.

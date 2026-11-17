@@ -262,6 +262,16 @@ impl State {
         self.agents.iter().find(|agent| agent.id == id)
     }
 
+    /// Live agents that write, or (`writes` false) that only read. Each kind
+    /// has its own `max_agents` places, so an idle planner or reviewer never
+    /// keeps a writer from starting.
+    pub fn live_agents(&self, writes: bool) -> usize {
+        self.agents
+            .iter()
+            .filter(|agent| agent.live && agent.writes == writes)
+            .count()
+    }
+
     pub fn agent_in_pane(&self, pane: &str) -> Option<&Agent> {
         self.agents
             .iter()

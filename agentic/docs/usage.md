@@ -83,8 +83,10 @@ The leader asks you (`escalate`) for what it cannot decide.
 The column beside the leader runs `devagentics board <task>`. Above every
 view, a rounded frame holds the task and branch with how many things need you
 in its top edge (`● 2 need you`, hidden at none), the views, a progress bar of
-accepted steps (braille dots, `⣿` done and `⣀` left, which every terminal
-draws as a texture), the team's cost at API prices with its input, output and
+accepted work (braille dots, `⣿` done and `⣀` left, which every terminal
+draws as a texture): a reviewed task counts its baseline's items
+(`4/56 · 7% · +24 helper steps`, the leader's plans, preflights and
+corrections apart), a legacy task its steps; the team's cost at API prices with its input, output and
 cache tokens (every agent the task has had), and a row per account with its
 5-hour and week limit bars (green, yellow from 60 %, red from 85 %; narrow
 panes keep the 5-hour bar). A pane too short for the frame keeps its top row.
@@ -201,8 +203,9 @@ waiting for you takes it as your answer.
   then only in a lane.
 - No agent that writes before you approve the plan; a new plan needs approval
   again.
-- At most `max_agents` running (6), the seniors included. Agents stay between
-  steps; the leader stops them at the end, near a limit, or to make room.
+- At most `max_agents` writers running (6), and as many read-only agents
+  (planners, reviewers) apart, so an idle senior never keeps a writer from
+  starting. Agents stay between steps; the leader stops them at the end, near a limit, or to make room.
 - No new agents on an account at 85% of its week or five-hour limit. Workers
   automatically try available alternatives, including Claude → Codex, without
   asking you again. Their role, lane and queued work stay the same. See
