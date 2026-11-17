@@ -600,6 +600,10 @@ fn screen_loop(
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
         execute!(std::io::stdout(), EnableMouseCapture)?;
+        // A pane left on the alternate screen (a board that was killed) keeps
+        // its old text there; the first frame would draw only over its own
+        // cells and leave the rest showing through.
+        terminal.clear()?;
         loop {
             match loader.take() {
                 Some(Ok(fresh)) => {
