@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# devws's opencode plugin (opencode_devws_plugin.js): opencode's events reach
+# devws's opencode plugin (agents/30-opencode/devws_plugin.js): opencode's events reach
 # devws as the hook payloads Claude Code and Codex send, a provider error
 # becomes a structured startup error, and edits reach the editor's hook.
 
@@ -7,7 +7,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_ROOT="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/devws-opencode-plugin.XXXXXX")" && pwd -P)"
-PLUGIN="$ROOT/config/tmuxinator/opencode_devws_plugin.js"
+PLUGIN="$ROOT/config/tmuxinator/agents/30-opencode/devws_plugin.js"
 
 cleanup() { rm -rf "$TEST_ROOT"; }
 trap cleanup EXIT
@@ -24,8 +24,9 @@ command -v node >/dev/null 2>&1 || {
 
 # The plugin runs the scripts beside it: stubs that record what they get.
 SCRIPTS="$TEST_ROOT/scripts"
-mkdir -p "$SCRIPTS" "$TEST_ROOT/bin"
-cp "$PLUGIN" "$SCRIPTS/plugin.mjs"
+# It is a module's file: devws's scripts are two folders up.
+mkdir -p "$SCRIPTS/agents/30-opencode" "$TEST_ROOT/bin"
+cp "$PLUGIN" "$SCRIPTS/agents/30-opencode/plugin.mjs"
 for stub in agent_state.sh agent_follow_hook.sh; do
   printf '#!/bin/sh\n{ printf "%s %%s " "$*"; cat; echo; } >> "%s/calls"\n' "$stub" "$TEST_ROOT" > "$SCRIPTS/$stub"
   chmod +x "$SCRIPTS/$stub"
@@ -37,7 +38,7 @@ chmod +x "$TEST_ROOT/bin/tmux"
 drive() {
   : > "$TEST_ROOT/calls"
   PATH="$TEST_ROOT/bin:$PATH" TMUX_PANE=%9 DEVWS_OPENCODE_DB=/data/opencode.db node --input-type=module -e "
-    const { DevwsPlugin } = await import('$SCRIPTS/plugin.mjs');
+    const { DevwsPlugin } = await import('$SCRIPTS/agents/30-opencode/plugin.mjs');
     const hooks = await DevwsPlugin({ directory: '/work/app' });
     for (const step of $1) {
       if (step.tool) {

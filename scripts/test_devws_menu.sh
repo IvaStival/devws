@@ -125,8 +125,12 @@ test_tabs_list_their_actions() {
     fail "Templates tab: $(actions_of templates)"
   [ "$(actions_of layout)" = "toggle-layout minimize header new-panel move-panel switch-editor ghostty-theme" ] ||
     fail "Layout tab: $(actions_of layout)"
-  [ "$(actions_of agent)" = "jump switch-agent restart-agent follow-mode initialize-agent register-agent agent-folder remove-agent team-roles opencode" ] ||
+  [ "$(actions_of agent)" = "jump switch-agent restart-agent follow-mode initialize-agent team-roles agent-accounts agent-programs" ] ||
     fail "Agent tab: $(actions_of agent)"
+  [ "$(actions_of agent/accounts)" = "register-agent agent-folder remove-agent" ] ||
+    fail "Agent › Accounts: $(actions_of agent/accounts)"
+  [ "$(actions_of agent/programs)" = "opencode antigravity" ] ||
+    fail "Agent › Programs: $(actions_of agent/programs)"
   [ "$(actions_of git)" = "commit commit-manual push tidy github-login" ] || fail "Git tab: $(actions_of git)"
   [ "$(actions_of jungleForge)" = "run-here switch-run stop-run services migrate shell logs info settings register-jungleforge" ] ||
     fail "JungleForge tab: $(actions_of jungleForge)"
@@ -156,16 +160,19 @@ test_open_an_agent_team_runs_devws_agentic() {
 
 # An agent team's workspace (@devws_task) offers moving its leader to the
 # leader's other program; devAgentics makes the move once its turn is over.
-test_an_agent_team_switches_its_leaders_model() {
-  ! grep -q switch-leader <<<"$(actions_of team)" || fail "a workspace without a task offers Switch leader model"
+test_an_agent_team_changes_its_leader() {
+  ! grep -q change-leader <<<"$(actions_of team)" || fail "a workspace without a task offers Change leader"
   cat > "$TEST_ROOT/bin/devagentics-stub" <<EOF
 #!/usr/bin/env bash
-printf '%s\n' "\$*" > "$TEST_ROOT/calls/devagentics"
-echo "The leader moves to claude once its turn is over."
+printf '%s\n' "\$*" >> "$TEST_ROOT/calls/devagentics"
+case "\$1 \$2" in
+  'leader choices') printf 'claude\tclaude\tleads now\nclaude_work\tclaude\t\n' ;;
+  'leader use') echo "The leader moves to \$4 once its turn is over." ;;
+esac
 EOF
   chmod +x "$TEST_ROOT/bin/devagentics-stub"
   tmux set-option -t dev-menu @devws_task feat-x
-  [ "$(actions_of team)" = "team-overview team-agents team-steps team-activity team-usage team-leader switch-leader" ] ||
+  [ "$(actions_of team)" = "team-overview team-agents team-steps team-activity team-usage team-leader change-leader" ] ||
     fail "Team tab: $(actions_of team)"
   grep -q 'Team' <<<"$(menu --header)" || fail "team header missing"
   menu --switch Team >/dev/null
@@ -175,13 +182,43 @@ EOF
   menu --switch prev >/dev/null
   [ "$(menu --tab)" = team ] || fail "Git tab does not cycle back to Team"
   local output
-  output="$(DEVWS_AGENTIC_COMMAND=devagentics-stub menu --run switch-leader <<<'' 2>&1)"
+  rm -f "$TEST_ROOT/calls/devagentics"
+  printf 'claude_work      claude       \tclaude_work\n' > "$TEST_ROOT/fzf.answers"
+  output="$(DEVWS_AGENTIC_COMMAND=devagentics-stub menu --run change-leader <<<'' 2>&1)"
   tmux set-option -u -t dev-menu @devws_task
-  [ "$(cat "$TEST_ROOT/calls/devagentics" 2>/dev/null)" = "leader switch feat-x" ] ||
-    fail "Switch leader model ran '$(cat "$TEST_ROOT/calls/devagentics" 2>/dev/null)'"
-  grep -q "moves to claude" <<<"$output" || fail "Switch leader model did not say where: $output"
+  grep -q 'leads now' "$TEST_ROOT/calls/fzf.input" || fail "Change leader did not show how each stands: $(cat "$TEST_ROOT/calls/fzf.input")"
+  [ "$(cat "$TEST_ROOT/calls/devagentics" 2>/dev/null)" = "$(printf 'leader choices feat-x\nleader use feat-x claude_work')" ] ||
+    fail "Change leader ran '$(cat "$TEST_ROOT/calls/devagentics" 2>/dev/null)'"
+  grep -q "moves to claude_work" <<<"$output" || fail "Change leader did not say where: $output"
   ! grep -q 'Team' <<<"$(menu --header)" || fail "normal workspace has a Team tab"
   [ "$(menu --tab)" = workspace ] || fail "stale Team selection was not reset"
+}
+
+# An agent team's agent pane is its leader, started with the task's
+# arguments: Switch agent opens the other agent in a panel of its own and
+# Restart agent leaves the leader alone, so the team never loses its leader.
+test_an_agent_team_keeps_its_leader_pane() {
+  local leader started output
+  leader="$(tmux split-window -t "$PANE" -P -F '#{pane_id}' 'sleep 600')"
+  tmux set-option -p -t "$leader" @devws_role agent
+  tmux set-option -t dev-menu @devws_task feat-x
+  tmux set-option -t dev-menu @devws_agent claude
+  started="$(tmux display-message -p -t "$leader" '#{pane_pid}')"
+
+  printf 'claude_work\n' > "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/new_panel.sh"
+  menu --run switch-agent <<<'' >/dev/null 2>&1
+  [ "$(cat "$TEST_ROOT/calls/new_panel.sh" 2>/dev/null)" = "dev-menu right agent claude_work" ] ||
+    fail "Switch agent in a team ran new_panel.sh with '$(cat "$TEST_ROOT/calls/new_panel.sh" 2>/dev/null)'"
+  [ "$(tmux show-options -qv -t dev-menu @devws_agent)" = claude ] || fail "Switch agent in a team changed the leader's agent"
+
+  output="$(menu --run restart-agent <<<'' 2>&1)"
+  grep -q 'Change leader' <<<"$output" || fail "Restart agent in a team did not point to Change leader: $output"
+
+  [ "$(tmux display-message -p -t "$leader" '#{pane_pid}')" = "$started" ] || fail "the leader pane was respawned"
+  tmux set-option -u -t dev-menu @devws_task
+  tmux set-option -u -t dev-menu @devws_agent
+  tmux kill-pane -t "$leader"
 }
 
 test_team_navigation_reuses_the_board_from_group_workspaces() {
@@ -194,7 +231,7 @@ test_team_navigation_reuses_the_board_from_group_workspaces() {
   tmux set-option -p -t "$board" @devws_role team-log
   tmux set-option -t dev-menu @devws_team_of dev-team
   count="$(tmux list-panes -a | wc -l | tr -d ' ')"
-  [ "$(actions_of team)" = "team-overview team-agents team-steps team-activity team-usage team-leader switch-leader" ] ||
+  [ "$(actions_of team)" = "team-overview team-agents team-steps team-activity team-usage team-leader change-leader" ] ||
     fail "group workspace has no team navigation"
   grep -q $'^team-steps\tTeam · ' <<<"$(menu --items-for steps)" || fail "global search lost Team actions"
   for view in overview agents steps activity usage; do
@@ -205,8 +242,10 @@ test_team_navigation_reuses_the_board_from_group_workspaces() {
   menu --run team-leader || fail "could not return to leader"
   [ "$(tmux display-message -p -t "$leader" '#{pane_active}')" = 1 ] || fail "leader not focused"
   [ "$(tmux list-panes -a | wc -l | tr -d ' ')" = "$count" ] || fail "navigation created another pane"
-  output="$(DEVWS_AGENTIC_COMMAND=devagentics-stub menu --run switch-leader <<<'' 2>&1)"
-  [ "$(cat "$TEST_ROOT/calls/devagentics")" = "leader switch feat-team" ] || fail "group leader switch used the wrong task"
+  rm -f "$TEST_ROOT/calls/devagentics"
+  printf 'claude_work\tclaude_work\n' > "$TEST_ROOT/fzf.answers"
+  output="$(DEVWS_AGENTIC_COMMAND=devagentics-stub menu --run change-leader <<<'' 2>&1)"
+  grep -qx "leader use feat-team claude_work" "$TEST_ROOT/calls/devagentics" || fail "group leader change used the wrong task"
   tmux kill-pane -t "$board"
   if output="$(menu --run team-overview 2>&1)"; then
     fail "missing board was accepted"
@@ -278,12 +317,37 @@ test_items_show_labels_and_shortcuts() {
 # The memory items show only with ai-memory installed (DEVWS_AI_MEMORY: none
 # for these tests, whatever the machine has, unless pointed at a stub).
 test_memory_items_need_ai_memory() {
-  ! grep -q memory- <<<"$(actions_of agent)" || fail "memory items without ai-memory"
+  ! grep -q memory <<<"$(actions_of agent)" || fail "memory items without ai-memory"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$TEST_ROOT/bin/ai-memory-stub"
   chmod +x "$TEST_ROOT/bin/ai-memory-stub"
-  [ "$(DEVWS_AI_MEMORY="$TEST_ROOT/bin/ai-memory-stub" actions_of agent | grep -o 'memory-[a-z]*' | tr '\n' ' ')" = \
-    "memory-search memory-recent memory-web memory-doctor " ] ||
-    fail "memory items with ai-memory: $(DEVWS_AI_MEMORY="$TEST_ROOT/bin/ai-memory-stub" actions_of agent)"
+  grep -qw agent-memory <<<"$(DEVWS_AI_MEMORY="$TEST_ROOT/bin/ai-memory-stub" actions_of agent)" ||
+    fail "no Memory group with ai-memory: $(DEVWS_AI_MEMORY="$TEST_ROOT/bin/ai-memory-stub" actions_of agent)"
+  [ "$(DEVWS_AI_MEMORY="$TEST_ROOT/bin/ai-memory-stub" actions_of agent/memory)" = \
+    "memory-search memory-recent memory-web memory-doctor" ] ||
+    fail "memory items with ai-memory: $(DEVWS_AI_MEMORY="$TEST_ROOT/bin/ai-memory-stub" actions_of agent/memory)"
+}
+
+# The Agent tab's groups open in their own dialog: picking a row there runs
+# it, Esc goes back to the menu; a search from the menu finds their rows.
+test_agent_groups_open_their_own_dialog() {
+  local found
+  found="$(menu --items-for register)"
+  grep -q $'^register-agent\tAgent › Accounts · ' <<<"$found" || fail "search lost a grouped row: $found"
+  [ "$(menu --function agent-accounts)" = "menu_group agent/accounts" ] || fail "Accounts… opens no group"
+
+  printf 'remove-agent\tRemove\n' > "$TEST_ROOT/fzf.answers"
+  printf '%s\n' claude >> "$TEST_ROOT/fzf.answers"
+  rm -f "$TEST_ROOT/calls/register_agent.sh"
+  menu --run agent-accounts <<<'' >/dev/null 2>&1
+  [ "$(cat "$TEST_ROOT/calls/register_agent.sh" 2>/dev/null)" = "remove claude" ] ||
+    fail "the Accounts dialog did not run Remove agent: $(cat "$TEST_ROOT/calls/register_agent.sh" 2>/dev/null)"
+
+  # Esc in the dialog: the menu again, on its tab.
+  printf '\n\n' > "$TEST_ROOT/fzf.answers"
+  tmux set-option -t dev-menu @devws_menu_tab agent
+  menu --group agent/accounts >/dev/null 2>&1
+  grep -q 'Switch agent' "$TEST_ROOT/calls/fzf.input" || fail "Esc did not go back to the menu: $(cat "$TEST_ROOT/calls/fzf.input")"
+  ! menu --group agent/nothing 2>/dev/null || fail "an unknown group was accepted"
 }
 
 # Register in jungleforge: the folder the app is in, its name (the repo's by
@@ -336,8 +400,8 @@ test_typing_searches_every_tab() {
   grep -q $'^jump\tAgent · ! Go to waiting agent' <<<"$all" || fail "not every tab is searched: $all"
   grep -q $'^run-here\tJungleForge · ▶ Run this branch' <<<"$all" || fail "search lost JungleForge"
   grep -q $'^network-devices\tTools · ' <<<"$all" || fail "search lost network discovery"
-  # Every action shown in a tab, once.
-  [ "$(grep -c . <<<"$all")" -eq "$(for tab in workspace templates layout agent team git jungleForge tools help; do menu --items "$tab"; done | grep -c .)" ] ||
+  # Every action shown in a tab or one of its groups, once.
+  [ "$(grep -c . <<<"$all")" -eq "$(for tab in workspace templates layout agent agent/accounts agent/programs team git jungleForge tools help; do menu --items "$tab"; done | grep -c .)" ] ||
     fail "a search does not list every action once"
 }
 
@@ -484,11 +548,17 @@ EOF
 
   [ "$(cat "$TEST_ROOT/calls/ui.args")" = "$(printf '%s\n' menu --tab jungleForge)" ] ||
     fail "devws-ui was given: $(cat "$TEST_ROOT/calls/ui.args")"
+  # A tab's groups follow it, each row with its group (shown only in a search).
   expected="$(for tab in workspace templates layout agent git jungleForge tools help; do
     menu --items "$tab" | cut -f1 | sed "s/^/$tab\t/"
+    [ "$tab" != agent ] || for group in accounts programs; do
+      menu --items "agent/$group" | cut -f1 | sed "s/^/$tab\t/"
+    done
   done)"
   [ "$(cut -f1,2 "$TEST_ROOT/calls/ui.input")" = "$expected" ] ||
     fail "the rows are not every shown action, tab by tab: $(cut -f1,2 "$TEST_ROOT/calls/ui.input")"
+  grep -qx $'agent\tregister-agent\t＋ Register agent\t\tAccounts' "$TEST_ROOT/calls/ui.input" ||
+    fail "a grouped row does not carry its group: $(grep register-agent "$TEST_ROOT/calls/ui.input")"
   grep -qx $'git\tpush\t↑ Push / PR\tC-b G' "$TEST_ROOT/calls/ui.input" ||
     fail "a row does not carry its label and shortcut: $(grep push "$TEST_ROOT/calls/ui.input")"
   [ "$(cat "$TEST_ROOT/calls/popup" 2>/dev/null)" = open ] || fail "the menu did not mark itself open"
@@ -899,7 +969,7 @@ test_templates_tab_actions() {
 
 test_every_action_has_a_function() {
   local tab action function
-  for tab in workspace templates layout agent team git jungleForge tools help; do
+  for tab in workspace templates layout agent agent/accounts agent/programs agent/memory team git jungleForge tools help; do
     for action in $(actions_of "$tab"); do
       function="$(menu --function "$action")" || fail "no function for $action"
       function="${function%% *}"
@@ -1001,12 +1071,14 @@ test_tabs_list_their_actions
 test_github_login_runs_interactively_and_preserves_failures
 test_an_agent_team_has_no_editor_items
 test_open_an_agent_team_runs_devws_agentic
-test_an_agent_team_switches_its_leaders_model
+test_an_agent_team_changes_its_leader
+test_an_agent_team_keeps_its_leader_pane
 test_team_navigation_reuses_the_board_from_group_workspaces
 test_team_roles_change_a_roles_setting
 test_items_show_labels_and_shortcuts
 test_typing_searches_every_tab
 test_memory_items_need_ai_memory
+test_agent_groups_open_their_own_dialog
 test_the_jungleforge_tab_follows_setup
 test_the_frequent_actions_have_keys
 test_switching_tabs

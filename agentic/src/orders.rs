@@ -22,6 +22,7 @@ pub fn check_timeout() -> Duration {
         .unwrap_or(DEFAULT_CHECK_TIMEOUT)
 }
 
+#[derive(Clone)]
 pub struct OrderRequest {
     pub agent: String,
     pub step: String,
@@ -36,6 +37,10 @@ pub struct OrderRequest {
     pub plan: Option<String>,
     /// The spec or plan part the step belongs to; kept when not given again.
     pub spec: Option<String>,
+    /// The related files the worker reads first.
+    pub read: Vec<String>,
+    /// Where its checks run; none: everywhere.
+    pub targets: Vec<String>,
 }
 
 /// The attempts a step gets: the task's, or what the user allowed it.
@@ -85,9 +90,52 @@ pub fn allow_attempts(task: &Task, step: &str, limit: u32) -> Result<()> {
     })
 }
 
+/// The leader records the user's yes to more attempts, with their words: the
+/// same allowance as `devagentics task attempts`, the approval in the log.
+pub fn allow_attempts_for_user(task: &Task, step: &str, limit: u32, user_said: &str) -> Result<()> {
+    let said = user_said.trim();
+    anyhow::ensure!(
+        !said.is_empty(),
+        "quote the user's words that approved it: only the user allows more attempts"
+    );
+    allow_attempts(task, step, limit)?;
+    task.transaction(|tx| {
+        tx.log(
+            Kind::Review,
+            Some(LEADER),
+            Some(step),
+            &format!("recorded by the leader; the user said \"{said}\""),
+        );
+        Ok(())
+    })
+}
+
 /// Gives an agent an order: records it, and queues the message that tells the
 /// agent (the dispatcher types it in when the agent can take it).
+/// Paths the leader names for an order (`read`, `targets`): from the repo's
+/// root, without `..`, and safe to hand a check command (they become
+/// `DEVAGENTICS_TARGETS`, words of a shell line).
+fn validate_paths(what: &str, paths: &[String]) -> Result<()> {
+    anyhow::ensure!(paths.len() <= 50, "{what}: at most 50 paths");
+    for path in paths {
+        let safe = !path.is_empty()
+            && path.len() <= 200
+            && !path.starts_with(['/', '-'])
+            && !path.split('/').any(|part| part == "..")
+            && path
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || "._/@+-".contains(character));
+        anyhow::ensure!(
+            safe,
+            "{what}: {path:?} is not a path from the repo's root (letters, digits, . _ / @ + -, no ..)"
+        );
+    }
+    Ok(())
+}
+
 pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
+    validate_paths("read", &request.read)?;
+    validate_paths("targets", &request.targets)?;
     let _control = task.control_lock()?;
     crate::workflow::block_unverified_runner(task)?;
     let agent = task
@@ -228,6 +276,8 @@ pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
         }
         let id = format!("o{}", tx.state.next_number());
         let order = Order {
+            read: request.read.clone(),
+            targets: request.targets.clone(),
             id: id.clone(),
             step: request.step.clone(),
             agent: agent.id.clone(),
@@ -388,6 +438,25 @@ pub(crate) fn order_message(order: &Order, title: &str, profiles: &[String]) -> 
              If something in it is unclear, ask: `devagentics ask \"<your question>\"` (worker action=ask), then end your turn and wait for the answer.\n\n"
         )
     });
+    let scope = format!(
+        "{}{}",
+        if order.read.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "Read these first; they are what you need to know beyond the files you change: {}\n",
+                order.read.join(", ")
+            )
+        },
+        if order.targets.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "Your checks run on: {} (the full suite runs once at review)\n",
+                order.targets.join(", ")
+            )
+        }
+    );
     let files = if order.forbidden.iter().any(|glob| glob == "**") {
         "You change no files: you plan and answer, and any file you change fails your report.\n"
             .to_string()
@@ -400,7 +469,7 @@ pub(crate) fn order_message(order: &Order, title: &str, profiles: &[String]) -> 
     };
     format!(
         "ORDER {id} · step {step}: {title}\n\n{plan}{text}\n\n\
-         {files}\
+         {files}{scope}\
          Done means your work is committed (a clean tree) and the check passes: {check}\n\
          When you are done: devagentics report done --order {id} \"<what you did>\" — or, if something stops you: \
          devagentics report blocked --order {id} \"<what stops you>\".",
@@ -782,6 +851,72 @@ pub fn accept_step(task: &Task, step: &str) -> Result<()> {
     Ok(())
 }
 
+/// The leader closes a step that waits for it (reported, check failed,
+/// blocked or sent back) when its work is not needed or its report was used:
+/// a read-only step's plan, preflight or audit. Nothing merges, and it counts
+/// as neither accepted nor open. A writer's step is not closed (dropping
+/// written work changes the scope: reject it or amend the baseline), nor one
+/// another baseline item or a milestone needs accepted.
+pub fn close_step(task: &Task, step: &str, reason: &str) -> Result<()> {
+    let reason = reason.trim();
+    anyhow::ensure!(!reason.is_empty(), "say why the step is closed");
+    task.transaction(|tx| {
+        let state = &tx.state;
+        let found = state
+            .steps
+            .iter()
+            .find(|found| found.id == step)
+            .with_context(|| format!("there is no step {step}"))?;
+        match found.status {
+            StepStatus::Reported
+            | StepStatus::Failed
+            | StepStatus::Blocked
+            | StepStatus::Rejected => {}
+            StepStatus::Ordered => {
+                bail!("step {step} is still being worked on: stop its agent first")
+            }
+            other => bail!("step {step} is {other:?}, not waiting for you"),
+        }
+        let author = state
+            .orders
+            .iter()
+            .rev()
+            .find(|order| order.step == step)
+            .and_then(|order| state.agent(&order.agent));
+        if author.is_some_and(|author| author.writes) {
+            bail!(
+                "step {step} was ordered to an agent that writes: reject it, or propose an amendment that drops it"
+            );
+        }
+        let items = state
+            .application
+            .items
+            .iter()
+            .filter(|(_, item)| item.dependencies.iter().any(|dependency| dependency == step));
+        let milestones = state
+            .application
+            .milestones
+            .iter()
+            .filter(|(_, milestone)| milestone.required.iter().any(|item| item == step));
+        let dependents: Vec<&str> = items
+            .map(|(id, _)| id.as_str())
+            .chain(milestones.map(|(id, _)| id.as_str()))
+            .collect();
+        if !dependents.is_empty() {
+            bail!(
+                "{} depend on step {step}: accept it instead",
+                dependents.join(", ")
+            );
+        }
+        tx.state
+            .step_mut(step)
+            .context("the step went away")?
+            .set_status(StepStatus::Closed, crate::log::now());
+        tx.log(Kind::Review, None, Some(step), &format!("closed: {reason}"));
+        Ok(())
+    })
+}
+
 /// The leader sends a reported step back.
 pub fn reject_step(task: &Task, step: &str, reason: &str) -> Result<()> {
     task.transaction(|tx| {
@@ -944,6 +1079,8 @@ mod tests {
 
     fn request(step: &str) -> OrderRequest {
         OrderRequest {
+            read: Vec::new(),
+            targets: Vec::new(),
             profiles: Vec::new(),
             agent: "backend-1".to_string(),
             step: step.to_string(),
@@ -955,6 +1092,43 @@ mod tests {
             plan: Some("p0".to_string()),
             spec: None,
         }
+    }
+
+    #[test]
+    fn an_order_names_what_to_read_and_where_its_checks_run() {
+        let f = fixture(None);
+        let mut scoped = request("s1");
+        scoped.read = vec!["src/session.rs".into()];
+        scoped.targets = vec!["tests/login.rs".into()];
+        let refused = |field: &str, path: &str| {
+            let mut bad = scoped.clone();
+            match field {
+                "read" => bad.read = vec![path.into()],
+                _ => bad.targets = vec![path.into()],
+            }
+            send_order(&f.task, bad).unwrap_err().to_string()
+        };
+        for path in ["../etc/passwd", "/abs", "a; rm -rf b", "-rf", "$(x)"] {
+            assert!(refused("targets", path).contains("is not a path"), "{path}");
+        }
+        assert!(refused("read", "src/../x").contains("read:"));
+        let id = send_order(&f.task, scoped).unwrap();
+        let state = f.task.state().unwrap();
+        let order = state.orders.iter().find(|order| order.id == id).unwrap();
+        assert_eq!(order.targets, ["tests/login.rs"]);
+        let message = state
+            .queue
+            .iter()
+            .find(|message| message.order.as_deref() == Some(&id))
+            .unwrap();
+        assert!(message.text.contains("Read these first; they are what you need to know beyond the files you change: src/session.rs"), "{}", message.text);
+        assert!(
+            message.text.contains(
+                "Your checks run on: tests/login.rs (the full suite runs once at review)"
+            ),
+            "{}",
+            message.text
+        );
     }
 
     #[test]
@@ -1056,6 +1230,45 @@ mod tests {
             Ok(id)
         })?;
         report(task, pane, &id, outcome, summary, timeout)
+    }
+
+    #[test]
+    fn every_report_is_kept_in_the_teams_memory() {
+        let f = fixture(None);
+        let id = send_order(&f.task, request("s1")).unwrap();
+        let agent = f
+            .task
+            .transaction(|tx| {
+                tx.state.orders[0].delivered = true;
+                let agent = tx
+                    .state
+                    .agents
+                    .iter_mut()
+                    .find(|agent| agent.pane == "%5")
+                    .unwrap();
+                // A read-only worker reports findings without checks.
+                agent.writes = false;
+                agent.role = "planner".into();
+                Ok(agent.id.clone())
+            })
+            .unwrap();
+        let folder = tempfile::TempDir::new().unwrap();
+        let devws = crate::devws::fake::FakeDevws::new(folder.path()).with_memory();
+        crate::worker_tools::call_in(
+            &f.task,
+            &devws,
+            &agent,
+            "report",
+            &serde_json::json!({"outcome": "done", "summary": "H1-AT fits docs/**"}),
+        )
+        .unwrap();
+        let notes = devws.notes();
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        let (_, path, note) = &notes[0];
+        assert!(path.starts_with("tasks/t/steps/s1/report-"), "{path}");
+        assert_eq!(note.title, format!("s1 done · order {id}"));
+        assert_eq!(note.body, "H1-AT fits docs/**");
+        assert_eq!(note.author, agent);
     }
 
     #[test]
@@ -1306,6 +1519,38 @@ mod tests {
         assert!(crate::check_profiles::run(&f.task, &id, Some("%5")).is_err());
         let _lock = crate::check_profiles::operation(&f.task, &id).unwrap();
         assert!(crate::check_profiles::run(&f.task, &id, None).is_err());
+    }
+
+    // A repo with a lane's own checks: the run's checks are the lane's view of
+    // them, and comparing them with the repo's whole configuration made every
+    // run stale ("check inputs changed; evidence is stale").
+    #[test]
+    fn a_check_in_a_task_with_lane_checks_records_its_evidence() {
+        let f = fixture(None);
+        crate::lanes::add(&f.task, "back", &["backend/**".into()], None).unwrap();
+        let profiles = serde_json::json!({
+            "environments": {"testing": {}},
+            "checks": {"unit": {"command": "true", "environment": "testing"}},
+            "selected": ["unit"],
+            "lanes": {"back": {"unit": {"command": "true", "environment": "testing"}}},
+        });
+        crate::check_profiles::configure(&f.task, "app", serde_json::from_value(profiles).unwrap())
+            .unwrap();
+        let id = send_order(&f.task, request("s1")).unwrap();
+        f.task
+            .transaction(|tx| {
+                tx.state.orders[0].delivered = true;
+                Ok(())
+            })
+            .unwrap();
+
+        let evidence = crate::check_profiles::run(&f.task, &id, Some("%5")).unwrap();
+        assert!(evidence.passed());
+        let state = f.task.state().unwrap();
+        assert!(state.check_evidence.contains_key(&id));
+        let order = state.orders.iter().find(|order| order.id == id).unwrap();
+        crate::check_profiles::validate_configuration(&f.task, &state, order, &evidence)
+            .expect("the evidence matches the checks the order runs");
     }
 
     const SHORT: Duration = Duration::from_secs(10);
@@ -1632,6 +1877,84 @@ mod tests {
 
         let log = f.task.log_lines().unwrap().join("\n");
         assert!(log.contains("rejected: use the existing helper") && log.contains("accepted"));
+    }
+
+    fn read_only(f: &Fixture) {
+        f.task
+            .transaction(|tx| {
+                tx.state.agents[0].writes = false;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn the_leader_closes_a_waiting_step_whose_report_it_used() {
+        let f = fixture(None);
+        read_only(&f);
+        send_order(&f.task, request("s1")).unwrap();
+        assert!(
+            close_step(&f.task, "s1", "plan read and followed")
+                .unwrap_err()
+                .to_string()
+                .contains("stop"),
+            "a step still being worked on cannot be closed"
+        );
+        delivered_report(&f.task, "%5", Outcome::Done, "plan written", SHORT).unwrap();
+        assert!(
+            close_step(&f.task, "s1", " ").is_err(),
+            "closing needs a reason"
+        );
+
+        close_step(&f.task, "s1", "plan read and followed").unwrap();
+        let state = f.task.state().unwrap();
+        let step = state.steps.iter().find(|step| step.id == "s1").unwrap();
+        assert_eq!(step.status, StepStatus::Closed);
+        assert_eq!(step.review_since, None, "it no longer waits for the leader");
+        assert!(close_step(&f.task, "s1", "again").is_err());
+        assert!(close_step(&f.task, "nope", "gone").is_err());
+        let log = f.task.log_lines().unwrap().join("\n");
+        assert!(log.contains("closed: plan read and followed"), "{log}");
+    }
+
+    #[test]
+    fn a_writers_step_is_not_closed() {
+        let f = fixture(None);
+        send_order(&f.task, request("s1")).unwrap();
+        commit_file(f.repo.path(), "src/a.rs", "x\n", "a");
+        delivered_report(&f.task, "%5", Outcome::Done, "done", SHORT).unwrap();
+
+        let error = close_step(&f.task, "s1", "not needed")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("writes"), "{error}");
+        assert_eq!(status(&f, "s1"), StepStatus::Reported);
+    }
+
+    #[test]
+    fn a_step_another_item_depends_on_is_not_closed() {
+        let f = fixture(None);
+        read_only(&f);
+        f.task
+            .transaction(|tx| {
+                tx.state.application.items.insert(
+                    "s2".to_string(),
+                    crate::execution::Contract {
+                        dependencies: vec!["s1".to_string()],
+                        ..Default::default()
+                    },
+                );
+                Ok(())
+            })
+            .unwrap();
+        send_order(&f.task, request("s1")).unwrap();
+        delivered_report(&f.task, "%5", Outcome::Done, "plan written", SHORT).unwrap();
+
+        let error = close_step(&f.task, "s1", "superseded")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("s2"), "{error}");
+        assert_eq!(status(&f, "s1"), StepStatus::Reported);
     }
 
     #[test]

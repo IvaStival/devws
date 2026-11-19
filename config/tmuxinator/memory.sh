@@ -58,24 +58,22 @@ with_account() {
   local agent="$1" kind
   shift
   kind="$(agent_kind "$agent")" || die "not a registered agent: $agent"
-  if ! agent_has_folder "$agent"; then
-    env -u CLAUDE_CONFIG_DIR -u CODEX_HOME "$@"
-  elif [ "$kind" = claude ]; then
-    env -u CODEX_HOME CLAUDE_CONFIG_DIR="$(agent_home "$agent")" "$@"
-  else
-    env -u CLAUDE_CONFIG_DIR CODEX_HOME="$(agent_home "$agent")" "$@"
-  fi
+  (
+    while IFS= read -r variable; do
+      [ -z "$variable" ] || unset "$variable"
+    done < <(agent_account_variables)
+    ! agent_has_folder "$agent" || agent_hook "$kind" account_env "$(agent_home "$agent")" || exit 1
+    exec "$@"
+  )
 }
 
 wire() {
-  local agent="$1" client
+  local agent="$1" client kind
   available || die "ai-memory is not installed"
-  case "$(agent_kind "$agent")" in
-    claude) client=claude-code ;;
-    codex) client=codex ;;
-    opencode) die "ai-memory has no client for opencode: $agent" ;;
-    *) die "not a registered agent: $agent" ;;
-  esac
+  kind="$(agent_kind "$agent")" || die "not a registered agent: $agent"
+  # The ai-memory client for the program (the module's memory_client).
+  client="$(agent_hook "$kind" memory_client)"
+  [ -n "$client" ] || die "ai-memory has no client for $kind: $agent"
   with_account "$agent" "$ai_memory" install-mcp --client "$client" --apply || return 1
   with_account "$agent" "$ai_memory" install-hooks --agent "$client" --apply || return 1
   mkdir -p "$(dirname "$wired_file")"
@@ -84,11 +82,12 @@ wire() {
 
 # [--force]: wires the agents already wired again too.
 wire_all() {
-  local agent
+  local agent kind
   available || return 0
   for agent in ${DEVWS_AGENTS:-claude codex}; do
     [ "${1:-}" != --force ] && grep -qxF "$agent" "$wired_file" 2>/dev/null && continue
-    [ "$(agent_kind "$agent" 2>/dev/null)" != opencode ] || continue
+    kind="$(agent_kind "$agent" 2>/dev/null)" || continue
+    [ -n "$(agent_hook "$kind" memory_client)" ] || continue
     wire "$agent" || printf 'devws memory: could not wire %s\n' "$agent" >&2
   done
 }

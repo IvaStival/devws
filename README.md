@@ -2,7 +2,8 @@
 
 `devws` turns each project into a terminal workspace that survives restarts:
 an editor (Neovim with LazyVim, Vim, VS Code or Zed), a coding agent (Claude
-Code or Codex) and a terminal side by side, one tmux session per branch.
+Code, Codex, opencode or Antigravity) and a terminal side by side, one tmux
+session per branch.
 Around them:
 
 - a sidebar of the open workspaces, with each one's branch, changes, pull
@@ -42,8 +43,9 @@ Core dependencies:
 - `tree`
 - btop and lazydocker, for the system monitor workspace
 - Ruby (used by tmuxinator)
-- one AI agent: [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-  or [Codex](https://developers.openai.com/codex/)
+- one AI agent: [Claude Code](https://docs.anthropic.com/en/docs/claude-code),
+  [Codex](https://developers.openai.com/codex/), [opencode](https://opencode.ai)
+  or [Antigravity](https://antigravity.google) (`agy`)
 
 The included tmux theme uses
 `JetBrainsMono Nerd Font Mono`. The Brewfile installs the font on macOS, but
@@ -151,7 +153,8 @@ The installer offers two optional parts, each asked once (`--ai-memory` or
   branches' apps in Docker: it is cloned into `~/.devws/jungleforge` with a
   `.env` of generated passwords. It needs Docker Desktop.
 
-Install either Codex or Claude Code separately, authenticate it, and edit
+Install Claude Code, Codex, opencode or Antigravity separately, authenticate
+it, and edit
 `config/tmuxinator/.env` if you want to change the available/default agent or
 editor.
 
@@ -201,7 +204,7 @@ conversations. `devws reload` does the same by hand:
 - leaves the agent, editor, terminal and database panes running.
 
 What those read only when they start applies to new or restarted ones: the
-agents' hooks and status line (`agent_settings.json`; **↻ Restart agent** in
+agents' hooks and status line (`config/tmuxinator/agents/10-claude/settings.json`; **↻ Restart agent** in
 the devws menu), the editor config, and the per-workspace options `dev.yml`
 sets, such as the workspace name on the status bar (reopen the workspace).
 Sessions that are not devws workspaces are left alone, apart from tmux.conf,

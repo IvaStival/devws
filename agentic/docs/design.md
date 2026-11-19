@@ -51,12 +51,25 @@ two failures the step goes to a stronger model (v2).
 escalations. The user watches it in a pane.
 
 **Memory.** The task folder holds the exact state: step status, queues,
-locks. ai-memory holds the team's knowledge: decisions, gotchas and handoffs,
-which recovering leaders and agents query. After a compaction or a restart,
-the leader rebuilds from `task_status` plus its last ai-memory handoff.
-ai-memory never answers exact questions (step status, locks, queues).
-Decisions about one repo go into that repo's project; decisions about the
-whole task go into a dedicated ai-memory project, `devagentics-tasks`.
+locks. ai-memory holds the team's knowledge: decisions, gotchas, findings,
+reports and handoffs. devAgentics talks to ai-memory itself (`src/memory.rs`,
+its CLI), so every program has the same memory whatever MCP servers its
+account has; without ai-memory nothing is kept and the team works as before.
+Notes live in the `devagentics-tasks` project under `tasks/<task>/`: a note
+about a step under `steps/<step>/`, handoffs and digests by kind.
+
+- Agents save with `memory_save` (leader tool, worker action) and find notes
+  with `memory_search`.
+- devAgentics saves every worker report and reviewer verdict, every step the
+  leader accepts or rejects, and, when the leader moves, a digest of where the
+  task stands, built from the state.
+- Before a move the outgoing leader is asked for its handoff; the move waits
+  for it at most 10 minutes.
+- A new leader (a move, or the team opened again) opens with the digest and
+  the last handoffs; an order carries its step's newest notes, so an agent
+  taking over a step reads what the one before it reported.
+- What comes back is fenced as history other agents wrote, not instructions.
+  ai-memory never answers exact questions (step status, locks, queues).
 
 **Limits.** Per task: at most N agents at once (3 by default), an OpenRouter
 spending cap, and no new agents on an account at 95% of its week or five-hour
@@ -74,7 +87,7 @@ the editor. Each executor is an agent pane in its worktree's devws workspace.
   draft PRs, limits, ai-memory handoffs.
 - **v2:** OpenCode as a devws agent kind, for floor and senior agents
   (done: `devagentics opencode`, the devws menu's ◆ OpenCode; its plugin,
-  opencode_devws_plugin.js, sends devws the hook events), executors on
+  config/tmuxinator/agents/30-opencode/devws_plugin.js, sends devws the hook events), executors on
   OpenRouter models, the stronger-model
   rule, the task's branches run together in jungleforge with end-to-end
   checks.
@@ -96,3 +109,12 @@ Killing the leader mid-task and starting a new one resumes the task from
 ## Reliable execution state
 
 The [execution architecture](../../docs/architecture/devagentics-execution.md) describes order revisions, operation locks, isolated check evidence and durable interruption recovery.
+
+## OpenCode response verification
+
+The leader's `probe_worker` call queues a typed message for a ready and idle
+managed OpenCode worker. The panel claims it through the normal delivery path
+without binding a runner. The worker MCP rejects calls during the probe, and
+the panel compares the provider's decoded text with the token for that turn
+before writing the outcome to the leader's inbox. Reviewed orders continue
+to bind an accepted execution item before delivery.

@@ -3,8 +3,9 @@
 //! tmux. Everything above this takes a `&dyn Devws`, so it can be tested with
 //! a fake.
 
-use crate::agent_args::Kind;
+use crate::providers::Kind;
 use anyhow::{Context, Result, bail};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -110,6 +111,8 @@ impl Usage {
 }
 
 pub trait Devws: Send + Sync {
+    /// Where the team's notes are kept (ai-memory, or nowhere).
+    fn memory(&self) -> &dyn crate::memory::Memory;
     fn agent_kind(&self, agent: &str) -> Result<Kind>;
     /// Every registered agent account and the program it runs, in the
     /// registry's order (`DEVWS_AGENTS`).
@@ -158,6 +161,13 @@ pub trait Devws: Send + Sync {
     /// The credit of a prepaid account (opencode Zen); `None` when devws does
     /// not know it.
     fn credit(&self, agent: &str) -> Result<Option<Credit>>;
+    /// The models an opencode account can run (`provider/model`), as
+    /// `opencode models` lists them with its logins, or an Antigravity one
+    /// (`agy models`' ids).
+    fn models(&self, agent: &str) -> Result<Vec<String>>;
+    /// The model each account's program starts with when none is named:
+    /// account → model. None for an account devws does not know one for.
+    fn default_models(&self) -> Result<BTreeMap<String, String>>;
     /// What the pane's agent has used; `None` while devws does not know its
     /// conversation yet, or when the pane is gone.
     fn usage(&self, pane: &str) -> Result<Option<Usage>>;
@@ -172,18 +182,28 @@ pub trait Devws: Send + Sync {
 pub struct CommandDevws {
     devws: String,
     tmux: String,
+    memory: Box<dyn crate::memory::Memory>,
 }
 
 impl CommandDevws {
+    /// With ai-memory when it is installed.
     pub fn from_env() -> Self {
-        Self::new(
-            std::env::var("DEVAGENTICS_DEVWS").unwrap_or_else(|_| "devws".to_string()),
-            std::env::var("DEVAGENTICS_TMUX").unwrap_or_else(|_| "tmux".to_string()),
-        )
+        Self {
+            memory: crate::memory::from_env(),
+            ..Self::new(
+                std::env::var("DEVAGENTICS_DEVWS").unwrap_or_else(|_| "devws".to_string()),
+                std::env::var("DEVAGENTICS_TMUX").unwrap_or_else(|_| "tmux".to_string()),
+            )
+        }
     }
 
+    /// Keeps no notes: a test never writes to the user's ai-memory.
     pub fn new(devws: String, tmux: String) -> Self {
-        Self { devws, tmux }
+        Self {
+            devws,
+            tmux,
+            memory: Box::new(crate::memory::NoMemory),
+        }
     }
 
     fn run(&self, program: &str, arguments: &[&str], stdin: Option<&str>) -> Result<Output> {
@@ -241,6 +261,10 @@ fn path_text(path: &Path) -> Result<&str> {
 }
 
 impl Devws for CommandDevws {
+    fn memory(&self) -> &dyn crate::memory::Memory {
+        self.memory.as_ref()
+    }
+
     fn agent_kind(&self, agent: &str) -> Result<Kind> {
         let name = self.devws(&["agent", "kind", agent])?;
         Kind::parse(&name)
@@ -404,6 +428,28 @@ impl Devws for CommandDevws {
         Ok(Credit::parse(&self.devws(&["agent", "credit", agent])?))
     }
 
+    fn models(&self, agent: &str) -> Result<Vec<String>> {
+        Ok(self
+            .devws(&["agent", "models", agent])?
+            .lines()
+            .map(str::trim)
+            // A model is one word; a line of prose (a warning) is not one.
+            .filter(|line| !line.is_empty() && !line.contains(char::is_whitespace))
+            .map(str::to_string)
+            .collect())
+    }
+
+    fn default_models(&self) -> Result<BTreeMap<String, String>> {
+        Ok(self
+            .devws(&["agent", "default-models"])?
+            .lines()
+            .filter_map(|line| {
+                let (name, model) = line.split_once(' ')?;
+                Some((name.to_string(), model.trim().to_string()))
+            })
+            .collect())
+    }
+
     fn usage(&self, pane: &str) -> Result<Option<Usage>> {
         // Informational: a pane that went or a log that cannot be read is no
         // reason to stop the board.
@@ -455,8 +501,11 @@ pub mod fake {
         calls: Vec<String>,
         states: HashMap<String, PaneState>,
         kinds: HashMap<String, Kind>,
+        /// Agents devws runs but does not list among its accounts (opencode).
+        unlisted: std::collections::HashSet<String>,
         limits: HashMap<String, Limits>,
         credits: HashMap<String, Credit>,
+        default_models: BTreeMap<String, String>,
         usages: HashMap<String, Usage>,
         roles: HashMap<(String, String), String>,
         options: HashMap<(String, String), String>,
@@ -471,6 +520,7 @@ pub mod fake {
 
     pub struct FakeDevws {
         inner: Mutex<Inner>,
+        memory: crate::memory::Recording,
     }
 
     impl FakeDevws {
@@ -483,6 +533,7 @@ pub mod fake {
             };
             Self {
                 inner: Mutex::new(inner),
+                memory: crate::memory::Recording::default(),
             }
         }
 
@@ -492,6 +543,24 @@ pub mod fake {
                 .unwrap()
                 .kinds
                 .insert(agent.to_string(), kind);
+            self
+        }
+
+        pub fn with_unlisted_kind(self, agent: &str, kind: Kind) -> Self {
+            self.inner
+                .lock()
+                .unwrap()
+                .unlisted
+                .insert(agent.to_string());
+            self.with_kind(agent, kind)
+        }
+
+        pub fn with_default_model(self, agent: &str, model: &str) -> Self {
+            self.inner
+                .lock()
+                .unwrap()
+                .default_models
+                .insert(agent.to_string(), model.to_string());
             self
         }
 
@@ -521,6 +590,21 @@ pub mod fake {
                     reason: "fixture provider unavailable".into(),
                 },
             );
+        }
+
+        /// As if ai-memory were installed: notes are kept.
+        pub fn with_memory(self) -> Self {
+            self.memory.turn_on();
+            self
+        }
+
+        pub fn memory_on(&self) {
+            self.memory.turn_on();
+        }
+
+        /// Every note saved: project, path and note.
+        pub fn notes(&self) -> Vec<(String, String, crate::memory::Note)> {
+            self.memory.saved()
         }
 
         pub fn fail_launch(&self, agent: &str, scope: crate::worker::FailureScope) {
@@ -606,11 +690,16 @@ pub mod fake {
     }
 
     impl Devws for FakeDevws {
+        fn memory(&self) -> &dyn crate::memory::Memory {
+            &self.memory
+        }
+
         fn accounts(&self) -> Result<Vec<(String, Kind)>> {
             let inner = self.record("accounts".into());
             let mut accounts: Vec<_> = inner
                 .kinds
                 .iter()
+                .filter(|(name, _)| !inner.unlisted.contains(*name))
                 .map(|(name, kind)| (name.clone(), *kind))
                 .collect();
             accounts.sort_by(|left, right| left.0.cmp(&right.0));
@@ -706,6 +795,8 @@ pub mod fake {
         }
 
         fn pane_state(&self, pane: &str) -> Result<PaneState> {
+            // Like `devws agent state`, which refuses a pane that is not one.
+            anyhow::ensure!(pane.starts_with('%'), "not a pane id: {pane} (like %12)");
             let inner = self.record(format!("state {pane}"));
             Ok(inner.states.get(pane).copied().unwrap_or(PaneState::Gone))
         }
@@ -785,6 +876,16 @@ pub mod fake {
             Ok(inner.credits.get(agent).copied())
         }
 
+        fn models(&self, agent: &str) -> Result<Vec<String>> {
+            drop(self.record(format!("models {agent}")));
+            Ok(Vec::new())
+        }
+
+        fn default_models(&self) -> Result<BTreeMap<String, String>> {
+            let inner = self.record("default-models".into());
+            Ok(inner.default_models.clone())
+        }
+
         fn usage(&self, pane: &str) -> Result<Option<Usage>> {
             let inner = self.record(format!("usage {pane}"));
             Ok(inner.usages.get(pane).copied())
@@ -834,6 +935,8 @@ case "$1 $2" in
   "agent send") cat >> "{log}.sent"; case "$3" in %1) echo "busy (working)" >&2; exit 3 ;; %2) exit 4 ;; esac ;;
   "agent limits") case "$3" in claude) echo "42 63" ;; *) echo "- -" ;; esac ;;
   "agent credit") case "$3" in opencode) echo "20.00 7.5" ;; esac ;;
+  "agent default-models") printf 'claude opus\ncodex gpt-6.2-sol\n' ;;
+  "agent models") case "$3" in opencode) printf 'Warning: cached list\nopencode/a\ndeepseek/b\n' ;; gemini) printf 'gemini-4-carbon-high\n\ngemini-3.8-flash-medium\n' ;; esac ;;
   "agent mark"|"agent stop") ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;
 esac
@@ -866,6 +969,29 @@ esac
             .lines()
             .map(str::to_string)
             .collect()
+    }
+
+    #[test]
+    fn default_models_are_read_per_account() {
+        let dir = TempDir::new().unwrap();
+        let (devws, _) = command_devws(&dir);
+        let models = devws.default_models().unwrap();
+        assert_eq!(models["claude"], "opus");
+        assert_eq!(models["codex"], "gpt-6.2-sol");
+    }
+
+    #[test]
+    fn models_are_the_one_word_lines_opencode_and_antigravity_list() {
+        let dir = TempDir::new().unwrap();
+        let (devws, _) = command_devws(&dir);
+        assert_eq!(
+            devws.models("opencode").unwrap(),
+            ["opencode/a", "deepseek/b"]
+        );
+        assert_eq!(
+            devws.models("gemini").unwrap(),
+            ["gemini-4-carbon-high", "gemini-3.8-flash-medium"]
+        );
     }
 
     #[test]

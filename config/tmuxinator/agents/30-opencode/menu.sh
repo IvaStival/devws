@@ -3,7 +3,7 @@
 # off by hand (devagentics opencode), the models they run, the account they
 # run on, and what it has used and has left.
 #
-#   opencode_menu.sh   (in the menu's popup; Esc leaves)
+#   menu.sh   (in the menu's popup; Esc leaves)
 #
 # The global switch is mandatory: while it is off, the floor's and the
 # seniors' switches are kept but ignored, and no agent runs on opencode.
@@ -11,7 +11,8 @@
 
 set -u
 
-scripts_dir="$(cd "$(dirname "$0")" && pwd)"
+module_dir="$(cd "$(dirname "$0")" && pwd)"
+scripts_dir="$(cd "$module_dir/../.." && pwd)"
 agentic="${DEVWS_AGENTIC_COMMAND:-devagentics}"
 picker="${DEVWS_PICKER:-$scripts_dir/picker.sh}"
 env_file="${DEVWS_ENV_FILE:-$scripts_dir/.env}"
@@ -128,7 +129,7 @@ set_balance() {
   printf 'The balance on opencode.ai now (Zen, Billing); what agents spend from now counts against it.\n'
   read -e -r -p 'US$: ' balance
   [ -n "$balance" ] || return
-  "$scripts_dir/opencode_credit.sh" set "$account" "$balance" || pause
+  "$module_dir/credit.sh" set "$account" "$balance" || pause
 }
 
 stats() {

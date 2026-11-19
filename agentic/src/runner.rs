@@ -32,8 +32,9 @@ pub struct Configuration {
     /// tracked-source snapshot lacks and a no-network run cannot fetch.
     #[serde(default)]
     pub image_mounts: Vec<ImageMount>,
-    /// Each container's memory in MiB (default 512) and CPUs (default 1).
-    /// Bounded: the runner shares the host with everything else on it.
+    /// Each container's memory in MiB (default and most: `MEMORY_LIMIT_MB`)
+    /// and CPUs (default 1). Bounded: the runner shares the host with
+    /// everything else on it.
     #[serde(default)]
     pub memory_mb: Option<u32>,
     #[serde(default)]
@@ -76,7 +77,10 @@ impl Configuration {
     }
 }
 
-const MEMORY_MB: std::ops::RangeInclusive<u32> = 128..=8192;
+/// No container gets more than 4 GB, swap included (images.rs builds with the
+/// same): a runaway test cannot take the host's memory.
+pub const MEMORY_LIMIT_MB: u32 = 4096;
+const MEMORY_MB: std::ops::RangeInclusive<u32> = 128..=MEMORY_LIMIT_MB;
 const CPUS: std::ops::RangeInclusive<u32> = 1..=4;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -291,7 +295,7 @@ pub fn validate_configuration(config: &Configuration) -> Result<()> {
         "runner timeout must be 1–900 seconds"
     );
     ensure!(
-        MEMORY_MB.contains(&config.memory_mb.unwrap_or(512)),
+        MEMORY_MB.contains(&config.memory_mb.unwrap_or(MEMORY_LIMIT_MB)),
         "runner memory must be {}–{} MiB",
         MEMORY_MB.start(),
         MEMORY_MB.end()
@@ -937,17 +941,34 @@ pub fn checkpoint(task: &Task, agent: &str, summary: &str) -> Result<Vec<String>
     })?;
     Ok(changed)
 }
+/// A container's output within `OUTPUT_LIMIT`: its start (what ran, with
+/// which setup) and its end (a test runner's failures and summary), the
+/// middle left out and marked.
 fn drain(mut stream: impl Read) -> String {
-    let mut collected = Vec::new();
+    const HEAD: usize = OUTPUT_LIMIT / 8;
+    let mut head = Vec::new();
+    let mut tail = std::collections::VecDeque::new();
+    let mut left_out = 0usize;
     let mut buffer = [0u8; 4096];
     while let Ok(size) = stream.read(&mut buffer) {
         if size == 0 {
             break;
         }
-        let remaining = OUTPUT_LIMIT.saturating_sub(collected.len());
-        collected.extend_from_slice(&buffer[..size.min(remaining)]);
+        let mut chunk = &buffer[..size];
+        let into_head = chunk.len().min(HEAD.saturating_sub(head.len()));
+        head.extend_from_slice(&chunk[..into_head]);
+        chunk = &chunk[into_head..];
+        tail.extend(chunk);
+        let over = tail.len().saturating_sub(OUTPUT_LIMIT - HEAD);
+        tail.drain(..over);
+        left_out += over;
     }
-    String::from_utf8_lossy(&collected).into_owned()
+    let mut text = String::from_utf8_lossy(&head).into_owned();
+    if left_out > 0 {
+        text.push_str(&format!("\n[… {left_out} bytes left out …]\n"));
+    }
+    text.push_str(&String::from_utf8_lossy(tail.make_contiguous()));
+    text
 }
 fn docker_arguments(
     config: &Configuration,
@@ -969,6 +990,7 @@ fn docker_arguments(
     // gain any. A container uid of the user's own would map to one of their
     // subordinate ids instead, which cannot write the snapshot.
     let user = "0:0".to_string();
+    let memory_mb = config.memory_mb.unwrap_or(MEMORY_LIMIT_MB);
     let mut arguments: Vec<String> = vec![
         "run".into(),
         "--rm".into(),
@@ -980,7 +1002,9 @@ fn docker_arguments(
         "--cap-drop=ALL".into(),
         "--security-opt=no-new-privileges".into(),
         "--pids-limit=128".into(),
-        format!("--memory={}m", config.memory_mb.unwrap_or(512)),
+        format!("--memory={memory_mb}m"),
+        // Equal to the memory: no swap on top of it.
+        format!("--memory-swap={memory_mb}m"),
         format!("--cpus={}", config.cpus.unwrap_or(1)),
         "--user".into(),
         user,
@@ -1254,6 +1278,7 @@ pub fn preflight(task: &Task, item_id: &str, source: &Path) -> Result<()> {
             crate::check_profiles::Container {
                 agent: &worker,
                 lane: Some(&item.lane),
+                targets: &[],
             },
             name,
             &profile,
@@ -1312,6 +1337,12 @@ pub fn images() -> Result<serde_json::Value> {
             .collect::<std::result::Result<Vec<_>, _>>()?
     ))
 }
+/// The overview fits the leader's tools (80 KB) for a repo of any size: the
+/// first files and the start of each document; the leader reads more through
+/// a planner.
+const OVERVIEW_FILES: usize = 600;
+const OVERVIEW_DOCUMENT_BYTES: usize = 8 * 1024;
+
 pub fn overview(task: &Task) -> Result<serde_json::Value> {
     let mut repositories = Vec::new();
     for repo in task.config()?.repos {
@@ -1330,11 +1361,12 @@ pub fn overview(task: &Task) -> Result<serde_json::Value> {
                 let data = bytes(&source)?;
                 documents.insert(
                     path,
-                    String::from_utf8_lossy(&data[..data.len().min(64 * 1024)]).into_owned(),
+                    String::from_utf8_lossy(&data[..data.len().min(OVERVIEW_DOCUMENT_BYTES)])
+                        .into_owned(),
                 );
             }
         }
-        repositories.push(serde_json::json!({"name":repo.name,"tracked_files":files.lines().take(2000).collect::<Vec<_>>(),"project_context":documents}));
+        repositories.push(serde_json::json!({"name":repo.name,"tracked_files_total":files.lines().count(),"tracked_files":files.lines().take(OVERVIEW_FILES).collect::<Vec<_>>(),"project_context":documents}));
     }
     Ok(serde_json::json!(repositories))
 }
@@ -1342,6 +1374,32 @@ pub fn overview(task: &Task) -> Result<serde_json::Value> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    // A test runner prints its failures and summary last: a long suite's
+    // output keeps its end, not only its first 64 KiB.
+    #[test]
+    fn long_output_keeps_its_start_and_its_end() {
+        let mut text = String::from("back-check: vendor matches composer.lock\n");
+        while text.len() < 5 * OUTPUT_LIMIT {
+            text.push_str("  ✓ it passes a unit test                     0.01s\n");
+        }
+        text.push_str(
+            " FAIL  Tests\\Feature\\SystemFlowRepositoryTest\nTests: 18 failed, 900 passed\n",
+        );
+        let kept = drain(text.as_bytes());
+        assert!(
+            kept.starts_with("back-check: vendor matches"),
+            "{}",
+            &kept[..80]
+        );
+        assert!(
+            kept.ends_with("Tests: 18 failed, 900 passed\n"),
+            "the end was cut"
+        );
+        assert!(kept.contains("bytes left out"), "the cut is not marked");
+        assert!(kept.len() <= OUTPUT_LIMIT + 100, "{}", kept.len());
+        assert_eq!(drain("short\n".as_bytes()), "short\n");
+    }
 
     #[test]
     fn the_runner_uses_the_pinned_daemon_or_the_users_rootless_one() {
@@ -1428,17 +1486,25 @@ pub mod tests {
         let root = tempfile::TempDir::new().unwrap();
         let defaults = docker_arguments(&configuration(), root.path(), false, "n", "true").unwrap();
         assert!(
-            defaults.contains(&"--memory=512m".into()) && defaults.contains(&"--cpus=1".into())
+            defaults.contains(&"--memory=4096m".into())
+                && defaults.contains(&"--memory-swap=4096m".into())
+                && defaults.contains(&"--cpus=1".into()),
+            "every container is held to 4 GB, swap included: {defaults:?}"
         );
-        let larger = Configuration {
+        let smaller = Configuration {
             memory_mb: Some(2048),
             cpus: Some(2),
             ..configuration()
         };
-        let args = docker_arguments(&larger, root.path(), false, "n", "true").unwrap();
-        assert!(args.contains(&"--memory=2048m".into()) && args.contains(&"--cpus=2".into()));
+        let args = docker_arguments(&smaller, root.path(), false, "n", "true").unwrap();
+        assert!(
+            args.contains(&"--memory=2048m".into())
+                && args.contains(&"--memory-swap=2048m".into())
+                && args.contains(&"--cpus=2".into())
+        );
         for (memory_mb, cpus) in [
             (Some(64), None),
+            (Some(4097), None),
             (Some(16_384), None),
             (None, Some(0)),
             (None, Some(8)),
@@ -1691,8 +1757,33 @@ mod docker_tests {
     #[test]
     #[ignore = "requires explicit local Docker image and isolated containers"]
     fn reviewed_source_checks_independent_review_merge_and_milestone() {
+        reviewed_source_lifecycle(false);
+    }
+
+    #[test]
+    #[ignore = "requires explicit local Docker image and isolated containers"]
+    fn reviewed_opencode_workers_checkpoint_check_and_submit_independent_review() {
+        reviewed_source_lifecycle(true);
+    }
+
+    fn reviewed_source_lifecycle(opencode: bool) {
         let root = tempfile::TempDir::new().unwrap();
         let (home, devws, task, repo) = crate::board::tests::started(&root);
+        let devws = devws.with_kind("opencode", crate::providers::Kind::Opencode);
+        if opencode {
+            let group = crate::opencode::GroupSettings {
+                enabled: true,
+                model: Some("fixture/fixture".into()),
+            };
+            crate::opencode::OpencodeSettings {
+                enabled: true,
+                floor: group.clone(),
+                senior: group,
+                ..Default::default()
+            }
+            .save(&home)
+            .unwrap();
+        }
         crate::checks::tests::run(repo.path(), &["config", "user.name", "Test Developer"]);
         crate::checks::tests::run(
             repo.path(),
@@ -1753,9 +1844,15 @@ mod docker_tests {
             .spawn_agent_in("backend-data", None, Some("back"))
             .unwrap();
         let reviewer = team.spawn_agent_in("code-reviewer", None, None).unwrap();
+        if opencode {
+            assert_eq!(author.agent, "opencode");
+            assert_eq!(reviewer.agent, "opencode");
+        }
         let order = crate::orders::send_order(
             &task,
             OrderRequest {
+                read: Vec::new(),
+                targets: Vec::new(),
                 agent: author.id.clone(),
                 step: "S01-B01".into(),
                 title: "Replace source".into(),
@@ -1797,14 +1894,32 @@ mod docker_tests {
         assert!(!workspace.snapshot.join(".git").exists());
         let result=execute(&task,&author.id,"set -eu; test ! -e /var/run/docker.sock; test ! -e /host; test \"$(wc -l < /proc/net/route)\" -eq 1; if touch /etc/runner-escape 2>/dev/null; then exit 1; fi; rm src/old.rs; printf 'new\\n' > src/new.rs").unwrap();
         assert!(result.success, "{} {}", result.stdout, result.stderr);
-        let changed = checkpoint(&task, &author.id, "Replace scoped source").unwrap();
-        assert_eq!(changed.len(), 2);
+        let changed = if opencode {
+            crate::worker_tools::call(
+                &task,
+                &author.id,
+                "checkpoint",
+                &serde_json::json!({"summary":"Replace scoped source"}),
+            )
+            .unwrap()["changed"]
+                .as_array()
+                .unwrap()
+                .len()
+        } else {
+            checkpoint(&task, &author.id, "Replace scoped source")
+                .unwrap()
+                .len()
+        };
+        assert_eq!(changed, 2);
         assert!(repo.path().join("src/old.rs").exists());
         assert!(!lane.worktree.join("src/old.rs").exists());
         assert_eq!(
             fs::read_to_string(lane.worktree.join("data/users.sqlite")).unwrap(),
             "protected fixture\n"
         );
+        if opencode {
+            crate::worker_tools::call(&task, &author.id, "check", &serde_json::json!({})).unwrap();
+        }
         let checked = crate::check_profiles::run(&task, &order, Some(&author.pane)).unwrap();
         assert!(checked.passed(), "{:?}", checked.phases);
         crate::orders::report(
@@ -1861,15 +1976,26 @@ mod docker_tests {
             )
             .is_err()
         );
-        crate::reviews::submit(
-            &task,
-            &reviewer.pane,
-            &review.id,
-            crate::reviews::Verdict::Approved,
-            vec![],
-            "Contract, source and tests reviewed",
-        )
-        .unwrap();
+        if opencode {
+            crate::worker_tools::call(
+                &task,
+                &reviewer.id,
+                "review_diff",
+                &serde_json::json!({"review":review.id}),
+            )
+            .unwrap();
+            crate::worker_tools::call(&task, &reviewer.id, "review_submit", &serde_json::json!({"review":review.id,"verdict":"approved","findings":[],"summary":"Contract, source and tests reviewed"})).unwrap();
+        } else {
+            crate::reviews::submit(
+                &task,
+                &reviewer.pane,
+                &review.id,
+                crate::reviews::Verdict::Approved,
+                vec![],
+                "Contract, source and tests reviewed",
+            )
+            .unwrap();
+        }
         crate::checks::tests::commit_file(
             repo.path(),
             "src/parallel.rs",

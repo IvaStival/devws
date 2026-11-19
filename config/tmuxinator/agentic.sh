@@ -58,13 +58,14 @@ done
 # shellcheck source=agents.sh
 . "$script_dir/agents.sh"
 
-# The agents that can lead: opencode works in the team, but does not run it
-# (devagentics opencode).
+# The agents that can lead: those whose program's module says it can run a
+# team (can_lead).
 leaders() {
-  local agent
-  for agent in ${DEVWS_AGENTS:-claude codex}; do
-    [ "$(agent_kind "$agent" 2>/dev/null)" = opencode ] || printf '%s\n' "$agent"
-  done
+  local agent kind
+  while IFS= read -r agent; do
+    kind="$(agent_kind "$agent" 2>/dev/null)" || continue
+    ! agent_hook "$kind" can_lead || printf '%s\n' "$agent"
+  done < <(agent_names)
 }
 
 # <folder>: the registered agent the user picks to lead, the one leading now

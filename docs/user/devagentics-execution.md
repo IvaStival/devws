@@ -210,10 +210,13 @@ New tasks use reviewed mode. Reopening an existing task preserves its mode;
 downgrades an existing reviewed task. The current application team is not
 automatically migrated.
 
-The verified reviewed adapter is Claude with native tools disabled and only the
-scoped devAgentics MCP catalog enabled. Codex remains available for legacy teams;
-reviewed startup skips unsupported worker adapters and tries compatible
-alternatives. An unsupported coordinator switch is refused.
+Reviewed workers support Claude and OpenCode with native tools disabled and
+only the scoped devAgentics MCP catalog enabled. OpenCode uses the existing
+account, global and group switches and model settings. Its managed adapter
+verifies OpenCode 1.19.6 on Linux and isolated configuration before readiness;
+unsupported versions or platforms fall back before work is claimed. Failed claimed turns require explicit
+recovery. The leader stays on Claude or on Codex with the existing task opt-in;
+an OpenCode coordinator switch is refused.
 
 Codex can run the read-only code reviewers, so a second model reviews what
 the first wrote. It is off by default, because Codex cannot turn its own shell
@@ -239,7 +242,8 @@ devagentics task codex-team <task> on     # off: writers and the leader on Claud
 ```
 
 Workers then start on their Codex candidate (Claude stays behind it as a
-fallback). A writer's `codex exec` turns run in Codex's workspace-write sandbox
+fallback). A group with OpenCode switched on still starts on OpenCode first,
+with Codex behind it. A writer's `codex exec` turns run in Codex's workspace-write sandbox
 in its own runner snapshot: it can write only there (not `/tmp`, not the rest
 of your home), with no network; checks and tests still run in the isolated
 container. A reviewer's are read-only. The leader runs interactive Codex in
@@ -279,7 +283,14 @@ Two more runner settings fit a project's toolchain:
   source only and the container has no network. For example
   `[{"path": "/node_modules", "target": "web/node_modules"}]` with an image
   that ran `npm ci` at `/`. A mount may not hide tracked source.
-- `memory_mb` (128–8192, default 512) and `cpus` (1–4, default 1) size each
+- A check gets its order's `targets` (the paths the leader named for the
+  change, space-separated; empty for a full run) as `DEVAGENTICS_TARGETS`. A
+  command that uses it runs only there, for example
+  `cd web && npx vitest run $DEVAGENTICS_TARGETS`. When an order's checks ran
+  on targets, its review candidate runs every selected profile in full before
+  the step can be accepted.
+- `memory_mb` (128–4096, default 4096: no container gets more than 4 GB, swap
+  included) and `cpus` (1–4, default 1) size each
   container. A TypeScript check or a Next.js build needs about 2048 MiB.
 
 A build that fetches from the network (Next's `next/font/google`, for one)
@@ -374,6 +385,20 @@ include `plan_proposal`, `plan_amend` (only the changes for the next revision),
 The baseline covers the known application before implementation staffing:
 scopes, applicable backend/frontend/data work, interfaces, dependencies, tests,
 acceptance criteria, required check definitions and milestones.
+
+You approve the first baseline and every revision that changes the plan: the
+goal, non-goals, decisions, scopes, items or milestones, or a check you
+approved. A revision that only adds checks (a new lane's commands, a new
+repo's) is the leader's to approve, with no confirmation round. It tells you in
+its next summary, and the log records "the leader approved check-only
+revision N". Workflow status shows which kind a pending proposal is
+(`proposal_approval`).
+
+The leader asks you only for plan changes, anything outside the project,
+destroying data or files outside the approved source scope, spending past a
+limit, and product questions. It decides the rest itself (staffing, retries,
+recovery, lanes, runner images and checks, reviews, accepting steps) and
+reports what it decided.
 
 Inspect or submit the baseline through CLI or the equivalent leader tool:
 

@@ -96,6 +96,8 @@ mod tests {
         send_order(
             task,
             OrderRequest {
+                read: Vec::new(),
+                targets: Vec::new(),
                 profiles: Vec::new(),
                 agent: agent.into(),
                 step: step.into(),

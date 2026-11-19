@@ -270,11 +270,11 @@ pub fn load(task: &Task, worktree: &Path) -> Result<Option<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_args::Kind as Program;
     use crate::board::tests::started;
     use crate::checks::tests::{commit_file, run};
     use crate::devws::fake::FakeDevws;
     use crate::home::Home;
+    use crate::providers::Kind as Program;
     use tempfile::TempDir;
 
     fn git_output(dir: &Path, arguments: &[&str]) -> String {

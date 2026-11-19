@@ -76,16 +76,13 @@ if [ -n "$args_file" ]; then
 fi
 
 # The account: the folder registered for the agent, or none for a bare name,
-# whatever folder the environment came with.
-unset CLAUDE_CONFIG_DIR CODEX_HOME DEVWS_OPENCODE_DB
-if agent_has_folder "$agent"; then
-  case "$kind" in
-    claude) export CLAUDE_CONFIG_DIR="$(agent_home "$agent")" ;;
-    codex) export CODEX_HOME="$(agent_home "$agent")" ;;
-    # opencode has no folder variable of its own: XDG_DATA_HOME moves its
-    # login and conversations (and those of the agent's own commands).
-    opencode) export XDG_DATA_HOME="$(agent_home "$agent")" ;;
-  esac
+# whatever folder the environment came with (the module's account_env).
+while IFS= read -r variable; do
+  [ -z "$variable" ] || unset "$variable"
+done < <(agent_account_variables)
+if agent_has_folder "$agent" && ! agent_hook "$kind" account_env "$(agent_home "$agent")"; then
+  printf 'Cannot run %s on its folder %s: register it with its program'"'"'s own\n' "$agent" "$(agent_home "$agent")" >&2
+  exit 2
 fi
 # The status line records this agent's limits under its name.
 export DEVWS_AGENT="$agent"
@@ -98,22 +95,9 @@ if [ "${extra_args[0]:-}" = --devagentics-worker ]; then
   exec "$executable" worker-panel "${extra_args[@]:2}"
 fi
 
-# Codex stops at "Trust this folder?" in a folder its config does not trust,
-# and every task gets new lane folders: trust the folders devAgentics made for
-# its tasks, as answering the question would, and no others. Trusting the
-# tasks folder itself is not enough: Codex looks for the exact folder.
-trust_task_folder() {
-  local folder tasks config
-  folder="$(pwd -P)"
-  tasks="$(cd "${DEVAGENTICS_HOME:-$HOME/.devagentics}/tasks" 2>/dev/null && pwd -P)" || return 0
-  case "$folder/" in "$tasks"/*) ;; *) return 0 ;; esac
-  config="${CODEX_HOME:-$HOME/.codex}/config.toml"
-  grep -qxF "[projects.\"$folder\"]" "$config" 2>/dev/null && return 0
-  if ! { mkdir -p "$(dirname "$config")" && printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$folder" >> "$config"; }; then
-    printf 'Could not trust %s for Codex in %s: it will ask.\n' "$folder" "$config" >&2
-  fi
-}
-[ "$kind" != codex ] || trust_task_folder
+# What the program needs before it starts here (the module's prepare: trust
+# for a folder devAgentics made, a plugin).
+agent_hook "$kind" prepare "$agent"
 
 if [ "$extra" = --extra ]; then
   tmux set-option -p -t "$TMUX_PANE" @devws_role extra-agent
@@ -124,7 +108,8 @@ fi
 
 # A respawn can reuse its pane. Never attribute the previous runtime's
 # observed model or transcript to the replacement agent.
-for option in @devws_startup_error @devws_model @devws_model_source @devws_model_seen @devws_model_transcript @devws_transcript @devws_model_configured; do
+for option in @devws_startup_error @devws_model @devws_model_source @devws_model_seen @devws_model_transcript @devws_transcript @devws_model_configured \
+    $(while IFS= read -r each; do agent_hook "$each" pane_options; done < <(agent_kinds)); do
   tmux set-option -p -u -t "$TMUX_PANE" "$option" 2>/dev/null
 done
 if [ "$extra" != --extra ]; then
@@ -147,73 +132,15 @@ done
 [ -z "$configured_model" ] || tmux set-option -p -t "$TMUX_PANE" @devws_model_configured "$configured_model"
 
 # Link the agent with the editor: an edit hook shows its changes there, and
-# the prompt tells it how to open files in it. Passed on the command line, so
-# the user's own agent settings are never changed.
-# Absolute: the hook runs from wherever the agent works.
-prompt="$(cat "$link_dir/agent_editor_prompt.md")"
-if ! command -v "$kind" >/dev/null 2>&1; then
+# the prompt tells it how to open files in it. Passed on the command line (the
+# module's launch), so the user's own agent settings are never changed.
+program="$(agent_program "$kind")"
+if ! command -v "$program" >/dev/null 2>&1; then
   tmux set-option -p -t "$TMUX_PANE" @devws_startup_error '{"type":"error","error":{"code":"provider_unavailable"}}'
-  printf 'Agent program is unavailable: %s\n' "$kind" >&2
+  printf 'Agent program is unavailable: %s\n' "$program" >&2
   exit 127
 fi
-case "$kind" in
-  claude)
-    claude ${resume:+--continue} --settings "$link_dir/agent_settings.json" --append-system-prompt "$prompt" \
-      ${extra_args[@]+"${extra_args[@]}"}
-    ;;
-  codex)
-    # Config overrides are TOML; jq's JSON strings are valid TOML strings, quotes escaped.
-    # The follow hook in <phase> (agent_follow_hook.sh): every tool call, since
-    # Codex's tools vary (exec, shell, apply_patch) and any may change files.
-    follow_hook() {
-      printf '{hooks=[{type="command",command=%s}]}' \
-        "$(jq -n --arg path "$link_dir/agent_follow_hook.sh" --arg phase "${1:-}" \
-          '"\"\($path)\" codex" + (if $phase == "" then "" else " " + $phase end)')"
-    }
-    # Every state event reports to agent_state.sh (working / needs you / done).
-    state_hook="{hooks=[{type=\"command\",command=$(jq -n --arg path "$link_dir/agent_state.sh" '"\"\($path)\""')}]}"
-    state_hooks=()
-    for event in SessionStart PermissionRequest Stop SessionEnd; do
-      state_hooks+=(-c "hooks.$event=[$state_hook]")
-    done
-    # Codex runs no status line command: its own items show what devws's
-    # Claude bar does (agent_usage_bar.sh), unless the account chose its own.
-    status_line_args=()
-    grep -q '^[[:space:]]*status_line[[:space:]]*=' "${CODEX_HOME:-$HOME/.codex}/config.toml" 2>/dev/null ||
-      status_line_args=(-c 'tui.status_line=["model-with-reasoning","git-branch","five-hour-limit","weekly-limit","context-used"]')
-    resume_args=()
-    [ -n "$resume" ] && resume_args=(resume --last)
-    codex ${resume_args[@]+"${resume_args[@]}"} \
-      -c "hooks.UserPromptSubmit=[$state_hook,$(follow_hook prompt)]" \
-      -c "hooks.PreToolUse=[$(follow_hook pre),$state_hook]" \
-      -c "hooks.PostToolUse=[$(follow_hook),$state_hook]" \
-      "${state_hooks[@]}" \
-      ${status_line_args[@]+"${status_line_args[@]}"} \
-      -c "developer_instructions=$(jq -n --arg prompt "$prompt" '$prompt')" \
-      ${extra_args[@]+"${extra_args[@]}"}
-    ;;
-  opencode)
-    # Where its usage is read (opencode_usage.sh), told to the plugin.
-    export DEVWS_OPENCODE_DB="${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db"
-    # Passed as config content, so the user's own opencode config stays: the
-    # plugin that reports to devws, the editor prompt, and the two agents
-    # devAgentics starts (agent_args.rs): the floor's edits its worktree,
-    # a senior's has no edit tools (its orders forbid every file).
-    config="$(jq -n --arg plugin "file://$link_dir/opencode_devws_plugin.js" \
-      --arg prompt "$link_dir/agent_editor_prompt.md" '{
-        plugin: [$plugin],
-        instructions: [$prompt],
-        agent: {
-          "devws-floor": {mode: "primary", description: "devws factory floor: works in its worktree",
-            permission: {edit: "allow", bash: "allow", webfetch: "allow"}},
-          "devws-senior": {mode: "primary", description: "devws senior: reads and plans, never edits",
-            permission: {edit: "deny", bash: "allow", webfetch: "allow"}}
-        }
-      }')"
-    OPENCODE_CONFIG_CONTENT="$config" opencode ${resume:+--continue} \
-      ${extra_args[@]+"${extra_args[@]}"}
-    ;;
-esac
+agent_hook "$kind" launch "$resume" "$link_dir/agent_editor_prompt.md" ${extra_args[@]+"${extra_args[@]}"}
 
 provider_exit=$?
 if [ "$provider_exit" -ne 0 ]; then

@@ -3,15 +3,15 @@
 # records carries its tokens and what the provider billed for it (for Zen,
 # the real charge, not an estimate at API prices).
 #
-#   opencode_usage.sh usage <db>#<session>   one conversation: "<input>
+#   usage.sh usage <db>#<session>   one conversation: "<input>
 #                                            <output> <cache> <US$> 0" (cache
 #                                            is read + written)
-#   opencode_usage.sh rows <db>              every response: "<folder> <id>
+#   usage.sh rows <db>              every response: "<folder> <id>
 #                                            <YYYY-MM-DD> <input> <output>
 #                                            <cache> <US$> 0", tab-separated
 #                                            (usage_history.sh)
-#   opencode_usage.sh spent <db> <epoch>     what responses since then cost,
-#                                            US$ (opencode_credit.sh)
+#   usage.sh spent <db> <epoch>     what responses since then cost,
+#                                            US$ (credit.sh)
 #
 # The database is opened read-only, beside the opencode running on it. A
 # database that is not there yet (an account never used) has used nothing.
@@ -21,7 +21,7 @@ set -u
 export LC_ALL=C
 
 fail() {
-  printf 'opencode_usage.sh: %s\n' "$*" >&2
+  printf 'usage.sh: %s\n' "$*" >&2
   exit 2
 }
 
@@ -67,8 +67,8 @@ spent() {
 }
 
 case "${1:-}" in
-  usage) [ "$#" -eq 2 ] || fail "usage: opencode_usage.sh usage <db>#<session>"; usage "$2" ;;
-  rows) [ "$#" -eq 2 ] || fail "usage: opencode_usage.sh rows <db>"; rows "$2" ;;
-  spent) [ "$#" -eq 3 ] || fail "usage: opencode_usage.sh spent <db> <epoch>"; spent "$2" "$3" ;;
-  *) fail "usage: opencode_usage.sh usage <db>#<session> | rows <db> | spent <db> <epoch>" ;;
+  usage) [ "$#" -eq 2 ] || fail "usage: usage.sh usage <db>#<session>"; usage "$2" ;;
+  rows) [ "$#" -eq 2 ] || fail "usage: usage.sh rows <db>"; rows "$2" ;;
+  spent) [ "$#" -eq 3 ] || fail "usage: usage.sh spent <db> <epoch>"; spent "$2" "$3" ;;
+  *) fail "usage: usage.sh usage <db>#<session> | rows <db> | spent <db> <epoch>" ;;
 esac

@@ -7,7 +7,9 @@ TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/devws-interrupt.XXXXXX")"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 mkdir -p "$TEST_ROOT/bin" "$TEST_ROOT/scripts"
 cp "$ROOT/config/tmuxinator/agent_cli.sh" "$TEST_ROOT/scripts/agent_cli.sh"
-printf 'agent_kind() { case "$1" in claude|codex|opencode) printf "%%s\\n" "$1" ;; *) return 1 ;; esac; }\n' > "$TEST_ROOT/scripts/agents.sh"
+# The programs' modules say which keys stop a turn.
+cp "$ROOT/config/tmuxinator/agents.sh" "$TEST_ROOT/scripts/agents.sh"
+cp -R "$ROOT/config/tmuxinator/agents" "$TEST_ROOT/scripts/agents"
 cat > "$TEST_ROOT/bin/tmux" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in

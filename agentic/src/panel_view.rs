@@ -1,5 +1,5 @@
 //! What a managed worker's panel shows: the provider's machine output (Codex
-//! `exec --json`, Claude `stream-json`) turned into one event model, drawn
+//! `exec --json`, Claude `stream-json`, OpenCode `run --format json`) turned into one event model, drawn
 //! for a person: formatted messages, one line per tool call with its outcome,
 //! and a header and footer around each turn.
 use serde_json::Value;
@@ -187,6 +187,66 @@ impl ClaudeStream {
             });
         }
         events
+    }
+}
+
+/// OpenCode 1.19.6 `run --format json` emits completed message parts.
+/// A turn can contain several model steps; keep their cumulative usage so
+/// the panel's footer reports the whole turn rather than only its final step.
+#[derive(Default)]
+pub struct OpenCodeStream {
+    finished: std::collections::HashSet<String>,
+    usage: Usage,
+}
+
+impl OpenCodeStream {
+    pub fn events(&mut self, line: &str) -> Vec<Event> {
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            return vec![Event::Raw(line.to_string())];
+        };
+        let part = &event["part"];
+        if let Some(identity) = part["id"].as_str()
+            && !self.finished.insert(identity.to_string())
+        {
+            return Vec::new();
+        }
+        match event["type"].as_str() {
+            Some("text") => vec![Event::Message(text_of(&part["text"]))],
+            Some("tool_use") => {
+                let state = &part["state"];
+                let name = part["tool"].as_str().unwrap_or("tool");
+                let name = name.strip_prefix("devagentics_worker_").unwrap_or(name);
+                vec![Event::Tool {
+                    action: action_of(&Value::from(name), &state["input"]),
+                    detail: detail_of(&state["input"]["input"]),
+                    outcome: if state["status"] == "error" {
+                        Outcome::Failed(reason(state["error"].as_str(), &Value::Null))
+                    } else {
+                        Outcome::Done
+                    },
+                }]
+            }
+            Some("step_finish") => {
+                let tokens = &part["tokens"];
+                let cached = tokens["cache"]["read"].as_u64().unwrap_or(0);
+                self.usage.input += tokens["input"].as_u64().unwrap_or(0)
+                    + cached
+                    + tokens["cache"]["write"].as_u64().unwrap_or(0);
+                self.usage.cached += cached;
+                self.usage.output += tokens["output"].as_u64().unwrap_or(0)
+                    + tokens["reasoning"].as_u64().unwrap_or(0);
+                vec![Event::TurnDone(self.usage)]
+            }
+            Some("error") => vec![Event::Error(
+                event["error"]["data"]["message"]
+                    .as_str()
+                    .or(event["error"]["message"].as_str())
+                    .or(event["error"]["name"].as_str())
+                    .unwrap_or("OpenCode reported an error")
+                    .to_string(),
+            )],
+            _ => Vec::new(),
+        }
     }
 }
 
@@ -429,6 +489,58 @@ mod tests {
         assert_eq!(
             codex_events("Reading additional input from stdin..."),
             [Event::Raw("Reading additional input from stdin...".into())]
+        );
+    }
+
+    #[test]
+    fn opencode_parts_show_messages_and_worker_tool_results() {
+        // Shapes emitted by OpenCode v1.19.6 cli/cmd/run.ts.
+        let mut stream = OpenCodeStream::default();
+        let text = r#"{"type":"text","sessionID":"ses_1","part":{"id":"p1","type":"text","text":"**Done**\n","time":{"end":10}}}"#;
+        assert_eq!(stream.events(text), [Event::Message("**Done**".into())]);
+        assert!(
+            stream.events(text).is_empty(),
+            "a repeated completed part is shown once"
+        );
+        assert_eq!(stream.events(r#"{"type":"tool_use","sessionID":"ses_1","part":{"id":"p2","tool":"devagentics_worker_worker","state":{"status":"completed","input":{"action":"execute","input":{"command":"cargo test"}},"output":"ok"}}}"#),
+            [Event::Tool { action: "execute".into(), detail: "cargo test".into(), outcome: Outcome::Done }]);
+        assert_eq!(stream.events(r#"{"type":"tool_use","sessionID":"ses_1","part":{"id":"p3","tool":"devagentics_worker_worker","state":{"status":"error","input":{"action":"checkpoint","input":{"summary":"Add test"}},"error":"task is paused"}}}"#),
+            [Event::Tool { action: "checkpoint".into(), detail: "Add test".into(), outcome: Outcome::Failed("task is paused".into()) }]);
+    }
+
+    #[test]
+    fn opencode_usage_accumulates_steps_without_counting_repeated_events() {
+        let mut stream = OpenCodeStream::default();
+        let step = r#"{"type":"step_finish","sessionID":"ses_1","part":{"id":"p1","tokens":{"input":10,"output":5,"reasoning":2,"cache":{"read":100,"write":20}}}}"#;
+        assert_eq!(
+            stream.events(step),
+            [Event::TurnDone(Usage {
+                input: 130,
+                cached: 100,
+                output: 7
+            })]
+        );
+        assert!(stream.events(step).is_empty());
+        assert_eq!(stream.events(r#"{"type":"step_finish","sessionID":"ses_1","part":{"id":"p2","tokens":{"input":3,"output":4,"reasoning":1,"cache":{"read":7,"write":0}}}}"#),
+            [Event::TurnDone(Usage {input:140,cached:107,output:12})]);
+    }
+
+    #[test]
+    fn opencode_errors_remain_visible_and_unknown_events_are_ignored() {
+        let mut stream = OpenCodeStream::default();
+        assert_eq!(stream.events(r#"{"type":"error","error":{"name":"APIError","data":{"message":"Insufficient balance"}}}"#), [Event::Error("Insufficient balance".into())]);
+        assert_eq!(
+            stream.events(r#"{"type":"error","error":{"name":"ProviderAuthError"}}"#),
+            [Event::Error("ProviderAuthError".into())]
+        );
+        assert!(
+            stream
+                .events(r#"{"type":"step_start","part":{"id":"start"}}"#)
+                .is_empty()
+        );
+        assert_eq!(
+            stream.events("provider warning"),
+            [Event::Raw("provider warning".into())]
         );
     }
 

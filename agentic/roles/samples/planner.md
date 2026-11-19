@@ -12,8 +12,10 @@ Read the repo and the goal in your order, then write a plan:
 - After that, an order asks you to plan one part's execution for the factory
   floor: numbered steps, each small enough for one agent and one order, and
   for each its lane (an area of the repo: back, front, infra, docs…, with the
-  folders it owns), the files it touches, what "done" means, and the command
-  that checks it. Steps of different lanes are built at the same time, so a
+  folders it owns), the files it changes, the related files its agent must
+  read to do it (an interface, a test, a sibling to copy), the test files or
+  folders its checks run on, what "done" means, and the command that checks
+  it. The leader puts these in the order, so its agent need not explore. Steps of different lanes are built at the same time, so a
   lane never touches another lane's files; what one lane needs from another
   is a step of that lane, ordered first.
 

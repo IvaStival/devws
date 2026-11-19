@@ -13,7 +13,6 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 const BUILD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-const BUILD_MEMORY: &str = "4g";
 /// Two CPUs, as a quota of the default 100 ms period.
 const BUILD_CPU_QUOTA: &str = "200000";
 const LOG_TAIL: usize = 64 * 1024;
@@ -191,12 +190,14 @@ fn copy_context(worktree: &Path, files: &[String], context: &Path) -> Result<()>
 
 /// The `docker build` arguments: the caps, the tag and the task's label.
 fn build_arguments(tag: &str, task_id: &str, context: &Path) -> Vec<String> {
+    // The same cap as every container the runner starts.
+    let memory = format!("{}m", runner::MEMORY_LIMIT_MB);
     vec![
         "build".into(),
         "--memory".into(),
-        BUILD_MEMORY.into(),
+        memory.clone(),
         "--memory-swap".into(),
-        BUILD_MEMORY.into(),
+        memory,
         "--cpu-quota".into(),
         BUILD_CPU_QUOTA.into(),
         "--label".into(),
@@ -231,7 +232,7 @@ mod tests {
             build_arguments("devws-runner/app:back", "feat-x", Path::new("/tmp/context"));
         let joined = arguments.join(" ");
         assert!(
-            joined.starts_with("build --memory 4g --memory-swap 4g --cpu-quota 200000"),
+            joined.starts_with("build --memory 4096m --memory-swap 4096m --cpu-quota 200000"),
             "{joined}"
         );
         assert!(

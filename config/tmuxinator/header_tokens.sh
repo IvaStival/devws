@@ -1,26 +1,29 @@
 #!/usr/bin/env bash
 # The agents' usage, for the header's agent column and tmux's own line.
 #
-#   header_tokens.sh costs                  this month's cost per agent in
-#                                           DEVWS_AGENTS: "work 212.43 0"
-#                                           (US$, then 1 if a model had no price)
-#   header_tokens.sh limits <codex agent>   a Codex agent's plan limits, % used:
-#                                           "<5-hour session> <week>"
+#   header_tokens.sh costs                  this month's cost per agent devws
+#                                           runs (agent_names): "work 212.43 0"
+#                                           (US$, then 1 if a model had no price);
+#                                           an agent on a plan without API
+#                                           prices has its tokens after them:
+#                                           "gemini 0 0 1250000"
+#   header_tokens.sh limits <agent>         the plan limits its program logs,
+#                                           % used: "<5-hour session> <week>"
 #   header_tokens.sh session <transcript>   one conversation: "conv 230k · ctx 41%"
 #   header_tokens.sh model <transcript>     latest observed model identifier
 #   header_tokens.sh usage <transcript>     what one conversation used:
 #                                           "<input> <output> <cache> <US$> <unpriced>"
 #                                           (tokens; cache is read + written)
-#                                           An opencode conversation is
-#                                           <db>#<session> (opencode_usage.sh)
 #   header_tokens.sh messages <transcript>  the same, a line per response:
 #                                           "<id> <YYYY-MM-DD> <input> <output>
 #                                           <cache> <US$> <unpriced>" (id "-"
-#                                           for Codex, whose logs do not repeat)
+#                                           when a program's logs do not repeat)
 #
-# Read from the agents' own logs, in each agent's folder (agents.sh): Claude
-# Code's <folder>/projects/*/*.jsonl and Codex's
-# <folder>/sessions/YYYY/MM/DD/*.jsonl. Costs price each response
+# Read from the agents' own logs, in each agent's folder (agents.sh). Each
+# program's module knows its logs (agents/*/agent.sh: owns_transcript,
+# session, usage, messages, model, month, log_limits); these hooks run inside
+# this script and use what it defines below: human, epoch and price (jq),
+# recent_logs, token_records, prices_file and now. Costs price each response
 # at agent_prices.tsv's API rates; the month starts on the 1st, 00:00 local.
 # DEVWS_TOKENS_NOW (epoch seconds) replaces the current time, for tests.
 
@@ -48,16 +51,10 @@ price='def price($model):
     // ($rows | map(select(. as $row | $model | startswith($row.model))) | sort_by(.model | length) | last)
   | if . then .rates else null end;'
 
-# Claude Code writes a message's usage on several lines: one per id.
-claude_messages='[inputs | fromjson? | select(.type == "assistant" and .message.usage and .message.id)]
-  | map({id: .message.id, at: (.timestamp | epoch), model: .message.model, usage: .message.usage,
-         total: (.message.usage | (.input_tokens + .output_tokens
-           + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)))})
-  | unique_by(.id)'
-
-# The logs of the last <days> days.
+# <folder> <days> [<name>]: the logs (*.jsonl, or named <name>) of the last
+# <days> days, NUL-separated.
 recent_logs() {
-  [ -d "$1" ] && find "$1" -name '*.jsonl' -mtime "-$2" -print0
+  [ -d "$1" ] && find "$1" -name "${3:-*.jsonl}" -mtime "-$2" -print0
 }
 
 # Cache normalized records rather than totals: reset times, pricing and
@@ -66,243 +63,52 @@ token_records() {
   perl "$scripts_dir/token_cache.pl"
 }
 
-# Rates: input, cache write 5 min, cache write 1 h, cache read, output. A
-# message without the 5 min / 1 h split counts its writes as 5 min ones.
-#   claude_cost <since> <folder>
-claude_cost() {
-  recent_logs "$2/projects" 32 | token_records |
-    jq -nRr --argjson since "$1" --rawfile prices "$prices_file" "$epoch $price $claude_messages
-      | map(select(.at >= \$since and .model != \"<synthetic>\") | . as \$message | price(.model) as \$rates
-        | if \$rates == null then {cost: 0, unpriced: 1}
-          else (.usage.cache_creation // {}) as \$writes
-            | ((\$writes.ephemeral_5m_input_tokens // null) == null and (\$writes.ephemeral_1h_input_tokens // null) == null) as \$unsplit
-            | {cost: ((.usage.input_tokens * \$rates[0]
-                + (if \$unsplit then (.usage.cache_creation_input_tokens // 0) else (\$writes.ephemeral_5m_input_tokens // 0) end) * \$rates[1]
-                + (if \$unsplit then 0 else (\$writes.ephemeral_1h_input_tokens // 0) end) * \$rates[2]
-                + (.usage.cache_read_input_tokens // 0) * \$rates[3]
-                + .usage.output_tokens * \$rates[4]) / 1000000),
-               unpriced: 0}
-          end)
-      | \"\(map(.cost) | add // 0 | . * 100 | round / 100) \(map(.unpriced) | max // 0)\""
-}
-
-# Each Codex response logs its usage (token_usage_record) under its turn,
-# whose turn_context names the model. Input counts cached and written tokens.
-#   codex_cost <since> <folder>
-codex_cost() {
-  local logs=()
-  while IFS= read -r -d '' log; do
-    logs+=("$log")
-  done < <(recent_logs "$2/sessions" 32)
-  if [ "${#logs[@]}" -eq 0 ]; then
-    printf '0 0\n'
-    return
-  fi
-  printf '%s\0' "${logs[@]}" | token_records |
-    jq -nRr --argjson since "$1" --rawfile prices "$prices_file" "$epoch $price
-      [inputs | fromjson?] as \$lines
-      | (\$lines | map(select(.type == \"turn_context\") | {key: .payload.turn_id, value: .payload.model}) | from_entries) as \$models
-      | \$lines | map(select(.type == \"token_usage_record\" and (.timestamp | epoch) >= \$since)
-        | price(\$models[.payload.turn_id] // \"\") as \$rates | .payload.usage as \$usage
-        | if \$rates == null then {cost: 0, unpriced: 1}
-          else {cost: (((\$usage.input_tokens - (\$usage.cached_input_tokens // 0) - (\$usage.cache_write_input_tokens // 0)) * \$rates[0]
-                + (\$usage.cache_write_input_tokens // 0) * \$rates[1]
-                + (\$usage.cached_input_tokens // 0) * \$rates[3]
-                + \$usage.output_tokens * \$rates[4]) / 1000000),
-                unpriced: 0}
-          end)
-      | \"\(map(.cost) | add // 0 | . * 100 | round / 100) \(map(.unpriced) | max // 0)\""
-}
-
 costs() {
   local month agent kind home cost
   # The 1st of this month at midnight: BSD date (macOS), else GNU's (Linux).
   month="$(date -r "$now" -v1d -v0H -v0M -v0S +%s 2>/dev/null ||
     date -d "$(date -d "@$now" +%Y-%m-01)" +%s)"
-  for agent in ${DEVWS_AGENTS-claude codex}; do
+  # The list on fd 3: the loop's commands read their own stdin.
+  while IFS= read -r agent <&3; do
     kind="$(agent_kind "$agent")" || continue
     home="$(agent_home "$agent")"
-    case "$kind" in
-      claude) cost="$(claude_cost "$month" "$home")" ;;
-      codex) cost="$(codex_cost "$month" "$home")" ;;
-      # Billed per response by the provider: every cost is known.
-      opencode) cost="$("$scripts_dir/opencode_usage.sh" spent "$home/opencode/opencode.db" "$month") 0" ;;
-    esac
+    cost="$(agent_hook "$kind" month "$month" "$home")"
     printf '%s %s\n' "$agent" "${cost:-0 0}"
-  done
+  done 3< <(agent_names)
 }
 
-# Codex logs its plan limits with each token count: the latest one counts, and
-# a window that has reset since is back to 0. Claude Code's limits come from
-# its status line instead (agent_statusline.sh).
-#   codex_limits <folder>
-codex_limits() {
-  local logs=()
-  while IFS= read -r -d '' log; do
-    logs+=("$log")
-  done < <(recent_logs "$1/sessions" 8)
-  [ "${#logs[@]}" -gt 0 ] || return 0
-  printf '%s\0' "${logs[@]}" | token_records |
-    jq -nRr --argjson now "$now" "$epoch [inputs | fromjson? | select(.payload.rate_limits.primary)
-      | {at: (.timestamp | epoch), limits: .payload.rate_limits}] | sort_by(.at) | last // empty | .limits
-      | [.primary, .secondary] | map(if . == null then \"-\" elif (.resets_at // 1e18) < \$now then 0 else .used_percent | floor end)
-      | join(\" \")"
-}
-
-# Codex knows its context window; Claude Code's logs do not, so its context is
-# shown in tokens.
-session() {
-  local transcript="$1" records
-  [ -r "$transcript" ] || return 0
-  records="$(printf '%s\0' "$transcript" | token_records)"
-  if grep -q '"token_count"' <<< "$records"; then
-    jq -nRr "$human [inputs | fromjson? | select(.type == \"event_msg\" and .payload.type == \"token_count\" and .payload.info) | .payload.info]
-      | last // empty
-      | \"conv \(.total_token_usage.total_tokens | human) · ctx \(.last_token_usage.input_tokens * 100 / .model_context_window | floor)%\"" \
-      <<< "$records" 2>/dev/null
-  else
-    printf '%s\n' "$records" |
-      jq -nRr "$human $epoch $claude_messages | select(length > 0)
-        | \"conv \(map(.total) | add | human) · ctx \(sort_by(.at) | last | .usage
-          | (.input_tokens + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)) | human)\"" 2>/dev/null
-  fi
-  return 0
-}
-
-# What one conversation used, in tokens and at API prices. A Claude Code log
-# has a usage per message; a Codex log the running total of its latest count.
-usage() {
-  local transcript="$1" records
-  case "$transcript" in
-    *.db\#*)
-      "$scripts_dir/opencode_usage.sh" usage "$transcript"
+# <hook> <transcript> [args…]: the module whose logs the transcript is
+# answers; nothing when none claims it.
+transcript_hook() {
+  local hook="$1" transcript="$2" records="" kind
+  shift 2
+  [ -r "$transcript" ] && records="$(printf '%s\0' "$transcript" | token_records)"
+  while IFS= read -r kind; do
+    if agent_hook "$kind" owns_transcript "$transcript" "$records"; then
+      agent_hook "$kind" "$hook" "$transcript" "$records" "$@"
       return 0
-      ;;
-  esac
-  [ -r "$transcript" ] || return 0
-  records="$(printf '%s\0' "$transcript" | token_records)"
-  if grep -q '"token_count"' <<< "$records"; then
-    printf '%s\n' "$records" |
-      jq -nRr --rawfile prices "$prices_file" "$price
-        [inputs | fromjson?] as \$lines
-        | (\$lines | map(select(.type == \"turn_context\") | .payload.model) | last // \"\") as \$model
-        | (\$lines | map(select(.type == \"event_msg\" and .payload.type == \"token_count\" and .payload.info) | .payload.info.total_token_usage) | last // empty) as \$total
-        | (\$total.cached_input_tokens // 0) as \$cached
-        | price(\$model) as \$rates
-        | (\$total.input_tokens - \$cached) as \$input
-        | \"\(\$input) \(\$total.output_tokens) \(\$cached) \(if \$rates == null then 0 else ((\$input * \$rates[0] + \$cached * \$rates[3] + \$total.output_tokens * \$rates[4]) / 1000000 * 100 | round / 100) end) \(if \$rates == null then 1 else 0 end)\"" 2>/dev/null
-  else
-    printf '%s\n' "$records" |
-      jq -nRr --rawfile prices "$prices_file" "$epoch $price $claude_messages
-        | select(length > 0)
-        | map(select(.model != \"<synthetic>\") | . as \$message | price(.model) as \$rates
-          | (.usage.cache_creation // {}) as \$writes
-          | ((\$writes.ephemeral_5m_input_tokens // null) == null and (\$writes.ephemeral_1h_input_tokens // null) == null) as \$unsplit
-          | {input: .usage.input_tokens, output: .usage.output_tokens,
-             cache: ((.usage.cache_creation_input_tokens // 0) + (.usage.cache_read_input_tokens // 0)),
-             unpriced: (if \$rates == null then 1 else 0 end),
-             cost: (if \$rates == null then 0 else ((.usage.input_tokens * \$rates[0]
-               + (if \$unsplit then (.usage.cache_creation_input_tokens // 0) else (\$writes.ephemeral_5m_input_tokens // 0) end) * \$rates[1]
-               + (if \$unsplit then 0 else (\$writes.ephemeral_1h_input_tokens // 0) end) * \$rates[2]
-               + (.usage.cache_read_input_tokens // 0) * \$rates[3]
-               + .usage.output_tokens * \$rates[4]) / 1000000) end)})
-        | \"\(map(.input) | add // 0) \(map(.output) | add // 0) \(map(.cache) | add // 0) \(map(.cost) | add // 0 | . * 100 | round / 100) \(map(.unpriced) | max // 0)\"" 2>/dev/null
-  fi
+    fi
+  done < <(agent_kinds)
   return 0
-}
-
-# What one conversation used, a line per response with its local day, for
-# the usage history (usage_history.sh), priced as usage() prices it. Claude
-# Code repeats a message in the log of a resumed conversation, so its lines
-# carry the message id: the history counts an id once over every log. A Codex
-# log's responses each have their own record; an older log without them
-# counts its last total on the day of its last count.
-messages() {
-  local transcript="$1" records
-  [ -r "$transcript" ] || return 0
-  records="$(printf '%s\0' "$transcript" | token_records)"
-  local lines='.[] | "\(.id) \(.day) \(.input) \(.output) \(.cache) \(.cost | . * 1000000 | round / 1000000) \(.unpriced)"'
-  if grep -q '"token_count"\|"token_usage_record"' <<< "$records"; then
-    printf '%s\n' "$records" |
-      jq -nRr --rawfile prices "$prices_file" "$epoch $price"'
-        def day: epoch | strflocaltime("%Y-%m-%d");
-        def priced($model; $input; $written; $cached; $output):
-          price($model) as $rates
-          | {input: $input, output: $output, cache: ($written + $cached),
-             unpriced: (if $rates == null then 1 else 0 end),
-             cost: (if $rates == null then 0
-               else (($input * $rates[0] + $written * $rates[1] + $cached * $rates[3] + $output * $rates[4]) / 1000000) end)};
-        [inputs | fromjson?] as $lines
-        | ($lines | map(select(.type == "turn_context") | {key: (.payload.turn_id // ""), value: .payload.model}) | from_entries) as $models
-        | ($lines | map(select(.type == "turn_context") | .payload.model) | last // "") as $last_model
-        | ($lines | map(select(.type == "token_usage_record"))) as $responses
-        | if ($responses | length) > 0 then
-            $responses | map(.payload.usage as $usage
-              | ($usage.cached_input_tokens // 0) as $cached
-              | ($usage.cache_write_input_tokens // 0) as $written
-              | priced($models[.payload.turn_id // ""] // $last_model;
-                  $usage.input_tokens - $cached - $written; $written; $cached; $usage.output_tokens)
-              + {id: "-", day: (.timestamp | day)})
-          else
-            $lines | map(select(.type == "event_msg" and .payload.type == "token_count" and .payload.info))
-            | last // empty
-            | [.payload.info.total_token_usage as $total
-               | ($total.cached_input_tokens // 0) as $cached
-               | priced($last_model; $total.input_tokens - $cached; 0; $cached; $total.output_tokens)
-               + {id: "-", day: (.timestamp | day)}]
-          end
-        | '"$lines" 2>/dev/null
-  else
-    printf '%s\n' "$records" |
-      jq -nRr --rawfile prices "$prices_file" "$epoch $price $claude_messages"'
-        | map(select(.model != "<synthetic>") | price(.model) as $rates
-          | (.usage.cache_creation // {}) as $writes
-          | (($writes.ephemeral_5m_input_tokens // null) == null and ($writes.ephemeral_1h_input_tokens // null) == null) as $unsplit
-          | {id, day: (.at | strflocaltime("%Y-%m-%d")),
-             input: .usage.input_tokens, output: .usage.output_tokens,
-             cache: ((.usage.cache_creation_input_tokens // 0) + (.usage.cache_read_input_tokens // 0)),
-             unpriced: (if $rates == null then 1 else 0 end),
-             cost: (if $rates == null then 0 else ((.usage.input_tokens * $rates[0]
-               + (if $unsplit then (.usage.cache_creation_input_tokens // 0) else ($writes.ephemeral_5m_input_tokens // 0) end) * $rates[1]
-               + (if $unsplit then 0 else ($writes.ephemeral_1h_input_tokens // 0) end) * $rates[2]
-               + (.usage.cache_read_input_tokens // 0) * $rates[3]
-               + .usage.output_tokens * $rates[4]) / 1000000) end)})
-        | '"$lines" 2>/dev/null
-  fi
-  return 0
-}
-
-# Reuse the compact transcript cache; no prompts or message bodies are read
-# from it. The final observed record wins when a conversation switches model.
-model() {
-  local transcript="$1" timed="${2:-}"
-  [ -r "$transcript" ] || return 0
-  printf '%s\0' "$transcript" | token_records |
-    jq -nRr --arg timed "$timed" '[inputs | fromjson? | . as $record |
-      (if .type == "assistant" then .message.model
-       elif .type == "turn_context" then .payload.model else null end)
-      | select(type == "string" and length > 0 and . != "<synthetic>")
-      | {model: ., at: (try ($record.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch 0)}]
-      | last // empty
-      | if $timed == "timed" then [(.at // 0), .model] | @tsv else .model end'
 }
 
 case "$mode" in
   costs) costs ;;
-  model) model "${2:-}" ;;
-  model-info) model "${2:-}" timed ;;
-  usage) usage "${2:-}" ;;
-  messages) messages "${2:-}" ;;
-  session) session "${2:-}" ;;
+  model) transcript_hook model "${2:-}" ;;
+  model-info) transcript_hook model "${2:-}" timed ;;
+  usage) transcript_hook usage "${2:-}" ;;
+  messages) transcript_hook messages "${2:-}" ;;
+  session) transcript_hook session "${2:-}" ;;
   limits)
-    if [ "$(agent_kind "${2:-}")" != codex ]; then
-      printf 'Only Codex logs its limits; Claude Code reports them to its status line\n' >&2
+    kind="$(agent_kind "${2:-}")" || { printf 'Not a registered agent: %s\n' "${2:-}" >&2; exit 2; }
+    if ! agent_defines "$kind" log_limits; then
+      printf '%s logs no limits: its module reads them elsewhere (agent_statusline.sh)\n' "$kind" >&2
       exit 2
     fi
-    codex_limits "$(agent_home "$2")"
+    agent_hook "$kind" log_limits "$(agent_home "$2")"
     ;;
   *)
-    printf 'Usage: header_tokens.sh costs | limits <codex agent> | session <transcript> | usage <transcript> | model <transcript>\n' >&2
+    printf 'Usage: header_tokens.sh costs | limits <agent> | session <transcript> | usage <transcript> | model <transcript>\n' >&2
     exit 2
     ;;
 esac

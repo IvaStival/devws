@@ -16,7 +16,8 @@ import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const scripts = dirname(fileURLToPath(import.meta.url));
+// devws's scripts, two folders up from this module's (agents/30-opencode).
+const scripts = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const database = process.env.DEVWS_OPENCODE_DB ?? "";
 const editTools = new Set(["edit", "write", "patch", "multiedit", "apply_patch"]);
 

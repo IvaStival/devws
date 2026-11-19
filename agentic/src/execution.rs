@@ -336,7 +336,9 @@ impl Application {
             self.approved(),
             "application baseline is unresolved or not approved at this revision"
         );
-        let item = self.items.get(id).context("unknown execution item")?;
+        let item = self.items.get(id).with_context(|| {
+            format!("unknown execution item {id}: reviewed orders require an item in the accepted application baseline")
+        })?;
         for dependency in &item.dependencies {
             ensure!(
                 state
@@ -525,10 +527,16 @@ pub fn confirm(task: &Task, revision: u64, approve: bool) -> Result<()> {
             "resolve open interview/contract questions first"
         );
         if approve {
+            let needs_user = user_approval_needed(&tx.state.application, &application);
+            // A check-only revision has no understanding to confirm.
             ensure!(
-                application.confirmed_revision == Some(revision),
+                needs_user.is_none() || application.confirmed_revision == Some(revision),
                 "confirm shared understanding before approving baseline"
             );
+            let approver = match &needs_user {
+                Some(_) => "user approved exact baseline revision".to_string(),
+                None => "the leader approved check-only revision".to_string(),
+            };
             let old = &tx.state.application;
             let global_change = old.revision > 0
                 && (old.goal != application.goal || old.non_goals != application.non_goals);
@@ -590,7 +598,7 @@ pub fn confirm(task: &Task, revision: u64, approve: bool) -> Result<()> {
                 None,
                 None,
                 &format!(
-                    "user approved exact baseline revision {revision}; affected contracts: {}",
+                    "{approver} {revision}; affected contracts: {}",
                     affected.into_iter().collect::<Vec<_>>().join(", ")
                 ),
             );
@@ -607,6 +615,68 @@ pub fn confirm(task: &Task, revision: u64, approve: bool) -> Result<()> {
         Ok(())
     })
 }
+/// Why `proposal` needs the user's approval, or None when the leader may
+/// approve it: a revision that changes nothing of the plan and only adds
+/// checks (a new lane's commands, a new repo's). Changing or removing a check
+/// the user approved could weaken it, so that stays theirs.
+pub fn user_approval_needed(approved: &Application, proposal: &Application) -> Option<String> {
+    if approved.revision == 0 {
+        return Some("it is the first baseline".into());
+    }
+    let mut plan_only = proposal.clone();
+    plan_only.check_configuration = approved.check_configuration.clone();
+    plan_only.revision = approved.revision;
+    plan_only.confirmed_revision = approved.confirmed_revision;
+    plan_only.approved_revision = approved.approved_revision;
+    if plan_only != *approved {
+        return Some(
+            "it changes the plan (goal, non-goals, decisions, scopes, items or milestones)".into(),
+        );
+    }
+    for (repo, old) in &approved.check_configuration {
+        let Some(new) = proposal.check_configuration.get(repo) else {
+            return Some(format!("it removes {repo}'s checks"));
+        };
+        if let Some(why) = weakened(old, new) {
+            return Some(format!("it {why} in {repo}"));
+        }
+    }
+    None
+}
+
+/// What a check change takes away from `old`, if anything: additions are fine.
+fn weakened(
+    old: &crate::check_profiles::RepositoryChecks,
+    new: &crate::check_profiles::RepositoryChecks,
+) -> Option<String> {
+    fn kept<T: PartialEq>(old: &BTreeMap<String, T>, new: &BTreeMap<String, T>) -> Option<String> {
+        old.iter()
+            .find(|(name, value)| new.get(*name) != Some(*value))
+            .map(|(name, _)| name.clone())
+    }
+    if let Some(name) = kept(&old.environments, &new.environments) {
+        return Some(format!("changes or removes the environment {name}"));
+    }
+    if let Some(name) = kept(&old.checks, &new.checks) {
+        return Some(format!("changes or removes the check {name}"));
+    }
+    for (list, old_names, new_names) in [
+        ("selected", &old.selected, &new.selected),
+        ("candidate", &old.candidate, &new.candidate),
+    ] {
+        if let Some(name) = old_names.iter().find(|name| !new_names.contains(name)) {
+            return Some(format!("takes {name} out of the {list} checks"));
+        }
+    }
+    for (lane, profiles) in &old.lanes {
+        let empty = BTreeMap::new();
+        if let Some(name) = kept(profiles, new.lanes.get(lane).unwrap_or(&empty)) {
+            return Some(format!("changes or removes the lane {lane}'s check {name}"));
+        }
+    }
+    None
+}
+
 pub fn question_frontier(application: &Application) -> Vec<&Decision> {
     application
         .decisions
@@ -626,6 +696,97 @@ pub fn question_frontier(application: &Application) -> Vec<&Decision> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    fn approved() -> Application {
+        Application {
+            revision: 6,
+            approved_revision: Some(6),
+            confirmed_revision: Some(6),
+            ..baseline()
+        }
+    }
+
+    fn next(change: impl FnOnce(&mut Application)) -> Application {
+        let mut proposal = approved();
+        proposal.revision = 7;
+        proposal.approved_revision = None;
+        proposal.confirmed_revision = None;
+        change(&mut proposal);
+        proposal
+    }
+
+    #[test]
+    fn a_revision_that_only_adds_checks_is_the_leaders_to_approve() {
+        let added = next(|proposal| {
+            let checks = proposal.check_configuration.get_mut("app").unwrap();
+            let lint = checks.checks["backend"].clone();
+            checks.lanes.insert(
+                "back".into(),
+                BTreeMap::from([("lint".into(), lint.clone())]),
+            );
+            checks.checks.insert("pint".into(), lint);
+            checks.selected.push("pint".into());
+        });
+        assert_eq!(user_approval_needed(&approved(), &added), None);
+        let new_repo = next(|proposal| {
+            let checks = proposal.check_configuration["app"].clone();
+            proposal.check_configuration.insert("api".into(), checks);
+        });
+        assert_eq!(user_approval_needed(&approved(), &new_repo), None);
+    }
+
+    #[test]
+    fn a_plan_change_or_a_weaker_check_is_the_users() {
+        let why = |proposal: Application| user_approval_needed(&approved(), &proposal).unwrap();
+        assert!(
+            why(next(|proposal| proposal.goal = "Another".into())).contains("changes the plan")
+        );
+        assert!(
+            why(next(|proposal| {
+                proposal.items.get_mut("S01-B01").unwrap().title = "Other".into();
+            }))
+            .contains("changes the plan")
+        );
+        assert!(
+            why(next(|proposal| {
+                proposal
+                    .check_configuration
+                    .get_mut("app")
+                    .unwrap()
+                    .checks
+                    .get_mut("backend")
+                    .unwrap()
+                    .command = "true # skip".into();
+            }))
+            .contains("changes or removes the check backend in app")
+        );
+        assert!(
+            why(next(|proposal| {
+                proposal
+                    .check_configuration
+                    .get_mut("app")
+                    .unwrap()
+                    .selected
+                    .clear();
+            }))
+            .contains("takes backend out of the selected checks")
+        );
+        assert!(
+            why(next(|proposal| {
+                proposal.check_configuration.remove("app");
+            }))
+            .contains("removes app's checks")
+        );
+        let first = Application {
+            revision: 1,
+            ..baseline()
+        };
+        assert!(
+            user_approval_needed(&Application::default(), &first)
+                .unwrap()
+                .contains("first baseline")
+        );
+    }
     pub fn baseline() -> Application {
         let item = Contract {
             scope: "S01".into(),
@@ -662,6 +823,19 @@ pub mod tests {
             ..Default::default()
         }
     }
+    #[test]
+    fn reviewed_order_errors_identify_the_unknown_item() {
+        let mut application = baseline();
+        application.confirmed_revision = Some(application.revision);
+        application.approved_revision = Some(application.revision);
+        let error = application
+            .ready("opencode-response-test", &State::default())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("opencode-response-test"), "{error}");
+        assert!(error.contains("accepted application baseline"), "{error}");
+    }
+
     #[test]
     fn the_outline_keeps_ids_and_titles_without_contract_bodies() {
         let outline = outline(&baseline());

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The devws menu's ◆ OpenCode screen (opencode_menu.sh): its lines turn the
+# The devws menu's ◆ OpenCode screen (agents/30-opencode/menu.sh): its lines turn the
 # switches on and off, pick the groups' models and register the account,
 # through devagentics opencode and register_agent.sh.
 
@@ -50,7 +50,7 @@ export DEVWS_PICKER="$TEST_ROOT/picker"
 # <answers…>: the screen, answered so, then left.
 screen() {
   printf '%s\n' "$@" > "$TEST_ROOT/answers"
-  "$SCRIPTS/opencode_menu.sh" </dev/null >/dev/null 2>&1
+  "$SCRIPTS/agents/30-opencode/menu.sh" </dev/null >/dev/null 2>&1
 }
 
 test_the_switches_turn_on_and_off() {

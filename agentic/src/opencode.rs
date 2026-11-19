@@ -76,7 +76,7 @@ impl OpencodeSettings {
         match group {
             Group::Floor => Some(&self.floor),
             Group::Senior => Some(&self.senior),
-            // The leader runs the team; it stays on Claude or Codex.
+            // The leader runs the team; it never runs on opencode.
             Group::Cto => None,
         }
     }

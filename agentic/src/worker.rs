@@ -1,7 +1,7 @@
 //! Bounded worker startup selection. Retry state survives dispatcher restarts.
-use crate::agent_args::Kind;
 use crate::devws::Devws;
 use crate::opencode::OpencodeSettings;
+use crate::providers::Kind;
 use crate::roles::{Fallback, Role};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -123,15 +123,18 @@ impl LaunchState {
                     continue;
                 }
             };
-            if kind == Kind::Opencode {
-                if !opencode.allows(self.role.group) {
-                    self.failures.push(format!(
-                        "{}: opencode is switched off for the {} group",
-                        program_name(&candidate),
-                        self.role.group.name()
-                    ));
-                    continue;
-                }
+            let provider = kind.provider();
+            // A program on the user's own switches runs only where they allow.
+            if provider.own_switches() && !opencode.allows(self.role.group) {
+                self.failures.push(format!(
+                    "{}: opencode is switched off for the {} group",
+                    program_name(&candidate),
+                    self.role.group.name()
+                ));
+                continue;
+            }
+            if provider.prepaid() {
+                // A prepaid account takes no new agent once it is spent.
                 if let Some(credit) = devws.credit(&candidate.agent)?
                     && credit.left() <= 0.0
                 {
@@ -144,6 +147,17 @@ impl LaunchState {
                 }
             }
             let limits = devws.limits(&candidate.agent)?;
+            // Used up, it cannot run at all: no consent starts an agent there.
+            let used_up = [("week", limits.week), ("5-hour limit", limits.five_hour)]
+                .into_iter()
+                .find(|(_, used)| used.is_some_and(|used| used >= 100));
+            if let Some((window, _)) = used_up {
+                self.failures.push(format!(
+                    "{} has used 100% of its {window}: it cannot run until it resets",
+                    candidate.agent
+                ));
+                continue;
+            }
             let exhausted = [("week", limits.week), ("5-hour limit", limits.five_hour)]
                 .into_iter()
                 .find_map(|(window, used)| {
@@ -225,9 +239,11 @@ pub fn failure_from_record(record: &Value) -> Option<StartupFailure> {
         | "overloaded_error"
         | "server_overloaded"
         | "provider_unavailable" => FailureScope::Account,
-        "model_not_found" | "model_not_available" | "model_unavailable" | "unsupported_model" => {
-            FailureScope::Model
-        }
+        "model_not_found"
+        | "model_not_available"
+        | "model_unavailable"
+        | "unsupported_model"
+        | "adapter_unavailable" => FailureScope::Model,
         _ => FailureScope::Other,
     };
     // Provider codes are enough to explain a rejection without copying prompts or credentials.

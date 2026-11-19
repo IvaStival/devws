@@ -161,6 +161,7 @@ pub fn validate(task: &Task, id: &str) -> Result<Evidence> {
             crate::check_profiles::Container {
                 agent: &worker,
                 lane: lane.as_deref(),
+                targets: &[],
             },
             &name,
             &profile,

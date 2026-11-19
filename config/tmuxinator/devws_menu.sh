@@ -15,6 +15,8 @@
 #                   every tab's, each tagged "<Tab> · ", for fzf to search
 #   --header        the tab bar, the current tab marked
 #   --tab           the current tab
+#   --group <tab/group>   a group's own dialog (Agent › Accounts…); Esc goes
+#                   back to the menu
 #   --switch <next|prev|tab title>   changes tab; prints fzf actions to show it
 #   --switch-at <column>             changes to the tab clicked at that column
 #   --run <action>  runs an action; --function <action> names its function
@@ -23,7 +25,8 @@ set -u
 
 script="$HOME/.tmuxinator/devws_menu.sh"
 # tab|action|label|shortcut|function in workspace_actions.sh, with its
-# arguments[|when: see shown]
+# arguments[|when: see shown]. A "tab/group" row belongs to that group's
+# dialog, opened by its tab's menu_group row; a search finds it too.
 actions='workspace|github|⎇ Open or start a workspace||new_github_workspace
 workspace|agentic|◈ Open an agent team||open_agentic_team
 workspace|system|▤ System monitor||open_system_workspace
@@ -49,22 +52,24 @@ agent|switch-agent|⇄ Switch agent||switch_agent
 agent|restart-agent|↻ Restart agent||restart_agent
 agent|follow-mode|◎ Agent follow|C-b F|choose_follow_mode
 agent|initialize-agent|◇ Initialize agent||initialize_agent
-agent|register-agent|＋ Register agent||register_agent
-agent|agent-folder|⌂ Change agent folder||change_agent_folder
-agent|remove-agent|− Remove agent||remove_agent
 agent|team-roles|⚙ Team roles||team_roles
-agent|opencode|◆ OpenCode||opencode_screen
-agent|memory-search|⁘ Search memory||search_memory|memory
-agent|memory-recent|◷ Recent memory||recent_memory|memory
-agent|memory-web|↗ Open memory web UI||open_memory_web|memory
-agent|memory-doctor|✚ Memory doctor||memory_doctor|memory
+agent|agent-accounts|☰ Accounts…||menu_group agent/accounts
+agent|agent-programs|◆ Programs…||menu_group agent/programs
+agent|agent-memory|⁘ Memory…||menu_group agent/memory|memory
+agent/accounts|register-agent|＋ Register agent||register_agent
+agent/accounts|agent-folder|⌂ Change agent folder||change_agent_folder
+agent/accounts|remove-agent|− Remove agent||remove_agent
+agent/memory|memory-search|⁘ Search memory||search_memory|memory
+agent/memory|memory-recent|◷ Recent memory||recent_memory|memory
+agent/memory|memory-web|↗ Open memory web UI||open_memory_web|memory
+agent/memory|memory-doctor|✚ Memory doctor||memory_doctor|memory
 team|team-overview|◈ Team overview||open_team_view overview|agentic
 team|team-agents|◇ Team agents||open_team_view agents|agentic
 team|team-steps|✓ Team steps||open_team_view steps|agentic
 team|team-activity|≡ Team activity||open_team_view activity|agentic
 team|team-usage|◷ Team usage||open_team_view usage|agentic
 team|team-leader|↩ Return to leader||open_team_leader|agentic
-team|switch-leader|⇄ Switch leader model||switch_leader_model|agentic
+team|change-leader|⇄ Change leader…||change_leader|agentic
 git|commit|✓ Commit (agent)|C-b g|commit_with_agent
 git|commit-manual|✎ Commit manually||commit_by_hand
 git|push|↑ Push / PR|C-b G|push_branch
@@ -96,6 +101,14 @@ help|guide-git|✓ Git||open_guide git
 help|guide-app|▶ JungleForge, jobs and database||open_guide app
 help|guide-commands|$ Commands||open_guide commands
 help|guide-configuration|⚙ Configuration||open_guide configuration'
+# Each program's own screen (its module's menu_entry: ◆ OpenCode…), in the
+# Agent tab's Programs dialog.
+# shellcheck source=agents.sh
+. "$HOME/.tmuxinator/agents.sh"
+program_actions="$(while IFS= read -r kind; do agent_hook "$kind" menu_entry; done < <(agent_kinds) |
+  sed 's#^agent|#agent/programs|#')"
+[ -z "$program_actions" ] || actions+=$'\n'"$program_actions"
+unset program_actions
 
 session() {
   if [ -n "${TMUX_PANE:-}" ]; then
@@ -182,16 +195,26 @@ jungleforge_available() {
   [ "$jungleforge_state" = yes ]
 }
 
-# While nothing is typed, the tab; once something is, every tab's actions
-# tagged with theirs, which fzf then filters by what was typed.
+# The groups of a tab ("agent/accounts"…), in the order they first appear.
+groups_of() {
+  awk -F '|' -v tab="$1" 'index($1, tab "/") == 1 && !seen[$1]++ { print $1 }' <<<"$actions"
+}
+
+# While nothing is typed, the tab; once something is, every tab's actions,
+# its groups' too, tagged with theirs, which fzf then filters by what was
+# typed.
 items_for() {
-  local tab
+  local tab group
   if [ -z "$1" ]; then
     items "$(current_tab)"
     return
   fi
   for tab in "${tabs[@]}"; do
     items "$tab" "$(title "$tab") · "
+    while IFS= read -r group; do
+      [ -n "$group" ] || continue
+      items "$group" "$(title "$tab") › $(title "${group#*/}") · "
+    done < <(groups_of "$tab")
   done
 }
 
@@ -283,17 +306,62 @@ popup_run() {
 }
 
 # The menu in the shared picker look (picker.sh). Typing searches every tab.
-# "tab<TAB>action<TAB>label<TAB>shortcut" for every action shown, tab by tab:
+# "tab<TAB>action<TAB>label<TAB>shortcut" for every action shown, tab by tab,
+# then its groups' with "<TAB>Group" (devws-ui shows those only in a search):
 # all devws-ui's menu needs, at once (it calls nothing back while open).
 menu_rows() {
-  local tab row_tab action label shortcut function when
+  local tab group row_tab action label shortcut function when
   for tab in "${tabs[@]}"; do
     while IFS='|' read -r row_tab action label shortcut function when; do
       [ "$row_tab" = "$tab" ] || continue
       shown "$when" || continue
       printf '%s\t%s\t%s\t%s\n' "$tab" "$action" "$label" "$shortcut"
     done <<<"$actions"
+    while IFS= read -r group; do
+      [ -n "$group" ] || continue
+      while IFS='|' read -r row_tab action label shortcut function when; do
+        [ "$row_tab" = "$group" ] || continue
+        shown "$when" || continue
+        printf '%s\t%s\t%s\t%s\t%s\n' "$tab" "$action" "$label" "$shortcut" "$(title "${group#*/}")"
+      done <<<"$actions"
+    done < <(groups_of "$tab")
   done
+}
+
+# devws-ui's rows for a group's dialog: its shown actions, in one tab named
+# after the group.
+group_rows() {
+  local row_tab action label shortcut function when
+  while IFS='|' read -r row_tab action label shortcut function when; do
+    [ "$row_tab" = "$1" ] || continue
+    shown "$when" || continue
+    printf '%s\t%s\t%s\t%s\n' "$2" "$action" "$label" "$shortcut"
+  done <<<"$actions"
+}
+
+# A group's own dialog: its actions alone, the group's name as its title.
+# Esc goes back to the menu, on the tab the group is in.
+show_group() {
+  local group="$1" name selected ui="${DEVWS_UI:-$HOME/.cargo/bin/devws-ui}" status=0
+  name="$(title "${group#*/}")"
+  [ -n "$(items "$group")" ] || { printf 'devws menu: unknown group: %s\n' "$group" >&2; return 2; }
+  if [ -x "$ui" ]; then
+    selected="$(group_rows "$group" "$name" | "$ui" menu --tab "$name")" || status=$?
+    selected="${selected#*$'\t'}"
+    [ "$status" -eq 0 ] && [ -n "$selected" ] || { show_menu; return; }
+  else
+    selected="$(
+      items "$group" |
+        "$HOME/.tmuxinator/picker.sh" "$name" "$(title "${group%%/*}") › $name" \
+          --height=100% --no-sort --delimiter=$'\t' --with-nth=2 \
+          --footer=$'\033[2mEnter run · Esc back to the menu\033[0m' \
+          --gutter=' ' --info=hidden --border=none --margin=0 --padding=0 \
+          --bind='left-click:accept'
+    )" || { show_menu; return; }
+    [ -n "$selected" ] || { show_menu; return; }
+    selected="${selected%%$'\t'*}"
+  fi
+  run_action "$selected"
 }
 
 # devws-ui draws the menu when rust_tools.sh installed it (DEVWS_UI names
@@ -356,6 +424,7 @@ case "${1:-}" in
   --switch) switch_tab "${2:-}" ;;
   --switch-at) switch_at "${2:-}" ;;
   --run) run_action "${2:-}" ;;
+  --group) show_group "${2:-}" ;;
   --function) function_for "${2:-}" ;;
   --popup) open_popup "${2:-}" ;;
   '') show_menu ;;

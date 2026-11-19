@@ -7,7 +7,7 @@ use crate::board_view::{self, Navigation, ScreenMap, View};
 use crate::devws::Devws;
 use crate::home::Home;
 use crate::leader;
-use crate::roles::Roles;
+use crate::roles::{Group, Roles};
 use crate::task::Task;
 use crate::watch::{self, Dispatcher};
 use anyhow::Result;
@@ -181,6 +181,14 @@ enum Action {
     },
     /// Turn this account on or off for the task.
     ToggleAccount(String),
+    /// An account's switch for one worker group: `(group, account)`.
+    ToggleGroupAccount(Group, String),
+    ToggleOpenCode(String),
+    /// Open the model picker of a group's agents on an account.
+    ChooseModel(Group, String),
+    /// The model picked for a group's agents on an account, for this task;
+    /// None: the default again.
+    SetModel(Group, String, Option<String>),
     /// What the user wrote to the leader in a dialog, about a step or not.
     TellLeader {
         about: crate::leader::About,
@@ -188,15 +196,168 @@ enum Action {
     },
 }
 
+/// The list a group's model on an account is picked from, under its row: the
+/// default, the models known for the account's program (for opencode, what
+/// `opencode models` lists), then one typed by hand.
+#[derive(Debug, PartialEq)]
+struct ModelPicker {
+    group: Group,
+    account: String,
+    /// What the default is: each role's own model, or the home-wide OpenCode one.
+    default: String,
+    models: Vec<String>,
+    /// The one picked for this task; None: the default.
+    current: Option<String>,
+    index: usize,
+    /// The model being typed, after "Type a model…".
+    typing: Option<String>,
+    /// Why the list may be short: listing the account's models failed.
+    note: Option<String>,
+}
+
+/// The lines above the choices in the picker.
+const PICKER_HEADER: u16 = 3;
+
+impl ModelPicker {
+    fn new(
+        group: Group,
+        account: &str,
+        default: String,
+        models: Vec<String>,
+        current: Option<String>,
+    ) -> Self {
+        // On the current choice: the default, a listed model, or the typed one.
+        let index = match &current {
+            None => 0,
+            Some(model) => models
+                .iter()
+                .position(|listed| listed == model)
+                .map_or(models.len() + 1, |position| position + 1),
+        };
+        Self {
+            group,
+            account: account.to_string(),
+            default,
+            models,
+            current,
+            index,
+            typing: None,
+            note: None,
+        }
+    }
+
+    /// The default, the models, then "Type a model…".
+    fn choices(&self) -> usize {
+        self.models.len() + 2
+    }
+
+    fn is_typing_choice(&self) -> bool {
+        self.index == self.choices() - 1
+    }
+
+    /// A key while the picker is open: the action, or None to keep it open.
+    fn key(&mut self, code: KeyCode) -> Option<Action> {
+        if let Some(text) = self.typing.as_mut() {
+            match code {
+                KeyCode::Char(character) => text.push(character),
+                KeyCode::Backspace => {
+                    text.pop();
+                }
+                KeyCode::Esc => self.typing = None,
+                KeyCode::Enter if !text.trim().is_empty() => {
+                    let model = text.trim().to_string();
+                    return Some(self.set(Some(model)));
+                }
+                _ => {}
+            }
+            return None;
+        }
+        match code {
+            KeyCode::Char('k') | KeyCode::Up => self.index = self.index.saturating_sub(1),
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.index = (self.index + 1).min(self.choices() - 1)
+            }
+            KeyCode::Enter if self.is_typing_choice() => {
+                self.typing = Some(self.current.clone().unwrap_or_default());
+            }
+            KeyCode::Enter => {
+                let model = self
+                    .index
+                    .checked_sub(1)
+                    .map(|index| self.models[index].clone());
+                return Some(self.set(model));
+            }
+            KeyCode::Esc | KeyCode::Char('q') => return Some(Action::None),
+            _ => {}
+        }
+        None
+    }
+
+    fn set(&self, model: Option<String>) -> Action {
+        Action::SetModel(self.group, self.account.clone(), model)
+    }
+
+    fn content(&self) -> String {
+        let mut text = format!(
+            "The model {} agents start on {} with, for this task.",
+            self.group.name(),
+            self.account
+        );
+        if let Some(note) = &self.note {
+            text.push_str(&format!(" {note}"));
+        }
+        text.push_str(if self.typing.is_some() {
+            "\nType it below · Enter: choose · Esc: back to the list\n"
+        } else {
+            "\nj/k: move · Enter: choose · Esc: cancel\n"
+        });
+        let default = format!("Default: {}", self.default);
+        let typed = match self.current.as_ref() {
+            Some(model) if !self.models.contains(model) => format!("Type a model… ({model})"),
+            _ => "Type a model…".to_string(),
+        };
+        let choices = std::iter::once(default.as_str())
+            .chain(self.models.iter().map(String::as_str))
+            .chain([typed.as_str()]);
+        for (index, choice) in choices.enumerate() {
+            let mark = if index == self.index { "▸" } else { " " };
+            let is_current = match &self.current {
+                None => index == 0,
+                Some(model) => match index
+                    .checked_sub(1)
+                    .and_then(|index| self.models.get(index))
+                {
+                    Some(listed) => listed == model,
+                    None => index > 0 && !self.models.contains(model),
+                },
+            };
+            let now = if is_current { "  ✓ now" } else { "" };
+            text.push_str(&format!("\n{mark} {choice}{now}"));
+        }
+        text
+    }
+}
+
+/// The group and account of a SENIOR/FLOOR ACCOUNTS row (`group:floor:codex`).
+fn group_row(id: &str) -> Option<(Group, &str)> {
+    let (group, account) = id.strip_prefix("group:")?.split_once(':')?;
+    crate::accounts::WORKER_GROUPS
+        .into_iter()
+        .find(|worker_group| worker_group.name() == group)
+        .map(|group| (group, account))
+}
+
 struct Interaction {
     nav: Navigation,
     peeking: bool,
     help: bool,
+    /// The open model picker, over everything else.
+    picker: Option<ModelPicker>,
     /// What the last drawn screen had where, for clicks.
     map: ScreenMap,
 }
 
-const HELP: &str = "Board navigation\n\nTab / Shift-Tab: next / previous view\nj/k or arrows: select row; scroll details\nPgUp/PgDn: move a page\ng/G or Home/End: first / last\nEnter: full details (JSON laid out, lists one item per line); a NEEDS YOU row you opened turns grey, one you answered shows ✉\nIn the details of a NEEDS YOU row, a step or the leader: Enter, m, a click in its box or a paste starts a message to the leader (Enter sends it, nothing when empty; Esc cancels)\nSpace on an account: turn it on/off for this task\nClick: select a row; click it again for details\nClick a view's name: show that view\nClick outside details: close them\nEsc: close details or cancel peek\no: go to selected agent\nv: peek selected agent\n1–9: go to numbered agent\np then 1–9: peek numbered agent\nL: return to leader\nl: toggle Activity\nc: toggle completed steps or inactive role catalog\nr: refresh\nz: zoom\n?: help\nq: close details, or quit board (dispatcher stops)";
+const HELP: &str = "Board navigation\n\nTab / Shift-Tab: next / previous view\nj/k or arrows: select row; scroll details\nPgUp/PgDn: move a page\ng/G or Home/End: first / last\nEnter: full details (JSON laid out, lists one item per line); a NEEDS YOU row you opened turns grey, one you answered shows ✉\nIn the details of a NEEDS YOU row, a step or the leader: Enter, m, a click in its box or a paste starts a message to the leader (Enter sends it, nothing when empty; Esc cancels)\nSpace on an account: turn it on/off for this task (ACCOUNTS) or for a group (SENIOR/FLOOR ACCOUNTS)\nEnter on an account under SENIOR/FLOOR ACCOUNTS (opencode too): choose the model the group runs on it for this task, or type one\nClick: select a row; click it again for details\nClick a view's name: show that view\nClick outside details: close them\nEsc: close details or cancel peek\no: go to selected agent\nv: peek selected agent\n1–9: go to numbered agent\np then 1–9: peek numbered agent\nL: return to leader\nl: toggle Activity\nc: toggle completed steps or inactive role catalog\nr: refresh\nz: zoom\n?: help\nq: close details, or quit board (dispatcher stops)";
 
 impl Interaction {
     /// One event from the terminal: a key, or the wheel, which moves `WHEEL`
@@ -294,6 +455,12 @@ impl Interaction {
 
     fn click(&mut self, column: u16, row: u16, entries: &[board_view::Entry]) {
         let position = ratatui::layout::Position::new(column, row);
+        if self.picker.is_some() {
+            if !self.map.dialog.is_some_and(|area| area.contains(position)) {
+                self.picker = None;
+            }
+            return;
+        }
         if self.map.input.is_some_and(|area| area.contains(position)) && self.takes_message(entries)
         {
             self.nav.compose.get_or_insert_with(String::new);
@@ -358,6 +525,35 @@ impl Interaction {
                 board_view::Message::None,
             ));
         }
+        if let Some(picker) = &self.picker {
+            let content = picker.content();
+            let typing = picker.typing.is_some();
+            let body = board_view::dialog_body(&content, width, height, typing).height;
+            // Scrolled so the chosen line stays in sight.
+            let scroll = (PICKER_HEADER + picker.index as u16 + 1).saturating_sub(body.max(1));
+            // It drops down under the row it is for.
+            let anchor = map
+                .rows
+                .iter()
+                .find(|(_, index)| *index == self.nav.index)
+                .map(|(row, _)| *row);
+            let message = match &picker.typing {
+                Some(text) => board_view::Message::Field {
+                    title: "Model",
+                    text,
+                },
+                None => board_view::Message::None,
+            };
+            let area = board_view::draw_dialog(
+                &mut screen,
+                &format!("{} model · {}", picker.group.label(), picker.account),
+                &content,
+                scroll,
+                anchor,
+                message,
+            );
+            map.dialog = Some(area);
+        }
         (screen, map)
     }
 
@@ -366,6 +562,7 @@ impl Interaction {
             nav: Navigation::new(view),
             peeking: false,
             help: false,
+            picker: None,
             map: ScreenMap::default(),
         }
     }
@@ -378,6 +575,13 @@ impl Interaction {
         page: u16,
     ) -> Action {
         self.nav.sent = false;
+        if let Some(picker) = self.picker.as_mut() {
+            let Some(action) = picker.key(code) else {
+                return Action::None;
+            };
+            self.picker = None;
+            return action;
+        }
         if let Some(text) = self.nav.compose.as_mut() {
             // Writing to the leader: every key is text, but these.
             match code {
@@ -436,6 +640,21 @@ impl Interaction {
                 self.nav.expanded = !self.nav.expanded;
                 self.nav.detail = false;
             }
+            KeyCode::Enter
+                if !self.help
+                    && !self.nav.detail
+                    && self.nav.selected.as_deref() == Some("opencode:floor") =>
+            {
+                return Action::ChooseModel(Group::Floor, board.opencode.account.clone());
+            }
+            KeyCode::Enter
+                if !self.help
+                    && !self.nav.detail
+                    && self.nav.selected.as_deref().and_then(group_row).is_some() =>
+            {
+                let (group, account) = self.nav.selected.as_deref().and_then(group_row).unwrap();
+                return Action::ChooseModel(group, account.to_string());
+            }
             KeyCode::Enter if !self.help && self.nav.selected.is_some() => {
                 self.nav.detail = true;
                 self.nav.detail_scroll = 0;
@@ -448,6 +667,17 @@ impl Interaction {
                     .and_then(|id| id.strip_prefix("account:"))
                 {
                     return Action::ToggleAccount(account.to_string());
+                }
+                if let Some((group, account)) = self.nav.selected.as_deref().and_then(group_row) {
+                    return Action::ToggleGroupAccount(group, account.to_string());
+                }
+                if let Some(setting) = self
+                    .nav
+                    .selected
+                    .as_deref()
+                    .and_then(|id| id.strip_prefix("opencode:"))
+                {
+                    return Action::ToggleOpenCode(setting.to_string());
                 }
                 self.nav.move_by(entries, page as isize);
             }
@@ -773,6 +1003,77 @@ fn screen_loop(
                             refreshed = Instant::now() - REFRESH;
                         })
                     }
+                    Action::ToggleGroupAccount(group, account) => {
+                        let on = !board.switches.iter().any(|switch| {
+                            switch.name == account
+                                && match group {
+                                    Group::Senior => switch.senior,
+                                    _ => switch.floor,
+                                }
+                        });
+                        crate::accounts::set_group_enabled(task, devws, &account, group, on).map(
+                            |()| {
+                                // Shown at once, as the global switch.
+                                if let Some(switch) = board
+                                    .switches
+                                    .iter_mut()
+                                    .find(|switch| switch.name == account)
+                                {
+                                    match group {
+                                        Group::Senior => switch.senior = on,
+                                        _ => switch.floor = on,
+                                    }
+                                }
+                                entries_dirty = true;
+                                loader.refresh();
+                                refreshed = Instant::now() - REFRESH;
+                            },
+                        )
+                    }
+                    Action::ChooseModel(group, account) => devws.agent_kind(&account).map(|kind| {
+                        ui.picker = Some(model_picker(&board, devws, group, &account, kind));
+                    }),
+                    Action::SetModel(group, account, model) => {
+                        crate::accounts::set_group_model(
+                            task,
+                            devws,
+                            &account,
+                            group,
+                            model.clone(),
+                        )
+                        .map(|()| {
+                            // Shown at once, as the switches.
+                            let models = board.group_models.entry(group).or_default();
+                            match model {
+                                Some(model) => {
+                                    models.insert(account, model.trim().to_string());
+                                }
+                                None => {
+                                    models.remove(&account);
+                                }
+                            }
+                            entries_dirty = true;
+                            loader.refresh();
+                            refreshed = Instant::now() - REFRESH;
+                        })
+                    }
+                    Action::ToggleOpenCode(setting) => {
+                        let home = Home::from_env()?;
+                        let mut settings = crate::opencode::OpencodeSettings::load(&home)?;
+                        match setting.as_str() {
+                            "global" => settings.enabled = !settings.enabled,
+                            // The senior switch stays in the devws menu: the
+                            // board offers OpenCode to the floor only.
+                            "floor" => settings.floor.enabled = !settings.floor.enabled,
+                            _ => anyhow::bail!("unknown OpenCode switch: {setting}"),
+                        }
+                        settings.save(&home)?;
+                        board.opencode = settings;
+                        entries_dirty = true;
+                        loader.refresh();
+                        refreshed = Instant::now() - REFRESH;
+                        Ok(())
+                    }
                 };
                 if let Err(error) = outcome {
                     local_problem = Some(format!("Board action failed: {error:#}"));
@@ -800,6 +1101,64 @@ fn screen_loop(
     result?;
     mouse_result?;
     Ok(())
+}
+
+/// The picker for `group`'s model on `account`: the models devws knows for
+/// its program; an opencode account's are what `opencode models` lists.
+fn model_picker(
+    board: &Board,
+    devws: &dyn Devws,
+    group: Group,
+    account: &str,
+    kind: crate::providers::Kind,
+) -> ModelPicker {
+    let known = || -> Vec<String> {
+        crate::roles::Setting::Model
+            .choices(kind)
+            .iter()
+            .map(|model| model.to_string())
+            .collect()
+    };
+    let current = board_view::group_model(board, group, account).map(str::to_string);
+    // "sonnet* (each role's own)": what Default starts the group's agents on.
+    let role_defaults = || -> String {
+        let defaults = board_view::default_models(board, group, account);
+        if defaults.is_empty() {
+            "each role's own model".into()
+        } else {
+            let models: Vec<_> = defaults.iter().map(|model| format!("{model}*")).collect();
+            format!("{} (each role's own)", models.join(", "))
+        }
+    };
+    let listed = |default: String| match devws.models(account) {
+        Ok(models) if !models.is_empty() => {
+            ModelPicker::new(group, account, default, models, current.clone())
+        }
+        Ok(_) => ModelPicker::new(group, account, default, known(), current.clone()),
+        Err(error) => {
+            let mut picker = ModelPicker::new(group, account, default, known(), current.clone());
+            picker.note = Some(format!("Listing its models failed: {error:#}."));
+            picker
+        }
+    };
+    let provider = kind.provider();
+    if !provider.lists_models() {
+        return ModelPicker::new(group, account, role_defaults(), known(), current);
+    }
+    // Its account lists its models; one on its own switches defaults to the
+    // devws menu's model.
+    if !provider.own_switches() {
+        return listed(role_defaults());
+    }
+    let default = match board
+        .opencode
+        .group(group)
+        .and_then(|settings| settings.model.as_deref())
+    {
+        Some(model) => format!("{model} (devws menu, every task)"),
+        None => "none set in the devws menu".into(),
+    };
+    listed(default)
 }
 
 /// The row the selection is on.
@@ -1009,6 +1368,163 @@ mod tests {
             "a click in the box starts writing"
         );
         assert!(ui.nav.detail, "and keeps the details open");
+    }
+
+    #[test]
+    fn an_antigravity_account_s_picker_offers_gemini_models_when_agy_lists_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (home, devws, task, _repo) = crate::board::tests::started(&dir);
+        let board = load(&task, &devws, &home, &mut UsageReader::new(Duration::ZERO)).unwrap();
+        let picker = model_picker(
+            &board,
+            &devws,
+            Group::Floor,
+            "gemini",
+            crate::providers::Kind::Antigravity,
+        );
+        let content = picker.content();
+        assert!(
+            content.contains("Default: each role's own model"),
+            "{content}"
+        );
+        assert!(content.contains("  gemini-3.8-flash-medium"), "{content}");
+        assert!(
+            devws.calls().contains(&"models gemini".to_string()),
+            "agy's own list is asked first"
+        );
+    }
+
+    #[test]
+    fn enter_on_a_group_account_row_picks_its_model_from_the_known_or_a_typed_one() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (home, devws, task, _repo) = crate::board::tests::started(&dir);
+        let board = load(&task, &devws, &home, &mut UsageReader::new(Duration::ZERO)).unwrap();
+        let row = |id: &str| board_view::Entry::text(id.into(), id.into(), String::new(), false);
+        let entries = vec![row("group:floor:codex"), row("opencode:floor")];
+        let mut ui = Interaction::new(View::Overview);
+        ui.nav.reconcile(&entries);
+        assert_eq!(
+            ui.key(KeyCode::Enter, &board, &entries, 10),
+            Action::ChooseModel(Group::Floor, "codex".into())
+        );
+        ui.key(KeyCode::Char('j'), &board, &entries, 10);
+        assert_eq!(
+            ui.key(KeyCode::Enter, &board, &entries, 10),
+            Action::ChooseModel(Group::Floor, board.opencode.account.clone())
+        );
+
+        let picker = model_picker(
+            &board,
+            &devws,
+            Group::Floor,
+            "codex",
+            crate::providers::Kind::Codex,
+        );
+        let content = picker.content();
+        assert!(
+            content.contains("▸ Default: each role's own model  ✓ now"),
+            "{content}"
+        );
+        assert!(
+            content.contains("  gpt-6-luna"),
+            "the known ones: {content}"
+        );
+        assert!(content.contains("  Type a model…"), "{content}");
+        ui.picker = Some(picker);
+        ui.key(KeyCode::Char('j'), &board, &entries, 10);
+        assert_eq!(
+            ui.key(KeyCode::Enter, &board, &entries, 10),
+            Action::SetModel(Group::Floor, "codex".into(), Some("gpt-6.1-sol".into()))
+        );
+        assert_eq!(ui.picker, None, "choosing closes it");
+
+        let mut picker = ModelPicker::new(
+            Group::Senior,
+            "claude",
+            "each role's own model".into(),
+            vec!["claude-opus-5-5".into()],
+            Some("claude-custom".into()),
+        );
+        assert!(
+            picker
+                .content()
+                .contains("▸ Type a model… (claude-custom)  ✓ now"),
+            "a typed one is the current: {}",
+            picker.content()
+        );
+        assert_eq!(picker.key(KeyCode::Enter), None, "it starts typing");
+        assert_eq!(picker.typing.as_deref(), Some("claude-custom"));
+        for _ in 0.."custom".len() {
+            picker.key(KeyCode::Backspace);
+        }
+        for character in "next".chars() {
+            picker.key(KeyCode::Char(character));
+        }
+        assert_eq!(
+            picker.key(KeyCode::Enter),
+            Some(Action::SetModel(
+                Group::Senior,
+                "claude".into(),
+                Some("claude-next".into())
+            ))
+        );
+        picker.typing = None;
+        picker.index = 0;
+        assert_eq!(
+            picker.key(KeyCode::Enter),
+            Some(Action::SetModel(Group::Senior, "claude".into(), None)),
+            "the default clears it"
+        );
+        assert_eq!(picker.key(KeyCode::Esc), Some(Action::None), "Esc cancels");
+
+        let mut board = board;
+        let opencode_default = |board: &Board| {
+            model_picker(
+                board,
+                &devws,
+                Group::Floor,
+                "opencode",
+                crate::providers::Kind::Opencode,
+            )
+            .content()
+        };
+        board.opencode.floor.model = None;
+        assert!(opencode_default(&board).contains("Default: none set in the devws menu"));
+        board.opencode.floor.model = Some("deepseek/deepseek-flash".into());
+        assert!(
+            opencode_default(&board)
+                .contains("Default: deepseek/deepseek-flash (devws menu, every task)")
+        );
+    }
+
+    #[test]
+    fn space_switches_an_account_for_the_selected_group() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (home, devws, task, _repo) = crate::board::tests::started(&dir);
+        let board = load(&task, &devws, &home, &mut UsageReader::new(Duration::ZERO)).unwrap();
+        let row = |id: &str| board_view::Entry::text(id.into(), id.into(), String::new(), false);
+        let entries = vec![
+            row("group:senior:codex"),
+            row("group:floor:claude"),
+            row("group:cto:claude"),
+        ];
+        let mut ui = Interaction::new(View::Overview);
+        ui.nav.reconcile(&entries);
+        assert_eq!(
+            ui.key(KeyCode::Char(' '), &board, &entries, 10),
+            Action::ToggleGroupAccount(Group::Senior, "codex".into())
+        );
+        ui.key(KeyCode::Char('j'), &board, &entries, 10);
+        assert_eq!(
+            ui.key(KeyCode::Char(' '), &board, &entries, 10),
+            Action::ToggleGroupAccount(Group::Floor, "claude".into())
+        );
+        ui.key(KeyCode::Char('j'), &board, &entries, 10);
+        assert_eq!(
+            ui.key(KeyCode::Char(' '), &board, &entries, 1),
+            Action::None,
+            "the leader has no group switch"
+        );
     }
 
     #[test]

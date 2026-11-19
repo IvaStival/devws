@@ -108,6 +108,7 @@ impl<'a> Dispatcher<'a> {
         self.keep_the_leader_waiting()?;
         if !state.paused {
             self.retry_spent_steps(crate::log::now())?;
+            self.remind_left_reviews(crate::log::now())?;
         }
         if !state.paused {
             match state.workflow {
@@ -207,6 +208,43 @@ impl<'a> Dispatcher<'a> {
                     Some(StepRetry::Waiting { .. }) => {}
                 }
             }
+            Ok(())
+        })
+    }
+
+    /// Steps that waited for the leader longer than `STALE_REVIEW_SECS` (or
+    /// since an unknown time) look like open problems on the board: the
+    /// leader hears them in one message, each once per wait, and settles
+    /// them.
+    pub(crate) fn remind_left_reviews(&self, now: u64) -> Result<()> {
+        self.task.transaction(|tx| {
+            let left: Vec<(String, u64)> = tx
+                .state
+                .steps
+                .iter()
+                .filter(|step| step.status.waits_for_leader())
+                .map(|step| (step.id.clone(), step.review_since.unwrap_or(0)))
+                .filter(|(_, since)| now.saturating_sub(*since) > crate::board::STALE_REVIEW_SECS)
+                .filter(|(id, since)| tx.state.reminded_reviews.get(id) != Some(since))
+                .collect();
+            if left.is_empty() {
+                return Ok(());
+            }
+            let ids: Vec<&str> = left.iter().map(|(id, _)| id.as_str()).collect();
+            tx.state.say(
+                LEADER,
+                format!(
+                    "These steps have been waiting for you for a while, and the user sees them as open problems: {}. Settle each now: accept_step what you keep, reject_step what must be done again, close_step a read-only step whose report you used or that nothing needs any more. A blocked step you cannot settle: say what it waits for.",
+                    ids.join(", ")
+                ),
+            );
+            tx.log(
+                Kind::Review,
+                Some(LEADER),
+                None,
+                &format!("reminded of steps left waiting: {}", ids.join(", ")),
+            );
+            tx.state.reminded_reviews.extend(left);
             Ok(())
         })
     }
@@ -323,8 +361,27 @@ impl<'a> Dispatcher<'a> {
         })
     }
 
-    /// The panel went: the leader is told once.
+    /// The panel went: a worker its account refused before it did anything
+    /// starts again on its next account; any other, the leader is told once.
     fn lose(&self, agent: &Agent) -> Result<()> {
+        if self
+            .task
+            .state()?
+            .restart_on_next_account
+            .contains(&agent.id)
+        {
+            let team = Team {
+                task: self.task,
+                home: self.home,
+                devws: self.devws,
+            };
+            if team.restart_on_next_account(&agent.id)? {
+                return Ok(());
+            }
+        }
+        let error = crate::worker_tools::last_error(self.task, &agent.id)
+            .map(|error| format!(" Its last turn failed: {error}"))
+            .unwrap_or_default();
         self.task.transaction(|tx| {
             let Some(lost) = tx
                 .state
@@ -346,11 +403,16 @@ impl<'a> Dispatcher<'a> {
             tx.state.say(
                 LEADER,
                 format!(
-                    "{}'s panel is gone.{order} `devagentics task resume` starts it again.",
+                    "{}'s panel is gone.{error}{order} `devagentics task resume` starts it again.",
                     agent.id
                 ),
             );
-            tx.log(Kind::Lost, Some(&agent.id), None, "its panel is gone");
+            tx.log(
+                Kind::Lost,
+                Some(&agent.id),
+                None,
+                &format!("its panel is gone.{error}"),
+            );
             Ok(())
         })
     }
@@ -489,9 +551,9 @@ pub fn format_line(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_args::Kind as Program;
     use crate::devws::fake::FakeDevws;
     use crate::home::Home;
+    use crate::providers::Kind as Program;
     use crate::start::start_task;
     use crate::team::Team;
     use tempfile::TempDir;
@@ -601,6 +663,8 @@ mod tests {
         f.task
             .transaction(|tx| {
                 tx.state.orders.push(crate::state::Order {
+                    read: Vec::new(),
+                    targets: Vec::new(),
                     id: "original".into(),
                     step: "s1".into(),
                     agent: agent.id.clone(),
@@ -816,6 +880,8 @@ mod tests {
             .transaction(|tx| {
                 tx.state.agents[0].ready = true;
                 tx.state.orders.push(crate::state::Order {
+                    read: Vec::new(),
+                    targets: Vec::new(),
                     id: "o1".into(),
                     step: "s1".into(),
                     agent: agent.id.clone(),
@@ -1025,6 +1091,83 @@ mod tests {
             .unwrap();
     }
 
+    fn waiting_step(f: &Fixture, id: &str, since: Option<u64>) {
+        f.task
+            .transaction(|tx| {
+                tx.state.steps.push(crate::state::Step {
+                    id: id.into(),
+                    title: "Preflight".into(),
+                    status: crate::state::StepStatus::Reported,
+                    attempts: 1,
+                    spec: None,
+                    review_since: since,
+                });
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn a_review_the_leader_left_is_reminded_once_per_wait() {
+        let f = fixture();
+        let now = crate::log::now();
+        let left = Some(now - crate::board::STALE_REVIEW_SECS - 1);
+        waiting_step(&f, "old-plan", left);
+        waiting_step(&f, "fresh-plan", Some(now));
+        waiting_step(&f, "unknown-since", None);
+        // Busy, so its messages stay queued where the test counts them.
+        f.devws.set_state("%1", PaneState::Working);
+        let mut dispatcher = f.dispatcher();
+
+        f.task
+            .transaction(|tx| {
+                tx.state.paused = true;
+                Ok(())
+            })
+            .unwrap();
+        dispatcher.tick().unwrap();
+        assert_eq!(
+            leader_heard(&f, "waiting for you"),
+            0,
+            "reminded while paused"
+        );
+        f.task
+            .transaction(|tx| {
+                tx.state.paused = false;
+                Ok(())
+            })
+            .unwrap();
+
+        dispatcher.tick().unwrap();
+        assert_eq!(leader_heard(&f, "waiting for you"), 1);
+        assert_eq!(leader_heard(&f, "old-plan"), 1);
+        assert_eq!(leader_heard(&f, "unknown-since"), 1);
+        assert_eq!(
+            leader_heard(&f, "fresh-plan"),
+            0,
+            "a fresh review is not left"
+        );
+        assert_eq!(
+            leader_heard(&f, "close_step"),
+            1,
+            "it says how to settle them"
+        );
+
+        dispatcher.tick().unwrap();
+        assert_eq!(leader_heard(&f, "waiting for you"), 1, "reminded twice");
+
+        // Ordered again and reported again: a new wait, reminded again.
+        f.task
+            .transaction(|tx| {
+                tx.state.step_mut("old-plan").unwrap().review_since = Some(now - 7200);
+                Ok(())
+            })
+            .unwrap();
+        dispatcher.tick().unwrap();
+        assert_eq!(leader_heard(&f, "old-plan"), 2);
+        assert_eq!(leader_heard(&f, "unknown-since"), 1);
+    }
+
     fn leader_heard(f: &Fixture, text: &str) -> usize {
         f.task
             .state()
@@ -1118,6 +1261,8 @@ mod tests {
         f.task
             .transaction(|tx| {
                 tx.state.orders.push(crate::state::Order {
+                    read: Vec::new(),
+                    targets: Vec::new(),
                     id: "o1".into(),
                     step: "s1".into(),
                     agent: agent.id.clone(),
@@ -1151,6 +1296,38 @@ mod tests {
         assert!(f.task.state().unwrap().agents[0].lost);
     }
 
+    // A worker whose program failed (a used-up account) closes its panel at
+    // once: the leader hears why, not only that the panel went.
+    #[test]
+    fn a_lost_panel_says_the_error_its_last_turn_ended_with() {
+        let f = fixture();
+        let agent = f.spawn("executor");
+        let control = f.task.dir().join("workers").join(&agent.id).join("control");
+        std::fs::create_dir_all(&control).unwrap();
+        std::fs::write(
+            control.join("turns.jsonl"),
+            concat!(
+                r#"{"type":"system","subtype":"init"}"#,
+                "\n",
+                r#"{"type":"result","is_error":true,"api_error":"usage_limit_reached","result":"You've hit your weekly limit · resets Nov 22, 2am"}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        f.devws.set_state(&agent.pane, PaneState::Gone);
+
+        f.dispatcher().tick().unwrap();
+        let sent = f.sent_to("%1");
+        assert!(
+            sent[0].contains("executor-1's panel is gone")
+                && sent[0].contains("You've hit your weekly limit"),
+            "{}",
+            sent[0]
+        );
+        let log = f.task.log_lines().unwrap().join("\n");
+        assert!(log.contains("You've hit your weekly limit"), "{log}");
+    }
+
     #[test]
     fn an_agent_that_ends_its_turn_without_reporting_is_told_to_the_leader_once() {
         let f = fixture();
@@ -1159,6 +1336,8 @@ mod tests {
             .transaction(|tx| {
                 tx.state.agents[0].ready = true;
                 tx.state.orders.push(crate::state::Order {
+                    read: Vec::new(),
+                    targets: Vec::new(),
                     id: "o1".into(),
                     step: "s1".into(),
                     agent: agent.id.clone(),
@@ -1205,6 +1384,8 @@ mod tests {
             .transaction(|tx| {
                 tx.state.agents[0].ready = true;
                 tx.state.orders.push(crate::state::Order {
+                    read: Vec::new(),
+                    targets: Vec::new(),
                     id: "o1".into(),
                     step: "s1".into(),
                     agent: agent.id.clone(),

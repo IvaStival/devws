@@ -4,8 +4,8 @@
 # look at opencode.ai) and what the account's responses cost since counts
 # against it.
 #
-#   opencode_credit.sh set <agent> <US$>   the balance now
-#   opencode_credit.sh show <agent>        "<balance> <used since>", US$;
+#   credit.sh set <agent> <US$>   the balance now
+#   credit.sh show <agent>        "<balance> <used since>", US$;
 #                                          nothing when no balance was entered
 #
 # Kept in ~/.devws-state/opencode-credit.tsv: "<agent> <balance> <epoch>".
@@ -14,7 +14,8 @@
 set -u
 export LC_ALL=C
 
-scripts_dir="$(cd "$(dirname "$0")" && pwd)"
+module_dir="$(cd "$(dirname "$0")" && pwd)"
+scripts_dir="$(cd "$module_dir/../.." && pwd)"
 env_file="${DEVWS_ENV_FILE:-$scripts_dir/.env}"
 # shellcheck source=/dev/null
 [ -r "$env_file" ] && . "$env_file"
@@ -24,7 +25,7 @@ credit_file="$HOME/.devws-state/opencode-credit.tsv"
 tab="$(printf '\t')"
 
 fail() {
-  printf 'opencode_credit.sh: %s\n' "$*" >&2
+  printf 'credit.sh: %s\n' "$*" >&2
   exit "${code:-1}"
 }
 
@@ -47,11 +48,11 @@ show() {
   [ -f "$credit_file" ] || return 0
   IFS="$tab" read -r balance since < <(awk -F "$tab" -v OFS="$tab" -v agent="$agent" '$1 == agent { print $2, $3 }' "$credit_file")
   [ -n "${balance:-}" ] || return 0
-  printf '%.2f %s\n' "$balance" "$("$scripts_dir/opencode_usage.sh" spent "$db" "$since")"
+  printf '%.2f %s\n' "$balance" "$("$module_dir/usage.sh" spent "$db" "$since")"
 }
 
 case "${1:-}" in
-  set) [ "$#" -eq 3 ] || code=2 fail "usage: opencode_credit.sh set <agent> <US\$>"; set_balance "$2" "$3" ;;
-  show) [ "$#" -eq 2 ] || code=2 fail "usage: opencode_credit.sh show <agent>"; show "$2" ;;
-  *) code=2 fail "usage: opencode_credit.sh set <agent> <US\$> | show <agent>" ;;
+  set) [ "$#" -eq 3 ] || code=2 fail "usage: credit.sh set <agent> <US\$>"; set_balance "$2" "$3" ;;
+  show) [ "$#" -eq 2 ] || code=2 fail "usage: credit.sh show <agent>"; show "$2" ;;
+  *) code=2 fail "usage: credit.sh set <agent> <US\$> | show <agent>" ;;
 esac

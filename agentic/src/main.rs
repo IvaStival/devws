@@ -20,12 +20,16 @@ mod lanes;
 mod leader;
 mod log;
 mod mcp;
+mod memory;
 mod milestones;
+mod notes;
 mod opencode;
+mod opencode_worker;
 mod orders;
 mod panel_view;
 mod performance;
 mod plans;
+mod providers;
 mod prs;
 mod questions;
 mod recovery;
@@ -44,7 +48,6 @@ mod worker;
 mod worker_tools;
 mod workflow;
 
-use agent_args::Kind;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use devws::{CommandDevws, Devws};
@@ -281,7 +284,8 @@ enum TaskAction {
     /// folder, never in the project
     Graph { task: String, switch: Switch },
     /// You allow a step more attempts than the task's limit (orders and
-    /// reviews asking for changes): `limit` in all. The leader cannot.
+    /// reviews asking for changes): `limit` in all. The leader can only
+    /// record your yes from its conversation (allow_attempts).
     Attempts {
         task: String,
         step: String,
@@ -394,6 +398,18 @@ enum LeaderAction {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Move the leader to an account you pick, any that can lead, once its
+    /// turn is over; it starts there from then on
+    Use {
+        task: String,
+        /// The devws account (`leader choices` lists them)
+        agent: String,
+        /// Why, for the log and the new leader
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// The accounts that can lead: name, program and how each stands, tab-separated
+    Choices { task: String },
 }
 
 #[derive(Subcommand)]
@@ -425,14 +441,14 @@ fn this_pane() -> Result<String> {
     std::env::var("TMUX_PANE").context("this is run by a team agent, in its pane (no TMUX_PANE)")
 }
 
-/// Claude or Codex: the program of the role's agent (`claude_work` is a
+/// Claude, Codex, opencode or Antigravity: the program of the role's agent (`claude_work` is a
 /// Claude account), which decides the values its settings take.
 fn role_kind(
     home: &Home,
     repo: Option<&std::path::Path>,
     name: &str,
     devws: &dyn devws::Devws,
-) -> Result<agent_args::Kind> {
+) -> Result<providers::Kind> {
     let roles = roles::Roles::load(home, repo)?;
     let role = roles
         .get(name)
@@ -795,7 +811,7 @@ fn run() -> Result<()> {
                         Some(model.to_string()).filter(|model| !model.is_empty());
                 }
                 OpencodeAction::Account { name } => {
-                    devws.agent_kind(&name).ok().filter(|kind| *kind == Kind::Opencode).with_context(|| {
+                    devws.agent_kind(&name).ok().filter(|kind| kind.provider().own_switches()).with_context(|| {
                         format!("{name} is not a devws opencode agent: register it in the devws menu")
                     })?;
                     settings.account = name;
@@ -813,6 +829,24 @@ fn run() -> Result<()> {
             "{}",
             leader::request_switch(&home, &open(&task)?, &devws, reason.as_deref())?
         ),
+        Command::Leader {
+            action:
+                LeaderAction::Use {
+                    task,
+                    agent,
+                    reason,
+                },
+        } => println!(
+            "{}",
+            leader::request_lead(&home, &open(&task)?, &devws, &agent, reason.as_deref())?
+        ),
+        Command::Leader {
+            action: LeaderAction::Choices { task },
+        } => {
+            for line in leader::choices(&open(&task)?, &devws)? {
+                println!("{line}");
+            }
+        }
         Command::Plan {
             action: PlanAction::Write { task },
         } => {
@@ -964,10 +998,17 @@ fn run() -> Result<()> {
         } => {
             let pane = this_pane()?;
             let task = task_of_this_pane(&home)?;
-            let outcome = match outcome {
-                ReportOutcome::Done => orders::Outcome::Done,
-                ReportOutcome::Blocked => orders::Outcome::Blocked,
+            let (outcome, word) = match outcome {
+                ReportOutcome::Done => (orders::Outcome::Done, "done"),
+                ReportOutcome::Blocked => (orders::Outcome::Blocked, "blocked"),
             };
+            let state = task.state()?;
+            let reported = state.orders.iter().find(|each| each.id == order).cloned();
+            let author = state
+                .agents
+                .iter()
+                .find(|agent| agent.pane == pane)
+                .map(|agent| agent.id.clone());
             println!(
                 "{}",
                 orders::report(
@@ -979,6 +1020,10 @@ fn run() -> Result<()> {
                     orders::check_timeout()
                 )?
             );
+            // Every report is kept for the agents after it.
+            if let (Some(reported), Some(author)) = (reported, author) {
+                notes::record_report(&task, &devws, &author, &reported, word, &summary);
+            }
         }
         Command::Mcp { task } => {
             let task = open(&task)?;

@@ -24,7 +24,7 @@ quick_suites="test_clipboard test_picker test_recent test_shared_files test_work
 shell_scripts=(
   "$ROOT/install.sh" "$ROOT/delete.sh"
   "$ROOT"/scripts/*.sh "$ROOT/shell/render_mermaid_preview.sh"
-  "$ROOT"/config/tmux/*.sh "$ROOT"/config/tmuxinator/*.sh
+  "$ROOT"/config/tmux/*.sh "$ROOT"/config/tmuxinator/*.sh "$ROOT"/config/tmuxinator/agents/*/*.sh
 )
 
 for file in "${shell_scripts[@]}"; do

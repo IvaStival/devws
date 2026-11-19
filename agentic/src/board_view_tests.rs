@@ -26,6 +26,9 @@ pub(crate) fn board() -> Board {
             credit: None,
         }],
         switches: vec![],
+        opencode: Default::default(),
+        group_models: Default::default(),
+        default_models: Default::default(),
         roles: vec![
             RoleRow {
                 name: "executor".into(),
@@ -1275,6 +1278,9 @@ fn the_accounts_card_sits_under_the_leader_with_a_switch_for_each() {
             five_hour: Some(19),
             week: Some(41),
             leader_on: true,
+            senior: true,
+            floor: true,
+            kind: crate::providers::Kind::Claude,
         },
         AccountSwitch {
             name: "claude".into(),
@@ -1282,6 +1288,9 @@ fn the_accounts_card_sits_under_the_leader_with_a_switch_for_each() {
             five_hour: Some(40),
             week: Some(22),
             leader_on: false,
+            senior: true,
+            floor: false,
+            kind: crate::providers::Kind::Claude,
         },
         AccountSwitch {
             name: "claude_work".into(),
@@ -1289,6 +1298,9 @@ fn the_accounts_card_sits_under_the_leader_with_a_switch_for_each() {
             five_hour: None,
             week: None,
             leader_on: true,
+            senior: true,
+            floor: true,
+            kind: crate::providers::Kind::Claude,
         },
     ];
     let rows = entries(&board, View::Overview, false, &[], None);
@@ -1332,6 +1344,156 @@ fn the_accounts_card_sits_under_the_leader_with_a_switch_for_each() {
         leader_detail(&board).contains("codex on · claude off · claude_work off"),
         "{}",
         leader_detail(&board)
+    );
+}
+
+#[test]
+fn each_worker_group_has_its_own_account_switches_and_opencode_is_floor_only() {
+    use crate::board::AccountSwitch;
+    let mut board = board();
+    let switch =
+        |name: &str, enabled: bool, senior: bool, floor: bool, is_opencode: bool| AccountSwitch {
+            name: name.into(),
+            enabled,
+            five_hour: None,
+            week: None,
+            leader_on: false,
+            senior,
+            floor,
+            kind: if is_opencode {
+                crate::providers::Kind::Opencode
+            } else {
+                crate::providers::Kind::Claude
+            },
+        };
+    board.switches = vec![
+        switch("codex", true, true, false, false),
+        switch("claude", false, true, true, false),
+        switch("zen", true, true, true, true),
+    ];
+    board.opencode.enabled = true;
+    board.opencode.floor.enabled = true;
+    board.opencode.floor.model = Some("opencode/deepseek-v4.1-flash".into());
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let place = |id: &str| rows.iter().position(|entry| entry.id == id);
+    let label = |id: &str| {
+        rows[place(id).unwrap_or_else(|| panic!("no {id}"))]
+            .label
+            .clone()
+    };
+
+    assert!(place("heading:ACCOUNTS") < place("opencode:global"));
+    assert!(place("opencode:global") < place("heading:SENIOR ACCOUNTS"));
+    assert!(place("heading:SENIOR ACCOUNTS") < place("group:senior:codex"));
+    assert!(place("group:senior:codex") < place("heading:FLOOR ACCOUNTS"));
+    assert!(place("heading:FLOOR ACCOUNTS") < place("group:floor:codex"));
+    assert!(place("group:floor:codex") < place("opencode:floor"));
+    assert_eq!(
+        place("opencode:senior"),
+        None,
+        "OpenCode is offered to the floor only"
+    );
+    assert_eq!(
+        place("group:senior:zen"),
+        None,
+        "an opencode account is not a senior's"
+    );
+    assert_eq!(
+        place("group:floor:zen"),
+        None,
+        "the OpenCode floor switch stands for it"
+    );
+    assert!(place("account:zen").is_some(), "its global switch stays");
+
+    assert!(label("group:senior:codex").starts_with("[━━● on ]  codex"));
+    assert!(label("group:floor:codex").starts_with("[○━━ off]  codex"));
+    assert!(
+        label("group:senior:claude").contains("held off globally"),
+        "{}",
+        label("group:senior:claude")
+    );
+    assert!(label("group:senior:claude").starts_with("[○━━ off]"));
+    assert!(
+        label("opencode:floor").starts_with("[━━● on ]  opencode")
+            && label("opencode:floor").contains("opencode/deepseek-v4.1-flash"),
+        "{}",
+        label("opencode:floor")
+    );
+    board.opencode.enabled = false;
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let floor = rows
+        .iter()
+        .find(|entry| entry.id == "opencode:floor")
+        .unwrap();
+    assert!(floor.label.starts_with("[○━━ off]") && floor.label.contains("held off globally"));
+}
+
+#[test]
+fn a_group_account_row_shows_the_model_picked_for_the_task() {
+    use crate::board::AccountSwitch;
+    let mut board = board();
+    board.switches = vec![AccountSwitch {
+        name: "codex".into(),
+        enabled: true,
+        five_hour: None,
+        week: None,
+        leader_on: false,
+        senior: true,
+        floor: true,
+        kind: crate::providers::Kind::Codex,
+    }];
+    board.opencode.floor.model = Some("opencode/glm-5.3-flash-free".into());
+    board.group_models.insert(
+        Group::Floor,
+        [
+            ("codex".to_string(), "gpt-6-luna".to_string()),
+            (
+                "opencode".to_string(),
+                "deepseek/deepseek-flash".to_string(),
+            ),
+        ]
+        .into(),
+    );
+    board.default_models.insert(
+        Group::Senior,
+        [(
+            "codex".to_string(),
+            vec!["gpt-6.2-sol".to_string(), "gpt-6.1-sol".to_string()],
+        )]
+        .into(),
+    );
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let row = |id: &str| rows.iter().find(|entry| entry.id == id).unwrap();
+    assert!(
+        row("group:floor:codex").label.ends_with("on · gpt-6-luna"),
+        "a pick shows without a mark"
+    );
+    assert_eq!(row("group:floor:codex").tail, "enter: model");
+    assert!(
+        row("group:senior:codex")
+            .label
+            .ends_with("on · gpt-6.2-sol*, gpt-6.1-sol*"),
+        "the defaults, each marked: {}",
+        row("group:senior:codex").label
+    );
+    assert!(row("group:senior:codex").detail.contains("* the default"));
+    assert!(
+        row("opencode:floor")
+            .label
+            .contains("deepseek/deepseek-flash"),
+        "the task's pick over the devws menu's: {}",
+        row("opencode:floor").label
+    );
+    board.group_models.clear();
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let label = &rows
+        .iter()
+        .find(|entry| entry.id == "opencode:floor")
+        .unwrap()
+        .label;
+    assert!(
+        label.contains("opencode/glm-5.3-flash-free*"),
+        "the devws menu's model is OpenCode's default: {label}"
     );
 }
 

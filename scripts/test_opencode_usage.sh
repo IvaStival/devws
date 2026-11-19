@@ -25,6 +25,8 @@ command -v sqlite3 >/dev/null 2>&1 || {
 
 export HOME="$TEST_ROOT/home" TMPDIR="$TEST_ROOT/tmp/" DEVWS_ENV_FILE=/dev/null
 export DEVAGENTICS_HOME="$TEST_ROOT/agentics" DEVWS_AGENTS="opencode"
+# Only the registered agents: not the programs this machine has installed.
+export DEVWS_OFFERED_PROGRAMS=""
 mkdir -p "$HOME/.local/share/opencode" "$TMPDIR"
 DB="$HOME/.local/share/opencode/opencode.db"
 WORK="$TEST_ROOT/work"
@@ -77,10 +79,10 @@ test_credit_is_unknown_until_a_balance_is_entered() {
 test_credit_left_counts_what_was_spent_since_the_balance() {
   local got
   # Entered yesterday: today's two responses (US$ 0.75) count, the older one not.
-  DEVWS_TOKENS_NOW=$((NOW - 86400)) "$SCRIPTS/opencode_credit.sh" set opencode 20 >/dev/null
+  DEVWS_TOKENS_NOW=$((NOW - 86400)) "$SCRIPTS/agents/30-opencode/credit.sh" set opencode 20 >/dev/null
   got="$("$SCRIPTS/agent_cli.sh" credit opencode)"
   [ "$got" = "20.00 0.75" ] || fail "credit: '$got'"
-  "$SCRIPTS/opencode_credit.sh" set opencode abc >/dev/null 2>&1 && fail "a balance that is not a number was saved"
+  "$SCRIPTS/agents/30-opencode/credit.sh" set opencode abc >/dev/null 2>&1 && fail "a balance that is not a number was saved"
   return 0
 }
 

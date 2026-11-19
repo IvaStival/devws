@@ -2,13 +2,14 @@
 //! them in check (one writer per worktree, a limit on how many, no writers
 //! before the user approves the plan, no agents on an account near its limit).
 
-use crate::agent_args::{self, Kind as Program, Launch};
+use crate::agent_args::{self, Launch};
 use crate::devws::{Devws, PaneState};
 use crate::home::Home;
 use crate::lanes;
 use crate::log::Kind;
 use crate::opencode::OpencodeSettings;
 use crate::orders;
+use crate::providers::Kind as Program;
 use crate::roles::{Role, Roles};
 use crate::start::{AGENT_FIRST, opening, repo_name};
 use crate::state::{Agent, OrderStatus, StepStatus, UsageApproval};
@@ -111,11 +112,25 @@ impl Team<'_> {
     /// Starts an agent; one that writes, in a lane when one is named: the
     /// lane's worktree, its repo. A repo with lanes takes its writers only in
     /// them, so they never share a worktree.
+    #[cfg(test)]
     pub fn spawn_agent_in(
         &self,
         role_name: &str,
         repo_name: Option<&str>,
         lane_name: Option<&str>,
+    ) -> Result<Agent> {
+        self.spawn_agent_on(role_name, repo_name, lane_name, None)
+    }
+
+    /// Starts an agent as `spawn_agent_in` does; on `account` only when one
+    /// is named: the user asked for it, so nothing else stands in when it
+    /// cannot start.
+    pub fn spawn_agent_on(
+        &self,
+        role_name: &str,
+        repo_name: Option<&str>,
+        lane_name: Option<&str>,
+        account: Option<&str>,
     ) -> Result<Agent> {
         let _control = self.task.control_lock()?;
         crate::workflow::block_unverified_runner(self.task)?;
@@ -168,8 +183,10 @@ impl Team<'_> {
             .devws
             .agent_kind(&role.agent)
             .or_else(|error| Program::parse(&role.agent).ok_or(error))?;
-        let mut launch = LaunchState::new(role, kind, &OpencodeSettings::load(self.home)?);
-        self.prefer_codex(&mut launch.candidates)?;
+        let mut launch = self.launch_state(role, kind)?;
+        if let Some(account) = account {
+            self.pin_account(&mut launch, account)?;
+        }
 
         // The agent is reserved before it starts, so two spawns cannot both
         // pass the rules.
@@ -285,6 +302,248 @@ impl Team<'_> {
         }
     }
 
+    /// Starts a lost or unavailable worker again, on its first account that
+    /// may take it, and tells it its open order (or review) again.
+    fn relaunch(&self, config: &TaskConfig, agent: &Agent) -> Result<()> {
+        let state = self.task.state()?;
+        let startup = (|| -> Result<_> {
+            if !agent.live {
+                if state.live_agents(agent.writes) >= config.max_agents {
+                    bail!(
+                        "cannot resume {}: the places for {} are full",
+                        agent.id,
+                        kind_of_agents(agent.writes)
+                    );
+                }
+                if agent.writes
+                    && state.agents.iter().any(|candidate| {
+                        candidate.live
+                            && candidate.writes
+                            && candidate.repo == agent.repo
+                            && candidate.lane == agent.lane
+                    })
+                {
+                    bail!(
+                        "cannot resume {}: another writer occupies its worktree",
+                        agent.id
+                    );
+                }
+                if agent.writes && !state.approved {
+                    bail!("cannot resume writer: the plan is not approved");
+                }
+            }
+            let repo = lanes::workplace(self.task, agent)?;
+            let roles = Roles::load(self.home, Some(&repo.worktree))?;
+            let role = roles
+                .get(&agent.role)
+                .with_context(|| format!("the role {} of {} is gone", agent.role, agent.id))?;
+            // Automatic retries use a snapshot. Explicit resume may pick up corrected
+            // provider settings while retaining this worker's instructions and scope.
+            let resumed_role =
+                if let Some(previous) = self.task.state()?.worker_launches.get(&agent.id) {
+                    Role {
+                        fallback: role.fallback.clone(),
+                        alternatives: role.alternatives.clone(),
+                        ..previous.role.with_program(&role.program())
+                    }
+                } else {
+                    role.clone()
+                };
+            if resumed_role.writes != agent.writes || resumed_role.group != agent.group() {
+                bail!(
+                    "cannot resume {}: its role's write scope or group changed",
+                    agent.id
+                );
+            }
+            let kind = self
+                .devws
+                .agent_kind(&resumed_role.agent)
+                .or_else(|error| Program::parse(&resumed_role.agent).ok_or(error))?;
+            let mut launch = self.launch_state(&resumed_role, kind)?;
+            // A failed cleanup is not permission to duplicate the still-live process.
+            if agent.unavailable && !self.pane_gone(&agent.pane)? {
+                self.devws
+                    .stop(&agent.pane)
+                    .context("close the unavailable worker before resuming")?;
+            }
+            let (session, pane) = self.launch_worker(config, &repo, &agent.id, &mut launch)?;
+            Ok((session, pane, launch))
+        })();
+        let (session, pane, launch) = startup?;
+        self.task.transaction(|tx| {
+            let order = tx.state.open_order_of(&agent.id).cloned();
+            let title = order
+                .as_ref()
+                .and_then(|order| tx.state.steps.iter().find(|step| step.id == order.step))
+                .map(|step| step.title.clone());
+            tx.state.cancel_probe(&agent.id);
+            tx.state.queue.retain(|message| message.to != agent.id);
+            if let (Some(order), Some(title)) = (order, title) {
+                tx.state.say_about(
+                    &agent.id,
+                    orders::order_message(
+                        &order,
+                        &title,
+                        tx.state
+                            .order_profiles
+                            .get(&order.id)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]),
+                    ),
+                    Some(order.id.clone()),
+                );
+                if let Some(open) = tx
+                    .state
+                    .orders
+                    .iter_mut()
+                    .find(|candidate| candidate.id == order.id)
+                {
+                    open.delivered = false;
+                    open.stalled = false;
+                }
+            }
+            if let Some(message) = crate::reviews::resumption(&tx.state, &agent.id) {
+                tx.state.say(&agent.id, message);
+            }
+            let restarted = tx
+                .state
+                .agents
+                .iter_mut()
+                .find(|candidate| candidate.id == agent.id)
+                .expect("the agent is in the state");
+            restarted.agent = launch.selected.as_ref().unwrap().agent.clone();
+            restarted.session = session;
+            restarted.pane = pane;
+            restarted.live = true;
+            restarted.unavailable = false;
+            restarted.ready = false;
+            restarted.lost = false;
+            tx.state.restart_on_next_account.remove(&agent.id);
+            tx.log(Kind::Spawn, Some(&agent.id), None, "started again");
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    /// The dispatcher restarts a worker its account refused before it did
+    /// anything (worker_tools `hold_and_restart`): that worker alone, on its
+    /// next account, without pausing the team. Never while the task is
+    /// paused: the user's resume brings it back then.
+    pub fn restart_on_next_account(&self, agent_id: &str) -> Result<bool> {
+        let _control = self.task.control_lock()?;
+        let state = self.task.state()?;
+        if state.paused || !state.restart_on_next_account.contains(agent_id) {
+            return Ok(false);
+        }
+        let agent = state.agent(agent_id).context("unknown worker")?.clone();
+        self.task.transaction(|tx| {
+            tx.state.restart_on_next_account.remove(agent_id);
+            Ok(())
+        })?;
+        let config = self.task.config()?;
+        if let Err(error) = self.relaunch(&config, &agent) {
+            self.task.transaction(|tx| {
+                tx.state.say(
+                    crate::state::LEADER,
+                    format!("{agent_id} could not start again on another account: {error:#}. Resume it when one is free, or stop it."),
+                );
+                Ok(())
+            })?;
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// Whether the agent's pane no longer runs. An agent the usage guard
+    /// held back before it started never had a pane.
+    fn pane_gone(&self, pane: &str) -> Result<bool> {
+        Ok(pane.is_empty() || self.devws.pane_state(pane)? == PaneState::Gone)
+    }
+
+    /// The OpenCode settings this task's agents start with: the home-wide
+    /// ones, with the models the user picked for this task.
+    fn opencode(&self) -> Result<OpencodeSettings> {
+        Ok(crate::accounts::opencode_for_task(
+            OpencodeSettings::load(self.home)?,
+            &self.task.state()?,
+        ))
+    }
+
+    /// The candidates a worker of `role` starts on, in the order tried.
+    fn launch_state(&self, role: &Role, kind: Program) -> Result<LaunchState> {
+        let mut launch = LaunchState::new(role, kind, &self.opencode()?);
+        self.add_enabled_accounts(&mut launch)?;
+        self.prefer_codex(&mut launch.candidates)?;
+        Ok(launch)
+    }
+
+    /// Every account the user left on for the role's group joins after the
+    /// role's own candidates: a role names a few programs, the user's
+    /// switches decide which accounts the team may use. OpenCode joins only
+    /// through its own switch, which names its model.
+    fn add_enabled_accounts(&self, launch: &mut LaunchState) -> Result<()> {
+        let state = self.task.state()?;
+        let group = launch.role.group;
+        for (account, kind) in self.devws.accounts()? {
+            let is_candidate = launch
+                .candidates
+                .iter()
+                .any(|candidate| candidate.agent == account);
+            if is_candidate
+                || kind.provider().own_switches()
+                || !crate::accounts::is_enabled_for(&state, &account, group)
+            {
+                continue;
+            }
+            let model = match group {
+                crate::roles::Group::Floor => crate::roles::floor_model(kind, None),
+                _ => None,
+            };
+            launch.candidates.push(crate::roles::Fallback {
+                agent: account,
+                model,
+                effort: None,
+                approvals: None,
+                sandbox: None,
+            });
+        }
+        Ok(())
+    }
+
+    /// Keeps only `account`'s candidate.
+    fn pin_account(&self, launch: &mut LaunchState, account: &str) -> Result<()> {
+        // devws runs opencode without listing it among its accounts: what it
+        // runs is the test.
+        let kind = self
+            .devws
+            .agent_kind(account)
+            .with_context(|| format!("there is no account {account} in devws"))?;
+        let group = launch.role.group;
+        if !crate::accounts::is_enabled_for(&self.task.state()?, account, group) {
+            bail!(
+                "{account} is switched off for the {} group of this task: the user turns it on on the board",
+                group.name()
+            );
+        }
+        let candidate = launch
+            .candidates
+            .iter()
+            .find(|candidate| candidate.agent == account)
+            .cloned()
+            .with_context(|| {
+                if kind.provider().own_switches() {
+                    format!(
+                        "{account} is switched off for the {} group, or has no model: the user switches it on (devagentics opencode switch, model)",
+                        group.name()
+                    )
+                } else {
+                    format!("{} cannot start on {account}", launch.role.name)
+                }
+            })?;
+        launch.candidates = vec![candidate];
+        Ok(())
+    }
+
     /// Persist attempts before effects so a dispatcher restart cannot loop candidates.
     fn launch_worker(
         &self,
@@ -299,9 +558,24 @@ impl Team<'_> {
             let candidate = launch.next_available(
                 self.devws,
                 approved,
-                &state.disabled_accounts,
-                &OpencodeSettings::load(self.home)?,
+                &crate::accounts::disabled_for(&state, launch.role.group),
+                &crate::accounts::opencode_for_task(OpencodeSettings::load(self.home)?, &state),
             );
+            // The model the user picked on the board for the group on that
+            // account replaces the role's.
+            let candidate = candidate.map(|role| {
+                let Some(model) = crate::accounts::group_model(&state, &role.agent, role.group)
+                else {
+                    return role;
+                };
+                if let Some(selected) = launch.selected.as_mut() {
+                    selected.model = Some(model.to_string());
+                }
+                Role {
+                    model: Some(model.to_string()),
+                    ..role
+                }
+            });
             let needs_consent = candidate
                 .as_ref()
                 .err()
@@ -519,10 +793,15 @@ impl Team<'_> {
             .filter(|agent| agent.live || agent.unavailable)
             .cloned()
             .with_context(|| format!("there is no live agent {id}"))?;
-        let usage = self.devws.usage(&agent.pane)?;
-        if self.devws.pane_state(&agent.pane)? != PaneState::Gone {
-            self.devws.stop(&agent.pane)?;
-        }
+        let usage = if agent.pane.is_empty() {
+            None
+        } else {
+            let usage = self.devws.usage(&agent.pane)?;
+            if !self.pane_gone(&agent.pane)? {
+                self.devws.stop(&agent.pane)?;
+            }
+            usage
+        };
         self.task.transaction(|tx| {
             if let Some(stopped) = tx
                 .state
@@ -555,6 +834,7 @@ impl Team<'_> {
                     step.set_status(StepStatus::Blocked, crate::log::now());
                 }
             }
+            tx.state.cancel_probe(id);
             tx.state.queue.retain(|message| message.to != id);
             tx.log(Kind::Stop, Some(id), None, "stopped");
             Ok(())
@@ -664,6 +944,7 @@ impl Team<'_> {
         })?;
 
         let mut restarted = Vec::new();
+        let mut skipped = Vec::new();
         for agent in self
             .task
             .state()?
@@ -671,128 +952,51 @@ impl Team<'_> {
             .iter()
             .filter(|agent| agent.live || agent.unavailable)
         {
-            if !agent.lost && self.devws.pane_state(&agent.pane)? != PaneState::Gone {
+            if !agent.lost && !self.pane_gone(&agent.pane)? {
                 continue;
             }
-            if !agent.live {
-                let state = self.task.state()?;
-                if state.live_agents(agent.writes) >= config.max_agents {
-                    bail!(
-                        "cannot resume {}: the places for {} are full",
-                        agent.id,
-                        kind_of_agents(agent.writes)
-                    );
-                }
-                if agent.writes
-                    && state.agents.iter().any(|candidate| {
-                        candidate.live
-                            && candidate.writes
-                            && candidate.repo == agent.repo
-                            && candidate.lane == agent.lane
-                    })
-                {
-                    bail!(
-                        "cannot resume {}: another writer occupies its worktree",
-                        agent.id
-                    );
-                }
-                if agent.writes && !state.approved {
-                    bail!("cannot resume writer: the plan is not approved");
-                }
+            let state = self.task.state()?;
+            let can_skip = agent.unavailable
+                && !agent.live
+                && agent.pane.is_empty()
+                && state.open_order_of(&agent.id).is_none()
+                && !state.worker_turns.contains_key(&agent.id)
+                && crate::reviews::resumption(&state, &agent.id).is_none();
+            match self.relaunch(&config, agent) {
+                Ok(()) => restarted.push(agent.id.clone()),
+                Err(error) if can_skip => skipped.push(format!("{}: {error:#}", agent.id)),
+                Err(error) => return Err(error),
             }
-            let repo = lanes::workplace(self.task, agent)?;
-            let roles = Roles::load(self.home, Some(&repo.worktree))?;
-            let role = roles
-                .get(&agent.role)
-                .with_context(|| format!("the role {} of {} is gone", agent.role, agent.id))?;
-            // Automatic retries use a snapshot. Explicit resume may pick up corrected
-            // provider settings while retaining this worker's instructions and scope.
-            let resumed_role =
-                if let Some(previous) = self.task.state()?.worker_launches.get(&agent.id) {
-                    Role {
-                        fallback: role.fallback.clone(),
-                        alternatives: role.alternatives.clone(),
-                        ..previous.role.with_program(&role.program())
-                    }
-                } else {
-                    role.clone()
-                };
-            if resumed_role.writes != agent.writes || resumed_role.group != agent.group() {
-                bail!(
-                    "cannot resume {}: its role's write scope or group changed",
-                    agent.id
-                );
-            }
-            let kind = self
-                .devws
-                .agent_kind(&resumed_role.agent)
-                .or_else(|error| Program::parse(&resumed_role.agent).ok_or(error))?;
-            let mut launch =
-                LaunchState::new(&resumed_role, kind, &OpencodeSettings::load(self.home)?);
-            self.prefer_codex(&mut launch.candidates)?;
-            // A failed cleanup is not permission to duplicate the still-live process.
-            if agent.unavailable && self.devws.pane_state(&agent.pane)? != PaneState::Gone {
-                self.devws
-                    .stop(&agent.pane)
-                    .context("close the unavailable worker before resuming")?;
-            }
-            let (session, pane) = self.launch_worker(&config, &repo, &agent.id, &mut launch)?;
-            self.task.transaction(|tx| {
-                let order = tx.state.open_order_of(&agent.id).cloned();
-                let title = order
-                    .as_ref()
-                    .and_then(|order| tx.state.steps.iter().find(|step| step.id == order.step))
-                    .map(|step| step.title.clone());
-                tx.state.queue.retain(|message| message.to != agent.id);
-                if let (Some(order), Some(title)) = (order, title) {
-                    tx.state.say_about(
-                        &agent.id,
-                        orders::order_message(
-                            &order,
-                            &title,
-                            tx.state
-                                .order_profiles
-                                .get(&order.id)
-                                .map(Vec::as_slice)
-                                .unwrap_or(&[]),
-                        ),
-                        Some(order.id.clone()),
-                    );
-                    if let Some(open) = tx
-                        .state
-                        .orders
-                        .iter_mut()
-                        .find(|candidate| candidate.id == order.id)
-                    {
-                        open.delivered = false;
-                        open.stalled = false;
-                    }
-                }
-                if let Some(message) = crate::reviews::resumption(&tx.state, &agent.id) {
-                    tx.state.say(&agent.id, message);
-                }
-                let restarted = tx
-                    .state
-                    .agents
-                    .iter_mut()
-                    .find(|candidate| candidate.id == agent.id)
-                    .expect("the agent is in the state");
-                restarted.agent = launch.selected.as_ref().unwrap().agent.clone();
-                restarted.session = session;
-                restarted.pane = pane;
-                restarted.live = true;
-                restarted.unavailable = false;
-                restarted.ready = false;
-                restarted.lost = false;
-                tx.log(Kind::Spawn, Some(&agent.id), None, "started again");
-                Ok(())
-            })?;
-            restarted.push(agent.id.clone());
+        }
+        if !skipped.is_empty()
+            && !self
+                .task
+                .state()?
+                .agents
+                .iter()
+                .any(|agent| agent.live && !agent.lost && !agent.pane.is_empty())
+        {
+            bail!("cannot resume: {}", skipped.join("; "));
         }
         crate::recovery::queue_resumption(self.task, self.devws, invoking)?;
         self.task.transaction(|tx| {
             tx.state.paused = false;
             tx.log(Kind::Pause, None, None, "resumed");
+            if !skipped.is_empty() {
+                let notice = format!(
+                    "Resumed with unavailable workers eligible for retry: {}",
+                    skipped.join("; ")
+                );
+                tx.log(Kind::Pause, None, None, &notice);
+                if !tx
+                    .state
+                    .queue
+                    .iter()
+                    .any(|message| message.to == crate::state::LEADER && message.text == notice)
+                {
+                    tx.state.say(crate::state::LEADER, notice);
+                }
+            }
             Ok(())
         })?;
         Ok(restarted)
@@ -814,14 +1018,12 @@ impl Team<'_> {
     }
 }
 
-/// Which program may run a reviewed worker. Claude runs every role with its
-/// native tools off. Codex cannot turn its shell off, so it runs only the
-/// read-only code reviewer, and only when the user opted in: its read-only
-/// sandbox stops writes, not reads of host files. Refused as a model
-/// failure, so the worker falls back to its next candidate (Claude).
+/// Provider preference for reviewed workers. Claude and OpenCode use only
+/// scoped worker MCP tools; Codex requires the task's explicit opt-in.
 impl Team<'_> {
     /// A reviewed team the user put on Codex starts each worker on its
-    /// Codex candidates; the others stay, in order, behind them.
+    /// Codex candidates rather than Claude; OpenCode keeps its configured
+    /// place, and the others stay, in order, behind them.
     fn prefer_codex(&self, candidates: &mut [crate::roles::Fallback]) -> Result<()> {
         let state = self.task.state()?;
         if state.workflow != crate::execution::Workflow::Reviewed
@@ -837,7 +1039,17 @@ impl Team<'_> {
                 .or_else(|error| Program::parse(&candidate.agent).ok_or(error))?;
             kinds.insert(candidate.agent.clone(), kind);
         }
-        candidates.sort_by_key(|candidate| kinds[&candidate.agent] != Program::Codex);
+        // Codex replaces Claude, not OpenCode: OpenCode is first only when the
+        // user switched it on for the group, and that choice holds whatever
+        // program the leader runs. The sort is stable, so the configured order
+        // stays among the rest.
+        use crate::providers::ReviewedAdapter;
+        candidates.sort_by_key(|candidate| {
+            !matches!(
+                kinds[&candidate.agent].provider().reviewed_worker(),
+                Some(ReviewedAdapter::Codex | ReviewedAdapter::Opencode)
+            )
+        });
         Ok(())
     }
 }
@@ -877,10 +1089,13 @@ fn reviewed_adapter(
             reason: reason.into(),
         })
     };
-    match kind {
-        Program::Claude => Ok(()),
-        Program::Codex if policy == CodexPolicy::Team => Ok(()),
-        Program::Codex if role == "code-reviewer" && !writes => {
+    // The program's reviewed adapter (its provider's); Codex's needs the
+    // user's opt-in.
+    use crate::providers::ReviewedAdapter;
+    match kind.provider().reviewed_worker() {
+        Some(ReviewedAdapter::Claude | ReviewedAdapter::Opencode) => Ok(()),
+        Some(ReviewedAdapter::Codex) if policy == CodexPolicy::Team => Ok(()),
+        Some(ReviewedAdapter::Codex) if role == "code-reviewer" && !writes => {
             if policy == CodexPolicy::Reviewers {
                 Ok(())
             } else {
@@ -907,10 +1122,21 @@ fn kind_of_agents(writes: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_args::Kind as Program;
+    use crate::providers::Kind as Program;
 
     #[test]
-    fn a_reviewed_team_on_codex_starts_its_workers_on_codex() {
+    fn reviewed_floor_and_senior_workers_use_the_managed_opencode_adapter() {
+        for (role, writes) in [
+            ("backend-data", true),
+            ("planner", false),
+            ("code-reviewer", false),
+        ] {
+            assert!(reviewed_adapter(Program::Opencode, role, writes, CodexPolicy::Off).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_reviewed_team_on_codex_puts_codex_ahead_of_claude_but_not_of_opencode() {
         let dir = TempDir::new().unwrap();
         let (home, devws, task, _repo) = crate::board::tests::started(&dir);
         let devws = devws.with_kind("codex", Program::Codex);
@@ -926,10 +1152,14 @@ mod tests {
             approvals: None,
             sandbox: None,
         };
-        let mut candidates = vec![candidate("claude"), candidate("codex")];
+        let mut candidates = vec![
+            candidate("opencode"),
+            candidate("claude"),
+            candidate("codex"),
+        ];
         team.prefer_codex(&mut candidates).unwrap();
         assert_eq!(
-            candidates[0].agent, "claude",
+            candidates[0].agent, "opencode",
             "not unless reviewed and opted in"
         );
         task.transaction(|tx| {
@@ -944,8 +1174,8 @@ mod tests {
                 .iter()
                 .map(|c| c.agent.as_str())
                 .collect::<Vec<_>>(),
-            ["codex", "claude"],
-            "Codex first, Claude kept behind it"
+            ["opencode", "codex", "claude"],
+            "Codex goes ahead of Claude; OpenCode switched on for the group keeps its place"
         );
     }
 
@@ -1315,6 +1545,57 @@ mod tests {
         );
     }
 
+    // The user's consent lets workers past the percentage guard, never onto
+    // an account that is used up: Claude Code there answers "You've hit your
+    // weekly limit" and the panel closes seconds after its order.
+    #[test]
+    fn a_used_up_account_is_skipped_even_with_usage_consent() {
+        use crate::state::UsageApproval;
+        let f = fixture().approved();
+        f.task
+            .transaction(|tx| {
+                tx.state.usage_limit_approval = UsageApproval::Approved;
+                Ok(())
+            })
+            .unwrap();
+        f.devws.set_limits(
+            "claude",
+            Limits {
+                week: Some(100),
+                five_hour: Some(81),
+            },
+        );
+        f.devws.set_limits(
+            "codex",
+            Limits {
+                week: Some(97),
+                five_hour: None,
+            },
+        );
+        let agent = f.team().spawn_agent("executor", None).unwrap();
+        assert_eq!(agent.agent, "codex", "consent covers 97%, not 100%");
+        f.team().stop_agent(&agent.id).unwrap();
+
+        f.devws.set_limits(
+            "codex",
+            Limits {
+                week: None,
+                five_hour: Some(100),
+            },
+        );
+        let error = f
+            .team()
+            .spawn_agent("executor", None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("claude has used 100% of its week")
+                && error.contains("codex has used 100% of its 5-hour limit"),
+            "{error}"
+        );
+        assert!(!error.contains("approval"), "consent cannot help: {error}");
+    }
+
     #[test]
     fn usage_consent_requires_a_request_and_survives_reload_and_revocation() {
         use crate::state::UsageApproval;
@@ -1371,6 +1652,161 @@ mod tests {
     }
 
     #[test]
+    fn a_worker_its_account_refused_restarts_alone_on_the_next_account() {
+        let f = fixture().approved();
+        let worker = f.team().spawn_agent("executor", None).unwrap();
+        assert_eq!(worker.agent, "claude");
+        let peer = f.team().spawn_agent("planner", None).unwrap();
+        f.devws.set_state(&worker.pane, PaneState::Gone);
+        f.devws.set_state(&peer.pane, PaneState::Gone);
+        let hold = |tx: &mut crate::task::Tx| {
+            tx.state.account_holds.insert(
+                "claude".into(),
+                crate::state::AccountHold {
+                    until: crate::log::now() + 60,
+                    reason: "provider startup error: insufficient_quota".into(),
+                },
+            );
+            tx.state.restart_on_next_account.insert(worker.id.clone());
+        };
+        f.task
+            .transaction(|tx| {
+                hold(tx);
+                tx.state.paused = true;
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            !f.team().restart_on_next_account(&worker.id).unwrap(),
+            "never while paused"
+        );
+        f.task
+            .transaction(|tx| {
+                tx.state.paused = false;
+                Ok(())
+            })
+            .unwrap();
+        assert!(f.team().restart_on_next_account(&worker.id).unwrap());
+        let state = f.task.state().unwrap();
+        let restarted = state.agent(&worker.id).unwrap();
+        assert_eq!(restarted.agent, "codex", "the held account is skipped");
+        assert!(!restarted.lost && restarted.pane != worker.pane);
+        assert!(state.restart_on_next_account.is_empty());
+        assert_eq!(
+            state.agent(&peer.id).unwrap().pane,
+            peer.pane,
+            "only the refused worker restarts"
+        );
+        assert!(!state.paused);
+    }
+
+    #[test]
+    fn resume_restarts_available_workers_when_idle_pane_less_peers_cannot_launch() {
+        let f = fixture().approved();
+        let worker = f.team().spawn_agent("executor", None).unwrap();
+        f.devws.set_state(&worker.pane, PaneState::Gone);
+        f.task
+            .transaction(|tx| {
+                let original = tx.state.agents[0].clone();
+                tx.state.probe(&original.id);
+                let claim = tx.state.queue.pop().unwrap();
+                tx.state.worker_turns.insert(original.id.clone(), claim);
+                for id in ["unavailable-one", "unavailable-two"] {
+                    let mut peer = original.clone();
+                    peer.id = id.into();
+                    peer.role = "missing-role".into();
+                    peer.writes = false;
+                    peer.live = false;
+                    peer.lost = true;
+                    peer.unavailable = true;
+                    peer.pane.clear();
+                    tx.state.agents.insert(0, peer);
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(f.team().resume().unwrap(), [worker.id]);
+        let state = f.task.state().unwrap();
+        assert!(!state.paused && state.worker_turns.is_empty());
+        assert!(
+            state
+                .queue
+                .iter()
+                .any(|message| message.text.contains("was interrupted"))
+        );
+        assert!(
+            state.agents[..2]
+                .iter()
+                .all(|agent| agent.unavailable && !agent.live)
+        );
+        assert!(
+            state
+                .queue
+                .iter()
+                .any(|message| message.to == crate::state::LEADER
+                    && message.text.contains("unavailable-one")
+                    && message.text.contains("unavailable-two"))
+        );
+        assert!(f.team().resume().unwrap().is_empty());
+        assert_eq!(f.task.state().unwrap().agents[2].pane, state.agents[2].pane);
+
+        f.task
+            .transaction(|tx| {
+                let peer = tx.state.agents[0].id.clone();
+                tx.state.orders.push(crate::state::Order {
+                    read: Vec::new(),
+                    targets: Vec::new(),
+                    id: "pending".into(),
+                    step: "step".into(),
+                    agent: peer,
+                    text: "Pending work".into(),
+                    allowed: vec![],
+                    forbidden: vec![],
+                    check: None,
+                    base: "base".into(),
+                    status: OrderStatus::Open,
+                    delivered: false,
+                    stalled: false,
+                    plan: None,
+                });
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            f.team()
+                .resume()
+                .unwrap_err()
+                .to_string()
+                .contains("missing-role")
+        );
+        let state = f.task.state().unwrap();
+        assert!(state.paused);
+        assert_eq!(state.orders[0].status, OrderStatus::Open);
+    }
+
+    #[test]
+    fn an_agent_the_usage_guard_held_back_has_no_pane_and_still_stops() {
+        let f = fixture().approved();
+        for account in ["claude", "codex"] {
+            f.devws.set_limits(
+                account,
+                Limits {
+                    week: Some(95),
+                    five_hour: None,
+                },
+            );
+        }
+        assert!(f.team().spawn_agent("executor", None).is_err());
+        let held = f.task.state().unwrap().agents[0].clone();
+        assert!(held.unavailable && held.pane.is_empty());
+        let before = f.devws.calls().len();
+        f.team().stop_agent(&held.id).unwrap();
+        assert_eq!(before, f.devws.calls().len(), "no pane access");
+        let stopped = f.task.state().unwrap().agents[0].clone();
+        assert!(!stopped.live && !stopped.unavailable);
+    }
+
+    #[test]
     fn usage_override_keeps_provider_rejections_and_execution_guards() {
         let f = fixture().approved();
         for account in ["claude", "codex"] {
@@ -1399,6 +1835,166 @@ mod tests {
     }
 
     #[test]
+    fn an_enabled_account_the_role_does_not_name_is_tried_after_its_own() {
+        let mut f = fixture().approved();
+        f.devws = f.devws.with_kind("claude_work", Program::Claude);
+        f.devws.fail_launch("claude", FailureScope::Account);
+        f.devws.fail_launch("codex", FailureScope::Account);
+        let agent = f.team().spawn_agent("executor", None).unwrap();
+        assert_eq!(agent.agent, "claude_work");
+        let state = f.task.state().unwrap();
+        assert_eq!(
+            state.worker_launches[&agent.id]
+                .selected
+                .as_ref()
+                .unwrap()
+                .model,
+            crate::roles::floor_model(Program::Claude, None),
+            "a floor agent on it runs the floor's model"
+        );
+    }
+
+    #[test]
+    fn an_account_switched_off_is_not_added_to_the_candidates() {
+        let mut f = fixture().approved();
+        f.devws = f.devws.with_kind("claude_work", Program::Claude);
+        crate::accounts::set_enabled(&f.task, &f.devws, "claude_work", false).unwrap();
+        f.devws.fail_launch("claude", FailureScope::Account);
+        f.devws.fail_launch("codex", FailureScope::Account);
+        assert!(f.team().spawn_agent("executor", None).is_err());
+    }
+
+    #[test]
+    fn an_agent_started_on_a_named_account_runs_there_only() {
+        let f = fixture().approved();
+        let agent = f
+            .team()
+            .spawn_agent_on("executor", None, None, Some("codex"))
+            .unwrap();
+        assert_eq!(agent.agent, "codex", "named over the role's own claude");
+        let launch = &f.task.state().unwrap().worker_launches[&agent.id];
+        assert_eq!(launch.candidates.len(), 1, "no fallback behind it");
+    }
+
+    #[test]
+    fn an_agent_started_on_opencode_by_name_runs_there_though_devws_does_not_list_it() {
+        let mut f = fixture().approved();
+        f.devws = f.devws.with_unlisted_kind("opencode", Program::Opencode);
+        OpencodeSettings {
+            enabled: true,
+            floor: crate::opencode::GroupSettings {
+                enabled: true,
+                model: Some("deepseek/deepseek-flash".into()),
+            },
+            ..OpencodeSettings::default()
+        }
+        .save(&f.home)
+        .unwrap();
+        let agent = f
+            .team()
+            .spawn_agent_on("executor", None, None, Some("opencode"))
+            .unwrap();
+        assert_eq!(agent.agent, "opencode");
+    }
+
+    #[test]
+    fn a_named_account_that_cannot_start_falls_back_to_none() {
+        let f = fixture().approved();
+        f.devws.fail_launch("codex", FailureScope::Account);
+        let error = f
+            .team()
+            .spawn_agent_on("executor", None, None, Some("codex"))
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("codex"), "{error:#}");
+        assert!(
+            f.task
+                .state()
+                .unwrap()
+                .agents
+                .iter()
+                .all(|agent| !agent.live),
+            "nothing started on claude instead"
+        );
+    }
+
+    #[test]
+    fn a_named_account_must_exist_and_be_on_for_the_group() {
+        let f = fixture().approved();
+        let error = f
+            .team()
+            .spawn_agent_on("executor", None, None, Some("nobody"))
+            .unwrap_err();
+        assert!(error.to_string().contains("no account nobody"), "{error}");
+        crate::accounts::set_group_enabled(
+            &f.task,
+            &f.devws,
+            "codex",
+            crate::roles::Group::Floor,
+            false,
+        )
+        .unwrap();
+        let error = f
+            .team()
+            .spawn_agent_on("executor", None, None, Some("codex"))
+            .unwrap_err();
+        assert!(error.to_string().contains("switched off"), "{error}");
+    }
+
+    #[test]
+    fn an_account_turned_off_for_the_floor_is_skipped_by_floor_agents_only() {
+        let f = fixture().approved();
+        crate::accounts::set_group_enabled(
+            &f.task,
+            &f.devws,
+            "claude",
+            crate::roles::Group::Floor,
+            false,
+        )
+        .unwrap();
+        let agent = f.team().spawn_agent("executor", None).unwrap();
+        assert_eq!(agent.agent, "codex");
+        let failures = &f.task.state().unwrap().worker_launches[&agent.id].failures;
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("claude is turned off")),
+            "{failures:?}"
+        );
+    }
+
+    #[test]
+    fn a_group_model_picked_on_the_board_replaces_the_roles() {
+        let f = fixture().approved();
+        crate::accounts::set_group_model(
+            &f.task,
+            &f.devws,
+            "claude",
+            crate::roles::Group::Floor,
+            Some("claude-haiku-5-5".into()),
+        )
+        .unwrap();
+        let agent = f.team().spawn_agent("executor", None).unwrap();
+        assert_eq!(agent.agent, "claude");
+        let state = f.task.state().unwrap();
+        let launch = &state.worker_launches[&agent.id];
+        assert_eq!(
+            launch.selected.as_ref().unwrap().model.as_deref(),
+            Some("claude-haiku-5-5")
+        );
+        let args = std::fs::read_to_string(
+            f.task
+                .dir()
+                .join("agents")
+                .join(format!("{}.args", agent.id)),
+        )
+        .unwrap();
+        assert!(
+            args.contains("claude-haiku-5-5"),
+            "it starts on that model: {args:?}"
+        );
+    }
+
+    #[test]
     fn exhausted_claude_starts_codex_with_the_same_worker_scope() {
         let f = fixture().approved();
         f.devws.set_limits(
@@ -1416,13 +2012,15 @@ mod tests {
         let launch = &state.worker_launches[&agent.id];
         assert_eq!(
             launch.selected.as_ref().unwrap().model.as_deref(),
-            Some(crate::roles::FLOOR_CODEX_MODEL),
+            Some(crate::providers::FLOOR_CODEX_MODEL),
             "the floor's Codex is Luna"
         );
         assert!(launch.failures[0].contains("week"));
         let args = std::fs::read(f.task.dir().join("agents/executor-1.args")).unwrap();
         let args = String::from_utf8_lossy(&args);
-        assert!(args.contains("factory floor") && args.contains(crate::roles::FLOOR_CODEX_MODEL));
+        assert!(
+            args.contains("factory floor") && args.contains(crate::providers::FLOOR_CODEX_MODEL)
+        );
         assert!(!args.contains("acceptEdits"));
         assert!(state.permissions.is_empty());
     }
@@ -1606,6 +2204,8 @@ mod tests {
                     review_since: None,
                 });
                 tx.state.orders.push(crate::state::Order {
+                    read: Vec::new(),
+                    targets: Vec::new(),
                     id: "o1".into(),
                     step: "s1".into(),
                     agent: "executor-1".into(),
@@ -1620,6 +2220,7 @@ mod tests {
                     plan: None,
                 });
                 tx.state.queue.push(Message {
+                    response_probe: false,
                     id: 1,
                     to: "executor-1".into(),
                     text: "queued".into(),
@@ -1717,6 +2318,8 @@ mod tests {
                     review_since: None,
                 });
                 tx.state.orders.push(crate::state::Order {
+                    read: Vec::new(),
+                    targets: Vec::new(),
                     id: "o1".into(),
                     step: "s1".into(),
                     agent: "executor-1".into(),

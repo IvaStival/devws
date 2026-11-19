@@ -18,7 +18,8 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
     let config = task.config()?;
     let state = task.state()?;
     let first_worktree = config.repos.first().map(|repo| repo.worktree.clone());
-    let opencode = crate::opencode::OpencodeSettings::load(home)?;
+    let opencode =
+        crate::accounts::opencode_for_task(crate::opencode::OpencodeSettings::load(home)?, &state);
     let roles: Vec<Value> = Roles::load(home, first_worktree.as_deref())?
         .all()
         .iter()
@@ -38,17 +39,8 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
                 "effort": effective.effort, "writes": role.writes, "group": role.group.name(),
                 "repo_access": if role.writes { "order_scoped_write" } else { "read_only" },
                 "permission_ceiling": if role.group == crate::roles::Group::Floor { "order_scoped_write" } else { "read_only" },
-                "sandbox": if crate::agent_args::Kind::parse(&effective.agent) == Some(crate::agent_args::Kind::Codex) {
-                    effective.sandbox.as_deref().unwrap_or(if role.writes { "workspace-write" } else { "read-only" })
-                } else {
-                    "provider-managed"
-                },
-                "approval_mode": if state.workflow==crate::execution::Workflow::Reviewed {"scoped_mcp_only"} else {effective.approvals.as_deref().unwrap_or(match crate::agent_args::Kind::parse(&effective.agent) {
-                    Some(crate::agent_args::Kind::Claude) if role.writes => "acceptEdits",
-                    Some(crate::agent_args::Kind::Claude) => "default",
-                    Some(crate::agent_args::Kind::Codex) => "on-request",
-                    Some(crate::agent_args::Kind::Opencode) | None => "provider-default",
-                })},
+                "sandbox": crate::providers::sandbox_label(effective),
+                "approval_mode": if state.workflow==crate::execution::Workflow::Reviewed {"scoped_mcp_only".to_string()} else {crate::providers::approvals_label(effective)},
                 "description": role.description,
                 "startup_candidates": if role.name == "leader" { None } else {
                     devws.agent_kind(&role.agent).ok().map(|kind| {
@@ -148,8 +140,16 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
         // The user's switches: new agents start only on accounts that are on.
         "accounts": devws.accounts()?.into_iter().map(|(name, kind)| json!({
             "name": name,
-            "kind": match kind { crate::agent_args::Kind::Claude => "claude", crate::agent_args::Kind::Codex => "codex", crate::agent_args::Kind::Opencode => "opencode" },
+            "kind": kind.name(),
             "enabled": crate::accounts::is_enabled(&state, &name),
+            // Each worker group's own switch, held off when `enabled` is off.
+            "senior": crate::accounts::is_enabled_for(&state, &name, crate::roles::Group::Senior),
+            "floor": crate::accounts::is_enabled_for(&state, &name, crate::roles::Group::Floor),
+            // The model the user picked for the group's agents on it; null: each role's own.
+            "senior_model": crate::accounts::group_model(&state, &name, crate::roles::Group::Senior),
+            "floor_model": crate::accounts::group_model(&state, &name, crate::roles::Group::Floor),
+            // A provider refused a worker on it: no new agents until then.
+            "held": state.account_holds.get(&name).filter(|hold| hold.until > crate::log::now()).map(|hold| json!({"until": hold.until, "reason": hold.reason})),
         })).collect::<Vec<_>>(),
         "leader": crate::leader::status(home, task, devws)?,
         "recent_log": recent,
@@ -159,10 +159,10 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_args::Kind as Program;
     use crate::devws::Limits;
     use crate::devws::fake::FakeDevws;
     use crate::home::Home;
+    use crate::providers::Kind as Program;
     use crate::start::start_task;
     use crate::team::Team;
     use tempfile::TempDir;
@@ -258,7 +258,10 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .all(|account| account["enabled"] == true && account["name"].is_string()),
+                .all(|account| account["enabled"] == true
+                    && account["senior"] == true
+                    && account["floor"] == true
+                    && account["name"].is_string()),
             "{}",
             summary["accounts"]
         );

@@ -99,6 +99,20 @@ test_add_registers_an_opencode_account() {
   [ ! -e "$TEST_ROOT/ai-memory-opencode.log" ] || fail "an opencode account was wired to ai-memory"
 }
 
+# Antigravity's one account is in its own folder; ai-memory has no client for it.
+test_add_registers_an_antigravity_account() {
+  local stub="$TEST_ROOT/bin/ai-memory-stub"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/ai-memory-antigravity.log"\n' "$TEST_ROOT" > "$stub"
+  chmod +x "$stub"
+  mkdir -p "$HOME/.gemini/antigravity-cli"
+  reset_env
+  DEVWS_AI_MEMORY="$stub" register add gemini antigravity "$HOME/.gemini/antigravity-cli" >/dev/null ||
+    fail "add antigravity failed"
+  [ "$(registry)" = "claude codex gemini|claude|claude=claude:$HOME/.claude|codex=codex:$HOME/.codex|gemini=antigravity:$HOME/.gemini/antigravity-cli" ] ||
+    fail "unexpected registry after adding antigravity: $(registry)"
+  [ ! -e "$TEST_ROOT/ai-memory-antigravity.log" ] || fail "an Antigravity account was wired to ai-memory"
+}
+
 test_add_rejects_bad_input() {
   reset_env
   register add work claude "$HOME/.claude-work" >/dev/null
@@ -148,6 +162,7 @@ test_remove_drops_a_name() {
 test_add_registers_a_name_with_its_folder
 test_add_wires_the_account_to_ai_memory
 test_add_registers_an_opencode_account
+test_add_registers_an_antigravity_account
 test_add_rejects_bad_input
 test_remove_drops_a_name
 test_folder_changes_an_agents_folder

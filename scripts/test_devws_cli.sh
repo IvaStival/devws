@@ -53,7 +53,7 @@ exec sleep 600
 EOF
 done
 chmod +x "$TEST_ROOT/bin/"*
-for script in "$SCRIPTS_SRC"/*.sh "$SCRIPTS_SRC"/*.json "$SCRIPTS_SRC"/*.md "$SCRIPTS_SRC"/*.yml; do
+for script in "$SCRIPTS_SRC"/*.sh "$SCRIPTS_SRC"/agents "$SCRIPTS_SRC"/*.json "$SCRIPTS_SRC"/*.md "$SCRIPTS_SRC"/*.yml; do
   ln -s "$script" "$TEST_ROOT/home/.tmuxinator/$(basename "$script")"
 done
 printf 'DEVWS_AGENTS="claude codex"\nDEVWS_EDITORS="nvim"\n' > "$TEST_ROOT/home/.tmuxinator/.env"
