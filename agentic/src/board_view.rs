@@ -341,6 +341,7 @@ fn step_word(status: StepStatus) -> &'static str {
         StepStatus::Rejected => "sent back",
         StepStatus::Accepted => "accepted",
         StepStatus::Exhausted => "failed",
+        StepStatus::Closed => "closed",
     }
 }
 
@@ -352,6 +353,7 @@ fn step_mark(status: StepStatus) -> char {
         StepStatus::Reported => '●',
         StepStatus::Failed | StepStatus::Blocked | StepStatus::Rejected => '⚠',
         StepStatus::Exhausted => '✕',
+        StepStatus::Closed => '–',
     }
 }
 
@@ -410,8 +412,8 @@ fn waited(seconds: u64) -> String {
 
 /// A team row: `1  executor-1       claude`, the name standing out from its
 /// number and program.
-/// The ACCOUNTS card: a switch for each registered account, Space on its row
-/// turns it on or off for this task.
+/// The ACCOUNTS card: a global switch for each registered account, Space on
+/// its row turns it on or off for this task; then each worker group's own.
 fn account_entries(board: &Board) -> Vec<Entry> {
     if board.switches.is_empty() {
         return Vec::new();
@@ -426,8 +428,13 @@ fn account_entries(board: &Board) -> Vec<Entry> {
         } else {
             ("[○━━ off]", Tone::Muted, Tone::Muted, "off")
         };
-        let percent = |used: Option<u32>| used.map_or("  -".to_string(), |used| format!("{used:>2}%"));
-        let usage = format!("5h {}  wk {}", percent(switch.five_hour), percent(switch.week));
+        let percent =
+            |used: Option<u32>| used.map_or("  -".to_string(), |used| format!("{used:>2}%"));
+        let usage = format!(
+            "5h {}  wk {}",
+            percent(switch.five_hour),
+            percent(switch.week)
+        );
         let detail = format!(
             "{} is {word} for this task: {}\nSpace turns it {}.",
             switch.name,
@@ -438,19 +445,190 @@ fn account_entries(board: &Board) -> Vec<Entry> {
             },
             if switch.enabled { "off" } else { "on" }
         );
-        let entry = Entry::text(format!("account:{}", switch.name), String::new(), detail, false)
-            .toned(vec![
-                (format!("{pill}  "), tone),
-                (format!("{:<13}", switch.name), name_tone),
-                (usage, Tone::Muted),
-            ]);
+        let entry = Entry::text(
+            format!("account:{}", switch.name),
+            String::new(),
+            detail,
+            false,
+        )
+        .toned(vec![
+            (format!("{pill}  "), tone),
+            (format!("{:<13}", switch.name), name_tone),
+            (usage, Tone::Muted),
+        ]);
         entries.push(if switch.leader_on && !switch.enabled {
             entry.with_tail("leader still on it")
         } else {
             entry
         });
     }
+    entries.push(opencode_entry(
+        "global",
+        board.opencode.enabled,
+        board.opencode.enabled,
+        if board.opencode.enabled { "on" } else { "off" },
+        "OpenCode global switch (every task, as in the devws menu)",
+    ));
+    for group in crate::accounts::WORKER_GROUPS {
+        entries.extend(group_account_entries(board, group));
+    }
     entries
+}
+
+/// The `[━━● on ]` pill, and its tone.
+fn switch_pill(on: bool) -> (&'static str, Tone) {
+    if on {
+        ("[━━● on ]", Tone::On)
+    } else {
+        ("[○━━ off]", Tone::Muted)
+    }
+}
+
+/// An OpenCode switch row (`opencode:global`, `opencode:floor`): kept in the
+/// home-wide OpenCode settings, so it holds for every task.
+fn opencode_entry(key: &str, effective: bool, enabled: bool, status: &str, what: &str) -> Entry {
+    let (pill, tone) = switch_pill(effective);
+    Entry::text(
+        format!("opencode:{key}"),
+        String::new(),
+        format!(
+            "{what} is {status}.\nSpace turns it {}.",
+            if enabled { "off" } else { "on" }
+        ),
+        false,
+    )
+    .toned(vec![
+        (format!("{pill}  "), tone),
+        (format!("{:<13}", "opencode"), Tone::Strong),
+        (status.to_string(), Tone::Muted),
+    ])
+}
+
+/// A worker group's card under ACCOUNTS (`SENIOR ACCOUNTS`): each account's
+/// switch for that group; the floor's also has OpenCode's.
+fn group_account_entries(board: &Board, group: Group) -> Vec<Entry> {
+    let name = group.name();
+    let mut entries = vec![
+        Entry::gap(&format!("accounts-{name}")),
+        Entry::section(&format!("{} ACCOUNTS", name.to_uppercase()), None),
+    ];
+    // A program on its own switches (OpenCode) is offered to the floor only,
+    // through those, below.
+    for switch in board
+        .switches
+        .iter()
+        .filter(|switch| !switch.kind.provider().own_switches())
+    {
+        let group_on = match group {
+            Group::Senior => switch.senior,
+            _ => switch.floor,
+        };
+        let (pill, tone) = switch_pill(group_on && switch.enabled);
+        let status = match (group_on, switch.enabled) {
+            (true, true) => "on",
+            (true, false) => "on · held off globally",
+            (false, _) => "off",
+        };
+        let model = model_label(board, group, &switch.name);
+        entries.push(
+            Entry::text(
+                format!("group:{name}:{}", switch.name),
+                String::new(),
+                format!(
+                    "{} is {status} for the {name} group of this task: {}\nModel: {model}{}.\nSpace turns it {}; Enter chooses the model.",
+                    switch.name,
+                    if group_on && switch.enabled {
+                        "new agents of the group may start on it."
+                    } else {
+                        "no new agent of the group starts on it; agents already on it keep running."
+                    },
+                    if model.ends_with('*') {
+                        " (* the default: none picked for this task)"
+                    } else {
+                        ""
+                    },
+                    if group_on { "off" } else { "on" }
+                ),
+                false,
+            )
+            .toned(vec![
+                (format!("{pill}  "), tone),
+                (
+                    format!("{:<13}", switch.name),
+                    if group_on && switch.enabled {
+                        Tone::Strong
+                    } else {
+                        Tone::Muted
+                    },
+                ),
+                (format!("{status} · {model}"), Tone::Muted),
+            ])
+            .with_tail("enter: model"),
+        );
+    }
+    if group == Group::Floor {
+        let floor = &board.opencode.floor;
+        let model = match (
+            group_model(board, group, &board.opencode.account),
+            floor.model.as_deref(),
+        ) {
+            (Some(picked), _) => picked.to_string(),
+            (None, Some(menu)) => format!("{menu}*"),
+            (None, None) => "no model chosen".to_string(),
+        };
+        let status = match (floor.enabled, board.opencode.enabled) {
+            (true, true) => format!("on · {model}"),
+            (true, false) => format!("on · held off globally · {model}"),
+            (false, _) => format!("off · {model}"),
+        };
+        entries.push(
+            opencode_entry(
+                "floor",
+                floor.enabled && board.opencode.enabled,
+                floor.enabled,
+                &status,
+                "OpenCode for the floor (every task, as in the devws menu)",
+            )
+            .with_tail("enter: model"),
+        );
+    }
+    entries
+}
+
+/// The model `group`'s agents start with on `account`: the one picked on the
+/// board, else the defaults (each role's, or the program's own), each marked
+/// `*`.
+pub fn model_label(board: &Board, group: Group, account: &str) -> String {
+    if let Some(picked) = group_model(board, group, account) {
+        return picked.to_string();
+    }
+    let defaults = default_models(board, group, account);
+    if defaults.is_empty() {
+        return "program default*".to_string();
+    }
+    defaults
+        .iter()
+        .map(|model| format!("{model}*"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// What `group`'s agents start with on `account` when nothing is picked.
+pub fn default_models<'a>(board: &'a Board, group: Group, account: &str) -> &'a [String] {
+    board
+        .default_models
+        .get(&group)
+        .and_then(|accounts| accounts.get(account))
+        .map_or(&[], Vec::as_slice)
+}
+
+/// The model the user picked on the board for `group`'s agents on `account`.
+pub fn group_model<'a>(board: &'a Board, group: Group, account: &str) -> Option<&'a str> {
+    board
+        .group_models
+        .get(&group)
+        .and_then(|models| models.get(account))
+        .map(String::as_str)
 }
 
 fn member_label(mark: &str, name: &str, program: &str) -> Vec<(String, Tone)> {
@@ -620,7 +798,13 @@ fn account_summary(board: &Board) -> String {
     board
         .switches
         .iter()
-        .map(|switch| format!("{} {}", switch.name, if switch.enabled { "on" } else { "off" }))
+        .map(|switch| {
+            format!(
+                "{} {}",
+                switch.name,
+                if switch.enabled { "on" } else { "off" }
+            )
+        })
         .collect::<Vec<_>>()
         .join(" · ")
         + " (switch them in the ACCOUNTS card)"
@@ -982,6 +1166,16 @@ fn percent(value: Option<u32>) -> String {
     value.map_or_else(|| "—".to_string(), |value| format!("{value}%"))
 }
 
+/// A prepaid account has no limits: what it has left. Zen has no balance
+/// API: the balance is the one the user entered (the opencode module's credit.sh).
+fn credit_left(credit: &crate::devws::Credit) -> String {
+    format!(
+        "${:.2} left of ${:.2} (estimated)",
+        credit.left(),
+        credit.balance
+    )
+}
+
 fn account_lines(board: &Board) -> Vec<Line<'static>> {
     if board.accounts.is_empty() {
         return vec![Line::styled("No agent is running.", DIM)];
@@ -992,11 +1186,14 @@ fn account_lines(board: &Board) -> Vec<Line<'static>> {
         .map(|account| {
             Line::from(vec![
                 Span::styled(format!("{:<14}", account.name), BOLD),
-                Span::raw(format!(
-                    "5 h {:<5} week {}",
-                    percent(account.five_hour),
-                    percent(account.week)
-                )),
+                Span::raw(match &account.credit {
+                    Some(credit) => credit_left(credit),
+                    None => format!(
+                        "5 h {:<5} week {}",
+                        percent(account.five_hour),
+                        percent(account.week)
+                    ),
+                }),
             ])
         })
         .collect()
@@ -1541,6 +1738,11 @@ fn header(
         .unwrap_or(0);
     for account in &board.accounts {
         let mut spans = vec![Span::raw(format!(" {:<name_width$}  ", account.name))];
+        if let Some(credit) = &account.credit {
+            spans.push(Span::raw(credit_left(credit)));
+            rows.push(Line::from(spans));
+            continue;
+        }
         spans.extend(limit("5h", account.five_hour));
         // Narrow panes keep the 5-hour window: it runs out first.
         if width >= 60 {
@@ -1790,6 +1992,11 @@ pub enum Message<'a> {
     Offered,
     Writing(&'a str),
     Sent,
+    /// A value typed into the dialog itself (a model), its box titled.
+    Field {
+        title: &'a str,
+        text: &'a str,
+    },
 }
 
 /// Whose details take a message for the leader, and what it is about: the
@@ -1831,7 +2038,12 @@ fn hint_line(message: Message, width: usize) -> Line<'static> {
             .to_string()
     };
     match message {
-        Message::Writing(_) => Line::styled(fitting(&["Enter send · Esc cancel", "Enter · Esc"]), DIM),
+        Message::Writing(_) => {
+            Line::styled(fitting(&["Enter send · Esc cancel", "Enter · Esc"]), DIM)
+        }
+        Message::Field { .. } => {
+            Line::styled(fitting(&["Enter choose · Esc back", "Enter · Esc"]), DIM)
+        }
         Message::Sent => Line::from(vec![
             Span::styled("Sent to the leader ✓", Style::new().fg(Color::Green)),
             Span::styled(" · Esc/q close", DIM),
@@ -1843,16 +2055,24 @@ fn hint_line(message: Message, width: usize) -> Line<'static> {
 /// The input box over the hint row: the message being written, its end and
 /// the cursor in view, or how to start one.
 fn draw_input(buffer: &mut Buffer, area: Rect, message: Message) {
-    let writing = matches!(message, Message::Writing(_));
+    let writing = matches!(message, Message::Writing(_) | Message::Field { .. });
+    let title = match message {
+        Message::Field { title, .. } => format!(" {title} "),
+        _ => " To the leader ".to_string(),
+    };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(if writing { Style::new().fg(Color::Cyan) } else { DIM })
-        .title(Line::styled(" To the leader ", if writing { BOLD } else { DIM }));
+        .border_style(if writing {
+            Style::new().fg(Color::Cyan)
+        } else {
+            DIM
+        })
+        .title(Line::styled(title, if writing { BOLD } else { DIM }));
     let inner = block.inner(area);
     block.render(area, buffer);
     let room = usize::from(inner.width).saturating_sub(1);
     let line = match message {
-        Message::Writing(text) => {
+        Message::Writing(text) | Message::Field { text, .. } => {
             let skip = text.chars().count().saturating_sub(room);
             Line::from(vec![
                 Span::raw(text.chars().skip(skip).collect::<String>()),
@@ -1980,7 +2200,10 @@ pub fn draw_dialog(
     if !body.is_empty() {
         Paragraph::new(crate::details_view::text(content))
             .wrap(Wrap { trim: false })
-            .scroll((scroll.min(dialog_scroll_max(content, width, height, input)), 0))
+            .scroll((
+                scroll.min(dialog_scroll_max(content, width, height, input)),
+                0,
+            ))
             .render(body, buffer);
     }
     if inner.height >= 2 {

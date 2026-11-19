@@ -5,10 +5,9 @@ mod board;
 mod board_tui;
 mod board_usage;
 mod board_view;
-mod details_view;
-mod seen;
 mod check_profiles;
 mod checks;
+mod details_view;
 mod devws;
 mod executable;
 mod execution;
@@ -21,17 +20,23 @@ mod lanes;
 mod leader;
 mod log;
 mod mcp;
+mod memory;
 mod milestones;
+mod notes;
+mod opencode;
+mod opencode_worker;
 mod orders;
 mod panel_view;
 mod performance;
 mod plans;
+mod providers;
 mod prs;
 mod questions;
 mod recovery;
 mod reviews;
 mod roles;
 mod runner;
+mod seen;
 mod specs;
 mod start;
 mod state;
@@ -45,7 +50,7 @@ mod workflow;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use devws::CommandDevws;
+use devws::{CommandDevws, Devws};
 use home::Home;
 use std::io::Read;
 use std::path::PathBuf;
@@ -128,6 +133,11 @@ enum Command {
     Role {
         #[command(subcommand)]
         action: RoleAction,
+    },
+    /// Team agents on opencode: the switches and the models
+    Opencode {
+        #[command(subcommand)]
+        action: OpencodeAction,
     },
     /// The leader's program
     Leader {
@@ -274,7 +284,8 @@ enum TaskAction {
     /// folder, never in the project
     Graph { task: String, switch: Switch },
     /// You allow a step more attempts than the task's limit (orders and
-    /// reviews asking for changes): `limit` in all. The leader cannot.
+    /// reviews asking for changes): `limit` in all. The leader can only
+    /// record your yes from its conversation (allow_attempts).
     Attempts {
         task: String,
         step: String,
@@ -318,6 +329,48 @@ enum RoleAction {
     },
 }
 
+#[derive(Subcommand)]
+enum OpencodeAction {
+    /// The switches, the groups' models and the account, tab-separated
+    Show,
+    /// Turn a switch on or off. `global` is mandatory: while it is off,
+    /// opencode runs no agent, whatever the groups' switches say
+    Switch { switch: SwitchArg, state: OnOff },
+    /// The model a group runs on opencode (`provider/model`, as `opencode
+    /// models` lists it); an empty one removes it
+    Model { group: GroupArg, model: String },
+    /// The devws agent that runs opencode (`DEVWS_AGENTS`)
+    Account { name: String },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum SwitchArg {
+    Global,
+    Floor,
+    Senior,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum GroupArg {
+    Floor,
+    Senior,
+}
+
+impl From<GroupArg> for roles::Group {
+    fn from(group: GroupArg) -> Self {
+        match group {
+            GroupArg::Floor => roles::Group::Floor,
+            GroupArg::Senior => roles::Group::Senior,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, ValueEnum)]
+enum OnOff {
+    On,
+    Off,
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum SettingArg {
     Model,
@@ -345,6 +398,18 @@ enum LeaderAction {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Move the leader to an account you pick, any that can lead, once its
+    /// turn is over; it starts there from then on
+    Use {
+        task: String,
+        /// The devws account (`leader choices` lists them)
+        agent: String,
+        /// Why, for the log and the new leader
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// The accounts that can lead: name, program and how each stands, tab-separated
+    Choices { task: String },
 }
 
 #[derive(Subcommand)]
@@ -376,14 +441,14 @@ fn this_pane() -> Result<String> {
     std::env::var("TMUX_PANE").context("this is run by a team agent, in its pane (no TMUX_PANE)")
 }
 
-/// Claude or Codex: the program of the role's agent (`claude_work` is a
+/// Claude, Codex, opencode or Antigravity: the program of the role's agent (`claude_work` is a
 /// Claude account), which decides the values its settings take.
 fn role_kind(
     home: &Home,
     repo: Option<&std::path::Path>,
     name: &str,
     devws: &dyn devws::Devws,
-) -> Result<agent_args::Kind> {
+) -> Result<providers::Kind> {
     let roles = roles::Roles::load(home, repo)?;
     let role = roles
         .get(name)
@@ -720,12 +785,68 @@ fn run() -> Result<()> {
                 println!("{choice}");
             }
         }
+        Command::Opencode { action } => {
+            let mut settings = opencode::OpencodeSettings::load(&home)?;
+            match action {
+                OpencodeAction::Show => {
+                    println!("{}", settings.describe());
+                    return Ok(());
+                }
+                OpencodeAction::Switch { switch, state } => {
+                    let on = state == OnOff::On;
+                    match switch {
+                        SwitchArg::Global => settings.enabled = on,
+                        SwitchArg::Floor => settings.floor.enabled = on,
+                        SwitchArg::Senior => settings.senior.enabled = on,
+                    }
+                }
+                OpencodeAction::Model { group, model } => {
+                    let model = model.trim();
+                    if !model.is_empty() && !model.contains('/') {
+                        bail!(
+                            "name the model as provider/model, as `opencode models` lists it: {model}"
+                        );
+                    }
+                    settings.group_mut(group.into())?.model =
+                        Some(model.to_string()).filter(|model| !model.is_empty());
+                }
+                OpencodeAction::Account { name } => {
+                    devws.agent_kind(&name).ok().filter(|kind| kind.provider().own_switches()).with_context(|| {
+                        format!("{name} is not a devws opencode agent: register it in the devws menu")
+                    })?;
+                    settings.account = name;
+                }
+            }
+            settings.save(&home)?;
+            println!(
+                "{}\nAgents started from now on follow it; running ones keep theirs.",
+                settings.describe()
+            );
+        }
         Command::Leader {
             action: LeaderAction::Switch { task, reason },
         } => println!(
             "{}",
             leader::request_switch(&home, &open(&task)?, &devws, reason.as_deref())?
         ),
+        Command::Leader {
+            action:
+                LeaderAction::Use {
+                    task,
+                    agent,
+                    reason,
+                },
+        } => println!(
+            "{}",
+            leader::request_lead(&home, &open(&task)?, &devws, &agent, reason.as_deref())?
+        ),
+        Command::Leader {
+            action: LeaderAction::Choices { task },
+        } => {
+            for line in leader::choices(&open(&task)?, &devws)? {
+                println!("{line}");
+            }
+        }
         Command::Plan {
             action: PlanAction::Write { task },
         } => {
@@ -877,10 +998,17 @@ fn run() -> Result<()> {
         } => {
             let pane = this_pane()?;
             let task = task_of_this_pane(&home)?;
-            let outcome = match outcome {
-                ReportOutcome::Done => orders::Outcome::Done,
-                ReportOutcome::Blocked => orders::Outcome::Blocked,
+            let (outcome, word) = match outcome {
+                ReportOutcome::Done => (orders::Outcome::Done, "done"),
+                ReportOutcome::Blocked => (orders::Outcome::Blocked, "blocked"),
             };
+            let state = task.state()?;
+            let reported = state.orders.iter().find(|each| each.id == order).cloned();
+            let author = state
+                .agents
+                .iter()
+                .find(|agent| agent.pane == pane)
+                .map(|agent| agent.id.clone());
             println!(
                 "{}",
                 orders::report(
@@ -892,6 +1020,10 @@ fn run() -> Result<()> {
                     orders::check_timeout()
                 )?
             );
+            // Every report is kept for the agents after it.
+            if let (Some(reported), Some(author)) = (reported, author) {
+                notes::record_report(&task, &devws, &author, &reported, word, &summary);
+            }
         }
         Command::Mcp { task } => {
             let task = open(&task)?;

@@ -4,9 +4,9 @@
 
 use crate::board_usage::{LEADER_NAME, TeamUsage};
 use crate::devws::{Devws, PaneState, Usage};
+use crate::log::Kind;
 use crate::roles::{Group, Role, Roles};
 use crate::state::LEADER;
-use crate::log::Kind;
 use crate::state::{Effect, LeaderWait, PermissionStatus, Step, StepStatus};
 use crate::task::Task;
 use anyhow::Result;
@@ -39,6 +39,14 @@ pub struct Board {
     /// Every registered account, and whether this task may start agents on
     /// it (the ACCOUNTS card).
     pub switches: Vec<AccountSwitch>,
+    /// OpenCode master and worker-group switches shown in the account panel.
+    pub opencode: crate::opencode::OpencodeSettings,
+    /// The models the user picked on the board for this task: group →
+    /// account → model.
+    pub group_models: BTreeMap<Group, BTreeMap<String, String>>,
+    /// The models a group's agents start with on an account when none is
+    /// picked: group → account → models (each role's, or its program's own).
+    pub default_models: BTreeMap<Group, BTreeMap<String, Vec<String>>>,
     /// Every role there is, running or not, by group: the CTO, the seniors,
     /// the factory floor.
     pub roles: Vec<RoleRow>,
@@ -74,7 +82,9 @@ pub struct Progress {
 
 impl Progress {
     fn of(state: &crate::state::State) -> Self {
-        let accepted = |step: &Step| step.status == StepStatus::Accepted;
+        // A closed step needs no more work: it counts as done.
+        let accepted =
+            |step: &Step| matches!(step.status, StepStatus::Accepted | StepStatus::Closed);
         if state.workflow != crate::execution::Workflow::Reviewed {
             return Self {
                 done: state.steps.iter().filter(|step| accepted(step)).count() as u32,
@@ -114,6 +124,8 @@ pub struct Account {
     pub name: String,
     pub five_hour: Option<u32>,
     pub week: Option<u32>,
+    /// A prepaid account's (opencode Zen), which has no plan limits.
+    pub credit: Option<crate::devws::Credit>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -124,6 +136,12 @@ pub struct AccountSwitch {
     pub week: Option<u32>,
     /// The leader runs on it now.
     pub leader_on: bool,
+    /// Each worker group's own switch, whatever `enabled` says.
+    pub senior: bool,
+    pub floor: bool,
+    /// The program it runs. An opencode account is offered to the floor
+    /// only, and the home-wide OpenCode switches decide where it runs.
+    pub kind: crate::providers::Kind,
 }
 
 #[derive(Debug, PartialEq)]
@@ -241,6 +259,62 @@ pub struct QueueRow {
     pub label: String,
 }
 
+/// What `group`'s agents start with on each account when the user picked
+/// nothing: each of the group's roles that runs there (its own program, or a
+/// fallback or alternative) brings its model, the floor's rule applied, and a
+/// role that names none its program's own (`devws agent default-models`). An
+/// account no role runs on shows what one would: the floor's model, or its
+/// program's own.
+fn default_models(
+    devws: &dyn Devws,
+    roles: &Roles,
+    switches: &[AccountSwitch],
+) -> Result<BTreeMap<Group, BTreeMap<String, Vec<String>>>> {
+    // Informational: a program whose default cannot be read shows none.
+    let program = devws.default_models().unwrap_or_default();
+    let mut groups = BTreeMap::new();
+    for group in crate::accounts::WORKER_GROUPS {
+        let mut accounts = BTreeMap::new();
+        // A program on its own switches has its model chosen there (its own
+        // row).
+        for switch in switches
+            .iter()
+            .filter(|switch| !switch.kind.provider().own_switches())
+        {
+            let mut models: Vec<String> = Vec::new();
+            for role in roles.all().iter().filter(|role| role.group == group) {
+                let Some(kind) = crate::providers::Kind::parse(&role.agent)
+                    .or_else(|| devws.agent_kind(&role.agent).ok())
+                else {
+                    continue;
+                };
+                for candidate in role.worker_candidates(kind) {
+                    if candidate.agent != switch.name {
+                        continue;
+                    }
+                    if let Some(model) = candidate
+                        .model
+                        .or_else(|| program.get(&switch.name).cloned())
+                        && !models.contains(&model)
+                    {
+                        models.push(model);
+                    }
+                }
+            }
+            if models.is_empty() {
+                // A floor agent there would still run the floor's model.
+                models.extend(match group {
+                    Group::Floor => crate::roles::floor_model(switch.kind, None),
+                    _ => program.get(&switch.name).cloned(),
+                });
+            }
+            accounts.insert(switch.name.clone(), models);
+        }
+        groups.insert(group, accounts);
+    }
+    Ok(groups)
+}
+
 fn program(role: &Role) -> String {
     let mut parts = vec![role.agent.clone()];
     parts.extend(role.model.clone());
@@ -252,6 +326,7 @@ impl Board {
     pub fn build(task: &Task, devws: &dyn Devws, roles: &Roles, usage: TeamUsage) -> Result<Self> {
         let config = task.config()?;
         let state = task.state()?;
+        let opencode = crate::opencode::OpencodeSettings::load(&crate::home::Home::from_env()?)?;
         let step_title = |id: &str| {
             state
                 .steps
@@ -283,24 +358,8 @@ impl Board {
                         } else {
                             "read-only"
                         },
-                        if crate::agent_args::Kind::parse(&effective.agent)
-                            == Some(crate::agent_args::Kind::Codex)
-                        {
-                            effective.sandbox.as_deref().unwrap_or(if role.writes {
-                                "workspace-write"
-                            } else {
-                                "read-only"
-                            })
-                        } else {
-                            "provider-managed"
-                        },
-                        match crate::agent_args::Kind::parse(&effective.agent) {
-                            Some(crate::agent_args::Kind::Claude) =>
-                                crate::agent_args::claude_permission_mode(effective),
-                            Some(crate::agent_args::Kind::Codex) =>
-                                effective.approvals.as_deref().unwrap_or("on-request"),
-                            None => effective.approvals.as_deref().unwrap_or("provider-default"),
-                        },
+                        crate::providers::sandbox_label(effective),
+                        crate::providers::approvals_label(effective),
                     ),
                     // A leader on its fallback (leader.rs) shows the program it
                     // runs now.
@@ -419,14 +478,17 @@ impl Board {
         for name in accounts {
             let used = devws.limits(&name)?;
             limits.insert(name.clone(), used);
+            // Informational, as usage: an unreadable credit never stops the board.
+            let credit = devws.credit(&name).ok().flatten();
             account_rows.push(Account {
                 name,
                 five_hour: used.five_hour,
                 week: used.week,
+                credit,
             });
         }
         let mut switches = Vec::new();
-        for (name, _) in devws.accounts()? {
+        for (name, kind) in devws.accounts()? {
             let used = match limits.get(&name) {
                 Some(used) => *used,
                 None => devws.limits(&name)?,
@@ -434,11 +496,16 @@ impl Board {
             switches.push(AccountSwitch {
                 enabled: crate::accounts::is_enabled(&state, &name),
                 leader_on: leader_account.as_deref() == Some(name.as_str()),
+                senior: crate::accounts::is_group_switch_on(&state, &name, Group::Senior),
+                floor: crate::accounts::is_group_switch_on(&state, &name, Group::Floor),
+                kind,
                 five_hour: used.five_hour,
                 week: used.week,
                 name,
             });
         }
+
+        let default_models = default_models(devws, roles, &switches)?;
 
         let done: Vec<StepRow> = state
             .steps
@@ -662,6 +729,9 @@ impl Board {
             summary: summary.join(" "),
             accounts: account_rows,
             switches,
+            opencode,
+            group_models: state.group_models.clone(),
+            default_models,
             roles: rows,
             questions,
             leader_question: leader_question(&task.log_lines()?, state.leader_wait),
@@ -716,12 +786,7 @@ fn split_reviews(
     let leader_working = leader_state == Some(PaneState::Working);
     let mut leader_review = Vec::new();
     let mut stale_review = Vec::new();
-    for step in steps.iter().filter(|step| {
-        matches!(
-            step.status,
-            StepStatus::Reported | StepStatus::Failed | StepStatus::Blocked | StepStatus::Rejected
-        )
-    }) {
+    for step in steps.iter().filter(|step| step.status.waits_for_leader()) {
         let waiting = step.review_since.map(|since| now.saturating_sub(since));
         let left = waiting.is_none_or(|seconds| seconds > STALE_REVIEW_SECS);
         if left && !leader_working {
@@ -739,10 +804,10 @@ fn split_reviews(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::agent_args::Kind as Program;
     use crate::devws::Limits;
     use crate::devws::fake::FakeDevws;
     use crate::home::Home;
+    use crate::providers::Kind as Program;
     use crate::start::start_task;
     use crate::team::Team;
     use std::fs;
@@ -850,10 +915,55 @@ pub(crate) mod tests {
             [Account {
                 name: "claude".into(),
                 five_hour: Some(40),
-                week: None
+                week: None,
+                credit: None
             }]
         );
         assert_eq!(board.summary, "No plan yet. 1 working.");
+    }
+
+    #[test]
+    fn each_group_s_default_model_on_an_account_is_its_roles_or_the_program_s() {
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, _repo) = started(&dir);
+        let devws = devws
+            .with_kind("codex", Program::Codex)
+            .with_kind("claude_work", Program::Claude)
+            .with_default_model("claude", "opus")
+            .with_default_model("claude_work", "opus")
+            .with_default_model("codex", "gpt-6.2-sol");
+        let roles = Roles::load(&home, None).unwrap();
+        let board = Board::build(&task, &devws, &roles, TeamUsage::default()).unwrap();
+        let defaults = |group: Group, account: &str| board.default_models[&group][account].clone();
+        assert_eq!(
+            defaults(Group::Senior, "claude"),
+            ["opus"],
+            "the planner names none: Claude's own"
+        );
+        assert_eq!(
+            defaults(Group::Senior, "codex"),
+            ["gpt-6.1-sol"],
+            "the planner's fallback names one"
+        );
+        assert_eq!(
+            defaults(Group::Floor, "claude"),
+            [crate::providers::FLOOR_CLAUDE_MODEL],
+            "the floor's rule"
+        );
+        assert_eq!(
+            defaults(Group::Floor, "codex"),
+            [crate::providers::FLOOR_CODEX_MODEL]
+        );
+        assert_eq!(
+            defaults(Group::Senior, "claude_work"),
+            ["opus"],
+            "no role runs there: its program's own"
+        );
+        assert_eq!(
+            defaults(Group::Floor, "claude_work"),
+            [crate::providers::FLOOR_CLAUDE_MODEL],
+            "no role runs there: the floor's would"
+        );
     }
 
     #[test]
@@ -867,6 +977,8 @@ pub(crate) mod tests {
         };
         team.spawn_agent("planner", None).unwrap();
         let order = |id: &str, step: &str| crate::state::Order {
+            read: Vec::new(),
+            targets: Vec::new(),
             id: id.into(),
             step: step.into(),
             agent: "planner-1".into(),
@@ -944,7 +1056,11 @@ pub(crate) mod tests {
             line("escalate", "leader", "old question"),
             line("escalate", "leader", "Which runner, A or B?"),
             line("report", "hammer-1", "done"),
-            line("escalate", "leader", "Permission p148 requested for application_workflow (external)"),
+            line(
+                "escalate",
+                "leader",
+                "Permission p148 requested for application_workflow (external)",
+            ),
             "not json".to_string(),
         ];
         assert_eq!(
@@ -952,7 +1068,11 @@ pub(crate) mod tests {
             Some("Which runner, A or B?")
         );
         assert_eq!(leader_question(&lines, LeaderWait::No), None, "answered");
-        assert_eq!(leader_question(&lines[2..], LeaderWait::Asked), None, "only a permission");
+        assert_eq!(
+            leader_question(&lines[2..], LeaderWait::Asked),
+            None,
+            "only a permission"
+        );
     }
 
     #[test]
@@ -1057,6 +1177,8 @@ pub(crate) mod tests {
                 review_since: None,
             });
             tx.state.orders.push(crate::state::Order {
+                read: Vec::new(),
+                targets: Vec::new(),
                 id: "o1".into(),
                 step: "s1".into(),
                 agent: planner.id.clone(),
@@ -1072,6 +1194,7 @@ pub(crate) mod tests {
             });
             let number = tx.state.next_number();
             tx.state.queue.push(crate::state::Message {
+                response_probe: false,
                 id: number,
                 to: planner.id.clone(),
                 text: "ORDER o1".into(),

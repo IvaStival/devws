@@ -1,7 +1,7 @@
 # devws guide
 
 devws turns each project into a workspace that survives restarts: an
-editor, a coding agent (Claude Code or Codex) and a terminal side by side,
+editor, a coding agent (Claude Code, Codex, opencode or Antigravity) and a terminal side by side,
 one tmux session per branch, with the actions you need around them in one
 menu.
 
@@ -31,7 +31,7 @@ menu.
 | --- | ------------- |
 | Workspace | Open, start, and close workspaces, open an agent team, or detach |
 | Layout | Layouts, minimize, the header, panels, the editor |
-| Agent | Switch, restart, and follow agents, manage accounts and team roles, and access memory |
+| Agent | Switch, restart, and follow agents, team roles; Accounts…, Programs… and Memory… dialogs |
 | Team | Open team views or manage the leader in a team workspace |
 | Git | Commit, push, open a PR, and tidy merged branches |
 | JungleForge | Set up JungleForge, register apps, run branches, and manage services |

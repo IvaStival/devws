@@ -23,8 +23,12 @@ pub(crate) fn board() -> Board {
             name: "claude".into(),
             five_hour: Some(40),
             week: None,
+            credit: None,
         }],
         switches: vec![],
+        opencode: Default::default(),
+        group_models: Default::default(),
+        default_models: Default::default(),
         roles: vec![
             RoleRow {
                 name: "executor".into(),
@@ -432,12 +436,37 @@ fn the_done_card_scrolls_with_a_bar_and_too_short_a_pane_is_a_plain_list() {
 }
 
 #[test]
+fn a_prepaid_account_shows_its_credit_left_instead_of_limit_bars() {
+    let mut board = board_with_history();
+    board.accounts.push(crate::board::Account {
+        name: "opencode".into(),
+        five_hour: None,
+        week: None,
+        credit: Some(crate::devws::Credit {
+            balance: 20.0,
+            used: 7.5,
+        }),
+    });
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let mut nav = Navigation::new(View::Overview);
+    nav.reconcile(&rows);
+    let text = plain(&screen(&board, &nav, &rows, 84, 40, None));
+    let line = text
+        .lines()
+        .find(|line| line.contains("opencode"))
+        .unwrap_or_else(|| panic!("no opencode line: {text}"));
+    assert!(line.contains("$12.50 left of $20.00"), "{line}");
+    assert!(!line.contains("5h"), "{line}");
+}
+
+#[test]
 fn the_header_has_the_count_the_tabs_the_progress_and_limit_bars() {
     let mut board = board_with_history();
     board.accounts.push(crate::board::Account {
         name: "codex".into(),
         five_hour: Some(9),
         week: Some(87),
+        credit: None,
     });
     let rows = entries(&board, View::Overview, false, &[], None);
     let mut nav = Navigation::new(View::Overview);
@@ -796,7 +825,10 @@ fn drawn_body(
             .collect::<String>()
             .contains('▸')
     });
-    dialog_body_of(dialog_area(&rows[nav.index].detail, width, height, anchor, false), false)
+    dialog_body_of(
+        dialog_area(&rows[nav.index].detail, width, height, anchor, false),
+        false,
+    )
 }
 
 #[test]
@@ -1126,13 +1158,19 @@ fn a_review_the_leader_left_is_in_its_backlog_not_under_needs_you() {
         .map(|entry| entry.id.as_str())
         .collect();
     assert!(!needs_you.contains(&"step:s0"), "{needs_you:?}");
-    assert_eq!(crate::board_view::message_about("step:s0"), Some(crate::leader::About::Step("s0".into())));
+    assert_eq!(
+        crate::board_view::message_about("step:s0"),
+        Some(crate::leader::About::Step("s0".into()))
+    );
 
     let mut unknown = board;
     unknown.stale_review[0].waiting = None;
     let rows = entries(&unknown, View::Overview, false, &[], None);
     let stale = rows.iter().find(|entry| entry.id == "step:s0").unwrap();
-    assert_eq!(stale.tail, "check failed", "no time known: its state instead");
+    assert_eq!(
+        stale.tail, "check failed",
+        "no time known: its state instead"
+    );
 }
 
 #[test]
@@ -1147,7 +1185,11 @@ fn the_leader_question_to_you_comes_first_under_needs_you() {
     let asks = &rows[needs_you + 2];
     assert_eq!(asks.id, "leader-asks");
     assert_eq!(asks.label, "● leader asks: A or B for the runner?");
-    assert!(asks.detail.contains("A or B for the runner?"), "{}", asks.detail);
+    assert!(
+        asks.detail.contains("A or B for the runner?"),
+        "{}",
+        asks.detail
+    );
     assert_eq!(
         crate::board_view::message_about("leader-asks"),
         Some(crate::leader::About::General)
@@ -1217,7 +1259,11 @@ fn a_step_that_failed_for_good_needs_you_with_a_red_cross() {
     assert_eq!(step_mark(StepStatus::Exhausted), '✕');
     assert_eq!(mark_color(Some('✕')), Some(Color::Red));
     assert_eq!(step_word(StepStatus::Exhausted), "failed");
-    assert_ne!(step_word(StepStatus::Failed), "failed", "two statuses, one word");
+    assert_ne!(
+        step_word(StepStatus::Failed),
+        "failed",
+        "two statuses, one word"
+    );
     assert!(failed.attention);
 }
 
@@ -1226,59 +1272,305 @@ fn the_accounts_card_sits_under_the_leader_with_a_switch_for_each() {
     use crate::board::AccountSwitch;
     let mut board = board();
     board.switches = vec![
-        AccountSwitch { name: "codex".into(), enabled: true, five_hour: Some(19), week: Some(41), leader_on: true },
-        AccountSwitch { name: "claude".into(), enabled: false, five_hour: Some(40), week: Some(22), leader_on: false },
-        AccountSwitch { name: "claude_work".into(), enabled: false, five_hour: None, week: None, leader_on: true },
+        AccountSwitch {
+            name: "codex".into(),
+            enabled: true,
+            five_hour: Some(19),
+            week: Some(41),
+            leader_on: true,
+            senior: true,
+            floor: true,
+            kind: crate::providers::Kind::Claude,
+        },
+        AccountSwitch {
+            name: "claude".into(),
+            enabled: false,
+            five_hour: Some(40),
+            week: Some(22),
+            leader_on: false,
+            senior: true,
+            floor: false,
+            kind: crate::providers::Kind::Claude,
+        },
+        AccountSwitch {
+            name: "claude_work".into(),
+            enabled: false,
+            five_hour: None,
+            week: None,
+            leader_on: true,
+            senior: true,
+            floor: true,
+            kind: crate::providers::Kind::Claude,
+        },
     ];
     let rows = entries(&board, View::Overview, false, &[], None);
-    let place = |id: &str| rows.iter().position(|entry| entry.id == id).unwrap_or_else(|| panic!("no {id}"));
+    let place = |id: &str| {
+        rows.iter()
+            .position(|entry| entry.id == id)
+            .unwrap_or_else(|| panic!("no {id}"))
+    };
     assert!(place("leader") < place("heading:ACCOUNTS"));
     assert!(place("heading:ACCOUNTS") < place("account:codex"));
     assert_eq!(rows[place("heading:ACCOUNTS")].tail, "space on/off");
 
     let text = |id: &str| rows[place(id)].label.clone();
-    assert!(text("account:codex").starts_with("[━━● on ]  codex"), "{}", text("account:codex"));
-    assert!(text("account:codex").contains("5h 19%  wk 41%"), "{}", text("account:codex"));
-    assert!(text("account:claude").starts_with("[○━━ off]  claude"), "{}", text("account:claude"));
+    assert!(
+        text("account:codex").starts_with("[━━● on ]  codex"),
+        "{}",
+        text("account:codex")
+    );
+    assert!(
+        text("account:codex").contains("5h 19%  wk 41%"),
+        "{}",
+        text("account:codex")
+    );
+    assert!(
+        text("account:claude").starts_with("[○━━ off]  claude"),
+        "{}",
+        text("account:claude")
+    );
     assert_eq!(rows[place("account:codex")].parts[0].1, Tone::On);
     assert_eq!(rows[place("account:claude")].parts[0].1, Tone::Muted);
-    assert_eq!(rows[place("account:claude_work")].tail, "leader still on it");
-    assert_eq!(rows[place("account:codex")].tail, "", "on, and the leader on it: nothing to say");
-    assert!(leader_detail(&board).contains("codex on · claude off · claude_work off"), "{}", leader_detail(&board));
+    assert_eq!(
+        rows[place("account:claude_work")].tail,
+        "leader still on it"
+    );
+    assert_eq!(
+        rows[place("account:codex")].tail,
+        "",
+        "on, and the leader on it: nothing to say"
+    );
+    assert!(
+        leader_detail(&board).contains("codex on · claude off · claude_work off"),
+        "{}",
+        leader_detail(&board)
+    );
+}
+
+#[test]
+fn each_worker_group_has_its_own_account_switches_and_opencode_is_floor_only() {
+    use crate::board::AccountSwitch;
+    let mut board = board();
+    let switch =
+        |name: &str, enabled: bool, senior: bool, floor: bool, is_opencode: bool| AccountSwitch {
+            name: name.into(),
+            enabled,
+            five_hour: None,
+            week: None,
+            leader_on: false,
+            senior,
+            floor,
+            kind: if is_opencode {
+                crate::providers::Kind::Opencode
+            } else {
+                crate::providers::Kind::Claude
+            },
+        };
+    board.switches = vec![
+        switch("codex", true, true, false, false),
+        switch("claude", false, true, true, false),
+        switch("zen", true, true, true, true),
+    ];
+    board.opencode.enabled = true;
+    board.opencode.floor.enabled = true;
+    board.opencode.floor.model = Some("opencode/deepseek-v4.1-flash".into());
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let place = |id: &str| rows.iter().position(|entry| entry.id == id);
+    let label = |id: &str| {
+        rows[place(id).unwrap_or_else(|| panic!("no {id}"))]
+            .label
+            .clone()
+    };
+
+    assert!(place("heading:ACCOUNTS") < place("opencode:global"));
+    assert!(place("opencode:global") < place("heading:SENIOR ACCOUNTS"));
+    assert!(place("heading:SENIOR ACCOUNTS") < place("group:senior:codex"));
+    assert!(place("group:senior:codex") < place("heading:FLOOR ACCOUNTS"));
+    assert!(place("heading:FLOOR ACCOUNTS") < place("group:floor:codex"));
+    assert!(place("group:floor:codex") < place("opencode:floor"));
+    assert_eq!(
+        place("opencode:senior"),
+        None,
+        "OpenCode is offered to the floor only"
+    );
+    assert_eq!(
+        place("group:senior:zen"),
+        None,
+        "an opencode account is not a senior's"
+    );
+    assert_eq!(
+        place("group:floor:zen"),
+        None,
+        "the OpenCode floor switch stands for it"
+    );
+    assert!(place("account:zen").is_some(), "its global switch stays");
+
+    assert!(label("group:senior:codex").starts_with("[━━● on ]  codex"));
+    assert!(label("group:floor:codex").starts_with("[○━━ off]  codex"));
+    assert!(
+        label("group:senior:claude").contains("held off globally"),
+        "{}",
+        label("group:senior:claude")
+    );
+    assert!(label("group:senior:claude").starts_with("[○━━ off]"));
+    assert!(
+        label("opencode:floor").starts_with("[━━● on ]  opencode")
+            && label("opencode:floor").contains("opencode/deepseek-v4.1-flash"),
+        "{}",
+        label("opencode:floor")
+    );
+    board.opencode.enabled = false;
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let floor = rows
+        .iter()
+        .find(|entry| entry.id == "opencode:floor")
+        .unwrap();
+    assert!(floor.label.starts_with("[○━━ off]") && floor.label.contains("held off globally"));
+}
+
+#[test]
+fn a_group_account_row_shows_the_model_picked_for_the_task() {
+    use crate::board::AccountSwitch;
+    let mut board = board();
+    board.switches = vec![AccountSwitch {
+        name: "codex".into(),
+        enabled: true,
+        five_hour: None,
+        week: None,
+        leader_on: false,
+        senior: true,
+        floor: true,
+        kind: crate::providers::Kind::Codex,
+    }];
+    board.opencode.floor.model = Some("opencode/glm-5.3-flash-free".into());
+    board.group_models.insert(
+        Group::Floor,
+        [
+            ("codex".to_string(), "gpt-6-luna".to_string()),
+            (
+                "opencode".to_string(),
+                "deepseek/deepseek-flash".to_string(),
+            ),
+        ]
+        .into(),
+    );
+    board.default_models.insert(
+        Group::Senior,
+        [(
+            "codex".to_string(),
+            vec!["gpt-6.2-sol".to_string(), "gpt-6.1-sol".to_string()],
+        )]
+        .into(),
+    );
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let row = |id: &str| rows.iter().find(|entry| entry.id == id).unwrap();
+    assert!(
+        row("group:floor:codex").label.ends_with("on · gpt-6-luna"),
+        "a pick shows without a mark"
+    );
+    assert_eq!(row("group:floor:codex").tail, "enter: model");
+    assert!(
+        row("group:senior:codex")
+            .label
+            .ends_with("on · gpt-6.2-sol*, gpt-6.1-sol*"),
+        "the defaults, each marked: {}",
+        row("group:senior:codex").label
+    );
+    assert!(row("group:senior:codex").detail.contains("* the default"));
+    assert!(
+        row("opencode:floor")
+            .label
+            .contains("deepseek/deepseek-flash"),
+        "the task's pick over the devws menu's: {}",
+        row("opencode:floor").label
+    );
+    board.group_models.clear();
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let label = &rows
+        .iter()
+        .find(|entry| entry.id == "opencode:floor")
+        .unwrap()
+        .label;
+    assert!(
+        label.contains("opencode/glm-5.3-flash-free*"),
+        "the devws menu's model is OpenCode's default: {label}"
+    );
 }
 
 #[test]
 fn a_dialog_that_takes_a_message_has_an_input_box() {
     let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 16));
-    draw_dialog(&mut buffer, "B1-1-AT", "Blocked.", 0, None, Message::Offered);
+    draw_dialog(
+        &mut buffer,
+        "B1-1-AT",
+        "Blocked.",
+        0,
+        None,
+        Message::Offered,
+    );
     let text = plain(&buffer);
-    assert!(text.contains("To the leader"), "the box is there before writing: {text}");
+    assert!(
+        text.contains("To the leader"),
+        "the box is there before writing: {text}"
+    );
     assert!(text.contains("Enter, m or a click to write"), "{text}");
 
     let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 16));
     let long = "accept it if the checkpoint passed and then send the docs lane its order";
-    draw_dialog(&mut buffer, "B1-1-AT", "Blocked.", 0, None, Message::Writing(long));
+    draw_dialog(
+        &mut buffer,
+        "B1-1-AT",
+        "Blocked.",
+        0,
+        None,
+        Message::Writing(long),
+    );
     let text = plain(&buffer);
-    assert!(text.contains("its order▏"), "the end of a long text shows: {text}");
+    assert!(
+        text.contains("its order▏"),
+        "the end of a long text shows: {text}"
+    );
     assert!(text.contains("Enter send · Esc cancel"), "{text}");
 
     let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 16));
     draw_dialog(&mut buffer, "B1-1-AT", "Blocked.", 0, None, Message::Sent);
-    assert!(plain(&buffer).contains("Sent to the leader ✓"), "{}", plain(&buffer));
+    assert!(
+        plain(&buffer).contains("Sent to the leader ✓"),
+        "{}",
+        plain(&buffer)
+    );
 
     let mut buffer = Buffer::empty(Rect::new(0, 0, 60, 16));
     draw_dialog(&mut buffer, "agent", "Details.", 0, None, Message::None);
-    assert!(!plain(&buffer).contains("To the leader"), "no box where no message goes");
+    assert!(
+        !plain(&buffer).contains("To the leader"),
+        "no box where no message goes"
+    );
 }
 
 #[test]
 fn every_needs_you_row_takes_a_message_about_itself() {
     use crate::leader::About;
-    assert_eq!(message_about("permission:p32"), Some(About::Permission("p32".into())));
-    assert_eq!(message_about("question:q7"), Some(About::Question("q7".into())));
-    assert_eq!(message_about("attention:hammer-5"), Some(About::Agent("hammer-5".into())));
-    assert_eq!(message_about("step:B1-1-AT"), Some(About::Step("B1-1-AT".into())));
-    assert_eq!(message_about("failed:B1-1-AT"), Some(About::Step("B1-1-AT".into())));
+    assert_eq!(
+        message_about("permission:p32"),
+        Some(About::Permission("p32".into()))
+    );
+    assert_eq!(
+        message_about("question:q7"),
+        Some(About::Question("q7".into()))
+    );
+    assert_eq!(
+        message_about("attention:hammer-5"),
+        Some(About::Agent("hammer-5".into()))
+    );
+    assert_eq!(
+        message_about("step:B1-1-AT"),
+        Some(About::Step("B1-1-AT".into()))
+    );
+    assert_eq!(
+        message_about("failed:B1-1-AT"),
+        Some(About::Step("B1-1-AT".into()))
+    );
     assert_eq!(message_about("leader"), Some(About::General));
     assert_eq!(message_about("agent:hammer-5"), None);
     assert_eq!(message_about("account:codex"), None);
@@ -1287,12 +1579,19 @@ fn every_needs_you_row_takes_a_message_about_itself() {
 #[test]
 fn a_needs_you_row_already_opened_or_answered_no_longer_calls() {
     let draw = |seen: Seen| {
-        let mut entry = Entry::text("permission:p1".into(), "⚠ p1 runner".into(), "x".into(), true);
+        let mut entry = Entry::text(
+            "permission:p1".into(),
+            "⚠ p1 runner".into(),
+            "x".into(),
+            true,
+        );
         entry.seen = seen;
         let area = Rect::new(0, 0, 30, 1);
         let mut buffer = Buffer::empty(area);
         entry_line(&entry, false, area, &mut buffer);
-        let text: String = (0..30).map(|x| buffer[(x, 0)].symbol().to_string()).collect();
+        let text: String = (0..30)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
         (text, buffer[(4, 0)].fg)
     };
     let (_, new) = draw(Seen::New);

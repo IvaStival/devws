@@ -28,8 +28,8 @@ pub struct State {
     pub environment_preflight: std::collections::BTreeMap<String, crate::runner::Preflight>,
     pub message_created: std::collections::BTreeMap<u64, u64>,
     pub worker_turns: std::collections::BTreeMap<String, Message>,
-    /// Provider conversations of managed workers that do not derive theirs
-    /// from their identity (a Codex reviewer's thread).
+    /// Managed provider conversations: Codex threads use the worker ID;
+    /// OpenCode uses `opencode/<worker>` to keep fallback sessions apart.
     pub worker_sessions: std::collections::BTreeMap<String, String>,
     /// The user let Codex run the read-only code reviewers of this reviewed
     /// task (`devagentics task codex-reviewers`).
@@ -50,9 +50,20 @@ pub struct State {
     /// Steps that used their attempts, and where devAgentics's one retry of
     /// each stands.
     pub step_retries: std::collections::BTreeMap<String, StepRetry>,
+    /// Steps the leader was reminded it left waiting, with the wait it was
+    /// reminded of (`review_since`, 0 when unknown): a new wait is reminded
+    /// again.
+    pub reminded_reviews: std::collections::BTreeMap<String, u64>,
     /// Accounts the user turned off for this task (the board's ACCOUNTS):
     /// no new agent starts on them.
     pub disabled_accounts: std::collections::BTreeSet<String>,
+    /// Accounts the user turned off for one group of this task (the board's
+    /// SENIOR and FLOOR ACCOUNTS): that group's new agents skip them.
+    pub disabled_group_accounts:
+        std::collections::BTreeMap<Group, std::collections::BTreeSet<String>>,
+    /// The model the user picked on the board for a group's agents on an
+    /// account (group → account → model); it replaces the role's own.
+    pub group_models: std::collections::BTreeMap<Group, std::collections::BTreeMap<String, String>>,
     pub amendments: Vec<Amendment>,
     pub check_evidence: std::collections::BTreeMap<String, crate::check_profiles::Evidence>,
     pub recovery: std::collections::BTreeMap<String, Recovery>,
@@ -88,6 +99,30 @@ pub struct State {
     /// The devws agent the user picked to lead when the team was opened; the
     /// leader's role then runs on it (leader.rs `led_by`). None: the role's.
     pub leader_pick: Option<String>,
+    /// The handoff the leader was asked for before a move: when, and whether
+    /// it saved it (leader.rs `hand_over`, notes.rs).
+    pub leader_handoff: Option<HandoffRequest>,
+    /// Accounts a provider refused a worker on, held back from new agents of
+    /// this task for a while (worker_tools: an account error before the
+    /// worker did anything).
+    pub account_holds: std::collections::BTreeMap<String, AccountHold>,
+    /// Workers refused that way: the dispatcher restarts each one on its next
+    /// account when its panel goes (watch.rs).
+    pub restart_on_next_account: std::collections::BTreeSet<String>,
+}
+
+/// An account held back until `until` (epoch seconds), and why.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AccountHold {
+    pub until: u64,
+    pub reason: String,
+}
+
+/// The leader was asked to save a handoff note before it moves.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HandoffRequest {
+    pub asked_at: u64,
+    pub saved: bool,
 }
 
 /// A senior's plan for the floor, kept as `plans/<step>.md`. The CTO approves
@@ -158,6 +193,9 @@ pub enum StepStatus {
     /// The leader sent it back.
     Rejected,
     Accepted,
+    /// The leader closed it without accepting it: its report was used, or
+    /// its work is not needed. Nothing merged.
+    Closed,
     /// It used every attempt, and the one retry devAgentics gave it after a
     /// wait: it needs the user.
     Exhausted,
@@ -191,15 +229,21 @@ pub struct Step {
     pub review_since: Option<u64>,
 }
 
+impl StepStatus {
+    /// The leader has to act on it: accept, reject, close or order it again.
+    pub fn waits_for_leader(self) -> bool {
+        matches!(
+            self,
+            StepStatus::Reported | StepStatus::Failed | StepStatus::Blocked | StepStatus::Rejected
+        )
+    }
+}
+
 impl Step {
     /// Moves the step on; a status the leader has to act on is stamped with
     /// `now`, so the board can tell a review the leader left behind.
     pub fn set_status(&mut self, status: StepStatus, now: u64) {
-        let waits_for_leader = matches!(
-            status,
-            StepStatus::Reported | StepStatus::Failed | StepStatus::Blocked | StepStatus::Rejected
-        );
-        self.review_since = waits_for_leader.then_some(now);
+        self.review_since = status.waits_for_leader().then_some(now);
         self.status = status;
     }
 }
@@ -234,6 +278,12 @@ pub struct Order {
     /// The step whose execution plan it follows (orders to the floor).
     #[serde(default)]
     pub plan: Option<String>,
+    /// The related files the leader tells the worker to read first.
+    #[serde(default)]
+    pub read: Vec<String>,
+    /// Where its checks run (`DEVAGENTICS_TARGETS`); none: everywhere.
+    #[serde(default)]
+    pub targets: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -245,6 +295,8 @@ pub struct Message {
     /// The order this message gives, once it is delivered the order is.
     #[serde(default)]
     pub order: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub response_probe: bool,
 }
 
 impl Agent {
@@ -310,6 +362,43 @@ impl State {
 
     /// The message that gives an order.
     pub fn say_about(&mut self, to: &str, text: String, order: Option<String>) {
+        self.enqueue(to, text, order, false);
+    }
+
+    pub fn probe(&mut self, to: &str) -> u64 {
+        self.enqueue(to, String::new(), None, true)
+    }
+
+    /// A replaced or stopped panel cannot finish its diagnostic turn.
+    pub fn cancel_probe(&mut self, agent: &str) {
+        let claimed = self
+            .worker_turns
+            .get(agent)
+            .filter(|message| message.response_probe);
+        let queued = self
+            .queue
+            .iter()
+            .find(|message| message.to == agent && message.response_probe);
+        if let Some(id) = claimed.or(queued).map(|message| message.id) {
+            if claimed.is_some() {
+                self.worker_turns.remove(agent);
+            }
+            self.queue.retain(|message| message.id != id);
+            self.message_created.remove(&id);
+            self.say(
+                LEADER,
+                format!("OpenCode response probe {id} for {agent} was interrupted."),
+            );
+        }
+    }
+
+    fn enqueue(
+        &mut self,
+        to: &str,
+        text: String,
+        order: Option<String>,
+        response_probe: bool,
+    ) -> u64 {
         let id = self.next_number();
         self.message_created.insert(id, crate::log::now());
         self.queue.push(Message {
@@ -317,7 +406,9 @@ impl State {
             to: to.to_string(),
             text,
             order,
+            response_probe,
         });
+        id
     }
 }
 

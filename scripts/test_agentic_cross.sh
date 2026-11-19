@@ -52,7 +52,7 @@ EOF
 done
 chmod +x "$ROOT/bin/"*
 ln -s "$DEVWS_ROOT/bin/devws" "$ROOT/bin/devws"
-for f in "$DEVWS_ROOT"/config/tmuxinator/*.sh "$DEVWS_ROOT"/config/tmuxinator/*.json "$DEVWS_ROOT"/config/tmuxinator/*.md "$DEVWS_ROOT"/config/tmuxinator/*.yml; do
+for f in "$DEVWS_ROOT"/config/tmuxinator/*.sh "$DEVWS_ROOT"/config/tmuxinator/agents "$DEVWS_ROOT"/config/tmuxinator/*.json "$DEVWS_ROOT"/config/tmuxinator/*.md "$DEVWS_ROOT"/config/tmuxinator/*.yml; do
   ln -s "$f" "$ROOT/home/.tmuxinator/$(basename "$f")"
 done
 mkdir -p "$ROOT/da/roles"; cp "$DEVWS_ROOT"/agentic/roles/samples/*.md "$ROOT/da/roles/"

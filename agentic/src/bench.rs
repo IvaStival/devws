@@ -333,6 +333,8 @@ mod tests {
 
     fn order(id: &str, step: &str) -> Order {
         Order {
+            read: Vec::new(),
+            targets: Vec::new(),
             id: id.into(),
             step: step.into(),
             agent: "a".into(),

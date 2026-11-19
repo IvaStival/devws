@@ -45,15 +45,27 @@
 #                                         starts <agent> in an agent pane, in
 #                                         place of the one running there; the
 #                                         pane keeps its place and role
-#   agent_cli.sh kind <agent>             the program the agent runs: claude or
-#                                         codex (an account like claude_work
-#                                         runs claude); 1 when unregistered
+#   agent_cli.sh kind <agent>             the program the agent runs: its
+#                                         module's kind (an account like
+#                                         claude_work runs claude); 1 when
+#                                         unregistered
 #   agent_cli.sh limits <agent>           "<5h> <week>": the per cent of its
 #                                         plan's limits that account has used,
 #                                         a - for what is not known. A Claude
 #                                         account's are asked of Anthropic
-#                                         live (claude_limits.sh), else its
+#                                         live (agents/10-claude/limits.sh), else its
 #                                         status line's if under 15 minutes old
+#   agent_cli.sh credit <agent>           "<balance> <used>": a prepaid
+#                                         (opencode Zen) account's credit in
+#                                         US$, the balance entered and what
+#                                         was spent since (agents/30-opencode/credit.sh);
+#                                         nothing when not known
+#   agent_cli.sh models <agent>          the models an opencode account can
+#                                         run, one `provider/model` a line, as
+#                                         `opencode models` lists them on its
+#                                         own data (the providers it logged in);
+#                                         an Antigravity account's, one id a
+#                                         line, as `agy models` lists them
 #   agent_cli.sh stop <pane>             asks the agent to exit, closes the
 #                                         pane if it did not, and updates the
 #                                         workspace's state
@@ -237,45 +249,52 @@ kind() {
 
 # "<name> <kind>" for each registered agent, in the registry's order; a name
 # with no program is left out.
+# Every account devAgentics may start agents on. A program the team reaches
+# through its own switches (the module's team_account fails) only when
+# registered.
 accounts() {
   [ "$#" -eq 0 ] || usage_fail "usage: devws agent accounts"
   local name kind
-  for name in ${DEVWS_AGENTS:-claude codex}; do
-    kind="$(agent_kind "$name" 2>/dev/null)" || continue
+  while IFS= read -r name; do
+    kind="$(agent_kind "$name")"
+    agent_hook "$kind" team_account || [[ " ${DEVWS_AGENTS-claude codex} " == *" $name "* ]] || continue
     printf '%s %s\n' "$name" "$kind"
-  done
+  done < <(agent_names)
 }
 
-# How long a Claude status line's reading stands in when Anthropic cannot be
-# asked: an older one may be from before a reset (one bought early, too), and
-# a stale "used up" blocks the team until a Claude session happens to run.
-claude_reading_lasts=900
-
-# A Claude account's limits: Anthropic's own when it answers (recorded for the
-# header too), else a recent status line reading, else nothing.
-claude_limits() {
-  local agent="$1" live five_hour week at
-  if live="$("$script_dir/claude_limits.sh" "$agent")"; then
-    tmux set-option -g "@devws_limits_$agent" "$live $(date +%s)" 2>/dev/null
-    printf '%s' "$live"
-    return
-  fi
-  read -r five_hour week at <<< "$(agent_limits "$agent")"
-  [[ "${at:-}" =~ ^[0-9]+$ ]] || return 0
-  [ $(($(date +%s) - at)) -le "$claude_reading_lasts" ] || return 0
-  printf '%s %s' "$five_hour" "$week"
+# "<name> <model>": the model each account's program starts with when none
+# is named (agents.sh's agent_default_model), for a module that knows it.
+default_models() {
+  [ "$#" -eq 0 ] || usage_fail "usage: devws agent default-models"
+  local name model
+  while IFS= read -r name; do
+    model="$(agent_default_model "$name")"
+    [ -z "$model" ] || printf '%s %s\n' "$name" "$model"
+  done < <(agent_names)
 }
 
 limits() {
   local value kind
   [ "$#" -eq 1 ] || usage_fail "usage: devws agent limits <agent>"
   kind="$(agent_kind "$1" 2>/dev/null)" || fail "unknown agent: $1 (register it in the devws menu)"
-  if [ "$kind" = claude ]; then
-    value="$(claude_limits "$1")"
-  else
-    value="$(agent_limits "$1")"
-  fi
+  # Asked live when the program's module can (live_limits).
+  value="$(agent_hook "$kind" live_limits "$1")"
   printf '%s\n' "${value:-- -}"
+}
+
+credit() {
+  local kind
+  [ "$#" -eq 1 ] || usage_fail "usage: devws agent credit <agent>"
+  kind="$(agent_kind "$1" 2>/dev/null)" || fail "unknown agent: $1 (register it in the devws menu)"
+  agent_hook "$kind" credit "$1"
+}
+
+models() {
+  local kind
+  [ "$#" -eq 1 ] || usage_fail "usage: devws agent models <agent>"
+  kind="$(agent_kind "$1" 2>/dev/null)" || fail "unknown agent: $1 (register it in the devws menu)"
+  agent_defines "$kind" models || fail "$1 runs $kind, whose module lists no models"
+  agent_hook "$kind" models "$1" || fail "could not list the models of $1"
 }
 
 # What the pane's agent has used: "<input> <output> <cache> <US$> <unpriced>"
@@ -294,7 +313,7 @@ usage() {
 
 # Interrupt one turn without invoking the quit/kill behavior of stop.
 interrupt() {
-  local pane agent kind current attempt
+  local pane agent kind keys key current attempt mark first
   [ "$#" -eq 1 ] || usage_fail "usage: devws agent interrupt <pane>"
   pane="$1"
   require_pane "$pane"
@@ -302,13 +321,25 @@ interrupt() {
   agent="$(tmux show-options -pqv -t "$pane" @devws_agent 2>/dev/null)"
   [ -n "$agent" ] || agent="$(tmux show-options -qv -t "$(pane_session "$pane")" @devws_agent 2>/dev/null)"
   kind="$(agent_kind "$agent" 2>/dev/null)" || fail "unsupported agent in $pane"
-  case "$kind" in claude|codex) ;; *) fail "unsupported interrupt program: $kind" ;; esac
+  # The keys that stop its turn (the module's interrupt_keys), a moment apart.
+  keys="$(agent_hook "$kind" interrupt_keys)" || fail "unsupported interrupt program: $kind"
   current="$(pane_state "$pane")"
   case "$current" in done|idle) return 0 ;; working|waiting) ;; *) fail "cannot interrupt $current" ;; esac
-  tmux send-keys -t "$pane" C-c || fail "could not interrupt $pane"
+  mark="$(agent_hook "$kind" interrupt_mark "$pane")"
+  first=1
+  for key in $keys; do
+    [ -n "$first" ] || sleep 0.3
+    first=""
+    tmux send-keys -t "$pane" "$key" || fail "could not interrupt $pane"
+  done
   for attempt in $(seq 1 40); do
     current="$(pane_state "$pane")"
     case "$current" in done|idle) return 0 ;; gone) code=4 fail "$pane went away during interrupt" ;; esac
+    # A program that runs no hook for a cancelled turn says so itself.
+    if agent_hook "$kind" interrupt_seen "$pane" "$mark"; then
+      "$script_dir/agent_status.sh" "$(pane_session "$pane")" done "$pane"
+      return 0
+    fi
     sleep 0.1
   done
   fail "interrupt was not acknowledged by $pane; pane preserved"
@@ -347,12 +378,15 @@ case "$command" in
   spawn) spawn "$@" ;;
   run) run "$@" ;;
   limits) limits "$@" ;;
+  credit) credit "$@" ;;
+  models) models "$@" ;;
   usage) usage "$@" ;;
   kind) kind "$@" ;;
   accounts) accounts "$@" ;;
+  default-models) default_models "$@" ;;
   go | peek)
     [ "$#" -eq 1 ] || usage_fail "usage: devws agent $command <pane>"
     exec "$script_dir/team_groups.sh" "$command" "$1"
     ;;
-  *) usage_fail "usage: devws agent state|send|mark|stop|interrupt|spawn|run|limits|usage|kind|accounts|go|peek …" ;;
+  *) usage_fail "usage: devws agent state|send|mark|stop|interrupt|spawn|run|limits|credit|usage|kind|accounts|default-models|go|peek …" ;;
 esac

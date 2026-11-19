@@ -34,12 +34,13 @@ pick() {
 }
 
 # [header]: what the agent is for.
+# The registered agents, then each installed program none of them runs
+# (agents.sh's agent_names).
 choose_agent() {
-  local agents="${DEVWS_AGENTS:-claude codex}"
   local header="${1:-The agent for the new workspace}"
   local agent
 
-  agent="$(printf '%s\n' $agents | pick Agent "$header")"
+  agent="$(agent_names | pick Agent "$header")"
   [ -n "$agent" ] && printf '%s\n' "$agent"
 }
 
@@ -63,15 +64,18 @@ agent_pane() {
   done < <(tmux list-panes -t "$(main_window "$session")" \
     -F '#{pane_id}|#{@devws_role}|#{pane_current_command}' 2>/dev/null)
 
-  # Compatibility for sessions created before agent_runner.sh was introduced.
+  # Compatibility for sessions created before agent_runner.sh was introduced:
+  # a pane running one of the programs (or node, which runs some).
+  local programs=" node " kind
+  while IFS= read -r kind; do
+    programs+="$(agent_program "$kind") "
+  done < <(agent_kinds)
   while IFS='|' read -r pane role command; do
     [ -z "$role" ] || continue
-    case "$command" in
-      claude|codex|node)
-        printf '%s\n' "$pane"
-        return 0
-        ;;
-    esac
+    if [[ "$programs" == *" $command "* ]]; then
+      printf '%s\n' "$pane"
+      return 0
+    fi
   done < <(tmux list-panes -t "$(main_window "$session")" \
     -F '#{pane_id}|#{@devws_role}|#{pane_current_command}' 2>/dev/null)
   return 1
@@ -128,9 +132,22 @@ start_workspace_agent() {
   "$HOME/.tmuxinator/agent_status.sh" "$session" idle
 }
 
+# An agent team's agent pane is its leader, started with the task's arguments
+# (devws agentic): respawned as a plain agent, the team would lose its leader.
+# devAgentics moves the leader (Change leader); any other agent gets a panel.
+is_team_workspace() {
+  [ -n "$(tmux show-options -qv -t "=$(team_session):" @devws_task 2>/dev/null)" ]
+}
+
 switch_agent() {
   local session agent root
   session="$(tmux display-message -p '#S')"
+  if is_team_workspace; then
+    agent="$(choose_agent 'The agent for a new panel: the leader stays (Change leader moves it)')" || return
+    [ -n "$agent" ] || return
+    "$HOME/.tmuxinator/new_panel.sh" "$session" right agent "$agent" >/dev/null
+    return
+  fi
   expand_minimized_panes "$session" || return
   agent="$(choose_agent)" || return
   [ -n "$agent" ] || return
@@ -164,6 +181,12 @@ switch_editor() {
 restart_agent() {
   local session agent
   session="$(tmux display-message -p '#S')"
+  if is_team_workspace; then
+    printf '\033c'
+    printf 'This agent is the team leader: devAgentics restarts it. Use Team › Change leader to move it.\n'
+    pause
+    return
+  fi
   expand_minimized_panes "$session" || return
   agent="$(tmux show-options -t "$session" -v @devws_agent 2>/dev/null)"
   [ -n "$agent" ] || agent="${DEVWS_DEFAULT_AGENT:-claude}"
@@ -189,25 +212,24 @@ initialize_agent() {
   fi
 }
 
-# The folders of a kind's accounts (~/.claude, ~/.claude-work, …) that no
-# agent uses yet, written under ~.
+# The folders of a kind's accounts (~/.claude, ~/.claude-work, …; the
+# module's default_folders) that no agent uses yet, written under ~.
 unregistered_folders() {
   local kind="$1" folder agent used=" "
   for agent in ${DEVWS_AGENTS:-claude codex}; do
     used+="$(agent_home "$agent" 2>/dev/null) "
   done
-  for folder in "$HOME/.$kind" "$HOME/.$kind"-*; do
-    [ -d "$folder" ] || continue
+  while IFS= read -r folder; do
     case "$used" in *" $folder "*) continue ;; esac
     printf '~/%s\n' "${folder#"$HOME"/}"
-  done
+  done < <(agent_hook "$kind" default_folders)
 }
 
 # Asks for the kind, the account's folder (offered, or typed) and a name, then
 # writes them to .env (register_agent.sh).
 register_agent() {
   local kind folder name suggested
-  kind="$(printf '%s\n' claude codex | pick Kind 'Register an agent: which program it runs')" || return
+  kind="$(agent_kinds | pick Kind 'Register an agent: which program it runs')" || return
   [ -n "$kind" ] || return
 
   folder="$(unregistered_folders "$kind" |
@@ -248,8 +270,8 @@ change_agent_folder() {
   [ -n "$agent" ] || return
   kind="$(agent_kind "$agent")" || return
 
-  folder="$(for candidate in "$HOME/.$kind" "$HOME/.$kind"-*; do
-      [ -d "$candidate" ] && printf '~/%s\n' "${candidate#"$HOME"/}"
+  folder="$(agent_hook "$kind" default_folders | while IFS= read -r candidate; do
+      printf '~/%s\n' "${candidate#"$HOME"/}"
     done | pick Folder "$agent runs in $(agent_home "$agent") (pick one, or type a path)" --print-query |
     tail -n 1)"
   [ -n "$folder" ] || return
@@ -671,24 +693,40 @@ open_team_leader() {
   focus_team_role agent
 }
 
-# Moves the agent team's leader to its other program (Claude or Codex):
-# devAgentics makes the move once the leader's turn is over.
-switch_leader_model() {
-  local task
+# Moves the agent team's leader to an account the user picks, any that can
+# lead (devagentics leader choices): devAgentics makes the move once the
+# leader's turn is over, and starts it there from then on.
+change_leader() {
+  local agentic="${DEVWS_AGENTIC_COMMAND:-devagentics}" task listing choice
   task="$(tmux show-options -qv -t "=$(team_session):" @devws_task 2>/dev/null)"
   printf '\033c'
   if [ -z "$task" ]; then
     printf 'This workspace is not an agent team.\n'
-  else
-    "${DEVWS_AGENTIC_COMMAND:-devagentics}" leader switch "$task"
+    pause
+    return
   fi
+  if ! listing="$("$agentic" leader choices "$task" 2>&1)"; then
+    printf '%s\n' "$listing"
+    pause
+    return
+  fi
+  choice="$(awk -F '\t' '{ printf "%-16s %-12s %s\t%s\n", $1, $2, $3, $1 }' <<<"$listing" |
+    pick Leader 'The account to lead the team: name, program, how it stands' \
+      --delimiter=$'\t' --with-nth=1)"
+  [ -n "$choice" ] || return
+  "$agentic" leader use "$task" "${choice##*$'\t'}"
   pause
+}
+
+# A group of a menu tab in its own dialog (devws_menu.sh --group).
+menu_group() {
+  "$HOME/.tmuxinator/devws_menu.sh" --group "$1"
 }
 
 # Changes an agent team role's model, effort or approvals (devagentics role
 # set): the role, the setting, then a value its program takes, Default for
 # the program's own, or, for a model, one typed. The workspace's repo roles
-# count. The leader is left out: Switch leader model moves it.
+# count. The leader is left out: Change leader moves it.
 team_roles() {
   local agentic="${DEVWS_AGENTIC_COMMAND:-devagentics}" root listing role setting value
   local -a repo=()
@@ -723,6 +761,12 @@ team_roles() {
   esac
   "$agentic" role set "$role" "--$setting" "$value" "${repo[@]}"
   pause
+}
+
+# A program's own screen in the menu's Agent tab (the module's screen, its
+# menu_entry naming it): ◆ OpenCode, ◆ Antigravity.
+agent_screen() {
+  agent_hook "${1:-}" screen
 }
 
 # Opens a workspace on a git worktree of the current workspace's repo: an

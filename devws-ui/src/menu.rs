@@ -1,6 +1,7 @@
 //! The devws menu: its actions in tabs. ←/→ (or Tab) change tab, typing
 //! searches every tab (each row tagged with its tab), Enter runs, Esc
-//! closes. The answer names the tab it was on, for the next menu to open on.
+//! closes. A row of a group (its tab's "Accounts…" dialog) shows only in a
+//! search. The answer names the tab it was on, for the next menu to open on.
 
 use crate::ansi;
 use crate::filter::Filter;
@@ -12,10 +13,12 @@ pub struct Row {
     pub action: String,
     pub label: String,
     pub shortcut: String,
+    /// The group inside its tab, empty for a row of the tab itself.
+    pub group: String,
 }
 
-/// Rows from "tab<TAB>action<TAB>label<TAB>shortcut" lines; a line missing
-/// its action is not a row.
+/// Rows from "tab<TAB>action<TAB>label<TAB>shortcut[<TAB>group]" lines; a
+/// line missing its action is not a row.
 pub fn parse(input: &str) -> Vec<Row> {
     input
         .lines()
@@ -31,6 +34,7 @@ pub fn parse(input: &str) -> Vec<Row> {
                 action,
                 label: fields.next().unwrap_or("").to_string(),
                 shortcut: fields.next().unwrap_or("").to_string(),
+                group: fields.next().unwrap_or("").to_string(),
             })
         })
         .collect()
@@ -95,13 +99,16 @@ impl Menu {
         !self.query.trim().is_empty()
     }
 
-    /// What a row shows: its label, tagged with its tab while searching.
+    /// What a row shows: its label, tagged with its tab (and group) while
+    /// searching.
     pub fn label_of(&self, index: usize) -> String {
         let row = &self.rows[index];
-        if self.searching() {
+        if !self.searching() {
+            row.label.clone()
+        } else if row.group.is_empty() {
             format!("{} · {}", title(&row.tab), row.label)
         } else {
-            row.label.clone()
+            format!("{} › {} · {}", title(&row.tab), row.group, row.label)
         }
     }
 
@@ -115,7 +122,10 @@ impl Menu {
         } else {
             let tab = self.tabs.get(self.current_tab);
             self.shown = (0..self.rows.len())
-                .filter(|&index| Some(&self.rows[index].tab) == tab)
+                .filter(|&index| {
+                    let row = &self.rows[index];
+                    Some(&row.tab) == tab && row.group.is_empty()
+                })
                 .collect();
         }
         self.cursor = 0;
@@ -269,6 +279,28 @@ mod tests {
                 tab: "help".into(),
                 action: Some("push".into())
             }
+        );
+    }
+
+    #[test]
+    fn a_grouped_row_stays_in_its_dialog_and_is_found_by_search() {
+        let mut menu = Menu::new(
+            parse(
+                "agent\tswitch\t⇄ Switch agent\t\n\
+                 agent\taccounts\t☰ Accounts…\t\n\
+                 agent\tregister\t＋ Register agent\t\tAccounts\n",
+            ),
+            None,
+        );
+        assert_eq!(menu.tabs, vec!["agent"]);
+        assert_eq!(actions(&menu), vec!["switch", "accounts"]);
+        for key in typed("register") {
+            menu.press(key);
+        }
+        assert_eq!(actions(&menu), vec!["register"]);
+        assert_eq!(
+            menu.label_of(menu.shown[0]),
+            "Agent › Accounts · ＋ Register agent"
         );
     }
 

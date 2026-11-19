@@ -80,8 +80,8 @@ role and order controls remain the enforcement ceiling for repository writes.
 `worker::LaunchState` snapshots the role and ordered provider/model candidates
 in `State::worker_launches`. The preferred program comes first, followed by
 `[fallback]` and `[[alternatives]]`. Without explicit alternatives, Claude
-workers get Codex `gpt-6.1-sol` at medium effort, and Codex workers get Claude's
-default model at high effort. Each alternative owns its model, effort, sandbox
+workers (and opencode and Antigravity ones) get Codex `gpt-6.1-sol` at medium
+effort, and Codex workers get Claude's default model at high effort. Each alternative owns its model, effort, sandbox
 and approval settings; provider-specific values are never copied across programs.
 Role instructions, write ceiling, group and lane remain unchanged.
 
@@ -202,11 +202,12 @@ Stable work IDs are independent of milestone application versions. Old task stat
 still defaults to legacy mode and is not automatically adopted.
 
 Reviewed coordinators have only the leader MCP catalog. Workers run as managed,
-noninteractive Claude turns with native tools and other MCP configurations
-disabled. The worker MCP server binds identity to a private runtime session and
+noninteractive Claude or OpenCode turns with native tools and other MCP
+configurations disabled. The worker MCP server binds identity to a private runtime session and
 exposes no leader approval, external-action or merge capabilities. Healthy turns
 resume the same conversation; uncertain turns retain durable intent and require
-explicit recovery. Unsupported provider adapters fail closed. This application
+explicit recovery. Unsupported provider adapters fail closed: Antigravity has
+none, so a reviewed task never starts it. This application
 boundary does not claim isolation from hostile same-user processes controlling
 runtime files or a compromised Docker daemon.
 
@@ -296,3 +297,21 @@ measurement shows whether they help.
   integration defects), timing aggregates and their overlap-free union, user
   interventions and usage. `review_wait` intervals come from the review's
   request and submit times.
+
+### Managed OpenCode workers
+
+Reviewed OpenCode workers use noninteractive JSON turns under the managed worker
+supervisor. Their configuration denies native tools and exposes only the
+authenticated worker MCP server. OpenCode HOME and configuration directories are
+isolated, while its registered account data directory supplies authentication
+and usage storage. The worker MCP subprocess receives the original task home
+explicitly so configuration isolation does not change task lookup.
+
+Before readiness, the adapter checks the verified OpenCode version and resolved
+configuration with a bounded preflight. Unsupported configuration fails closed
+and can use startup fallback. The coordinator and existing routing preferences
+remain unchanged. OpenCode session IDs use provider-specific keys in worker
+session storage; each subsequent turn resumes that exact ID. Claimed failed
+turns stay in the existing explicit recovery flow. The supervisor records JSON
+output, panel events and database/session transcript metadata directly, because
+reviewed workers bypass the legacy interactive plugin.

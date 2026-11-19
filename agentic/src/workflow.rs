@@ -46,9 +46,13 @@ pub fn ready_work(task: &Task) -> Result<Vec<Value>> {
             ensure!(
                 !matches!(
                     stage,
-                    Some(crate::state::StepStatus::Accepted | crate::state::StepStatus::Reported)
+                    Some(
+                        crate::state::StepStatus::Accepted
+                            | crate::state::StepStatus::Reported
+                            | crate::state::StepStatus::Closed
+                    )
                 ),
-                "completed or awaiting independent review"
+                "completed, closed or awaiting independent review"
             );
             let repo = config
                 .repos
@@ -114,8 +118,14 @@ pub fn status(task: &Task) -> Result<Value> {
             )
         })
         .collect();
+    // Who approves the pending proposal: the leader for a revision that only
+    // adds checks, the user for the rest.
+    let proposal_approval = state.application_proposal.as_ref().map(|proposal| {
+        let why = execution::user_approval_needed(&state.application, proposal);
+        json!({"needs_user": why.is_some(), "why": why.unwrap_or_else(|| "it only adds checks: confirm nothing, approve it yourself and tell the user in your next summary".into())})
+    });
     Ok(
-        json!({"workflow":state.workflow,"candidate_checks":candidate_checks,"application":state.application,"proposal":state.application_proposal,"interview_frontier":execution::question_frontier(state.application_proposal.as_ref().unwrap_or(&state.application)),"ready_work":items,"reviews":state.reviews,"performance":performance::update(task)?,"capacity":{"limit":config.max_agents,"writers":state.live_agents(true),"read_only":state.live_agents(false)},"runner":{"configured":state.runner.is_some(),"available":state.runner.is_some(),"adapter":if state.codex_team {"claude_mcp_only or codex_sandbox: the user put the whole team on Codex (task codex-team); Codex workers write only their snapshot, without network"} else {"claude_mcp_only"},"worker_programs":if state.codex_team {vec!["claude","codex"]} else {vec!["claude"]},"reviewer_adapter":if state.codex_reviewers || state.codex_team {"codex_read_only_sandbox: cannot write; its shell can read host files"} else {"claude_mcp_only"},"network":"none","live_project_mounts":false,"configuration":state.runner}}),
+        json!({"workflow":state.workflow,"proposal_approval":proposal_approval,"candidate_checks":candidate_checks,"application":state.application,"proposal":state.application_proposal,"interview_frontier":execution::question_frontier(state.application_proposal.as_ref().unwrap_or(&state.application)),"ready_work":items,"reviews":state.reviews,"performance":performance::update(task)?,"capacity":{"limit":config.max_agents,"writers":state.live_agents(true),"read_only":state.live_agents(false)},"runner":{"configured":state.runner.is_some(),"available":state.runner.is_some(),"adapter":if state.codex_team {"claude_mcp_only or opencode_mcp_only or codex_sandbox: the user put the whole team on Codex (task codex-team); Codex workers write only their snapshot, without network"} else {"claude_mcp_only or opencode_mcp_only"},"worker_programs":if state.codex_team {vec!["claude","opencode","codex"]} else {vec!["claude","opencode"]},"reviewer_adapter":if state.codex_reviewers || state.codex_team {"codex_read_only_sandbox: cannot write; its shell can read host files"} else {"claude_mcp_only or opencode_mcp_only"},"network":"none","live_project_mounts":false,"configuration":state.runner}}),
     )
 }
 /// The status small enough to come back in one call: the baseline and the
@@ -127,10 +137,37 @@ pub fn compact(task: &Task) -> Result<Value> {
     if let Some(proposal) = &state.application_proposal {
         status["proposal"] = execution::outline(proposal);
     }
-    status["read_more"] = json!(
-        "status {section}: one part in full (runner, ready_work, reviews, …); section application or proposal with items [ids]: those items' full contracts"
-    );
+    slim_growing_parts(&mut status, &state);
+    status["read_more"] = json!(format!(
+        "status with section, one part in full: {}; section application or proposal with items [ids]: those items' full contracts",
+        SECTIONS.join(", ")
+    ));
     Ok(status)
+}
+
+/// The parts of the status a section names.
+const SECTIONS: [&str; 9] = [
+    "application",
+    "proposal",
+    "reviews",
+    "ready_work",
+    "runner",
+    "candidate_checks",
+    "interview_frontier",
+    "performance",
+    "capacity",
+];
+
+/// Reviews and accepted items only grow as the team works: keep each review's
+/// outcome and the work still to do; their sections have the rest.
+fn slim_growing_parts(status: &mut Value, state: &crate::state::State) {
+    status["reviews"] = json!(state.reviews.iter().map(|review| json!({"id":review.id,"order":review.order,"author":review.author,"reviewer":review.reviewer,"verdict":review.verdict,"findings":review.findings.len(),"submitted_at":review.submitted_at})).collect::<Vec<_>>());
+    let ready_work = status["ready_work"].as_array().cloned().unwrap_or_default();
+    let (accepted, open): (Vec<_>, Vec<_>) = ready_work
+        .into_iter()
+        .partition(|item| item["stage"] == "accepted");
+    status["ready_work"] = json!(open);
+    status["accepted_items"] = json!(accepted.len());
 }
 
 /// The status inside `task_status`, which carries much else: of the baseline
@@ -138,21 +175,15 @@ pub fn compact(task: &Task) -> Result<Value> {
 pub fn brief(task: &Task) -> Result<Value> {
     let mut status = status(task)?;
     let state = task.state()?;
-    let size = |application: &execution::Application| {
-        json!({"revision":application.revision,"confirmed_revision":application.confirmed_revision,"approved_revision":application.approved_revision,"items":application.items.len()})
-    };
+    let size = |application: &execution::Application| json!({"revision":application.revision,"confirmed_revision":application.confirmed_revision,"approved_revision":application.approved_revision,"items":application.items.len()});
     status["application"] = size(&state.application);
     if let Some(proposal) = &state.application_proposal {
         status["proposal"] = size(proposal);
     }
-    // Reviews and accepted items only grow as the team works: the brief keeps
-    // each review's outcome and the work still to do, the section the rest.
-    status["reviews"] = json!(state.reviews.iter().map(|review| json!({"id":review.id,"order":review.order,"author":review.author,"reviewer":review.reviewer,"verdict":review.verdict,"findings":review.findings.len(),"submitted_at":review.submitted_at})).collect::<Vec<_>>());
-    let ready_work = status["ready_work"].as_array().cloned().unwrap_or_default();
-    let (accepted, open): (Vec<_>, Vec<_>) = ready_work.into_iter().partition(|item| item["stage"] == "accepted");
-    status["ready_work"] = json!(open);
-    status["accepted_items"] = json!(accepted.len());
-    status["read_more"] = json!("application_workflow status: the baseline's outline; section (reviews, ready_work, runner, …) for the full part, and items for contracts");
+    slim_growing_parts(&mut status, &state);
+    status["read_more"] = json!(
+        "application_workflow status: the baseline's outline; section (reviews, ready_work, runner, …) for the full part, and items for contracts"
+    );
     Ok(status)
 }
 
@@ -172,14 +203,20 @@ fn section(task: &Task, section: &str, input: &Value) -> Result<Value> {
     };
     if let Some(application) = application {
         return match input.get("items") {
-            Some(ids) => execution::items(application, &serde_json::from_value::<Vec<String>>(ids.clone())?),
+            Some(ids) => execution::items(
+                application,
+                &serde_json::from_value::<Vec<String>>(ids.clone())?,
+            ),
             None => Ok(execution::outline(application)),
         };
     }
     let status = status(task)?;
-    let part = status
-        .get(section)
-        .with_context(|| format!("status has no section {section}"))?;
+    let part = status.get(section).with_context(|| {
+        format!(
+            "status has no section {section}; its sections are {}",
+            SECTIONS.join(", ")
+        )
+    })?;
     Ok(json!({ section: part }))
 }
 
@@ -213,21 +250,20 @@ pub fn call(task: &Task, action: &str, input: &Value) -> Result<Value> {
             })?;
             Ok(json!({"retry_enabled":item}))
         }
-        "leader_inbox" => leader_inbox(task),
+        "leader_inbox" => {
+            // The messages handled last time go with the next read: one call.
+            let acknowledged = match input.get("ack") {
+                Some(ids) => acknowledge(task, serde_json::from_value(ids.clone())?)?,
+                None => Vec::new(),
+            };
+            let mut inbox = leader_inbox(task)?;
+            if !acknowledged.is_empty() {
+                inbox["acknowledged"] = json!(acknowledged);
+            }
+            Ok(inbox)
+        }
         "inbox_ack" => {
-            let ids = serde_json::from_value::<Vec<u64>>(input["ids"].clone())?;
-            task.transaction(|tx| {
-                ensure!(
-                    ids.iter().all(|id| tx
-                        .state
-                        .queue
-                        .iter()
-                        .any(|message| message.id == *id && message.to == crate::state::LEADER)),
-                    "cannot acknowledge foreign or already consumed notifications"
-                );
-                tx.state.queue.retain(|message| !ids.contains(&message.id));
-                Ok(())
-            })?;
+            let ids = acknowledge(task, serde_json::from_value(input["ids"].clone())?)?;
             Ok(json!({"acknowledged":ids}))
         }
         "preview_adoption" => adoption(task),
@@ -252,7 +288,7 @@ pub fn call(task: &Task, action: &str, input: &Value) -> Result<Value> {
                 serde_json::from_value(input["configuration"].clone())?,
             )?;
             Ok(
-                json!({"configured":true,"adapter":if task.state()?.codex_team {"claude_mcp_only or codex_sandbox"} else {"claude_mcp_only"},"network":"none","live_project_mounts":false}),
+                json!({"configured":true,"adapter":if task.state()?.codex_team {"claude_mcp_only or opencode_mcp_only or codex_sandbox"} else {"claude_mcp_only or opencode_mcp_only"},"network":"none","live_project_mounts":false}),
             )
         }
         "image_build" => Ok(serde_json::to_value(crate::images::build(
@@ -348,12 +384,8 @@ pub fn call(task: &Task, action: &str, input: &Value) -> Result<Value> {
             )
         }
         "amend" => {
-            let changes = serde_json::from_value(
-                input
-                    .get("changes")
-                    .context("changes required")?
-                    .clone(),
-            )?;
+            let changes =
+                serde_json::from_value(input.get("changes").context("changes required")?.clone())?;
             let affected = execution::amend(
                 task,
                 changes,
@@ -418,9 +450,63 @@ pub fn milestones(task: &Task) -> Result<Value> {
 /// The leader's messages, and the ready items nobody has started. Only
 /// agents send messages; ready work is shown here, read when the leader reads
 /// its inbox, and never wakes it on its own.
+/// Takes the leader's handled messages out of its inbox.
+fn acknowledge(task: &Task, ids: Vec<u64>) -> Result<Vec<u64>> {
+    task.transaction(|tx| {
+        ensure!(
+            ids.iter().all(|id| tx
+                .state
+                .queue
+                .iter()
+                .any(|message| message.id == *id && message.to == crate::state::LEADER)),
+            "cannot acknowledge foreign or already consumed notifications"
+        );
+        tx.state.queue.retain(|message| !ids.contains(&message.id));
+        Ok(())
+    })?;
+    Ok(ids)
+}
+
+/// One line per live agent: what the leader needs between turns without a
+/// status call. "hammer-17 hammer · lane front · claude · B3 · working".
+fn roster(state: &crate::state::State) -> Vec<String> {
+    state
+        .agents
+        .iter()
+        .filter(|agent| agent.live)
+        .map(|agent| {
+            let order = state
+                .open_order_of(&agent.id)
+                .map(|order| order.step.as_str());
+            let doing = if agent.lost {
+                "lost"
+            } else if state.worker_turns.contains_key(&agent.id) {
+                "working"
+            } else if !agent.ready {
+                "starting"
+            } else if order.is_some() {
+                "has its order"
+            } else {
+                "idle"
+            };
+            let lane = agent
+                .lane
+                .as_deref()
+                .map(|lane| format!(" · lane {lane}"))
+                .unwrap_or_default();
+            let step = order.map(|step| format!(" · {step}")).unwrap_or_default();
+            format!(
+                "{} {}{lane} · {}{step} · {doing}",
+                agent.id, agent.role, agent.agent
+            )
+        })
+        .collect()
+}
+
 fn leader_inbox(task: &Task) -> Result<Value> {
-    let messages: Vec<_> = task
-        .state()?
+    let state = task.state()?;
+    let team = roster(&state);
+    let messages: Vec<_> = state
         .queue
         .into_iter()
         .filter(|message| message.to == crate::state::LEADER)
@@ -430,7 +516,9 @@ fn leader_inbox(task: &Task) -> Result<Value> {
         .filter(|item| item["ready"] == true && item["assigned"] == false)
         .map(|item| json!({"id": item["id"], "lane": item["lane"]}))
         .collect();
-    Ok(json!({"messages": messages, "ready_not_started": ready_not_started}))
+    Ok(
+        json!({"messages": messages, "team": team, "ready_not_started": ready_not_started, "next": "handle the messages, then read again with ack [their ids]"}),
+    )
 }
 
 pub fn block_unverified_runner(task: &Task) -> Result<()> {
@@ -449,19 +537,55 @@ mod tests {
         let read = |input: Value| call(&task, "status", &input).unwrap();
 
         let whole = read(json!({}));
-        assert_eq!(whole["proposal"]["items"]["S01-B01"]["title"], "Token service");
-        assert!(whole["proposal"]["items"]["S01-B01"].get("acceptance").is_none());
+        assert_eq!(
+            whole["proposal"]["items"]["S01-B01"]["title"],
+            "Token service"
+        );
+        assert!(
+            whole["proposal"]["items"]["S01-B01"]
+                .get("acceptance")
+                .is_none()
+        );
         assert!(whole["read_more"].as_str().unwrap().contains("items"));
         let brief = brief(&task).unwrap();
-        assert_eq!(brief["proposal"]["items"], 1, "only its size inside task_status");
+        assert_eq!(
+            brief["proposal"]["items"], 1,
+            "only its size inside task_status"
+        );
         assert_eq!(brief["proposal"]["revision"], 1);
 
         let runner = read(json!({"section":"runner"}));
-        assert_eq!(runner.as_object().unwrap().keys().collect::<Vec<_>>(), ["runner"]);
+        assert_eq!(
+            runner.as_object().unwrap().keys().collect::<Vec<_>>(),
+            ["runner"]
+        );
         let contracts = read(json!({"section":"proposal","items":["S01-B01"]}));
-        assert_eq!(contracts["items"]["S01-B01"]["acceptance"][0], "Service contract passes");
-        assert!(call(&task, "status", &json!({"section":"nothing"})).is_err());
-        assert!(call(&task, "status", &json!({"section":"proposal","items":["S9"]})).is_err());
+        assert_eq!(
+            contracts["items"]["S01-B01"]["acceptance"][0],
+            "Service contract passes"
+        );
+        let error = call(&task, "status", &json!({"section":"nothing"}))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("its sections are application, proposal, reviews, ready_work, runner"),
+            "a wrong section names the right ones: {error}"
+        );
+        let whole = call(&task, "status", &json!({})).unwrap();
+        for section in SECTIONS
+            .into_iter()
+            .filter(|section| *section != "proposal")
+        {
+            assert!(whole.get(section).is_some(), "the status has {section}");
+        }
+        assert!(
+            call(
+                &task,
+                "status",
+                &json!({"section":"proposal","items":["S9"]})
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -477,6 +601,61 @@ mod tests {
         let inbox = call(&task, "leader_inbox", &json!({})).unwrap();
         assert_eq!(inbox["messages"][0]["text"], "hammer-1 reports");
         assert!(inbox["ready_not_started"].is_array());
+    }
+
+    #[test]
+    fn one_inbox_read_acknowledges_the_last_and_shows_the_team() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        task.transaction(|tx| {
+            tx.state.say(crate::state::LEADER, "first".into());
+            tx.state.agents.push(crate::state::Agent {
+                id: "hammer-17".into(),
+                role: "hammer".into(),
+                agent: "claude".into(),
+                repo: "app".into(),
+                session: String::new(),
+                pane: "%9".into(),
+                writes: true,
+                group: None,
+                lane: Some("front".into()),
+                live: true,
+                unavailable: false,
+                ready: true,
+                lost: false,
+                usage: None,
+            });
+            Ok(())
+        })
+        .unwrap();
+        let inbox = call(&task, "leader_inbox", &json!({})).unwrap();
+        assert_eq!(
+            inbox["team"],
+            json!(["hammer-17 hammer · lane front · claude · idle"])
+        );
+        let first = inbox["messages"][0]["id"].clone();
+        task.transaction(|tx| {
+            tx.state.say(crate::state::LEADER, "second".into());
+            Ok(())
+        })
+        .unwrap();
+        let next = call(&task, "leader_inbox", &json!({"ack": [first]})).unwrap();
+        assert_eq!(next["acknowledged"], json!([first]));
+        let texts: Vec<_> = next["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message["text"].clone())
+            .collect();
+        assert_eq!(
+            texts,
+            [json!("second")],
+            "the handled one is gone in the same call"
+        );
+        assert!(
+            call(&task, "leader_inbox", &json!({"ack": [first]})).is_err(),
+            "not twice"
+        );
     }
 
     #[test]
@@ -499,7 +678,12 @@ mod tests {
         assert!(brief["reviews"][0].get("summary").is_none());
         assert_eq!(brief["accepted_items"], 0);
         let reviews = call(&task, "status", &json!({"section":"reviews"})).unwrap();
-        assert!(reviews["reviews"][0]["summary"].as_str().unwrap().starts_with("a long"));
+        assert!(
+            reviews["reviews"][0]["summary"]
+                .as_str()
+                .unwrap()
+                .starts_with("a long")
+        );
     }
 
     #[test]
@@ -524,7 +708,10 @@ mod tests {
         let proposal = task.state().unwrap().application_proposal.unwrap();
         assert_eq!(proposal.revision, 2);
         assert_eq!(proposal.items.len(), 2);
-        assert!(call(&task, "amend", &json!({"changes":{}})).is_err(), "a reason is required");
+        assert!(
+            call(&task, "amend", &json!({"changes":{}})).is_err(),
+            "a reason is required"
+        );
     }
 
     #[test]
@@ -532,8 +719,14 @@ mod tests {
         let directory = tempfile::TempDir::new().unwrap();
         let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
         let runner = |task: &Task| status(task).unwrap()["runner"].clone();
-        assert_eq!(runner(&task)["adapter"], "claude_mcp_only");
-        assert_eq!(runner(&task)["worker_programs"], serde_json::json!(["claude"]));
+        assert_eq!(
+            runner(&task)["adapter"],
+            "claude_mcp_only or opencode_mcp_only"
+        );
+        assert_eq!(
+            runner(&task)["worker_programs"],
+            serde_json::json!(["claude", "opencode"])
+        );
         task.transaction(|tx| {
             tx.state.codex_team = true;
             Ok(())
@@ -541,10 +734,14 @@ mod tests {
         .unwrap();
         assert_eq!(
             runner(&task)["worker_programs"],
-            serde_json::json!(["claude", "codex"]),
+            serde_json::json!(["claude", "opencode", "codex"]),
             "the user put the whole team on Codex: planners, writers and reviewers"
         );
-        assert!(runner(&task)["adapter"].as_str().unwrap().contains("codex"), "{}", runner(&task));
+        assert!(
+            runner(&task)["adapter"].as_str().unwrap().contains("codex"),
+            "{}",
+            runner(&task)
+        );
     }
 
     #[test]
@@ -574,6 +771,52 @@ mod tests {
             "smoke"
         );
     }
+    #[test]
+    fn the_leader_approves_a_check_only_revision_but_not_a_plan_change() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        crate::execution::store(&task, baseline(), "first").unwrap();
+        crate::execution::confirm(&task, 1, false).unwrap();
+        crate::execution::confirm(&task, 1, true).unwrap();
+
+        let mut checks_only = task.state().unwrap().application;
+        checks_only.revision = 2;
+        let app = checks_only.check_configuration.get_mut("app").unwrap();
+        let lint = app.checks["backend"].clone();
+        app.checks.insert("pint".into(), lint);
+        crate::execution::store(&task, checks_only, "back lane checks").unwrap();
+        let status = call(&task, "status", &json!({})).unwrap();
+        assert_eq!(
+            status["proposal_approval"]["needs_user"], false,
+            "{}",
+            status["proposal_approval"]
+        );
+        crate::execution::confirm(&task, 2, true).expect("no confirmation round for checks");
+        assert!(
+            task.log_lines()
+                .unwrap()
+                .iter()
+                .any(|line| line.contains("the leader approved check-only revision 2"))
+        );
+
+        let mut plan_change = task.state().unwrap().application;
+        plan_change.revision = 3;
+        plan_change.goal = "Something else".into();
+        crate::execution::store(&task, plan_change, "new goal").unwrap();
+        let status = call(&task, "status", &json!({})).unwrap();
+        assert_eq!(status["proposal_approval"]["needs_user"], true);
+        assert!(
+            status["proposal_approval"]["why"]
+                .as_str()
+                .unwrap()
+                .contains("changes the plan")
+        );
+        assert!(
+            crate::execution::confirm(&task, 3, true).is_err(),
+            "the user confirms and approves a plan change"
+        );
+    }
+
     #[test]
     fn approved_baseline_prevents_silent_check_weakening() {
         let directory = tempfile::TempDir::new().unwrap();

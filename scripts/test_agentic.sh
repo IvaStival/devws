@@ -65,12 +65,14 @@ esac
 EOF
 ln -s "$ROOT/bin/devws" "$TEST_ROOT/bin/devws"
 chmod +x "$TEST_ROOT/bin/"*
-for script in "$SCRIPTS_SRC"/*.sh "$SCRIPTS_SRC"/*.json "$SCRIPTS_SRC"/*.md "$SCRIPTS_SRC"/*.yml; do
+for script in "$SCRIPTS_SRC"/*.sh "$SCRIPTS_SRC"/agents "$SCRIPTS_SRC"/*.json "$SCRIPTS_SRC"/*.md "$SCRIPTS_SRC"/*.yml; do
   ln -s "$script" "$TEST_ROOT/home/.tmuxinator/$(basename "$script")"
 done
 printf 'DEVWS_AGENTS="claude codex"\nDEVWS_EDITORS="nvim"\n' > "$TEST_ROOT/home/.tmuxinator/.env"
 export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home"
 export DEVWS_NOTIFY_COMMAND=true DEVWS_AUTO_RESTORE=0
+# Only the registered agents: not the programs this machine has installed.
+export DEVWS_OFFERED_PROGRAMS=""
 export DEVWS_HOME="$TEST_ROOT/devws" DEVWS_CLONE_BASE="$TEST_ROOT/remotes/"
 unset TMUX
 SCRIPTS="$HOME/.tmuxinator"

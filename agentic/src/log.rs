@@ -23,6 +23,8 @@ pub enum Kind {
     Answer,
     /// The leader's program: chosen at start, or handed over to its fallback.
     Leader,
+    /// A note saved in the team's memory (ai-memory).
+    Memory,
 }
 
 /// One line of `log.jsonl`: what happened in the team, written by devAgentics

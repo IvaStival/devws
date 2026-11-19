@@ -102,6 +102,7 @@ pub fn write_leader_args(
 ) -> Result<PathBuf> {
     let config = task.config()?;
     let kind = devws.agent_kind(&leader.agent)?;
+    crate::leader::refuse_non_leader(&leader.agent, kind)?;
     let mcp = McpServer {
         command: command.to_string(),
         task_id: config.id.clone(),
@@ -110,8 +111,11 @@ pub fn write_leader_args(
     agent_args::write_mcp_config(&mcp)?;
     let first_message = opening(leader, &config, "the leader", &config.repos[0], first);
     let state = task.state()?;
-    let arguments = if state.workflow == crate::execution::Workflow::Reviewed
-        && kind == crate::agent_args::Kind::Codex
+    let reviewed = state.workflow == crate::execution::Workflow::Reviewed;
+    // A reviewed coordinator runs on its program's leader adapter.
+    let adapter = kind.provider().reviewed_leader();
+    let arguments = if reviewed
+        && adapter == Some(crate::providers::ReviewedAdapter::Codex)
         && state.codex_team
     {
         crate::worker_tools::codex_leader_arguments(
@@ -121,9 +125,9 @@ pub fn write_leader_args(
             leader.model.as_deref(),
             leader.effort.as_deref(),
         )
-    } else if state.workflow == crate::execution::Workflow::Reviewed {
+    } else if reviewed {
         anyhow::ensure!(
-            kind == crate::agent_args::Kind::Claude,
+            adapter == Some(crate::providers::ReviewedAdapter::Claude),
             "reviewed coordinator requires the verified Claude MCP-only adapter (or the user's `devagentics task codex-team <task> on`); unsafe provider switching is blocked"
         );
         crate::worker_tools::leader_arguments(
@@ -286,11 +290,12 @@ pub fn start_task_with_workflow(
         (Some(agent), None) => leader::choose(&leader::led_by(role, agent, devws)?, devws)?,
         (None, _) => leader::choose(role, devws)?,
     };
+    let codex_team = task.state()?.codex_team;
     if task.state()?.workflow == crate::execution::Workflow::Reviewed
-        && !task.state()?.codex_team
+        && !codex_team
         && pick.is_none()
-        && devws.agent_kind(&leader.agent)? != crate::agent_args::Kind::Claude
-        && devws.agent_kind(&role.agent)? == crate::agent_args::Kind::Claude
+        && !leader::reviewed_leader_allowed(devws.agent_kind(&leader.agent)?, codex_team)
+        && leader::reviewed_leader_allowed(devws.agent_kind(&role.agent)?, codex_team)
     {
         leader = role.clone();
         why=Some("unsupported automatic coordinator fallback blocked; retained the supported MCP-only adapter".into());
@@ -298,13 +303,14 @@ pub fn start_task_with_workflow(
     // Carrying on: the steps it has came from the repo's history, or from
     // earlier in this home; either way the leader catches up first.
     let first = if task.state()?.workflow == crate::execution::Workflow::Reviewed {
-        "This task uses reviewed planning. Call application_workflow with action=status. Interview the user and prepare an application baseline; use stable scope/step IDs and milestone release versions. Confirm shared understanding, then record explicit approval for the exact baseline revision. Configure and verify a local source-only container image through the exact-call external permission flow before starting specialists. Use leader_inbox and inbox_ack instead of terminal capture/delivery. Do not bypass missing capabilities with direct shell, task-state edits or a legacy restart."
+        "This task uses reviewed planning. Call application_workflow with action=status. Interview the user and prepare an application baseline; use stable scope/step IDs and milestone release versions. Confirm shared understanding, then record explicit approval for the exact baseline revision. Configure and verify a local source-only container image through the exact-call external permission flow before starting specialists. Read your inbox with application_workflow action=leader_inbox (an action of that tool, not a tool of its own), and acknowledge what you handled with input.ack [ids] on your next read, never by terminal capture. Do not bypass missing capabilities with direct shell, task-state edits or a legacy restart."
     } else if task.state()?.steps.is_empty() {
         LEADER_FIRST
     } else {
         LEADER_CONTINUES
     };
-    let args_file = write_leader_args(&task, devws, &leader, command, first)?;
+    let first = with_memory(&task, devws, first)?;
+    let args_file = write_leader_args(&task, devws, &leader, command, &first)?;
     task.transaction(|tx| {
         tx.state.leader_agent = Some(leader.agent.clone());
         tx.state.leader_pick = pick.clone();
@@ -321,12 +327,32 @@ pub fn start_task_with_workflow(
     })
 }
 
+/// A leader that carries a task on opens with where it stands and the last
+/// leaders' handoffs; a new task has neither.
+fn with_memory(task: &Task, devws: &dyn Devws, first: &str) -> Result<String> {
+    let mut text = first.to_string();
+    if !task.state()?.steps.is_empty() {
+        let digest = crate::notes::digest(task, "The team was opened again.")?;
+        text.push_str(&format!(
+            "\n\nWhere the task stands (devAgentics, from its state):\n{digest}"
+        ));
+    }
+    // A memory that fails costs the handoffs, never the start.
+    let handoffs =
+        crate::notes::newest(task, devws, crate::memory::NoteKind::Handoff, 2).unwrap_or_default();
+    let block = crate::notes::fenced("The last leaders' handoffs", &handoffs);
+    if !block.is_empty() {
+        text.push_str(&format!("\n\n{block}"));
+    }
+    Ok(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_args::Kind as Program;
     use crate::checks::tests::repo;
     use crate::devws::fake::FakeDevws;
+    use crate::providers::Kind as Program;
     use std::fs;
     use tempfile::TempDir;
 
@@ -384,6 +410,58 @@ mod tests {
         assert_eq!(
             mcp["mcpServers"]["devagentics"]["args"],
             serde_json::json!(["mcp", "feat-login"])
+        );
+    }
+
+    #[test]
+    fn a_leader_that_carries_on_opens_with_the_digest_and_the_last_handoff() {
+        let home_dir = TempDir::new().unwrap();
+        let home = Home::at(home_dir.path().to_path_buf());
+        let devws = FakeDevws::new(home_dir.path())
+            .with_kind("claude", Program::Claude)
+            .with_memory();
+        let repo = branch_repo("feat/login");
+        let first = start_task(&home, &devws, repo.path(), "d", None).unwrap();
+        let opening = std::fs::read_to_string(&first.args_file).unwrap();
+        assert!(
+            !opening.contains("Where the task stands"),
+            "a new task has no digest"
+        );
+
+        let task = Task::open(&home, &first.id).unwrap();
+        task.transaction(|tx| {
+            tx.state.steps.push(crate::state::Step {
+                id: "A1".into(),
+                title: "Login form".into(),
+                status: crate::state::StepStatus::Accepted,
+                attempts: 1,
+                spec: None,
+                review_since: None,
+            });
+            Ok(())
+        })
+        .unwrap();
+        crate::notes::save(
+            &task,
+            &devws,
+            &crate::memory::Note {
+                kind: crate::memory::NoteKind::Handoff,
+                title: "End of day".into(),
+                body: "A2 waits for the user's answer on SSO.".into(),
+                author: crate::state::LEADER.into(),
+                step: None,
+            },
+        )
+        .unwrap();
+        let again = start_task(&home, &devws, repo.path(), "d", None).unwrap();
+        let opening = std::fs::read_to_string(&again.args_file).unwrap();
+        assert!(
+            opening.contains("The team was opened again.\n\n## Accepted (1 of 1)\nA1"),
+            "{opening}"
+        );
+        assert!(
+            opening.contains("A2 waits for the user's answer on SSO."),
+            "{opening}"
         );
     }
 

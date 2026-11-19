@@ -187,38 +187,27 @@ fn check_candidate_first(
     }
     let lane = crate::lanes::get(task, &lane)?;
     let candidate = crate::integration::candidate(task, &lane)?;
-    let Some(evidence) =
-        crate::integration::check_candidate(task, &lane.repo, Some(&lane.name), &candidate)?
+    let Some(evidence) = crate::integration::check_candidate(
+        task,
+        &lane.repo,
+        Some(&lane.name),
+        &candidate,
+        !order.targets.is_empty(),
+    )?
     else {
         return Ok(None);
     };
     if evidence.passed() {
         return Ok(Some(evidence));
     }
-    let failed: Vec<String> = evidence
-        .phases
-        .iter()
-        .filter(|phase| phase.outcome != crate::check_profiles::Outcome::Passed)
-        .map(|phase| {
-            format!(
-                "{} ({:?}): {}",
-                phase.profile, phase.outcome, phase.diagnostic
-            )
-        })
-        .collect();
+    let failed = failed_phases(&evidence.phases);
     let step = order.step.clone();
+    let message = integration_failure(&step, &evidence.phases, !order.targets.is_empty());
     task.transaction(|tx| {
         if let Some(found) = tx.state.step_mut(&step) {
             found.set_status(StepStatus::Failed, crate::log::now());
         }
-        tx.state.say(
-            crate::state::LEADER,
-            format!(
-                "INTEGRATION FAILED {step}: its work merged with the task's branch fails the \
-                 candidate check: {}. Order a correction (an integration defect) or escalate.",
-                failed.join("; ")
-            ),
-        );
+        tx.state.say(crate::state::LEADER, message);
         tx.log(
             Kind::Check,
             None,
@@ -231,6 +220,49 @@ fn check_candidate_first(
         "the merge candidate of {step} fails its candidate check: {}",
         failed.join("; ")
     )
+}
+
+/// Each failed phase: its profile, outcome and diagnostic.
+fn failed_phases(phases: &[crate::check_profiles::Phase]) -> Vec<String> {
+    phases
+        .iter()
+        .filter(|phase| phase.outcome != crate::check_profiles::Outcome::Passed)
+        .map(|phase| {
+            format!(
+                "{} ({:?}): {}",
+                phase.profile, phase.outcome, phase.diagnostic
+            )
+        })
+        .collect()
+}
+
+/// What the leader is told when a merge candidate fails: which profiles, why
+/// they ran (every selected profile when the order's own checks ran only on
+/// its targets) and the failing lines of each log, which neither it nor a
+/// reviewer can open.
+fn integration_failure(step: &str, phases: &[crate::check_profiles::Phase], full: bool) -> String {
+    let mut message = format!(
+        "INTEGRATION FAILED {step}: its work merged with the task's branch fails the candidate check: {}.",
+        failed_phases(phases).join("; ")
+    );
+    if full {
+        message.push_str(
+            " Its order's checks ran only on its targets, so the candidate ran every selected profile on the whole repo: a failure may come from other work in the lane or the branch.",
+        );
+    }
+    for phase in phases
+        .iter()
+        .filter(|phase| phase.outcome != crate::check_profiles::Outcome::Passed)
+    {
+        let excerpt = crate::check_profiles::failure_excerpt(&phase.log);
+        if !excerpt.is_empty() {
+            message.push_str(&format!("\n{} log: {excerpt}", phase.profile));
+        }
+    }
+    message.push_str(
+        "\nOrder a correction (an integration defect), or escalate when the failure is not this step's.",
+    );
+    message
 }
 
 pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
@@ -598,6 +630,48 @@ pub fn require_approval(task: &Task, step: &str) -> Result<()> {
 mod tests {
     use super::*;
 
+    // The leader cannot open the candidate's logs: the message carries why
+    // the whole suite ran and which tests failed.
+    #[test]
+    fn an_integration_failure_says_why_the_suite_ran_and_what_failed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let log = dir.path().join("phase-2.log");
+        std::fs::write(
+            &log,
+            "  ✓ fine\n FAIL  src/hooks/useSystemMutations.test.tsx > keeps the mutation\nAssertionError: expected undefined\n",
+        )
+        .unwrap();
+        let phase = |profile: &str, outcome| crate::check_profiles::Phase {
+            profile: profile.into(),
+            outcome,
+            exit_code: Some(1),
+            seconds: 1,
+            diagnostic: "Isolated test command failed".into(),
+            log: log.clone(),
+        };
+        let phases = [
+            phase("lint", crate::check_profiles::Outcome::Passed),
+            phase("test", crate::check_profiles::Outcome::TestFailure),
+        ];
+
+        let message = integration_failure("B3", &phases, true);
+        assert!(message.starts_with("INTEGRATION FAILED B3"), "{message}");
+        assert!(
+            message.contains("test (TestFailure)") && !message.contains("lint ("),
+            "{message}"
+        );
+        assert!(message.contains("ran only on its targets"), "{message}");
+        assert!(
+            message.contains("test log: FAIL  src/hooks/useSystemMutations.test.tsx")
+                && message.contains("AssertionError"),
+            "{message}"
+        );
+        assert!(
+            !integration_failure("B3", &phases, false).contains("targets"),
+            "an order checked everywhere ran the candidate's own profiles"
+        );
+    }
+
     #[test]
     fn a_submitted_review_tells_the_leader_what_comes_next() {
         let approved = submitted_message(
@@ -678,7 +752,10 @@ mod tests {
         assert_eq!(results["order"]["passed"], true);
         assert_eq!(results["order"]["phases"][1]["profile"], "test");
         assert_eq!(results["order"]["phases"][1]["exit_code"], 0);
-        assert!(results["order"]["phases"][1].get("log").is_none(), "a path it cannot open");
+        assert!(
+            results["order"]["phases"][1].get("log").is_none(),
+            "a path it cannot open"
+        );
         assert!(results["candidate"].is_null(), "no candidate check yet");
     }
 
@@ -706,6 +783,8 @@ mod tests {
                 review_since: None,
             });
             tx.state.orders.push(crate::state::Order {
+                read: Vec::new(),
+                targets: Vec::new(),
                 id: "o-review".into(),
                 step: "S01-B01".into(),
                 agent: author.id.clone(),
@@ -748,6 +827,8 @@ mod tests {
                 review_since: None,
             });
             tx.state.orders.push(crate::state::Order {
+                read: Vec::new(),
+                targets: Vec::new(),
                 id: "o1".into(),
                 step: "S01-B01".into(),
                 agent: "executor-1".into(),

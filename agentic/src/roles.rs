@@ -1,5 +1,5 @@
-use crate::agent_args::{AUTO, Kind};
 use crate::home::Home;
+use crate::providers::Kind;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -109,22 +109,17 @@ pub struct Fallback {
     pub sandbox: Option<String>,
 }
 
-/// The factory floor works on these and nothing else: a model the role names
-/// stays only when it is one of them (any Sonnet, any Luna).
-pub const FLOOR_CLAUDE_MODEL: &str = "sonnet";
-pub const FLOOR_CODEX_MODEL: &str = "gpt-6-luna";
-
 /// A floor agent's model on `kind`: the one named when it is of the floor's
-/// family, else the floor's.
-fn floor_model(kind: Kind, named: Option<&str>) -> String {
-    let (family, model) = match kind {
-        Kind::Claude => ("sonnet", FLOOR_CLAUDE_MODEL),
-        Kind::Codex => ("luna", FLOOR_CODEX_MODEL),
+/// family on that program (its provider's floor: any Sonnet, any Luna…), else
+/// the floor's; a program with no floor family keeps the one named.
+pub(crate) fn floor_model(kind: Kind, named: Option<&str>) -> Option<String> {
+    let Some((family, model)) = kind.provider().floor() else {
+        return named.map(str::to_string);
     };
-    match named {
+    Some(match named {
         Some(named) if named.contains(family) => named.to_string(),
         _ => model.to_string(),
-    }
+    })
 }
 
 impl Role {
@@ -170,22 +165,7 @@ impl Role {
             }
         }
         if self.fallback.is_none() && self.alternatives.is_empty() {
-            candidates.push(match kind {
-                Kind::Claude => Fallback {
-                    agent: "codex".into(),
-                    model: Some("gpt-6.1-sol".into()),
-                    effort: Some("medium".into()),
-                    approvals: Some("auto".into()),
-                    sandbox: None,
-                },
-                Kind::Codex => Fallback {
-                    agent: "claude".into(),
-                    model: None,
-                    effort: Some("high".into()),
-                    approvals: Some("auto".into()),
-                    sandbox: None,
-                },
-            });
+            candidates.push(kind.provider().default_fallback());
         }
         if self.group == Group::Floor {
             for (place, candidate) in candidates.iter_mut().enumerate() {
@@ -198,7 +178,7 @@ impl Role {
                     Kind::parse(&candidate.agent)
                 };
                 if let Some(candidate_kind) = candidate_kind {
-                    candidate.model = Some(floor_model(candidate_kind, candidate.model.as_deref()));
+                    candidate.model = floor_model(candidate_kind, candidate.model.as_deref());
                 }
             }
         }
@@ -367,21 +347,11 @@ impl Setting {
     /// The values the role's program takes; for a model, the known ones, as
     /// any other may be typed (new models come out faster than this list).
     pub fn choices(self, kind: Kind) -> &'static [&'static str] {
-        match (self, kind) {
-            (Setting::Model, Kind::Claude) => &[
-                "claude-opus-5-5",
-                "claude-sonnet-5-5",
-                "claude-haiku-5-5",
-                "claude-fable-5-1",
-            ],
-            (Setting::Model, Kind::Codex) => &["gpt-6.1-sol", "gpt-6-luna", "gpt-5.6-luna"],
-            (Setting::Effort, Kind::Claude) => &["low", "medium", "high", "xhigh", "max"],
-            (Setting::Effort, Kind::Codex) => &["minimal", "low", "medium", "high", "xhigh"],
-            // Claude's permission modes; Codex's -a, and devws's auto review.
-            (Setting::Approvals, Kind::Claude) => {
-                &["default", "acceptEdits", "plan", AUTO, "bypassPermissions"]
-            }
-            (Setting::Approvals, Kind::Codex) => &["untrusted", "on-request", "never", AUTO],
+        let provider = kind.provider();
+        match self {
+            Setting::Model => provider.models(),
+            Setting::Effort => provider.efforts(),
+            Setting::Approvals => provider.approval_modes(),
         }
     }
 }
@@ -534,6 +504,8 @@ pub fn provision_specialists(home: &Home) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_args::AUTO;
+    use crate::providers::{FLOOR_ANTIGRAVITY_MODEL, FLOOR_CLAUDE_MODEL, FLOOR_CODEX_MODEL};
     use tempfile::TempDir;
 
     fn home_with(files: &[(&str, &str)]) -> (TempDir, Home) {
@@ -661,6 +633,52 @@ mod tests {
     }
 
     #[test]
+    fn an_antigravity_floor_agent_runs_a_gemini_flash_then_falls_back_to_codex() {
+        let models = |text: &str| {
+            parse("hammer", text, Source::Home, "test")
+                .unwrap()
+                .worker_candidates(Kind::Antigravity)
+                .into_iter()
+                .map(|candidate| (candidate.agent, candidate.model.unwrap_or_default()))
+                .collect::<Vec<_>>()
+        };
+        let pair = |agent: &str, model: &str| (agent.to_string(), model.to_string());
+        let floor = "+++\nagent = \"antigravity\"\nwrites = true\ngroup = \"floor\"\n+++\nBuild.\n";
+        assert_eq!(
+            models(floor),
+            [
+                pair("antigravity", FLOOR_ANTIGRAVITY_MODEL),
+                pair("codex", FLOOR_CODEX_MODEL)
+            ]
+        );
+        let pro = floor.replace("group", "model = \"gemini-4-carbon-high\"\ngroup");
+        assert_eq!(
+            models(&pro)[0],
+            pair("antigravity", FLOOR_ANTIGRAVITY_MODEL)
+        );
+        let flash = floor.replace("group", "model = \"gemini-3.8-flash-high\"\ngroup");
+        assert_eq!(
+            models(&flash)[0],
+            pair("antigravity", "gemini-3.8-flash-high"),
+            "a Flash the role names stays"
+        );
+    }
+
+    #[test]
+    fn antigravity_settings_are_agy_s_models_efforts_and_modes() {
+        assert!(
+            Setting::Model
+                .choices(Kind::Antigravity)
+                .contains(&FLOOR_ANTIGRAVITY_MODEL)
+        );
+        assert_eq!(
+            Setting::Approvals.choices(Kind::Antigravity),
+            ["accept-edits", AUTO, "plan"]
+        );
+        assert!(Setting::Effort.choices(Kind::Antigravity).contains(&"max"));
+    }
+
+    #[test]
     fn the_floor_runs_only_on_claude_sonnet_and_codex_luna() {
         let models = |text: &str, kind| {
             parse("hammer", text, Source::Home, "test")
@@ -746,6 +764,7 @@ mod tests {
             "authorize_action",
             "accept_step",
             "reject_step",
+            "close_step",
             "add_repo",
             "open_prs",
             "escalate",
