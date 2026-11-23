@@ -61,7 +61,7 @@ pub struct Report {
     pub cost_per_integrated_success: Option<f64>,
     /// Usage summed by role, the leader as `leader`.
     pub usage_by_role: BTreeMap<String, Usage>,
-    /// Leader tool calls over MCP per accepted step, from telemetry: each call
+    /// Leader calls (MCP tools and CLI reads) per accepted step, from telemetry: each call
     /// rereads the leader's whole context, so this drives the leader's cost.
     pub leader_calls_per_accepted_step: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -459,7 +459,7 @@ fn lines(report: &Report) -> Vec<(String, String)> {
         },
     ));
     lines.push((
-        "leader MCP calls per accepted step".into(),
+        "leader calls per accepted step".into(),
         report
             .leader_calls_per_accepted_step
             .map_or("unknown (telemetry off)".into(), |calls| {
@@ -943,6 +943,7 @@ mod tests {
                         ("initialize".into(), calls(1)),
                         ("task_status.progress".into(), calls(4)),
                         ("send_order".into(), calls(2)),
+                        ("cli:progress".into(), calls(5)),
                     ]),
                 ),
                 (
@@ -952,7 +953,11 @@ mod tests {
             ]),
             ..crate::telemetry::Summary::default()
         };
-        assert_eq!(leader_calls(&telemetry), 6);
+        assert_eq!(
+            leader_calls(&telemetry),
+            11,
+            "CLI reads are leader calls too"
+        );
     }
 
     #[test]

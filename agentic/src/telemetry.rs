@@ -44,12 +44,49 @@ enum Observation {
         response_bytes: u64,
         failed: bool,
     },
+    /// A leader read through `devagentics leader-read`.
+    Cli {
+        operation: String,
+        response_bytes: u64,
+        failed: bool,
+    },
     WorkerTurnStarted {
         prompt_bytes: u64,
     },
     WorkerTurnFinished {
         stream_usage: Option<Value>,
     },
+}
+
+struct Call {
+    request_bytes: u64,
+    response_bytes: u64,
+    failed: bool,
+}
+
+type Samples = BTreeMap<(&'static str, String), Vec<u64>>;
+
+fn add(
+    summary: &mut Summary,
+    samples: &mut Samples,
+    role: &'static str,
+    operation: String,
+    call: Call,
+) {
+    let payloads = summary
+        .mcp
+        .entry(role.into())
+        .or_default()
+        .entry(operation.clone())
+        .or_default();
+    payloads.calls += 1;
+    payloads.failures += usize::from(call.failed);
+    payloads.request_bytes += call.request_bytes;
+    payloads.response_bytes += call.response_bytes;
+    samples
+        .entry((role, operation))
+        .or_default()
+        .push(call.response_bytes);
 }
 
 pub fn summary(task: &Task) -> Result<Option<Summary>> {
@@ -60,7 +97,7 @@ pub fn summary(task: &Task) -> Result<Option<Summary>> {
     };
     FileExt::lock_shared(&file)?;
     let mut summary = Summary::default();
-    let mut samples = BTreeMap::<_, Vec<u64>>::new();
+    let mut samples = Samples::new();
     for line in BufReader::new(file).lines() {
         match serde_json::from_str::<Observation>(&line?) {
             Ok(Observation::Mcp {
@@ -75,20 +112,26 @@ pub fn summary(task: &Task) -> Result<Option<Summary>> {
                 } else {
                     "worker"
                 };
-                let payloads = summary
-                    .mcp
-                    .entry(role.into())
-                    .or_default()
-                    .entry(operation.clone())
-                    .or_default();
-                payloads.calls += 1;
-                payloads.failures += usize::from(failed);
-                payloads.request_bytes += request_bytes;
-                payloads.response_bytes += response_bytes;
-                samples
-                    .entry((role, operation))
-                    .or_default()
-                    .push(response_bytes);
+                let call = Call {
+                    request_bytes,
+                    response_bytes,
+                    failed,
+                };
+                add(&mut summary, &mut samples, role, operation, call);
+            }
+            // A CLI read is a leader call too, kept apart by its operation name.
+            Ok(Observation::Cli {
+                operation,
+                response_bytes,
+                failed,
+            }) => {
+                let call = Call {
+                    request_bytes: 0,
+                    response_bytes,
+                    failed,
+                };
+                let operation = format!("cli:{operation}");
+                add(&mut summary, &mut samples, "leader", operation, call);
             }
             Ok(Observation::WorkerTurnStarted { prompt_bytes }) => {
                 summary.worker_turns_started += 1;
@@ -135,6 +178,23 @@ pub fn record(task: &Task, event: &impl Serialize) {
     if let Err(error) = write() {
         eprintln!("devagentics benchmark telemetry: {error}");
     }
+}
+
+/// One `leader-read` command: what it read, how much it printed, whether it failed.
+pub fn cli(task: &Task, operation: &str, output_bytes: usize, failed: bool, started: Instant) {
+    record(
+        task,
+        &json!({
+            "version": 1,
+            "kind": "cli",
+            "at": crate::log::now(),
+            "agent": crate::state::LEADER,
+            "operation": operation,
+            "response_bytes": output_bytes,
+            "failed": failed,
+            "duration_ms": started.elapsed().as_millis(),
+        }),
+    );
 }
 
 pub fn mcp(
@@ -205,6 +265,24 @@ mod tests {
             summary.mcp["leader"]["task_status"].response_p95_bytes,
             wire.len() as u64
         );
+    }
+
+    #[test]
+    fn a_cli_read_counts_as_a_leader_call_under_its_own_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = crate::home::Home::at(directory.path().to_path_buf());
+        let task_dir = home.task_dir("fixture");
+        std::fs::create_dir_all(&task_dir).unwrap();
+        std::fs::write(task_dir.join("task.toml"), "").unwrap();
+        std::fs::write(task_dir.join(FLAG), "").unwrap();
+        let task = Task::open(&home, "fixture").unwrap();
+        cli(&task, "progress", 900, false, Instant::now());
+        cli(&task, "progress", 0, true, Instant::now());
+        let summary = summary(&task).unwrap().unwrap();
+        let progress = &summary.mcp["leader"]["cli:progress"];
+        assert_eq!((progress.calls, progress.failures), (2, 1));
+        assert_eq!(progress.response_bytes, 900);
+        assert_eq!(summary.unreadable_records, 0);
     }
 
     #[test]

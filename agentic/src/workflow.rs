@@ -239,6 +239,21 @@ pub fn adoption(task: &Task) -> Result<Value> {
         json!({"current":state.workflow,"paused":state.paused,"direct_branch_writers":direct,"open_orders":state.orders.iter().filter(|order|order.status==crate::state::OrderStatus::Open).map(|order|&order.id).collect::<Vec<_>>(),"managed_storage":task.dir(),"repositories":config.repos.iter().map(|repo|&repo.worktree).collect::<Vec<_>>(),"blockers": if state.runner.is_none(){vec!["Configure and verify an isolated local image first"]}else if !state.paused{vec!["Pause task before adoption"]}else if state.agents.iter().any(|worker|worker.live){vec!["Stop unscoped legacy agents before adoption"]}else if state.orders.iter().any(|order|order.status==crate::state::OrderStatus::Open){vec!["Resolve open legacy orders before adoption"]}else{vec![]},"can_apply":state.runner.is_some() && state.paused && !state.agents.iter().any(|worker|worker.live) && !state.orders.iter().any(|order|order.status==crate::state::OrderStatus::Open)}),
     )
 }
+/// A part of the leader's role that its prompt leaves out. A user's own
+/// leader role without that part falls back to the built-in one.
+fn guide(task: &Task, topic: &str) -> Result<Value> {
+    let instructions = crate::leader::instructions(task)?;
+    let text = crate::roles::part(&instructions, topic)
+        .or_else(|| crate::roles::part(crate::roles::LEADER, topic));
+    match text {
+        Some(text) => Ok(json!({"topic": topic, "text": text})),
+        None => anyhow::bail!(
+            "unknown guide topic {topic}; topics: {}",
+            crate::roles::parts(crate::roles::LEADER).join(", ")
+        ),
+    }
+}
+
 /// Caller must be the leader/user. Worker tools never expose this catalog.
 pub fn call(task: &Task, action: &str, input: &Value) -> Result<Value> {
     match action {
@@ -246,6 +261,7 @@ pub fn call(task: &Task, action: &str, input: &Value) -> Result<Value> {
             Some(name) => section(task, name, input),
             None => compact(task),
         },
+        "guide" => guide(task, input["topic"].as_str().context("topic required")?),
         "proposal_example" if input["variant"] == "light" => execution::light_proposal_example(),
         "proposal_example" => execution::proposal_example(),
         "runner_images" => crate::runner::images(),
@@ -336,7 +352,9 @@ pub fn call(task: &Task, action: &str, input: &Value) -> Result<Value> {
             crate::runner::probe(&configured)?;
             let _control = task.control_lock()?;
             task.transaction(|tx|{ensure!(tx.state.paused,"pause task before explicit adoption");ensure!(!tx.state.agents.iter().any(|worker|worker.live),"stop legacy agents before adopting scoped workers");ensure!(!tx.state.orders.iter().any(|order|order.status==crate::state::OrderStatus::Open),"resolve active legacy orders before adoption");tx.state.workflow=Workflow::Reviewed;tx.state.approved=tx.state.application.approved();tx.log(crate::log::Kind::Review,None,None,"user adopted reviewed execution for future work; historical steps retain legacy provenance");Ok(())})?;
-            Ok(json!({"adopted":true}))
+            Ok(
+                json!({"adopted":true,"next":"Read application_workflow action=guide topic=reviewed: the reviewed workflow your instructions did not carry."}),
+            )
         }
         "answer" => {
             let id = input["question"].as_str().context("question required")?;
@@ -774,6 +792,28 @@ mod tests {
         assert_eq!(suggested(3, Some(1)), 1, "the host's container slots");
         assert_eq!(suggested(3, None), 1, "no runner: one at a time");
         assert_eq!(staffing(&[], 3, Some(8))["suggested_writers"], 0);
+    }
+
+    #[test]
+    fn the_leader_reads_a_left_out_part_of_its_role_with_guide() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        let accounts = call(&task, "guide", &json!({"topic": "accounts"})).unwrap();
+        assert!(
+            accounts["text"]
+                .as_str()
+                .unwrap()
+                .contains("set_usage_limit_approval")
+        );
+        let reviewed = call(&task, "guide", &json!({"topic": "reviewed"})).unwrap();
+        assert!(
+            reviewed["text"]
+                .as_str()
+                .unwrap()
+                .contains("For reviewed tasks")
+        );
+        let unknown = call(&task, "guide", &json!({"topic": "spikes"})).unwrap_err();
+        assert!(unknown.to_string().contains("accounts"), "{unknown}");
     }
 
     #[test]

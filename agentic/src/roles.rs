@@ -7,7 +7,69 @@ use std::path::{Path, PathBuf};
 
 /// Only the leader is built in: every other role is the user's own file.
 /// `roles/samples/` holds examples to copy.
-const BUILTIN: [(&str, &str); 1] = [("leader", include_str!("../roles/leader.md"))];
+const BUILTIN: [(&str, &str); 1] = [("leader", LEADER)];
+
+/// The built-in leader role.
+pub const LEADER: &str = include_str!("../roles/leader.md");
+
+/// The workflow part a role keeps in its prompt. Every other part, such as
+/// `accounts`, is left out and read on demand with `guide`.
+fn workflow_part(workflow: crate::execution::Workflow) -> &'static str {
+    match workflow {
+        crate::execution::Workflow::Reviewed => "reviewed",
+        crate::execution::Workflow::Legacy => "legacy",
+    }
+}
+
+fn part_start(line: &str) -> Option<&str> {
+    line.trim()
+        .strip_prefix("<!-- part:")
+        .and_then(|rest| rest.strip_suffix("-->"))
+        .map(str::trim)
+}
+
+fn is_part_end(line: &str) -> bool {
+    line.trim() == "<!-- /part -->"
+}
+
+/// A role's text as its prompt for a task on `workflow`: what is outside any
+/// part, plus that workflow's part. A role with no parts is unchanged.
+pub fn for_workflow(instructions: &str, workflow: crate::execution::Workflow) -> String {
+    let keep = workflow_part(workflow);
+    let mut current: Option<&str> = None;
+    let mut lines = Vec::new();
+    for line in instructions.lines() {
+        if let Some(name) = part_start(line) {
+            current = Some(name);
+        } else if is_part_end(line) {
+            current = None;
+        } else if current.is_none_or(|name| name == keep) {
+            lines.push(line);
+        }
+    }
+    lines.join("\n")
+}
+
+/// The names of a role's parts, in order.
+pub fn parts(instructions: &str) -> Vec<&str> {
+    instructions.lines().filter_map(part_start).collect()
+}
+
+/// One part of a role, without its markers.
+pub fn part(instructions: &str, name: &str) -> Option<String> {
+    let mut lines = instructions
+        .lines()
+        .skip_while(|line| part_start(line) != Some(name))
+        .skip(1)
+        .take_while(|line| !is_part_end(line));
+    let first = lines.next()?;
+    Some(
+        std::iter::once(first)
+            .chain(lines)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
 
 /// The sample roles, which the tests install into a home as the user's own.
 #[cfg(test)]
@@ -504,6 +566,58 @@ pub fn provision_specialists(home: &Home) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_leader_prompt_carries_only_its_tasks_workflow() {
+        use crate::execution::Workflow;
+        let reviewed = for_workflow(LEADER, Workflow::Reviewed);
+        let legacy = for_workflow(LEADER, Workflow::Legacy);
+        assert!(
+            reviewed.contains("For reviewed tasks")
+                && !reviewed.contains("How you work (legacy tasks)")
+        );
+        assert!(
+            legacy.contains("How you work (legacy tasks)")
+                && !legacy.contains("For reviewed tasks")
+        );
+        for prompt in [&reviewed, &legacy] {
+            assert!(!prompt.contains("<!-- part"), "no markers reach the model");
+            assert!(
+                !prompt.contains("Account limits: the week"),
+                "accounts is read on demand"
+            );
+            assert!(
+                prompt.contains("topic=accounts"),
+                "but it says where to read it"
+            );
+            assert!(prompt.contains("## When to ask the user"));
+        }
+        assert!(
+            reviewed.len() + 6000 < LEADER.len(),
+            "{} of {}",
+            reviewed.len(),
+            LEADER.len()
+        );
+    }
+
+    #[test]
+    fn every_part_of_the_leader_can_be_read_alone() {
+        assert_eq!(parts(LEADER), ["reviewed", "legacy", "accounts"]);
+        for name in parts(LEADER) {
+            let text = part(LEADER, name).unwrap();
+            assert!(text.len() > 500 && !text.contains("<!-- "), "{name}");
+        }
+        assert!(
+            part(LEADER, "accounts")
+                .unwrap()
+                .contains("set_usage_limit_approval")
+        );
+        assert_eq!(part(LEADER, "nothing"), None);
+        assert_eq!(
+            for_workflow("Lead.\nNo parts.", crate::execution::Workflow::Legacy),
+            "Lead.\nNo parts."
+        );
+    }
     use crate::agent_args::AUTO;
     use crate::providers::{FLOOR_ANTIGRAVITY_MODEL, FLOOR_CLAUDE_MODEL, FLOOR_CODEX_MODEL};
     use tempfile::TempDir;

@@ -1,7 +1,7 @@
 # Engineering workflows for devAgentics: the PStack ideas, done cheaply
 
 - **Date** 22-11-2026 · **Branch** `feat/opencode-workers`
-- **Status** In progress on branch `feat/pstack-workflows` (worktree `../devws-pstack`), started 23-11-2026. Committed: M0, M2 (`11a91db`), M3 (`6d216e7`). Done in the next commit: part of M4, part of M5 (learning) and part of M7 (deterministic review). Waiting for the CLI work: M1, the M4 system profile, M5 budgets. M6 and M8 not started. Revised 22-11-2026 after reading PStack's source skills (section 9).
+- **Status** In progress on branch `feat/pstack-workflows` (worktree `../devws-pstack`), rebased onto the CLI work (`d1b2661`). Done: M0, M1, M2, M3, M5, M6, the deterministic parts of M7, M4 without the system profile, and the review fixes. Left: the M4 system profile, M8 runs (they need you). Revised 22-11-2026 after reading PStack's source skills (section 9).
 - **Related plans:** builds on [token-optimization](../2026-11-21-214851_token-optimization/plan.md) and [cto-leader](../2026-11-19-200000_cto-leader/plan.md) and does not duplicate them.
 
 ## Context
@@ -712,3 +712,24 @@ It is the `attention` section of the workflow status, and the "Attention" sectio
 *Kept as decided:* #9, decisions stored before this change count as two-way and are no longer asked. You approved that. The leader lists them as assumed decisions at confirmation.
 
 *Verification:* 553 tests pass (+7), the 4 Docker tests pass, and clippy and fmt are clean.
+
+**Rebased onto the CLI work (23-11-2026).** The Codex session changed no source code after the first snapshot. It added the hybrid Notes comparison to the token plan: $4.13 with compact MCP against $3.20 with CLI reads, both arms integrated. The branch was replayed onto a second snapshot (`d1b2661`) with no conflicts.
+
+**M1 result (23-11-2026).**
+- **Workers:** the role and standards go on the first turn of a session only. Later turns get a re-anchor: the agent id, the tool rules, "call status", and the message.
+  - The full role goes again in three cases: after a new panel (a restart, an account switch, a failed turn); when the provider has no session to continue (no Codex thread or OpenCode session, or a new Claude session); and on every 10th turn.
+  - `shared.md` is no longer sent twice. A custom role without it still gets it.
+  - Size: about 6.6 KB per turn before. Now the first turn is about 4.1 KB and the next nine about 0.7 KB each.
+  - Telemetry records `full_role` and the bytes actually sent.
+- **Leader:** `leader.md` has marked parts.
+  - A task gets only its workflow's part, reviewed or legacy.
+  - The account rules are read on demand (`application_workflow action=guide topic=accounts`, or `leader-read <task> guide <topic>`).
+  - The prompt has a pointer to them, and so does the inbox message when no worker account can start.
+  - A task adopted into the reviewed workflow is told to read `topic=reviewed`.
+  - Size: a reviewed leader's role is 24.8 KB → 18.3 KB, at the start and on every handover.
+  - A user's own `leader.md` without parts is unchanged.
+- **CLI reads in telemetry:** `leader-read` records a `cli` observation, and the bench now counts leader calls from MCP and the CLI together.
+- **Not done:**
+  - *Note cap.* Agents can't read a whole note: `memory_search` returns snippets. A cap would cut notes with nowhere to read the rest, and adding a `memory_read` tool enlarges every catalog. Deferred until M8 shows long notes cost something.
+  - *Worker `guide` topics.* The order already carries the kind's rule (e.g. "name the regression test").
+- **Also fixed:** the container-slot test was flaky under parallel tests. A process forked by another test while a slot file was open holds its lock until it execs. The test now polls, as `take_slot` does.

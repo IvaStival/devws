@@ -1838,10 +1838,16 @@ pub mod tests {
             "both slots busy"
         );
         drop(first);
-        assert!(
-            free_slot(folder.path(), 2).unwrap().is_some(),
-            "a released slot is free"
-        );
+        // A process forked by another test while the file was open shares its
+        // lock until it execs, so the slot frees a moment later; take_slot
+        // polls for the same reason.
+        let freed = (0..100).any(|_| {
+            free_slot(folder.path(), 2).unwrap().is_some() || {
+                std::thread::sleep(Duration::from_millis(20));
+                false
+            }
+        });
+        assert!(freed, "a released slot is free");
         drop(second);
     }
 

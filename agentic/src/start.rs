@@ -108,8 +108,13 @@ pub fn write_leader_args(
         config_file: task.dir().join("mcp.json"),
     };
     agent_args::write_mcp_config(&mcp)?;
-    let first_message = opening(leader, &config, "the leader", &config.repos[0], first);
     let state = task.state()?;
+    // Only the task's workflow goes in the prompt; other parts are read with guide.
+    let leader = &Role {
+        instructions: crate::roles::for_workflow(&leader.instructions, state.workflow),
+        ..leader.clone()
+    };
+    let first_message = opening(leader, &config, "the leader", &config.repos[0], first);
     let reviewed = state.workflow == crate::execution::Workflow::Reviewed;
     // A reviewed coordinator runs on its program's leader adapter.
     let adapter = kind.provider().reviewed_leader();

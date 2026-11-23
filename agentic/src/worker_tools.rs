@@ -1168,6 +1168,70 @@ pub fn last_error(task: &Task, agent: &str) -> Option<String> {
 }
 
 /// The panel remains a supervisor, never an interactive editable model prompt.
+/// A resumed session already holds the role text, so later turns get a short
+/// re-anchor. The full text goes again every this many turns, because a long
+/// conversation the provider compacted can drop it.
+const FULL_ROLE_EVERY: u32 = 10;
+
+/// What a panel sent its session so far. A new panel (after a restart, an
+/// account switch or a failed turn) starts empty and sends the full role.
+#[derive(Default)]
+struct RoleAnchor {
+    turns_since_full: Option<u32>,
+}
+
+impl RoleAnchor {
+    fn send_full(&self, session_continues: bool) -> bool {
+        !session_continues
+            || self
+                .turns_since_full
+                .is_none_or(|turns| turns + 1 >= FULL_ROLE_EVERY)
+    }
+
+    fn sent(&mut self, full: bool) {
+        self.turns_since_full = Some(if full {
+            0
+        } else {
+            self.turns_since_full.unwrap_or(0) + 1
+        });
+    }
+}
+
+struct TurnText<'a> {
+    role: &'a str,
+    standards: &'a str,
+    agent: &'a str,
+    tools: &'a str,
+    graph: &'a str,
+    message: &'a str,
+}
+
+fn worker_prompt(text: &TurnText, full: bool) -> String {
+    let TurnText {
+        role,
+        standards,
+        agent,
+        tools,
+        graph,
+        message,
+    } = text;
+    let rules = "Execute commands only through the isolated execute action. Checkpoint before check/report. Do not use host paths or attempt external/database actions. Process this message, report or submit review, then finish this turn";
+    if !full {
+        return format!(
+            "You are {agent}. Your role instructions earlier in this conversation still apply. {tools} Call status with input.view=brief first. {rules}:\n{message}"
+        );
+    }
+    // Provisioned roles already carry the shared standards; custom ones may not.
+    let standards = if role.contains(standards.trim()) {
+        ""
+    } else {
+        standards
+    };
+    format!(
+        "{role}\n{standards}\nYou are {agent}. {tools}{graph} Call status with input.view=brief first; read full status when you need contract details or history. {rules}:\n{message}"
+    )
+}
+
 pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> Result<()> {
     let devws = CommandDevws::from_env();
     let pane = std::env::var("TMUX_PANE").context("managed worker requires a pane")?;
@@ -1201,6 +1265,7 @@ pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> 
         &secret[20..32]
     );
     let mut resumed = false;
+    let mut anchor = RoleAnchor::default();
     let program = task
         .state()?
         .agent(agent)
@@ -1337,19 +1402,35 @@ pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> 
         let expected = message
             .response_probe
             .then(|| format!("DEVWS-PROBE-{}", message.id));
+        let turn_state = task.state()?;
+        let session_continues = match adapter {
+            Some(ReviewedAdapter::Claude) => resumed,
+            Some(ReviewedAdapter::Codex) => turn_state.worker_sessions.contains_key(agent),
+            Some(ReviewedAdapter::Opencode) => turn_state
+                .worker_sessions
+                .contains_key(&format!("opencode/{agent}")),
+            None => false,
+        };
+        let full_role = anchor.send_full(session_continues);
         let prompt = if let Some(expected) = &expected {
             format!(
                 "This is a connection check. Reply with exactly {expected} and finish. Do not use any tools."
             )
         } else {
-            format!(
-                "{role}\n{standards}\nYou are {agent}. {tools}{graph} Call status with input.view=brief first; read full status when you need contract details or history. Execute commands only through the isolated execute action. Checkpoint before check/report. Do not use host paths or attempt external/database actions. Process this message, report or submit review, then finish this turn:\n{}",
-                message.text
+            worker_prompt(
+                &TurnText {
+                    role: &role,
+                    standards,
+                    agent,
+                    tools,
+                    graph,
+                    message: &message.text,
+                },
+                full_role,
             )
         };
         let mut reply = String::new();
         let turn_start = crate::log::now();
-        let turn_state = task.state()?;
         let effort = turn_state
             .worker_launches
             .get(agent)
@@ -1406,8 +1487,11 @@ pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> 
                     "message_id": message.id, "order": message.order, "attempt": attempt,
                     "probe": message.response_probe,
                     "prompt_bytes": prompt.len(),
-                    "role_bytes": expected.is_none().then_some(role.len()),
-                    "standards_bytes": expected.is_none().then_some(standards.len()),
+                    "full_role": expected.is_none().then_some(full_role),
+                    "role_bytes": expected.is_none().then_some(if full_role { role.len() } else { 0 }),
+                    "standards_bytes": expected.is_none().then_some(
+                        if full_role && !role.contains(standards.trim()) { standards.len() } else { 0 },
+                    ),
                     "tool_instructions_bytes": expected.is_none().then_some(tools.len()),
                     "graph_instructions_bytes": expected.is_none().then_some(graph.len()),
                     "message_bytes": expected.is_none().then_some(message.text.len()),
@@ -1547,6 +1631,9 @@ pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> 
             status.success(),
             "managed provider turn failed; inspect the worker output before recovery"
         );
+        if expected.is_none() {
+            anchor.sent(full_role);
+        }
         resumed = true;
     }
     Ok(())
@@ -1554,6 +1641,62 @@ pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn turn<'a>(role: &'a str, standards: &'a str) -> TurnText<'a> {
+        TurnText {
+            role,
+            standards,
+            agent: "hammer-3",
+            tools: "Use only devagentics_worker worker tools.",
+            graph: "",
+            message: "fix the slug bug",
+        }
+    }
+
+    #[test]
+    fn a_resumed_session_gets_a_short_reanchor_instead_of_the_role() {
+        let role = "R".repeat(3000);
+        let full = worker_prompt(&turn(&role, "shared rules"), true);
+        let short = worker_prompt(&turn(&role, "shared rules"), false);
+        assert!(full.contains(&role) && full.contains("shared rules"));
+        assert!(!short.contains(&role) && !short.contains("shared rules"));
+        assert!(short.contains("You are hammer-3") && short.contains("fix the slug bug"));
+        assert!(short.contains("Use only devagentics_worker worker tools."));
+        assert!(
+            short.len() * 4 <= full.len(),
+            "{} vs {}",
+            short.len(),
+            full.len()
+        );
+    }
+
+    #[test]
+    fn standards_already_in_the_role_are_not_sent_twice() {
+        let standards = include_str!("../roles/standards/shared.md");
+        let role = format!("writer template\n{standards}\ndomain");
+        let prompt = worker_prompt(&turn(&role, standards), true);
+        assert_eq!(prompt.matches(standards.trim()).count(), 1);
+        let custom = worker_prompt(&turn("custom role", standards), true);
+        assert!(custom.contains(standards.trim()));
+    }
+
+    #[test]
+    fn the_full_role_goes_first_after_a_new_session_and_every_tenth_turn() {
+        let mut anchor = RoleAnchor::default();
+        assert!(anchor.send_full(true), "a new panel knows nothing it sent");
+        anchor.sent(true);
+        assert!(!anchor.send_full(true));
+        assert!(anchor.send_full(false), "a lost provider session");
+        let mut fulls = Vec::new();
+        for turn in 1..=20 {
+            let full = anchor.send_full(true);
+            if full {
+                fulls.push(turn);
+            }
+            anchor.sent(full);
+        }
+        assert_eq!(fulls, [10, 20]);
+    }
 
     #[test]
     fn brief_status_keeps_scoped_assignment_and_pending_references() {

@@ -217,6 +217,8 @@ enum LeaderReadView {
     Progress,
     /// A single order and its check evidence
     Order { id: String },
+    /// A part of the leader's role its prompt leaves out (accounts, reviewed, legacy)
+    Guide { topic: String },
 }
 
 #[derive(Subcommand)]
@@ -1091,15 +1093,26 @@ fn run() -> Result<()> {
                     && state.leader_cli,
                 "CLI_DISABLED: use the Leader MCP tools"
             );
-            let (operation, snapshot) = match view {
-                LeaderReadView::Progress => ("task_status", status::progress(&task)?),
-                LeaderReadView::Order { id } => ("task_status", status::order(&task, &id)?),
-                LeaderReadView::Inbox => ("leader_inbox", workflow::leader_inbox(&task)?),
+            let started = telemetry::start(&task);
+            // The first name is the one telemetry counts; the second picks
+            // the same response limit the MCP tool has.
+            let (operation, limit, snapshot) = match view {
+                LeaderReadView::Progress => ("progress", "task_status", status::progress(&task)),
+                LeaderReadView::Order { id } => ("order", "task_status", status::order(&task, &id)),
+                LeaderReadView::Inbox => ("inbox", "leader_inbox", workflow::leader_inbox(&task)),
+                LeaderReadView::Guide { topic } => (
+                    "guide",
+                    "application_workflow",
+                    workflow::call(&task, "guide", &serde_json::json!({ "topic": topic })),
+                ),
             };
-            println!(
-                "{}",
-                mcp::fitting(operation, serde_json::to_string(&snapshot)?)?
-            );
+            let printed = snapshot
+                .and_then(|snapshot| mcp::fitting(limit, serde_json::to_string(&snapshot)?));
+            if let Some(started) = started {
+                let bytes = printed.as_ref().map_or(0, String::len);
+                telemetry::cli(&task, operation, bytes, printed.is_err(), started);
+            }
+            println!("{}", printed?);
         }
         Command::Mcp {
             task,

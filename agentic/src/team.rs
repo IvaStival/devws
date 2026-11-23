@@ -586,7 +586,7 @@ impl Team<'_> {
                     tx.state.usage_limit_blocks = launch.percentage_blocks.clone();
                     if tx.state.usage_limit_approval == UsageApproval::NotRequested {
                         tx.state.usage_limit_approval = UsageApproval::Pending;
-                        tx.state.say(crate::state::LEADER, "Every worker account the task may use reached the percentage guard or is switched off. Ask the user for task-scoped usage-limit approval, then record their decision with set_usage_limit_approval. Resume existing workers after approval.".into());
+                        tx.state.say(crate::state::LEADER, "Every worker account the task may use reached the percentage guard or is switched off. Ask the user for task-scoped usage-limit approval, then record their decision with set_usage_limit_approval. Resume existing workers after approval. The rules are in application_workflow action=guide topic=accounts.".into());
                         tx.log(Kind::Review, None, None, "worker usage-limit approval requested");
                     }
                 }

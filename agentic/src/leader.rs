@@ -178,6 +178,16 @@ fn leader_role_file(home: &Home, task: &Task) -> Result<Role> {
         .context("there is no leader role")
 }
 
+/// The leader's role text for the task, with every part (see `roles::part`).
+pub fn instructions(task: &Task) -> Result<String> {
+    let home = task
+        .dir()
+        .parent()
+        .and_then(std::path::Path::parent)
+        .context("task home missing")?;
+    Ok(leader_role_file(&Home::at(home.to_path_buf()), task)?.instructions)
+}
+
 /// The leader's role for the task: the role file's, led by the agent the user
 /// picked when there is one.
 fn leader_role(home: &Home, task: &Task, devws: &dyn Devws) -> Result<Role> {
