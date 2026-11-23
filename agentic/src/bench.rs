@@ -161,6 +161,12 @@ fn escaped_defects(state: &State, log: &[Entry]) -> BTreeMap<String, u64> {
                 .get(step)
                 .into_iter()
                 .flatten()
+                // Work after a revision reset is new work on a changed
+                // contract, not a defect the acceptance let through.
+                .take_while(|failure| {
+                    failure.at <= accepted_at
+                        || failure.kind != crate::failures::FailureKind::RevisionReset
+                })
                 .filter(|failure| failure.at > accepted_at && crate::failures::counts(failure))
                 .count() as u64;
             (escaped > 0).then(|| (step.to_string(), escaped))
@@ -612,6 +618,7 @@ mod tests {
             resolution: None,
             category,
             pre_existing: false,
+            caused_by_change: false,
         }
     }
 
@@ -875,12 +882,17 @@ mod tests {
                 failure(1_600, FailureKind::RevisionReset),
             ],
         )]);
+        state
+            .step_failures
+            .get_mut("S01-B01")
+            .unwrap()
+            .push(failure(1_650, FailureKind::CheckFailed));
         let log = [accepted(1_000, "S01-B01"), accepted(1_700, "S01-B01")];
         let report = build("bench-1", &state, &log, vec![], None);
         assert_eq!(
             report.escaped_defects,
             BTreeMap::from([("S01-B01".into(), 1)]),
-            "the failure before acceptance was caught; a revision reset is no defect"
+            "the failure before acceptance was caught; a revision reset and the new work after it are no defect"
         );
         assert!(render(&report).contains("1 (S01-B01 1)"));
     }

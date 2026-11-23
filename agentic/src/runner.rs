@@ -1162,25 +1162,27 @@ pub(crate) fn run_container_artifacts(
 }
 
 /// The containers this host runs at once at `config`'s caps: as many as its
-/// CPUs and its free memory hold, at least one.
+/// CPUs and three quarters of its memory hold (the rest is the host's), at
+/// least one. Total memory, not free: the running containers' own use must
+/// not shrink the count below the slots they hold.
 pub fn host_slots(config: &Configuration) -> usize {
     let cpus = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     let by_cpu = cpus / config.cpus.unwrap_or(1).max(1) as usize;
     let memory_mb = u64::from(config.memory_mb.unwrap_or(MEMORY_LIMIT_MB).max(1));
     let by_memory = fs::read_to_string("/proc/meminfo")
         .ok()
-        .and_then(|text| available_memory_mb(&text))
-        .map_or(usize::MAX, |free| {
-            usize::try_from(free / memory_mb).unwrap_or(usize::MAX)
+        .and_then(|text| usable_memory_mb(&text))
+        .map_or(usize::MAX, |usable| {
+            usize::try_from(usable / memory_mb).unwrap_or(usize::MAX)
         });
     by_cpu.min(by_memory).max(1)
 }
 
-/// `MemAvailable` of /proc/meminfo, in MB.
-fn available_memory_mb(meminfo: &str) -> Option<u64> {
+/// Three quarters of `MemTotal` of /proc/meminfo, in MB.
+fn usable_memory_mb(meminfo: &str) -> Option<u64> {
     meminfo
         .lines()
-        .find_map(|line| line.strip_prefix("MemAvailable:"))
+        .find_map(|line| line.strip_prefix("MemTotal:"))
         .and_then(|rest| {
             rest.trim()
                 .trim_end_matches("kB")
@@ -1188,7 +1190,7 @@ fn available_memory_mb(meminfo: &str) -> Option<u64> {
                 .parse::<u64>()
                 .ok()
         })
-        .map(|kilobytes| kilobytes / 1024)
+        .map(|kilobytes| kilobytes / 1024 * 3 / 4)
 }
 
 /// A container slot of this host, held until it is dropped: a lock on one of
@@ -1207,8 +1209,15 @@ fn free_slot(folder: &Path, slots: usize) -> Result<Option<Slot>> {
             .truncate(false)
             .write(true)
             .open(folder.join(format!("slot-{slot}")))?;
-        if fs2::FileExt::try_lock_exclusive(&file).is_ok() {
-            return Ok(Some(Slot { _lock: file }));
+        match fs2::FileExt::try_lock_exclusive(&file) {
+            Ok(()) => return Ok(Some(Slot { _lock: file })),
+            Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {}
+            Err(error) => {
+                return Err(anyhow::Error::from(error).context(format!(
+                    "cannot lock the container slot {}",
+                    folder.join(format!("slot-{slot}")).display()
+                )));
+            }
         }
     }
     Ok(None)
@@ -1804,9 +1813,13 @@ pub mod tests {
 
     #[test]
     fn a_host_runs_as_many_containers_as_its_free_memory_and_cpus_hold() {
-        let meminfo = "MemTotal:       32000000 kB\nMemAvailable:   12582912 kB\n";
-        assert_eq!(available_memory_mb(meminfo), Some(12_288));
-        assert_eq!(available_memory_mb("MemTotal: 1 kB\n"), None);
+        let meminfo = "MemTotal:       16777216 kB\nMemAvailable:    1048576 kB\n";
+        assert_eq!(
+            usable_memory_mb(meminfo),
+            Some(12_288),
+            "three quarters of the total, whatever is free while checks run"
+        );
+        assert_eq!(usable_memory_mb("MemAvailable: 1 kB\n"), None);
         let huge = Configuration {
             memory_mb: Some(MEMORY_LIMIT_MB),
             cpus: Some(u32::MAX),

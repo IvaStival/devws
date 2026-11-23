@@ -482,6 +482,7 @@ pub fn repeated(state: &State, step: &str) -> Vec<String> {
     };
     let mut lines = Vec::new();
     let mut own = causes(step);
+    own.sort_by_key(|cause| cause_name(*cause));
     own.dedup();
     for cause in own {
         let mut steps: Vec<&str> = state
@@ -599,6 +600,32 @@ mod tests {
         );
         assert!(lines[0].contains("then a check whose error names the fix"));
         assert!(repeated(&state, "B6").is_empty(), "once is no pattern");
+
+        let mut twice = diagnosed(&[("B7", "back", Cause::MissingContext)]);
+        let first = twice.step_failures["B7"][0].clone();
+        for (order, cause) in [("o-x", Cause::TestDefect), ("o-y", Cause::MissingContext)] {
+            twice.step_failures.get_mut("B7").unwrap().push(Failure {
+                order: Some(order.into()),
+                diagnosis: Some(diagnosis(cause)),
+                ..first.clone()
+            });
+        }
+        twice
+            .application
+            .items
+            .insert("B8".into(), twice.application.items["B7"].clone());
+        twice
+            .step_failures
+            .insert("B8".into(), twice.step_failures["B7"].clone());
+        let lines = repeated(&twice, "B7");
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.starts_with("missing_context"))
+                .count(),
+            1,
+            "a cause the step had twice is one line: {lines:?}"
+        );
     }
 
     fn order(id: &str, agent: &str) -> Order {

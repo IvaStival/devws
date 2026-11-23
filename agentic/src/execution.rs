@@ -1464,7 +1464,11 @@ pub fn user_approval_needed(approved: &Application, proposal: &Application) -> O
         if old.writes_tests != new.writes_tests {
             return Some(format!("it changes whether {id} writes tests"));
         }
-        if new.rigor.unwrap_or_default() < old.rigor.unwrap_or_default() {
+        // The rigor an item is routed at, not only what was written down:
+        // a new kind or fewer globs can make an approved item light too.
+        if let (Ok(before), Ok(after)) = (approved.routing(id, 0), proposal.routing(id, 0))
+            && after.rigor < before.rigor
+        {
             return Some(format!("it lowers the rigor of {id}"));
         }
     }
@@ -2103,6 +2107,31 @@ pub mod tests {
             user_approval_needed(&approved, &proposal),
             None,
             "raising is free"
+        );
+    }
+
+    #[test]
+    fn a_revision_that_makes_an_approved_item_light_needs_the_user() {
+        let mut approved = approved();
+        approved.items.get_mut("S01-B01").unwrap().allowed = vec!["src/a.py".into()];
+        let mut proposal = approved.clone();
+        proposal.revision = 7;
+        proposal.items.get_mut("S01-B01").unwrap().kind = WorkKind::Change;
+        assert_eq!(
+            user_approval_needed(&approved, &proposal).as_deref(),
+            Some("it lowers the rigor of S01-B01"),
+            "feature to change drops it from standard to light"
+        );
+
+        let mut light = approved.clone();
+        light.items.get_mut("S01-B01").unwrap().kind = WorkKind::Change;
+        let mut written = light.clone();
+        written.revision = 7;
+        written.items.get_mut("S01-B01").unwrap().rigor = Some(Rigor::Light);
+        assert_eq!(
+            user_approval_needed(&light, &written),
+            None,
+            "writing down the rigor it already had lowers nothing"
         );
     }
 

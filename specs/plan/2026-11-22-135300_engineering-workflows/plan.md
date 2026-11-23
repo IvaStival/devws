@@ -693,3 +693,22 @@ It is the `attention` section of the workflow status, and the "Attention" sectio
 *Effect on existing baselines:* their decisions are two-way by default, so they are no longer asked. Planners must mark the hard-to-undo ones as `one_way`.
 
 *Tests:* the old frontier test now uses one-way decisions, and one new test covers the rest. 546 tests pass.
+
+**Code review fixes (23-11-2026).** A high-effort review of the nine commits found 10 issues plus 3 smaller ones. Each fix has a regression test.
+
+| # | Issue | Fix |
+|---|---|---|
+| 1 | A second review was asked again on every later approval | Asked once: none once the latest order has an independent approval |
+| 2 | A light acceptance could overrule a "changes requested" or skip a pending review | Refused while the order has an independent review that is pending or not approved, checked before the candidate check and again under the lock |
+| 3 | A revision could make an approved item light without the user; writing down an unchanged rigor asked for approval | `user_approval_needed` compares the effective routing, not the declared field |
+| 4 | With `diff.noprefix`, no hunk or weakened test was seen | One `change_diff` with `--src-prefix=a/ --dst-prefix=b/`, tested on a repo with `diff.noprefix=true` |
+| 5 | Findings on a deleted file counted as the base's | `touched` falls back to the `--- a/` path |
+| 6 | A change's breakage in code it did not edit could not block | `Finding.caused_by_change`: such a finding still blocks, and the reviewer's brief says when to set it |
+| 7 | Host slots shrank while checks ran, because they were based on free memory | Three quarters of total memory |
+| 8 | Any lock error looked like a busy slot, so a container could wait forever | Only contention waits; other errors fail with the slot's path. No test: the error can't be produced here |
+| 10 | A usage read error stopped the dispatcher's pass, and a budget pause still nudged the leader | Usage errors count as unknown, and `paused` is read again before the nudge. No test for the nudge order |
+| extra | Repeated causes printed twice; work after a revision reset counted as an escaped defect; `iter().skip(1)` counted as a skipped test | Sorted dedup; counting stops at a reset; skip patterns matched as written and specific |
+
+*Kept as decided:* #9, decisions stored before this change count as two-way and are no longer asked. You approved that. The leader lists them as assumed decisions at confirmation.
+
+*Verification:* 553 tests pass (+7), the 4 Docker tests pass, and clippy and fmt are clean.

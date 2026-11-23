@@ -40,6 +40,11 @@ pub struct Finding {
     /// already had, reported but never blocking.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pre_existing: bool,
+    /// The reviewer's word that the change causes it although its line is
+    /// outside the change (a caller of a renamed function, a config the
+    /// change forgot): such a finding still blocks.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub caused_by_change: bool,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -384,7 +389,7 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
                 review.automatic.iter().map(|finding| finding.file.as_str()).collect::<Vec<_>>().join(", ")
             )
         };
-        tx.state.say(reviewer,format!("Independently review {} for order {} using review_diff, inspect surrounding source through execute, then review_submit. Try to break each acceptance line; report a bug or a regression, not style. Say in your summary the one fact the change is safe because of, and how you know it (a run beats a line you point at, which beats your word). A line the change did not touch is the base's problem: name it in one line, never block on it.{automatic} Source {}, target {}, integration tree {}. Do not modify code.",review.id,review.order,review.source,review.target,review.candidate.tree));
+        tx.state.say(reviewer,format!("Independently review {} for order {} using review_diff, inspect surrounding source through execute, then review_submit. Try to break each acceptance line; report a bug or a regression, not style. Say in your summary the one fact the change is safe because of, and how you know it (a run beats a line you point at, which beats your word). A line the change did not touch is the base's problem: name it in one line, never block on it, unless the change breaks it (a caller, a config it forgot): then set caused_by_change and say how.{automatic} Source {}, target {}, integration tree {}. Do not modify code.",review.id,review.order,review.source,review.target,review.candidate.tree));
         tx.log(
             Kind::Review,
             Some(reviewer),
@@ -437,16 +442,7 @@ fn bind(
         }
         None => String::new(),
     };
-    let diff = checks::git(
-        &workplace.worktree,
-        &[
-            "diff",
-            "-U0",
-            "--no-ext-diff",
-            "--no-textconv",
-            &format!("{target}...{source}"),
-        ],
-    )?;
+    let diff = change_diff(&workplace.worktree, &target, &source)?;
     let review = Review {
         automatic: weakened_tests(&diff),
         id: "the requested review".into(),
@@ -482,13 +478,16 @@ pub fn accept_light(task: &Task, step: &str, reason: &str) -> Result<String> {
             "light acceptance is for reviewed tasks"
         );
         light(task, &state, step)?;
-        state
+        let order_id = state
             .orders
             .iter()
             .rev()
             .find(|order| order.step == step)
             .map(|order| order.id.clone())
-            .context("the step has no order")?
+            .context("the step has no order")?;
+        // Before the candidate check, which takes minutes.
+        no_open_review(&state, &order_id, step)?;
+        order_id
     };
     let checked = check_candidate_first(task, &order_id)?.context(
         "a light item skips the review only after a passing candidate check, and this \
@@ -509,6 +508,7 @@ pub fn accept_light(task: &Task, step: &str, reason: &str) -> Result<String> {
             .any(|found| found.id == step && found.status == StepStatus::Reported),
         "implementation must report passing checks first"
     );
+    no_open_review(&state, &order_id, step)?;
     let bound = bind(task, &state, order, Some(&checked))?;
     ensure!(
         bound.review.automatic.is_empty(),
@@ -545,6 +545,30 @@ pub fn accept_light(task: &Task, step: &str, reason: &str) -> Result<String> {
     })
 }
 
+/// An independent review of the order that is pending or not approved: a
+/// light acceptance can neither overrule nor skip it.
+fn no_open_review(state: &crate::state::State, order_id: &str, step: &str) -> Result<()> {
+    if let Some(review) = state
+        .reviews
+        .iter()
+        .rev()
+        .find(|review| review.order == order_id && review.reviewer != crate::state::LEADER)
+    {
+        ensure!(
+            review.verdict == Some(Verdict::Approved),
+            "{step} has an independent review ({}) that is {}: a light acceptance cannot overrule \
+             or skip it",
+            review.id,
+            match review.verdict {
+                None => "still pending",
+                Some(Verdict::ChangesRequested) => "asking for changes",
+                _ => "blocked",
+            }
+        );
+    }
+    Ok(())
+}
+
 /// The step's item is light now: a rise in rigor since (a failure, a new
 /// sensitive path) takes the shortcut away.
 fn light(task: &Task, state: &crate::state::State, step: &str) -> Result<()> {
@@ -567,18 +591,21 @@ fn light(task: &Task, state: &crate::state::State, step: &str) -> Result<()> {
 
 /// Lines that assert, in the languages the teams write tests in.
 const ASSERTIONS: &[&str] = &["assert", "expect(", ".should", "t.error", "t.fatal"];
-/// Ways to switch a test off.
+/// Ways to switch a test off, matched as written: `iter().skip(1)` in a
+/// test is not one.
 const SKIPS: &[&str] = &[
     "@skip",
     "unittest.skip",
     "pytest.mark.skip",
     "pytest.skip(",
-    "skiptest(",
-    ".skip(",
+    "skipTest(",
+    "it.skip(",
+    "test.skip(",
+    "describe.skip(",
     "xit(",
     "xdescribe(",
     "#[ignore",
-    "t.skip(",
+    "t.Skip(",
 ];
 
 fn is_test_file(path: &str) -> bool {
@@ -639,7 +666,7 @@ pub fn weakened_tests(diff: &str) -> Vec<Finding> {
             count.removed += 1;
         } else if text.starts_with('+') {
             count.added += u64::from(asserts);
-            count.skips += u64::from(SKIPS.iter().any(|skip| lowered.contains(skip)));
+            count.skips += u64::from(SKIPS.iter().any(|skip| text.contains(skip)));
         }
     }
     files
@@ -671,13 +698,51 @@ fn hunk_start(header: &str) -> Option<(u64, u64)> {
     Some((start, length))
 }
 
+/// What the reviewed change did, as a zero-context diff from `target` to
+/// `source`: the input of the test scanner and the hunks findings are
+/// judged against.
+fn change_diff(worktree: &std::path::Path, target: &str, source: &str) -> Result<String> {
+    checks::git(
+        worktree,
+        &[
+            "diff",
+            "-U0",
+            "--no-ext-diff",
+            "--no-textconv",
+            // The scanners read a/ and b/ headers, whatever the user's
+            // diff.noprefix or diff.mnemonicPrefix says.
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            &format!("{target}...{source}"),
+        ],
+    )
+}
+
+/// A blocking finding far from every changed line is the base's problem,
+/// unless the reviewer says the change causes it there.
+fn mark_pre_existing(findings: &mut [Finding], changed: &BTreeMap<String, Vec<(u64, u64)>>) {
+    for finding in findings {
+        if finding.blocking && !finding.caused_by_change && !in_change(changed, finding) {
+            finding.blocking = false;
+            finding.pre_existing = true;
+        }
+    }
+}
+
 /// The lines a unified diff touches in each new file.
 fn touched(diff: &str) -> BTreeMap<String, Vec<(u64, u64)>> {
     let mut touched: BTreeMap<String, Vec<(u64, u64)>> = BTreeMap::new();
     let mut file = None;
+    let mut old_file: Option<String> = None;
     for text in diff.lines() {
-        if let Some(path) = text.strip_prefix("+++ ") {
-            file = path.strip_prefix("b/").map(str::to_string);
+        if let Some(path) = text.strip_prefix("--- a/") {
+            old_file = Some(path.to_string());
+        } else if let Some(path) = text.strip_prefix("+++ ") {
+            // A deleted file has no new side: its findings are about the old.
+            file = path
+                .strip_prefix("b/")
+                .map(str::to_string)
+                .or_else(|| old_file.clone());
         } else if let (Some(path), Some(hunk)) = (&file, text.strip_prefix("@@ "))
             && let Some(range) = hunk_start(hunk)
         {
@@ -823,29 +888,20 @@ pub fn submit(
     let mut findings = findings;
     let author = state.agent(&review.author).context("unknown author")?;
     let workplace = crate::lanes::workplace(task, author)?;
-    let changed = touched(&checks::git(
+    let changed = touched(&change_diff(
         &workplace.worktree,
-        &[
-            "diff",
-            "-U0",
-            "--no-ext-diff",
-            "--no-textconv",
-            &format!("{}...{}", review.target, review.source),
-        ],
+        &review.target,
+        &review.source,
     )?);
-    for finding in &mut findings {
-        if finding.blocking && !in_change(&changed, finding) {
-            finding.blocking = false;
-            finding.pre_existing = true;
-        }
-    }
+    mark_pre_existing(&mut findings, &changed);
     ensure!(
         verdict != Verdict::ChangesRequested
             || !findings.iter().any(|finding| finding.pre_existing)
             || findings.iter().any(|finding| finding.blocking)
             || !review.automatic.is_empty(),
         "every blocking finding is outside this change ({}): the base already had it. \
-         Approve and name it in your summary in one line, or point at the changed line it is about",
+         Approve and name it in your summary in one line, point at the changed line it is about, \
+         or set caused_by_change when the change breaks code it did not edit",
         findings
             .iter()
             .filter(|finding| finding.pre_existing)
@@ -977,6 +1033,17 @@ fn submitted_message(
 /// critical, or its history shows one reviewer is not enough. Only then: a
 /// second reviewer on every step would double the review cost.
 fn second_opinion(state: &crate::state::State, step: &str) -> Result<Option<String>> {
+    // Asked once: when the step's latest order already has an independent
+    // approval, the one being submitted is the second.
+    if let Some(order) = state.orders.iter().rev().find(|order| order.step == step)
+        && state.reviews.iter().any(|review| {
+            review.order == order.id
+                && review.reviewer != crate::state::LEADER
+                && review.verdict == Some(Verdict::Approved)
+        })
+    {
+        return Ok(None);
+    }
     let routing = state
         .application
         .routing(step, crate::failures::work_failures(state, step))?;
@@ -1093,6 +1160,7 @@ mod tests {
             resolution: None,
             category: Some(Category::EnvironmentMismatch),
             pre_existing: false,
+            caused_by_change: false,
         };
         let changes = submitted_message(
             "r312",
@@ -1342,6 +1410,118 @@ diff --git a/web/list.test.ts b/web/list.test.ts
 ";
 
     #[test]
+    fn the_change_diff_has_a_and_b_prefixes_whatever_the_users_config() {
+        let repo = crate::checks::tests::repo();
+        crate::checks::tests::run(repo.path(), &["config", "diff.noprefix", "true"]);
+        let before = checks::head(repo.path()).unwrap();
+        crate::checks::tests::commit_file(
+            repo.path(),
+            "tests/test_x.py",
+            "def test_x():\n    pass\n",
+            "add",
+        );
+        let after = checks::head(repo.path()).unwrap();
+        let diff = change_diff(repo.path(), &before, &after).unwrap();
+        assert!(diff.contains("+++ b/tests/test_x.py"), "{diff}");
+        assert!(touched(&diff).contains_key("tests/test_x.py"));
+    }
+
+    #[test]
+    fn a_finding_on_a_deleted_file_is_about_the_change() {
+        let diff = "--- a/src/validators.py\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-def check():\n-    pass\n-\n";
+        let changed = touched(diff);
+        let finding = Finding {
+            file: "src/validators.py".into(),
+            line: 1,
+            ..Finding::default()
+        };
+        assert!(in_change(&changed, &finding));
+    }
+
+    #[test]
+    fn a_reviewer_can_block_on_a_line_the_change_breaks_but_did_not_edit() {
+        let changed = touched(WEAKENING);
+        let caller = Finding {
+            file: "src/cli.rs".into(),
+            line: 88,
+            blocking: true,
+            ..Finding::default()
+        };
+        let mut findings = vec![
+            caller.clone(),
+            Finding {
+                caused_by_change: true,
+                rationale: "calls parse(), which the change renamed".into(),
+                ..caller
+            },
+        ];
+        mark_pre_existing(&mut findings, &changed);
+        assert!(
+            findings[0].pre_existing && !findings[0].blocking,
+            "the base's problem"
+        );
+        assert!(
+            !findings[1].pre_existing && findings[1].blocking,
+            "the change breaks it"
+        );
+    }
+
+    #[test]
+    fn an_iterator_skip_in_a_test_is_not_a_switched_off_test() {
+        let diff = "--- a/tests/test_list.py\n+++ b/tests/test_list.py\n@@ -3,0 +3,1 @@\n+    rest = list(iter(items).skip(1))\n";
+        assert!(weakened_tests(diff).is_empty());
+        let skipped = "--- a/web/a.test.ts\n+++ b/web/a.test.ts\n@@ -3,0 +3,1 @@\n+it.skip('lists', () => {})\n";
+        assert_eq!(weakened_tests(skipped).len(), 1);
+    }
+
+    #[test]
+    fn a_light_acceptance_cannot_overrule_or_skip_an_independent_review() {
+        for verdict in [None, Some(Verdict::ChangesRequested)] {
+            let (_root, task) = light_candidate(crate::execution::WorkKind::Change, "README.md");
+            task.transaction(|tx| {
+                tx.state.reviews.push(Review {
+                    id: "r1".into(),
+                    order: "o1".into(),
+                    reviewer: "reviewer-1".into(),
+                    verdict: verdict.clone(),
+                    ..Review::default()
+                });
+                Ok(())
+            })
+            .unwrap();
+            let error = accept_light(&task, "S01-B01", "looks right")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("has an independent review (r1)")
+                    && error.contains("a light acceptance cannot overrule or skip it"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_second_review_is_asked_once() {
+        let (_root, task) = light_candidate(crate::execution::WorkKind::Feature, "src/notes.py");
+        let mut state = task.state().unwrap();
+        state.application.items.get_mut("S01-B01").unwrap().rigor =
+            Some(crate::execution::Rigor::Critical);
+        assert!(second_opinion(&state, "S01-B01").unwrap().is_some());
+        state.reviews.push(Review {
+            id: "r1".into(),
+            order: "o1".into(),
+            reviewer: "reviewer-1".into(),
+            verdict: Some(Verdict::Approved),
+            ..Review::default()
+        });
+        assert_eq!(
+            second_opinion(&state, "S01-B01").unwrap(),
+            None,
+            "the approval being submitted is the second"
+        );
+    }
+
+    #[test]
     fn a_second_review_is_asked_only_on_a_signal() {
         let (_root, task) = light_candidate(crate::execution::WorkKind::Feature, "src/notes.py");
         let state = task.state().unwrap();
@@ -1586,6 +1766,7 @@ diff --git a/web/list.test.ts b/web/list.test.ts
             resolution: None,
             category: None,
             pre_existing: false,
+            caused_by_change: false,
         };
         let error = submit(
             &task,

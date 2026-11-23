@@ -153,7 +153,8 @@ impl<'a> Dispatcher<'a> {
             self.remind_left_reviews(crate::log::now())?;
             self.keep_within_budget(crate::log::now())?;
         }
-        if !state.paused {
+        // The budget may have paused the task in this pass.
+        if !self.task.state()?.paused {
             match state.workflow {
                 crate::execution::Workflow::Legacy => self.tell_the_leader()?,
                 crate::execution::Workflow::Reviewed => self.nudge_the_leader()?,
@@ -177,8 +178,9 @@ impl<'a> Dispatcher<'a> {
         self.budget_checked = Some(Instant::now());
         let tokens = budget
             .max_tokens
-            .map(|_| self.usage.of_team(self.task, self.devws))
-            .transpose()?
+            // Usage that cannot be read this time counts as unknown: a
+            // pane's hiccup must not stop the dispatcher's pass.
+            .and_then(|_| self.usage.of_team(self.task, self.devws).ok())
             .map(|team| {
                 let usage = crate::board_usage::total(&team.by_role);
                 usage.input + usage.output + usage.cache
