@@ -655,3 +655,29 @@ It is the `attention` section of the workflow status, and the "Attention" sectio
 *Tests:* 4 new (spend thresholds, warned once, pause and escalation, no budget). 545 tests pass in all, and clippy and fmt are clean.
 
 *Touches the CLI-work file `task.rs`:* the `Budget` type and field, plus one `budget:` line next to each `routing:` literal.
+
+**M8 preparation (23-11-2026). No runs yet: runs cost API usage and need you.**
+
+*Fixture:*
+- `agentic/bench/fixtures/bugfix-one-file`: `slugify` drops the last word, a one-line fix in `slugs/slugify.py`.
+- Its 3 acceptance tests fail as shipped and all 4 tests pass after the fix (checked).
+- `scripts/bench_team.sh bugfix-one-file reviewed` prepares it.
+- `docs/user/devagentics-bench.md` lists it and the new report lines.
+
+*Pass rule, written before any run:*
+- **Arms:**
+  - A: `routing = "off"`, today's process;
+  - B: routing on.
+
+  M1 isn't built yet, so it isn't an arm. Same models, accounts, answers and fixture commit. Paired runs alternate their order: A,B then B,A.
+- **Runs:** start with 5 pairs per fixture (`bugfix-one-file`, `notes`). Add pairs while the spread of A's cost per integrated success is larger than the difference.
+- **Primary number:** the median cost per integrated success.
+- **B passes a fixture when all of these hold:**
+  - its median is lower than A's by more than half of A's run-to-run range, and by at least 10%;
+  - its delivered runs are not fewer;
+  - its escaped defects are not more.
+
+  Otherwise the result is "no measurable difference" and routing stays off by default.
+- **Explaining the number:**
+  - On `bugfix-one-file`, B must show ≥1 light acceptance and no planner or reviewer cost. If it doesn't, the routing did not engage, and the run measured nothing about it.
+  - Record leader calls per accepted step: the expected cause of any gain.

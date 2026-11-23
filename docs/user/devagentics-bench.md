@@ -15,7 +15,9 @@ from run to run. Compare many runs of the same fixed scope.
    scripts/bench_team.sh notes reviewed     # or: notes legacy
    ```
 
-   It prints the folder, the commands to start the team and the check. It
+   `bugfix-one-file` is a one-line bug in one file, with acceptance tests
+   that fail until it is fixed: risk routing should take it as light (no
+   planner and no reviewer agent). It prints the folder, the commands to start the team and the check. It
    starts no agent itself: the team runs on your accounts.
 2. Start the team with the printed commands and give the leader the folder's
    `GOAL.md` unchanged. Answer its questions the same way on every run.
@@ -39,6 +41,12 @@ from run to run. Compare many runs of the same fixed scope.
 | user | Escalations, approvals, permission requests and extra attempts you allowed. |
 | milestones ready | Milestones whose integrated validation passes for the current code. |
 | tokens, cost | The team's total, at API prices. |
+| integrated, cost per integrated success | Whether every milestone is ready, and the run's cost when it is and every agent was priced (unknown otherwise; sum a failed run's cost into the ones that integrated). |
+| cost by role | Each role's cost and share: leader, planner, reviewer, writers. |
+| review rounds per reviewed step | Independent reviews per step that had one. |
+| light acceptances, items by rigor | Light items accepted on the leader's reason without a reviewer, and how the items were routed. |
+| escaped defects | Work failures recorded on a step after it was first accepted: a lower bound. |
+| leader MCP calls per accepted step | From payload telemetry; each call rereads the leader's context, so this drives its cost. CLI reads are not counted yet. |
 
 ## Protocol
 
