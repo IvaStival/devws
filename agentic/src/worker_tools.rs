@@ -873,6 +873,52 @@ fn brief_status(state: &crate::state::State, worker: &crate::state::Agent) -> Va
     })
 }
 
+/// The item a worker's open order is on, when it is a baseline item.
+fn assigned_item<'a>(
+    state: &'a crate::state::State,
+    worker: &crate::state::Agent,
+) -> Option<(&'a String, &'a crate::execution::Contract)> {
+    let order = state.open_order_of(&worker.id)?;
+    state.application.items.get_key_value(&order.step)
+}
+
+/// The contracts a worker sees: only its order's item while it has one, so a
+/// large baseline does not ride along on every status; otherwise every item
+/// of its role and repo, as what may come next.
+fn assigned_contracts(
+    state: &crate::state::State,
+    worker: &crate::state::Agent,
+) -> std::collections::BTreeMap<String, crate::execution::Contract> {
+    if let Some((id, item)) = assigned_item(state, worker) {
+        return std::collections::BTreeMap::from([(id.clone(), item.clone())]);
+    }
+    state
+        .application
+        .items
+        .iter()
+        .filter(|(_, item)| item.role == worker.role && item.repo == worker.repo)
+        .map(|(id, item)| (id.clone(), item.clone()))
+        .collect()
+}
+
+/// The specs of the interfaces the worker's item provides or consumes.
+fn assigned_interfaces(
+    state: &crate::state::State,
+    worker: &crate::state::Agent,
+) -> std::collections::BTreeMap<String, crate::execution::Interface> {
+    let Some((_, item)) = assigned_item(state, worker) else {
+        return Default::default();
+    };
+    item.provides
+        .iter()
+        .chain(&item.consumes)
+        .filter_map(|id| {
+            let interface = state.application.interfaces.get(id)?;
+            Some((id.clone(), interface.clone()))
+        })
+        .collect()
+}
+
 pub fn call(task: &Task, agent: &str, action: &str, input: &Value) -> Result<Value> {
     let state = task.state()?;
     let worker = usable_worker(&state, agent)?;
@@ -881,7 +927,7 @@ pub fn call(task: &Task, agent: &str, action: &str, input: &Value) -> Result<Val
         "status" => match input.get("view").map(Value::as_str) {
             Some(Some("brief")) => Ok(brief_status(&state, worker)),
             None | Some(Some("full")) => Ok(
-                json!({"agent":agent,"role":worker.role,"order":state.open_order_of(agent),"application_revision":state.application.revision,"planning_proposal":if !worker.writes{state.application_proposal.as_ref().map(crate::execution::outline)}else{None},"contracts":state.application.items.iter().filter(|(_,item)|item.role==worker.role && item.repo==worker.repo).collect::<std::collections::BTreeMap<_,_>>(),"questions":state.questions.iter().filter(|question|question.to==agent||question.from==agent).collect::<Vec<_>>(),"reviews":state.reviews.iter().filter(|review|review.reviewer==agent).collect::<Vec<_>>(),"reviewed_contracts":reviewed_contracts(&state,agent)}),
+                json!({"agent":agent,"role":worker.role,"order":state.open_order_of(agent),"application_revision":state.application.revision,"planning_proposal":if !worker.writes{state.application_proposal.as_ref().map(crate::execution::outline)}else{None},"contracts":assigned_contracts(&state,worker),"interfaces":assigned_interfaces(&state,worker),"questions":state.questions.iter().filter(|question|question.to==agent||question.from==agent).collect::<Vec<_>>(),"reviews":state.reviews.iter().filter(|review|review.reviewer==agent).collect::<Vec<_>>(),"reviewed_contracts":reviewed_contracts(&state,agent)}),
             ),
             _ => bail!("status view must be brief or full"),
         },
@@ -1696,6 +1742,30 @@ mod tests {
             anchor.sent(full);
         }
         assert_eq!(fulls, [10, 20]);
+    }
+
+    #[test]
+    fn a_working_writer_sees_only_its_items_contract_and_interfaces() {
+        let example: Value =
+            serde_json::from_str(include_str!("../roles/standards/proposal-example.json")).unwrap();
+        let mut state: crate::state::State = serde_json::from_value(json!({
+            "agents":[{"id":"writer-1","role":"executor","agent":"codex","repo":"example-repo",
+                "session":"test","pane":"%1","writes":true,"live":true,"ready":true}],
+        }))
+        .unwrap();
+        state.application = serde_json::from_value(example["application"].clone()).unwrap();
+        let worker = state.agents[0].clone();
+        let idle = assigned_contracts(&state, &worker);
+        assert_eq!(idle.len(), 2, "no order: every item of its role and repo");
+        assert!(assigned_interfaces(&state, &worker).is_empty());
+
+        state.orders = serde_json::from_value(json!([{"id":"o1","step":"status-command",
+            "agent":"writer-1","text":"build it","allowed":["src/**"],"forbidden":[],"base":"base","status":"open"}]))
+        .unwrap();
+        let working = assigned_contracts(&state, &worker);
+        assert_eq!(working.keys().collect::<Vec<_>>(), ["status-command"]);
+        let interfaces = assigned_interfaces(&state, &worker);
+        assert_eq!(interfaces.keys().collect::<Vec<_>>(), ["status-cli"]);
     }
 
     #[test]

@@ -733,3 +733,5 @@ It is the `attention` section of the workflow status, and the "Attention" sectio
   - *Note cap.* Agents can't read a whole note: `memory_search` returns snippets. A cap would cut notes with nowhere to read the rest, and adding a `memory_read` tool enlarges every catalog. Deferred until M8 shows long notes cost something.
   - *Worker `guide` topics.* The order already carries the kind's rule (e.g. "name the regression test").
 - **Also fixed:** the container-slot test was flaky under parallel tests. A process forked by another test while a slot file was open holds its lock until it execs. The test now polls, as `take_slot` does.
+
+**M3, worker status (23-11-2026).** A worker with an open order on a baseline item sees, in full `status`, only that item's contract and the specs of the interfaces it provides or consumes. With no order it still sees the items of its role and repo, as what may come next. Planners keep `application_read`; reviewers keep `reviewed_contracts`.
