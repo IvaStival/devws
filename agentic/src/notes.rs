@@ -233,6 +233,17 @@ pub fn digest(task: &Task, headline: &str) -> Result<String> {
             .unwrap_or_default()
     };
     let mut text = format!("{headline}\n");
+    let attention = crate::workflow::attention(&state);
+    if !attention.is_empty() {
+        text.push_str(&format!(
+            "\n## Attention\n{}\n",
+            attention
+                .iter()
+                .map(|line| format!("- {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
     let accepted: Vec<_> = state
         .steps
         .iter()

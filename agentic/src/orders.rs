@@ -1996,6 +1996,7 @@ mod tests {
                 cause,
                 evidence: "the report and the diff show it".into(),
                 change: "do it the other way".into(),
+                premise: Some("both attempts trusted the same fixture: ran it alone".into()),
             }),
             ..request(step)
         }

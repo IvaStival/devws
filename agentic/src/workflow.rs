@@ -130,7 +130,7 @@ pub fn status(task: &Task) -> Result<Value> {
         json!({"needs_user": why.is_some(), "why": why.unwrap_or_else(|| "it changes only how steps are carried out, adds steps or adds checks: confirm nothing, approve it yourself and tell the user in one line of your next summary what changed and why".into())})
     });
     Ok(
-        json!({"workflow":state.workflow,"proposal_approval":proposal_approval,"candidate_checks":candidate_checks,"application":state.application,"proposal":state.application_proposal,"interview_frontier":execution::question_frontier(state.application_proposal.as_ref().unwrap_or(&state.application)),"ready_work":items,"reviews":state.reviews,"performance":performance::update(task)?,"capacity":{"limit":config.max_agents,"writers":state.live_agents(true),"read_only":state.live_agents(false)},"runner":{"configured":state.runner.is_some(),"available":state.runner.is_some(),"adapter":if state.codex_team {"claude_mcp_only or opencode_mcp_only or codex_sandbox: the user put the whole team on Codex (task codex-team); Codex workers write only their snapshot, without network"} else {"claude_mcp_only or opencode_mcp_only"},"worker_programs":if state.codex_team {vec!["claude","opencode","codex"]} else {vec!["claude","opencode"]},"reviewer_adapter":if state.codex_reviewers || state.codex_team {"codex_read_only_sandbox: cannot write; its shell can read host files"} else {"claude_mcp_only or opencode_mcp_only"},"network":"none","live_project_mounts":false,"configuration":state.runner}}),
+        json!({"workflow":state.workflow,"attention":attention(&state),"proposal_approval":proposal_approval,"candidate_checks":candidate_checks,"application":state.application,"proposal":state.application_proposal,"interview_frontier":execution::question_frontier(state.application_proposal.as_ref().unwrap_or(&state.application)),"ready_work":items,"reviews":state.reviews,"performance":performance::update(task)?,"capacity":{"limit":config.max_agents,"writers":state.live_agents(true),"read_only":state.live_agents(false)},"runner":{"configured":state.runner.is_some(),"available":state.runner.is_some(),"adapter":if state.codex_team {"claude_mcp_only or opencode_mcp_only or codex_sandbox: the user put the whole team on Codex (task codex-team); Codex workers write only their snapshot, without network"} else {"claude_mcp_only or opencode_mcp_only"},"worker_programs":if state.codex_team {vec!["claude","opencode","codex"]} else {vec!["claude","opencode"]},"reviewer_adapter":if state.codex_reviewers || state.codex_team {"codex_read_only_sandbox: cannot write; its shell can read host files"} else {"claude_mcp_only or opencode_mcp_only"},"network":"none","live_project_mounts":false,"configuration":state.runner}}),
     )
 }
 /// The status small enough to come back in one call: the baseline and the
@@ -151,7 +151,7 @@ pub fn compact(task: &Task) -> Result<Value> {
 }
 
 /// The parts of the status a section names.
-const SECTIONS: [&str; 9] = [
+const SECTIONS: [&str; 10] = [
     "application",
     "proposal",
     "reviews",
@@ -161,6 +161,7 @@ const SECTIONS: [&str; 9] = [
     "interview_frontier",
     "performance",
     "capacity",
+    "attention",
 ];
 
 /// Reviews and accepted items only grow as the team works: keep each review's
@@ -528,6 +529,79 @@ pub(crate) fn leader_inbox(task: &Task) -> Result<Value> {
     )
 }
 
+/// What a person should look at first when they come back to the task:
+/// the places where devAgentics or the leader took a shortcut or let
+/// something through. Computed from the state, no agent writes it.
+pub fn attention(state: &crate::state::State) -> Vec<String> {
+    let mut lines = Vec::new();
+    let step_of = |order: &str| {
+        state
+            .orders
+            .iter()
+            .find(|found| found.id == order)
+            .map_or(String::new(), |found| found.step.clone())
+    };
+    for review in &state.reviews {
+        let step = step_of(&review.order);
+        if review.reviewer == crate::state::LEADER {
+            lines.push(format!(
+                "{step} was accepted light, without a reviewer: {}",
+                review.summary.as_deref().unwrap_or("no reason")
+            ));
+        }
+        if review.verdict == Some(crate::reviews::Verdict::Approved) {
+            for automatic in &review.automatic {
+                let resolution = review
+                    .findings
+                    .iter()
+                    .find(|finding| finding.file == automatic.file)
+                    .and_then(|finding| finding.resolution.as_deref())
+                    .unwrap_or("unresolved");
+                lines.push(format!(
+                    "{step} was approved although devAgentics found weakened tests in {}: {resolution}",
+                    automatic.file
+                ));
+            }
+        }
+        let old: Vec<String> = review
+            .findings
+            .iter()
+            .filter(|finding| finding.pre_existing)
+            .map(|finding| format!("{}:{}", finding.file, finding.line))
+            .collect();
+        if !old.is_empty() {
+            lines.push(format!(
+                "review {} found problems the base already had: {}",
+                review.id,
+                old.join(", ")
+            ));
+        }
+    }
+    for (step, failures) in &state.step_failures {
+        let open_environment = failures.iter().any(|failure| {
+            failure.kind == crate::failures::FailureKind::CheckEnvironment
+                && failure.resolved_by.is_none()
+        });
+        if open_environment {
+            lines.push(format!(
+                "{step}'s check could not run (environment): inconclusive, not a pass"
+            ));
+        }
+        if state.application.items.contains_key(step)
+            && let Ok(routing) = state
+                .application
+                .routing(step, crate::failures::work_failures(state, step))
+            && routing.why.iter().any(|why| why.ends_with("work failures"))
+        {
+            lines.push(format!(
+                "{step} became {} after its work failed repeatedly",
+                format!("{:?}", routing.rigor).to_lowercase()
+            ));
+        }
+    }
+    lines
+}
+
 /// How many writers the ready work can use: one per lane that has ready
 /// work (a lane takes one writer, and an item waiting on another's interface
 /// is not ready), no more than the task allows or the host's container slots
@@ -610,6 +684,78 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn attention_lists_every_shortcut_and_inconclusive_check() {
+        use crate::failures::FailureKind;
+        use crate::reviews::{Finding, Review, Verdict};
+        let mut state = crate::state::State {
+            application: baseline(),
+            ..Default::default()
+        };
+        for (id, step) in [("o1", "DOC-1"), ("o2", "S01-B01")] {
+            state.orders.push(
+                serde_json::from_value(json!({"id":id,"step":step,"agent":"a","text":"t","allowed":[],"forbidden":[],"base":"b","status":"closed","delivered":true}))
+                    .unwrap(),
+            );
+        }
+        let weakened = Finding {
+            file: "tests/test_api.py".into(),
+            line: 30,
+            ..Finding::default()
+        };
+        state.reviews = vec![
+            Review {
+                id: "r1".into(),
+                order: "o1".into(),
+                reviewer: crate::state::LEADER.into(),
+                verdict: Some(Verdict::Approved),
+                summary: Some("one-line port fix".into()),
+                ..Review::default()
+            },
+            Review {
+                id: "r2".into(),
+                order: "o2".into(),
+                reviewer: "reviewer-1".into(),
+                verdict: Some(Verdict::Approved),
+                automatic: vec![weakened.clone()],
+                findings: vec![
+                    Finding {
+                        resolution: Some("the removed asserts tested a deleted endpoint".into()),
+                        ..weakened
+                    },
+                    Finding {
+                        file: "src/old.rs".into(),
+                        line: 7,
+                        pre_existing: true,
+                        ..Finding::default()
+                    },
+                ],
+                ..Review::default()
+            },
+        ];
+        for (order, kind) in [
+            ("o-a", FailureKind::CheckFailed),
+            ("o-b", FailureKind::CheckFailed),
+            ("o-c", FailureKind::CheckEnvironment),
+        ] {
+            crate::failures::record(&mut state, "S01-B01", Some(order), kind, "x", 1);
+        }
+        let lines = attention(&state);
+        for wanted in [
+            "DOC-1 was accepted light, without a reviewer: one-line port fix",
+            "S01-B01 was approved although devAgentics found weakened tests in tests/test_api.py: the removed asserts tested a deleted endpoint",
+            "review r2 found problems the base already had: src/old.rs:7",
+            "S01-B01's check could not run (environment): inconclusive, not a pass",
+            "S01-B01 became strict after its work failed repeatedly",
+        ] {
+            assert!(
+                lines.iter().any(|line| line == wanted),
+                "{wanted}\n{lines:#?}"
+            );
+        }
+        assert!(attention(&crate::state::State::default()).is_empty());
     }
 
     #[test]

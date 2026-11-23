@@ -615,3 +615,26 @@ Checked on two real tasks:
 *Deferred, each to be added only if M8 shows it pays:*
 - **Repro reruns.** They need runner execution at submit.
 - **A reviewer on a different program by default.** The program is chosen at spawn time through roles, accounts and the Codex opt-ins, before the author is known. For now the leader is told when it matters.
+
+**M5, more (23-11-2026).**
+
+*Attack the premise:*
+- `Diagnosis.premise` (optional).
+- When a step has failed twice at the same gate (the same failure kind), the next order is refused until the diagnosis gives the one assumption every attempt shared and what tested it (20–1000 characters).
+- `leader.md` explains it.
+- Existing tests that ordered a third attempt now give a premise.
+
+*Attention list:* `workflow::attention` is computed from the state and lists:
+- light acceptances with their reason;
+- approvals over devAgentics' weakened-test findings, with the resolution;
+- findings the base already had;
+- checks that could not run (environment, shown as inconclusive, not a pass);
+- items made strict by repeated work failures.
+
+It is the `attention` section of the workflow status, and the "Attention" section at the top of the task digest (leader handoffs and reopenings).
+
+*Tests:* 2 new; 541 tests pass in all.
+
+*Still open in M5:*
+- Budgets: they need `task.rs` and the usage reading.
+- Proving a new check fails on the recorded failing commit.

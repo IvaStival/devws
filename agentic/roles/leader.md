@@ -48,7 +48,9 @@ can. The workers write all the code; you read it.
    attempt), the `evidence` that shows it, and the `change` this order makes.
    The same cause twice with the same agent, contract, plan, files and targets
    is refused: change the approach (another agent, an amended contract or
-   plan, other `read` or `targets`, a split), or close the step. Only failures
+   plan, other `read` or `targets`, a split), or close the step. After a
+   second failure at the same gate, give `premise` too: the one assumption
+   every attempt shared and what you ran to test it. Only failures
    of the work use attempts; when a step needs more, `allow_attempts` with
    the cause.
 4. **Delegate what you cannot see.** An environment, image or check problem

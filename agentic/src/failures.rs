@@ -117,6 +117,11 @@ pub struct Diagnosis {
     pub evidence: String,
     /// What the next order does differently because of it.
     pub change: String,
+    /// After a second failure at the same gate: the one assumption every
+    /// attempt shared, and what tested it. Two fixes that failed the same
+    /// way usually share a wrong premise, not two bad fixes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub premise: Option<String>,
 }
 
 /// How an order goes at its step: when a step fails twice for the same cause,
@@ -327,6 +332,21 @@ pub fn resolve(
             (10..=1000).contains(&change),
             "the diagnosis change must say what this order does differently (10 to 1000 characters)"
         );
+        let same_gate = failures[..=index]
+            .iter()
+            .filter(|earlier| earlier.kind == failure.kind)
+            .count();
+        let premise = diagnosis
+            .premise
+            .as_deref()
+            .map_or(0, |premise| premise.trim().chars().count());
+        anyhow::ensure!(
+            same_gate < 2 || (20..=1000).contains(&premise),
+            "step {step} failed at the same gate ({:?}) {same_gate} times: before another fix, \
+             give diagnosis.premise, the one assumption every attempt shared and what you ran \
+             to test it (20 to 1000 characters)",
+            failure.kind
+        );
         let previous = failures[..index]
             .iter()
             .rev()
@@ -502,6 +522,7 @@ mod tests {
             cause,
             evidence: "useSystemMutations.test.tsx:757 expected 'mutation remains'".into(),
             change: "keep the unrelated mutation's cache entry".into(),
+            premise: Some("the cache key names the mutation: ran the key test, it does".into()),
         }
     }
 
@@ -756,6 +777,68 @@ mod tests {
                 .cause,
             Cause::ImplementationDefect
         );
+    }
+
+    #[test]
+    fn a_second_failure_at_the_same_gate_needs_the_premise_first() {
+        let mut state = state();
+        record(
+            &mut state,
+            "B3",
+            Some("o1"),
+            FailureKind::CheckFailed,
+            "1 test failed",
+            1,
+        );
+        let without = || Diagnosis {
+            premise: None,
+            ..diagnosis(Cause::ImplementationDefect)
+        };
+        resolve(
+            &mut state,
+            "B3",
+            Some(without()),
+            &approach("hammer-28"),
+            "o2",
+            2,
+        )
+        .expect("one failure needs no premise");
+        state.orders.push(order("o2", "hammer-28"));
+        record(
+            &mut state,
+            "B3",
+            Some("o2"),
+            FailureKind::CheckFailed,
+            "same test",
+            3,
+        );
+        let error = resolve(
+            &mut state,
+            "B3",
+            Some(Diagnosis {
+                cause: Cause::TestDefect,
+                ..without()
+            }),
+            &approach("hammer-29"),
+            "o3",
+            4,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("failed at the same gate (CheckFailed) 2 times")
+                && error.contains("diagnosis.premise"),
+            "{error}"
+        );
+        resolve(
+            &mut state,
+            "B3",
+            Some(diagnosis(Cause::TestDefect)),
+            &approach("hammer-29"),
+            "o3",
+            4,
+        )
+        .expect("with the premise written and tested, the next fix may go");
     }
 
     #[test]
