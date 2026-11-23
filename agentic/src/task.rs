@@ -47,6 +47,30 @@ pub struct TaskConfig {
     /// whatever its facts say. The rollback for risk routing.
     #[serde(default)]
     pub routing: crate::execution::RoutingMode,
+    /// What the team may spend; nothing is limited by default.
+    #[serde(default, skip_serializing_if = "Budget::is_unlimited")]
+    pub budget: Budget,
+}
+
+/// `[budget]` in task.toml. At 80% of a limit the leader is told; at the
+/// limit the task pauses, nothing is lost, and the user decides: raise it in
+/// task.toml and resume, or stop.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Budget {
+    /// Tokens every model of the team processed (input, output and cache),
+    /// as the panes report them: an estimate, providers count differently.
+    #[serde(default)]
+    pub max_tokens: Option<u64>,
+    /// Hours since the task started.
+    #[serde(default)]
+    pub max_hours: Option<f64>,
+}
+
+impl Budget {
+    pub fn is_unlimited(&self) -> bool {
+        self.max_tokens.is_none() && self.max_hours.is_none()
+    }
 }
 
 /// An area of a repo (back, front, docs…): its files, and the worktree on a
@@ -244,6 +268,7 @@ mod tests {
             check_profiles: Default::default(),
             lanes: Vec::new(),
             routing: Default::default(),
+            budget: Default::default(),
             repos: vec![Repo {
                 name: "app".to_string(),
                 worktree: "/work/app-feat-login".into(),

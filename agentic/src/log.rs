@@ -25,6 +25,8 @@ pub enum Kind {
     Leader,
     /// A note saved in the team's memory (ai-memory).
     Memory,
+    /// The team neared or reached the task's budget.
+    Budget,
 }
 
 /// One line of `log.jsonl`: what happened in the team, written by devAgentics

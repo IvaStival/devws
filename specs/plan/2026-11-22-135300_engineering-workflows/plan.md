@@ -638,3 +638,20 @@ It is the `attention` section of the workflow status, and the "Attention" sectio
 *Still open in M5:*
 - Budgets: they need `task.rs` and the usage reading.
 - Proving a new check fails on the recorded failing commit.
+
+**M5 budgets (23-11-2026).**
+
+*Configuration:* `task.toml [budget]` with `max_tokens` (input + output + cache, from the team's panes) and `max_hours` (since the first log entry). Nothing is limited without it.
+
+*How the dispatcher checks it:*
+- It checks every 30 s, and reads pane usage at most once a minute.
+- **At 80%:** the leader gets a "BUDGET: 80% used" message, once per limit. The log line names the limit, so a raised limit warns again.
+- **At the limit:** the task pauses with nothing dropped. The log has a budget entry and a pause, and you get an escalation with the accepted count and how to resume. Your pane is marked waiting.
+- **Unreadable usage** never pauses.
+- **Separate limits:** `max_review_rounds` is not added; the existing `max_attempts` covers it, as the plan said.
+
+*Docs:* `agentic/docs/usage.md` has a "Risk routing and budgets" section that also covers `routing = "off"`.
+
+*Tests:* 4 new (spend thresholds, warned once, pause and escalation, no budget). 545 tests pass in all, and clippy and fmt are clean.
+
+*Touches the CLI-work file `task.rs`:* the `Budget` type and field, plus one `budget:` line next to each `routing:` literal.

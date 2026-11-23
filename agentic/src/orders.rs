@@ -1161,6 +1161,7 @@ mod tests {
             check_profiles: Default::default(),
             lanes: Vec::new(),
             routing: Default::default(),
+            budget: Default::default(),
             repos: vec![Repo {
                 name: "app".to_string(),
                 worktree: repo.path().to_path_buf(),

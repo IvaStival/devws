@@ -37,6 +37,46 @@ pub struct Dispatcher<'a> {
     grace: Duration,
     /// When each agent was first seen done with an open order.
     done_since: HashMap<String, Instant>,
+    /// The team's usage, read from its panes no more than once a minute.
+    usage: crate::board_usage::UsageReader,
+    budget_checked: Option<Instant>,
+}
+
+/// How often the budget is checked: usage changes in minutes, not seconds.
+const BUDGET_EVERY: Duration = Duration::from_secs(30);
+
+/// Where the team stands against its budget.
+#[derive(Debug, PartialEq)]
+enum Spend {
+    Within,
+    /// 80% or more of a limit: what to tell the leader.
+    Near(String),
+    /// A limit reached: why the task pauses.
+    Reached(String),
+}
+
+fn spend(budget: &crate::task::Budget, tokens: Option<u64>, hours: f64) -> Spend {
+    let mut near = None;
+    let mut measures = Vec::new();
+    if let (Some(limit), Some(tokens)) = (budget.max_tokens, tokens) {
+        measures.push((
+            tokens as f64,
+            limit as f64,
+            format!("{tokens} of {limit} tokens"),
+        ));
+    }
+    if let Some(limit) = budget.max_hours {
+        measures.push((hours, limit, format!("{hours:.1} of {limit} hours")));
+    }
+    for (used, limit, text) in measures {
+        if used >= limit {
+            return Spend::Reached(text);
+        }
+        if used >= 0.8 * limit {
+            near.get_or_insert(text);
+        }
+    }
+    near.map_or(Spend::Within, Spend::Near)
 }
 
 impl<'a> Dispatcher<'a> {
@@ -52,6 +92,8 @@ impl<'a> Dispatcher<'a> {
             devws,
             grace,
             done_since: HashMap::new(),
+            usage: crate::board_usage::UsageReader::new(Duration::from_secs(60)),
+            budget_checked: None,
         }
     }
 
@@ -109,6 +151,7 @@ impl<'a> Dispatcher<'a> {
         if !state.paused {
             self.retry_spent_steps(crate::log::now())?;
             self.remind_left_reviews(crate::log::now())?;
+            self.keep_within_budget(crate::log::now())?;
         }
         if !state.paused {
             match state.workflow {
@@ -117,6 +160,99 @@ impl<'a> Dispatcher<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Tells the leader once at 80% of a limit, and pauses the task at the
+    /// limit for the user to decide. A log line names the limit it was for,
+    /// so a raised limit warns again.
+    fn keep_within_budget(&mut self, now: u64) -> Result<()> {
+        let budget = self.task.config()?.budget;
+        if budget.is_unlimited()
+            || self
+                .budget_checked
+                .is_some_and(|checked| checked.elapsed() < BUDGET_EVERY)
+        {
+            return Ok(());
+        }
+        self.budget_checked = Some(Instant::now());
+        let tokens = budget
+            .max_tokens
+            .map(|_| self.usage.of_team(self.task, self.devws))
+            .transpose()?
+            .map(|team| {
+                let usage = crate::board_usage::total(&team.by_role);
+                usage.input + usage.output + usage.cache
+            });
+        let log: Vec<crate::log::Entry> = self
+            .task
+            .log_lines()?
+            .iter()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        let started = log.iter().map(|entry| entry.at).min().unwrap_or(now);
+        let hours = now.saturating_sub(started) as f64 / 3600.0;
+        let limit = format!(
+            "(limit: {} tokens, {} hours)",
+            budget
+                .max_tokens
+                .map_or("no".into(), |tokens| tokens.to_string()),
+            budget
+                .max_hours
+                .map_or("no".into(), |hours| hours.to_string())
+        );
+        match spend(&budget, tokens, hours) {
+            Spend::Within => Ok(()),
+            Spend::Near(used) => {
+                let said = log.iter().any(|entry| {
+                    entry.kind == Kind::Budget
+                        && entry.text.starts_with("80%")
+                        && entry.text.ends_with(&limit)
+                });
+                if said {
+                    return Ok(());
+                }
+                self.task.transaction(|tx| {
+                    tx.state.say(
+                        LEADER,
+                        format!(
+                            "BUDGET: 80% used ({used}). Finish what is open, start nothing that is not needed, and tell the user what is left."
+                        ),
+                    );
+                    tx.log(Kind::Budget, None, None, &format!("80% used: {used} {limit}"));
+                    Ok(())
+                })
+            }
+            Spend::Reached(used) => {
+                let config = self.task.config()?;
+                self.task.transaction(|tx| {
+                    let accepted = tx
+                        .state
+                        .steps
+                        .iter()
+                        .filter(|step| step.status == StepStatus::Accepted)
+                        .count();
+                    tx.state.paused = true;
+                    tx.log(Kind::Budget, None, None, &format!("reached: {used} {limit}"));
+                    tx.log(Kind::Pause, None, None, "paused: the budget is reached");
+                    tx.log(
+                        Kind::Escalate,
+                        None,
+                        None,
+                        &format!(
+                            "The budget is reached ({used}); the task is paused and nothing is lost. {accepted} of {} steps are accepted (devagentics task status {}). To go on, raise [budget] in task.toml and resume (devagentics task resume {}); or stop.",
+                            tx.state.steps.len(),
+                            config.id,
+                            config.id
+                        ),
+                    );
+                    Ok(())
+                })?;
+                if let Some(pane) = self.devws.pane_with_role(&config.workspace, "agent")? {
+                    self.devws.mark(&pane, "waiting")?;
+                }
+                Ok(())
+            }
+        }
     }
 
     /// A reviewed leader fetches its own inbox, so
@@ -633,6 +769,108 @@ mod tests {
                 .map(|(_, text)| text)
                 .collect()
         }
+    }
+
+    #[test]
+    fn spend_is_near_at_80_percent_and_reached_at_the_limit() {
+        let budget = crate::task::Budget {
+            max_tokens: Some(1_000),
+            max_hours: Some(2.0),
+        };
+        assert_eq!(spend(&budget, Some(100), 0.5), Spend::Within);
+        assert_eq!(
+            spend(&budget, Some(850), 0.5),
+            Spend::Near("850 of 1000 tokens".into())
+        );
+        assert_eq!(
+            spend(&budget, Some(100), 2.0),
+            Spend::Reached("2.0 of 2 hours".into())
+        );
+        assert_eq!(
+            spend(&budget, None, 0.5),
+            Spend::Within,
+            "unreadable usage never pauses the task"
+        );
+        assert_eq!(
+            spend(&crate::task::Budget::default(), Some(9), 9.0),
+            Spend::Within
+        );
+    }
+
+    fn started_hours_ago(f: &Fixture, hours: f64, budget: crate::task::Budget) {
+        let mut config = f.task.config().unwrap();
+        config.budget = budget;
+        f.task.write_config(&config).unwrap();
+        let at = crate::log::now() - (hours * 3600.0) as u64;
+        let mut log = std::fs::OpenOptions::new()
+            .append(true)
+            .open(f.task.dir().join("log.jsonl"))
+            .unwrap();
+        writeln!(
+            log,
+            "{}",
+            serde_json::json!({"at": at, "kind": "start", "text": "task started"})
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn near_the_budget_the_leader_is_told_once() {
+        let f = fixture();
+        started_hours_ago(
+            &f,
+            0.9,
+            crate::task::Budget {
+                max_hours: Some(1.0),
+                ..Default::default()
+            },
+        );
+        let mut dispatcher = f.dispatcher();
+        dispatcher.keep_within_budget(crate::log::now()).unwrap();
+        dispatcher.budget_checked = None;
+        dispatcher.keep_within_budget(crate::log::now()).unwrap();
+        let state = f.task.state().unwrap();
+        let told: Vec<_> = state
+            .queue
+            .iter()
+            .filter(|message| message.to == LEADER && message.text.starts_with("BUDGET: 80% used"))
+            .collect();
+        assert_eq!(told.len(), 1, "once per limit");
+        assert!(!state.paused);
+    }
+
+    #[test]
+    fn at_the_budget_the_task_pauses_and_the_user_decides() {
+        let f = fixture();
+        started_hours_ago(
+            &f,
+            2.0,
+            crate::task::Budget {
+                max_hours: Some(1.5),
+                ..Default::default()
+            },
+        );
+        f.dispatcher()
+            .keep_within_budget(crate::log::now())
+            .unwrap();
+        assert!(f.task.state().unwrap().paused, "paused, nothing dropped");
+        let log = f.task.log_lines().unwrap().join("\n");
+        assert!(
+            log.contains(
+                "The budget is reached (2.0 of 1.5 hours); the task is paused and nothing is lost"
+            ) && log.contains("raise [budget] in task.toml and resume"),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn without_a_budget_nothing_is_checked() {
+        let f = fixture();
+        started_hours_ago(&f, 100.0, crate::task::Budget::default());
+        f.dispatcher()
+            .keep_within_budget(crate::log::now())
+            .unwrap();
+        assert!(!f.task.state().unwrap().paused);
     }
 
     #[test]

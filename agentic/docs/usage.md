@@ -527,6 +527,38 @@ devagentics opencode model floor opencode/<model>  # from `opencode models`
 - A planner or executor starts by answering "ready"; its first order waits for
   that answer.
 
+## Risk routing and budgets (reviewed tasks)
+
+Each baseline item has a `kind` (change, bugfix, feature, interface,
+investigation), and devAgentics computes how much process it gets from facts
+about the item. No agent judges it.
+
+- **light**: a change or bug fix in at most 3 file patterns that no other
+  lane builds on. The leader accepts it after a passing merge check, with a
+  written reason and no reviewer agent.
+- **strict**: anything touching auth, migrations, SQL, Docker, CI or
+  dependency files, changing stored data, sharing an interface with another
+  lane, or with 2 failures of its own work. It gets a test-first item and a
+  reviewer.
+- **standard**: everything else, which is today's review.
+
+The leader may raise an item's rigor, never lower it below the computed one.
+Lowering an approved item's rigor needs you.
+
+In `task.toml`:
+
+```toml
+routing = "off"        # every item at least standard: the full review, as before
+
+[budget]               # optional; nothing is limited without it
+max_tokens = 3000000   # what the team's models processed, as the panes report it (an estimate)
+max_hours = 4
+```
+
+At 80% of a limit the leader is told once. At the limit the task pauses,
+nothing is lost, and you are asked. To go on, raise the limit and run
+`devagentics task resume <task>`.
+
 ## Reliable execution
 
 See the [order, recovery and isolated-check guide](../../docs/user/devagentics-execution.md) for required report IDs, audited amendments, interrupt/resume, named check configuration and result formats.

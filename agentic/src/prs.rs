@@ -201,6 +201,7 @@ esac
             check_profiles: Default::default(),
             lanes: Vec::new(),
             routing: Default::default(),
+            budget: Default::default(),
             repos: repos
                 .iter()
                 .map(|(name, path)| Repo {

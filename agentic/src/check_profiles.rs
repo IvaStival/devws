@@ -1344,6 +1344,7 @@ mod tests {
                 repos: vec![],
                 lanes: vec![],
                 routing: Default::default(),
+                budget: Default::default(),
             },
         )
         .unwrap();
