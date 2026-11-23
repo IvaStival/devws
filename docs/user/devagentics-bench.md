@@ -46,7 +46,24 @@ from run to run. Compare many runs of the same fixed scope.
 | review rounds per reviewed step | Independent reviews per step that had one. |
 | light acceptances, items by rigor | Light items accepted on the leader's reason without a reviewer, and how the items were routed. |
 | escaped defects | Work failures recorded on a step after it was first accepted: a lower bound. |
-| leader MCP calls per accepted step | From payload telemetry; each call rereads the leader's context, so this drives its cost. CLI reads are not counted yet. |
+| leader calls per accepted step | From payload telemetry, MCP tools and `leader-read` CLI reads together (CLI reads show as `cli:<view>`); each call rereads the leader's context, so this drives its cost. |
+
+## Risk routing: the control arm
+
+To measure risk routing, run pairs on the same fixture: arm A with routing off
+(every item gets a planner-led baseline and a reviewer, as before routing) and
+arm B with it on (the default). Turn it off for arm A after the task starts and
+before you give the leader the goal:
+
+```sh
+devagentics task routing <task> off
+```
+
+Both arms run the same pinned binary. The pass rule is in the
+engineering-workflows plan (M8): B must lower the median cost per integrated
+success by more than half of A's run-to-run range and by at least 10%, with
+no fewer delivered runs and no more escaped defects. On `bugfix-one-file`, a
+B run with no light acceptance measured nothing about routing.
 
 ## Protocol
 

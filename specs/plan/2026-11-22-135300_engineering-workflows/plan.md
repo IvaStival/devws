@@ -741,3 +741,9 @@ It is the `attention` section of the workflow status, and the "Attention" sectio
 - A system profile starts the application and runs smoke or end-to-end tests against it in one container. `--network=none` keeps loopback, so `localhost` works; the Docker lifecycle test proves it with a server on `127.0.0.1:8080`.
 - Taking a profile out of `system` needs the user, like `selected` and `candidate`. An empty `system` is not serialized, so old evidence signatures stay the same.
 - *Not built:* several services on an `--internal` Docker network. It needs service images, a network per milestone and its cleanup in the runner. Built only when a fixture needs more than one container.
+
+**M8 ready to run (23-11-2026).**
+- *Arms, revised:* M1 has no switch, so both arms carry it. Arm A is `devagentics task routing <task> off`, arm B is on. The pair still isolates routing.
+- *M1's reference:* the hybrid Notes run on the binary before M1 ($3.20 per completed task; token plan). M1 is judged on the same fixture by `prompt_bytes` per worker turn and by the leader's input tokens.
+- *Binary:* a pinned release build of this branch under `~/Projects/devws-bench/bin/pstack-<commit>/`, with its sha256. It is not installed over `~/.cargo/bin/devagentics`, because benchmark teams from earlier sessions still run on that binary, and an older binary drops the new state fields when it writes.
+- *Runs:* not started. They spend your accounts.

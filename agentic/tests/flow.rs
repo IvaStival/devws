@@ -110,6 +110,20 @@ fn opted_in_leader_cli_matches_mcp_and_stays_in_its_worktree() {
             serde_json::from_str::<Value>(&mcp[0].1).unwrap()
         );
     }
+    let guide = read(repo, &["leader-read", "feat-x", "guide", "accounts"]);
+    assert!(guide.status.success(), "{:?}", guide.stderr);
+    let mcp = world.leader(
+        "feat-x",
+        &[(
+            "application_workflow",
+            json!({"action": "guide", "input": {"topic": "accounts"}}),
+        )],
+    );
+    assert!(!mcp[0].0, "{}", mcp[0].1);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&guide.stdout).unwrap(),
+        serde_json::from_str::<Value>(&mcp[0].1).unwrap()
+    );
     assert_eq!(before, fs::read(&state_path).unwrap());
     let inbox = ["leader-read", "feat-x", "inbox"];
     let result = read(repo, &inbox);
@@ -153,6 +167,22 @@ fn opted_in_leader_cli_matches_mcp_and_stays_in_its_worktree() {
     let result = read(repo, &progress);
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("CLI_DISABLED"));
+}
+
+#[test]
+fn the_user_turns_risk_routing_off_for_a_control_run_and_on_again() {
+    let world = World::new();
+    world.ok(
+        None,
+        &["task", "start", world.repo.path().to_str().unwrap()],
+        "",
+    );
+    let config = || fs::read_to_string(world.path("home/tasks/feat-x/task.toml")).unwrap();
+    assert!(!config().contains("routing = \"off\""));
+    world.ok(None, &["task", "routing", "feat-x", "off"], "");
+    assert!(config().contains("routing = \"off\""), "{}", config());
+    world.ok(None, &["task", "routing", "feat-x", "on"], "");
+    assert!(config().contains("routing = \"on\""), "{}", config());
 }
 
 fn git(dir: &Path, arguments: &[&str]) {

@@ -307,6 +307,10 @@ enum TaskAction {
     CodexTeam { task: String, switch: Switch },
     /// Prefer direct CLI reads for a reviewed Codex leader
     LeaderCli { task: String, switch: Switch },
+    /// You route this task's items by risk (on, the default) or give every
+    /// item the standard process (off): the benchmark's control arm, and the
+    /// rollback if light items let defects through
+    Routing { task: String, switch: Switch },
     /// You turn the code graph (Graphify, code only and offline) on or off
     /// for this task's leader and workers: built per commit in the task
     /// folder, never in the project
@@ -736,6 +740,29 @@ fn run() -> Result<()> {
                 println!(
                     "Leader CLI {}. Reopen the leader to refresh its instructions.",
                     if enabled { "enabled" } else { "disabled" }
+                );
+            }
+            TaskAction::Routing { task, switch } => {
+                let task = open(&task)?;
+                let mut config = task.config()?;
+                config.routing = match switch {
+                    Switch::On => execution::RoutingMode::On,
+                    Switch::Off => execution::RoutingMode::Off,
+                };
+                task.write_config(&config)?;
+                task.transaction(|tx| {
+                    let text = format!("the user turned risk routing {:?}", config.routing);
+                    tx.log(log::Kind::Review, None, None, &text.to_lowercase());
+                    Ok(())
+                })?;
+                println!(
+                    "{}",
+                    match config.routing {
+                        execution::RoutingMode::On =>
+                            "Risk routing is on: light items need no reviewer.",
+                        execution::RoutingMode::Off =>
+                            "Risk routing is off: every item gets the standard process.",
+                    }
                 );
             }
             TaskAction::Graph { task, switch } => {
