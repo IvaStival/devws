@@ -111,9 +111,13 @@ pub fn ready(task: &Task, id: &str) -> Result<bool> {
 /// The profiles a milestone runs, by repo: its items' own, and the check of
 /// every interface they provide, so the lanes are tested against what they
 /// agreed on once their work is together.
+/// The profiles a milestone runs, by repo: its items' own, the checks of the
+/// interfaces they provide, and each repo's system checks (the application
+/// starts and its flows work).
 fn profiles(
     application: &crate::execution::Application,
     milestone: &crate::execution::Milestone,
+    checks: &BTreeMap<String, crate::check_profiles::RepositoryChecks>,
 ) -> Result<BTreeMap<String, BTreeSet<String>>> {
     let mut selected: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for item in &milestone.required {
@@ -131,6 +135,11 @@ fn profiles(
                 .filter_map(|interface| interface.check.clone()),
         );
     }
+    for (repo, names) in selected.iter_mut() {
+        if let Some(checks) = checks.get(repo) {
+            names.extend(checks.system.iter().cloned());
+        }
+    }
     Ok(selected)
 }
 
@@ -146,7 +155,8 @@ pub fn validate(task: &Task, id: &str) -> Result<Evidence> {
     for item in &milestone.required {
         validate_item(&state, item)?;
     }
-    let selected = profiles(&state.application, milestone)?;
+    let config = task.config()?;
+    let selected = profiles(&state.application, milestone, &config.check_profiles)?;
     for dependency in &milestone.dependencies {
         ensure!(
             state
@@ -161,7 +171,6 @@ pub fn validate(task: &Task, id: &str) -> Result<Evidence> {
     }
     let captured = code(task)?;
     let signature = configuration(task)?;
-    let config = task.config()?;
     let directory = task.dir().join("milestone-checks").join(format!(
         "{id}-{}",
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
@@ -278,11 +287,35 @@ mod tests {
                 check: Some("contract".into()),
             },
         );
-        let selected = profiles(&application, &application.milestones["M01"]).unwrap();
+        let selected = profiles(
+            &application,
+            &application.milestones["M01"],
+            &BTreeMap::new(),
+        )
+        .unwrap();
         assert_eq!(
             selected["app"],
             BTreeSet::from(["backend".to_string(), "contract".to_string()])
         );
+    }
+
+    #[test]
+    fn a_milestone_runs_its_repos_system_checks_and_other_repos_do_not() {
+        let application = crate::execution::tests::baseline();
+        let system = |names: &[&str]| crate::check_profiles::RepositoryChecks {
+            system: names.iter().map(|name| name.to_string()).collect(),
+            ..Default::default()
+        };
+        let checks = BTreeMap::from([
+            ("app".to_string(), system(&["e2e"])),
+            ("elsewhere".to_string(), system(&["other-e2e"])),
+        ]);
+        let selected = profiles(&application, &application.milestones["M01"], &checks).unwrap();
+        assert_eq!(
+            selected["app"],
+            BTreeSet::from(["backend".to_string(), "e2e".to_string()])
+        );
+        assert!(!selected.contains_key("elsewhere"), "not in this milestone");
     }
 
     fn audit() -> State {

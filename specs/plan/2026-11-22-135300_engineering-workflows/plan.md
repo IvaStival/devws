@@ -1,7 +1,7 @@
 # Engineering workflows for devAgentics: the PStack ideas, done cheaply
 
 - **Date** 22-11-2026 · **Branch** `feat/opencode-workers`
-- **Status** In progress on branch `feat/pstack-workflows` (worktree `../devws-pstack`), rebased onto the CLI work (`d1b2661`). Done: M0, M1, M2, M3, M5, M6, the deterministic parts of M7, M4 without the system profile, and the review fixes. Left: the M4 system profile, M8 runs (they need you). Revised 22-11-2026 after reading PStack's source skills (section 9).
+- **Status** In progress on branch `feat/pstack-workflows` (worktree `../devws-pstack`), rebased onto the CLI work (`d1b2661`). Done: M0–M7 (M4's system check in one container; the deterministic parts of M7) and the review fixes. Left: M8 runs (they need you). Revised 22-11-2026 after reading PStack's source skills (section 9).
 - **Related plans:** builds on [token-optimization](../2026-11-21-214851_token-optimization/plan.md) and [cto-leader](../2026-11-19-200000_cto-leader/plan.md) and does not duplicate them.
 
 ## Context
@@ -735,3 +735,9 @@ It is the `attention` section of the workflow status, and the "Attention" sectio
 - **Also fixed:** the container-slot test was flaky under parallel tests. A process forked by another test while a slot file was open holds its lock until it execs. The test now polls, as `take_slot` does.
 
 **M3, worker status (23-11-2026).** A worker with an open order on a baseline item sees, in full `status`, only that item's contract and the specs of the interfaces it provides or consumes. With no order it still sees the items of its role and repo, as what may come next. Planners keep `application_read`; reviewers keep `reviewed_contracts`.
+
+**M4 system checks (23-11-2026).**
+- A repo's check configuration has `system`: profile names that every milestone covering that repo runs, after its items' and interfaces' checks. Orders and candidates never run them.
+- A system profile starts the application and runs smoke or end-to-end tests against it in one container. `--network=none` keeps loopback, so `localhost` works; the Docker lifecycle test proves it with a server on `127.0.0.1:8080`.
+- Taking a profile out of `system` needs the user, like `selected` and `candidate`. An empty `system` is not serialized, so old evidence signatures stay the same.
+- *Not built:* several services on an `--internal` Docker network. It needs service images, a network per milestone and its cleanup in the runner. Built only when a fixture needs more than one container.

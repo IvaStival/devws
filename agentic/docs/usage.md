@@ -577,8 +577,9 @@ you: when the next attempt can succeed, it gives the step more with
 `allow_attempts` (its reason in the log and its next summary); otherwise it
 changes the approach or closes the step. You can still allow more yourself
 with `devagentics task attempts <task> <step> <limit>`. In reviewed tasks,
-candidate checks test each merge candidate before its review, protected tests
-cannot be changed by the work they judge, and `devagentics task
+candidate checks test each merge candidate before its review, system checks
+(`system` in a repo's check configuration) start the application and run its
+smoke or end-to-end tests at every milestone, protected tests cannot be changed by the work they judge, and `devagentics task
 codex-reviewers <task> on` lets Codex run the read-only reviewers.
 
 ## Measuring a team

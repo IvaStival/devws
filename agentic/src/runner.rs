@@ -2460,6 +2460,9 @@ mod docker_tests {
         definitions["checks"]["smoke"] =
             serde_json::json!({"command":"test -f src/new.rs","environment":"testing"});
         definitions["candidate"] = serde_json::json!(["smoke"]);
+        // The application starts and answers on loopback: --network=none keeps lo.
+        definitions["checks"]["app"] = serde_json::json!({"command":"(nc -l -p 8080 -s 127.0.0.1 -e echo up &); sleep 0.5; nc 127.0.0.1 8080 </dev/null | grep -qx up","environment":"testing"});
+        definitions["system"] = serde_json::json!(["app"]);
         let original = definitions["checks"]["unit"]["command"].as_str().unwrap();
         definitions["checks"]["unit"]["command"] = serde_json::json!(format!(
             "test \"$RUNNER_TEXT\" = \"value with 'quote\" && {original}"
@@ -2807,6 +2810,14 @@ mod docker_tests {
             "the history recorded during the review is kept beside the reviewed code"
         );
         let final_check = crate::milestones::validate(&task, "M01").unwrap();
+        assert!(
+            final_check
+                .phases
+                .iter()
+                .any(|phase| phase.profile == "app"),
+            "the milestone ran the system check: {:?}",
+            final_check.phases
+        );
         assert!(
             final_check
                 .phases

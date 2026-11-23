@@ -184,6 +184,9 @@ this workflow:
 - What needs the user is the list under "When to ask the user" below; decide
   everything else yourself.
 - Validate each milestone against the integrated code with `validate_milestone`.
+  It also runs the repo's `system` checks: profiles that start the application
+  and run its smoke or end-to-end tests, in one container with loopback only.
+  When the application has a runnable flow, put one in the check configuration.
   Ready is not released. Publishing retains its separate external permission.
   Claude is the verified MCP-only adapter; code reviewers run on Codex only when
   the user opted in for the task. Other unsupported provider routes stay

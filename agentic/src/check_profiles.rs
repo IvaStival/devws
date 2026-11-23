@@ -24,6 +24,12 @@ pub struct RepositoryChecks {
     /// finds two lanes that pass alone and break together at that merge, not
     /// at the milestone.
     pub candidate: Vec<String>,
+    /// Profiles that prove the application works: each starts it and runs
+    /// smoke or end-to-end tests against it in one container (loopback only,
+    /// no network). Every milestone that covers this repo runs them, and
+    /// nothing earlier does. Left out when empty, like `lanes`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub system: Vec<String>,
     /// A lane's own commands for profile names: in that lane they replace the
     /// repo's (`test` runs `cd backend && …` in the back lane). Left out when
     /// empty, so a repo without them keeps its evidence signatures.
@@ -257,7 +263,22 @@ pub fn validate(config: &RepositoryChecks) -> Result<()> {
         bail!("select at most 32 candidate profiles");
     }
 
-    for name in config.selected.iter().chain(&config.candidate) {
+    let mut system = std::collections::BTreeSet::new();
+    for name in &config.system {
+        if !system.insert(name) {
+            bail!("duplicate system profile {name}");
+        }
+    }
+    if config.system.len() > 8 {
+        bail!("select at most 8 system profiles");
+    }
+
+    for name in config
+        .selected
+        .iter()
+        .chain(&config.candidate)
+        .chain(&config.system)
+    {
         let profile = config
             .checks
             .get(name)
@@ -1107,6 +1128,24 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn a_system_check_names_a_declared_profile_once() {
+        let mut checks = web_and_back();
+        checks.system = vec!["lint".into()];
+        validate(&checks).unwrap();
+        checks.system = vec!["e2e".into()];
+        let error = format!("{:#}", validate(&checks).unwrap_err());
+        assert!(error.contains("e2e"), "{error}");
+        checks.system = vec!["lint".into(), "lint".into()];
+        let error = format!("{:#}", validate(&checks).unwrap_err());
+        assert!(error.contains("duplicate system profile"), "{error}");
+        let empty = serde_json::to_value(web_and_back()).unwrap();
+        assert!(
+            empty.get("system").is_none(),
+            "old evidence signatures stay the same"
+        );
+    }
+
     fn web_and_back() -> RepositoryChecks {
         RepositoryChecks {
             environments: BTreeMap::from([("testing".into(), Environment::default())]),
@@ -1116,6 +1155,7 @@ mod tests {
             ]),
             selected: vec!["lint".into(), "test".into()],
             candidate: vec!["lint".into()],
+            system: Vec::new(),
             lanes: BTreeMap::from([(
                 "back".into(),
                 BTreeMap::from([("test".into(), profile("cd backend && php artisan test"))]),

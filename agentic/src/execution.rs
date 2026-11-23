@@ -1512,6 +1512,7 @@ fn weakened(
     for (list, old_names, new_names) in [
         ("selected", &old.selected, &new.selected),
         ("candidate", &old.candidate, &new.candidate),
+        ("system", &old.system, &new.system),
     ] {
         if let Some(name) = old_names.iter().find(|name| !new_names.contains(name)) {
             return Some(format!("takes {name} out of the {list} checks"));
@@ -1569,6 +1570,20 @@ pub fn assumed(application: &Application) -> Vec<serde_json::Value> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn taking_a_system_check_out_needs_the_user() {
+        let with = crate::check_profiles::RepositoryChecks {
+            system: vec!["e2e".into()],
+            ..Default::default()
+        };
+        let without = crate::check_profiles::RepositoryChecks::default();
+        assert_eq!(
+            weakened(&with, &without).as_deref(),
+            Some("takes e2e out of the system checks")
+        );
+        assert_eq!(weakened(&without, &with), None, "adding one is fine");
+    }
 
     fn approved() -> Application {
         Application {
