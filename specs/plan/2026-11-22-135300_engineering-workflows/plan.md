@@ -1,7 +1,7 @@
 # Engineering workflows for devAgentics: the PStack ideas, done cheaply
 
 - **Date** 22-11-2026 · **Branch** `feat/opencode-workers`
-- **Status** In progress on branch `feat/pstack-workflows` (worktree `../devws-pstack`), started 23-11-2026. M0 and M2 implemented and tested, not committed. M1 waits for the CLI work; M3–M8 not started. Revised 22-11-2026 after reading PStack's source skills (section 9).
+- **Status** In progress on branch `feat/pstack-workflows` (worktree `../devws-pstack`), started 23-11-2026. M0 and M2 committed (`11a91db`). M3 implemented and tested. M1 waits for the CLI work; M4–M8 not started. Revised 22-11-2026 after reading PStack's source skills (section 9).
 - **Related plans:** builds on [token-optimization](../2026-11-21-214851_token-optimization/plan.md) and [cto-leader](../2026-11-19-200000_cto-leader/plan.md) and does not duplicate them.
 
 ## Context
@@ -500,3 +500,45 @@ Checked on two real tasks:
 - `mcp.rs`: the `accept_step` schema and arm.
 - `runner.rs`: test only, one new Docker case.
 - `start.rs`, `check_profiles.rs`, `task.rs`: `routing` in `TaskConfig` and its literals.
+
+**M3 result (23-11-2026).**
+
+*What was added:*
+- `Application.interfaces`: per interface an id, `owner` item, `kind` (http, function, event, schema, cli or config), `spec` (≤4 KB) and an optional `check` profile. Old baselines write nothing new.
+- `Contract.provides` and `Contract.consumes`.
+
+*What validation refuses:*
+- an unknown owner or interface;
+- an owner that doesn't list the interface in `provides`;
+- a second provider;
+- a consumer that doesn't depend on the owner;
+- a spec over 4 KB;
+- an unknown check profile.
+
+*Versions and resets:*
+- `store` sets versions itself: an unchanged spec keeps its version, a changed one goes up by one, a new one starts at 1. The planner never writes versions.
+- A changed or removed spec marks the provider and every consumer as affected. `confirm` resets them and closes their open orders.
+
+*What the agents see:*
+- An order's text carries the specs of the interfaces its item provides or uses ("You use interface auth-api v2 (Http), exactly as specified…"). A resent order keeps them.
+- The outline lists the interfaces without their specs. `items` returns the specs of the contracts asked for.
+- Sharing an interface across lanes makes an item strict.
+
+*Decisions:*
+- `Decision.one_way`, `criteria` (≤6) and `alternatives` (option, tradeoffs, cost).
+- A one-way decision needs ≥2 alternatives.
+
+*Docs:* `leader.md` explains interfaces and one-way decisions, and `proposal-example.json` shows an interface.
+
+*Verification:*
+- 529 tests pass, 9 of them new.
+- The four Docker tests pass.
+- clippy and fmt are clean.
+
+*Changed from the design:*
+- **Staleness.** It comes from the reset on `confirm`, not from storing interface specs in `contract_bindings` (`state.rs`, a CLI-work file). A reset step needs a new order, so an old review can't be accepted.
+- **Worker `status`.** Its scoping waits for the CLI work (`worker_tools.rs`). The spec reaches the worker through its order instead.
+
+*Not done yet:*
+- Two-way decisions defaulting to the recommendation (9.2 point 4). Every existing decision is two-way by default, so turning this on would stop all interview questions until planners mark one-way ones. It needs its own decision.
+- Interface checks at the milestone. They belong to M4.

@@ -29,13 +29,17 @@ pub struct Application {
     pub items: BTreeMap<String, Contract>,
     pub milestones: BTreeMap<String, Milestone>,
     pub check_configuration: BTreeMap<String, crate::check_profiles::RepositoryChecks>,
+    /// What lanes agree on, written once: an item provides each and the
+    /// items that use it consume it, so both sides read the same text.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub interfaces: BTreeMap<String, Interface>,
     /// Existing tracked acceptance files, immutable across all orders in a repo.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub existing_protected_tests: BTreeMap<String, Vec<String>>,
     pub confirmed_revision: Option<u64>,
     pub approved_revision: Option<u64>,
 }
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Decision {
     pub id: String,
@@ -44,6 +48,54 @@ pub struct Decision {
     pub recommendation: String,
     pub prerequisites: Vec<String>,
     pub answer: Option<String>,
+    /// Hard to undo (an auth strategy, a data format): it needs written
+    /// alternatives before anyone picks one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub one_way: bool,
+    /// What the pick is judged on, written before the alternatives.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub criteria: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternatives: Vec<Alternative>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Alternative {
+    pub option: String,
+    pub tradeoffs: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cost: String,
+}
+
+/// The longest interface spec: enough for signatures, a schema or an API
+/// fragment, short enough to inline in every order that uses it.
+const MAX_SPEC_BYTES: usize = 4096;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterfaceKind {
+    Http,
+    Function,
+    Event,
+    Schema,
+    Cli,
+    Config,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Interface {
+    /// Set by devAgentics: it goes up each time the spec changes.
+    #[serde(default)]
+    pub version: u32,
+    /// The item that provides it.
+    pub owner: String,
+    pub kind: InterfaceKind,
+    pub spec: String,
+    /// A check profile of the owner's repo that tests it (a contract test).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -72,6 +124,12 @@ pub struct Contract {
     pub protected_tests: Vec<String>,
     /// This item writes the protected tests (of the items that depend on it).
     pub writes_tests: bool,
+    /// Interfaces of the baseline this item builds.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub provides: Vec<String>,
+    /// Interfaces of the baseline this item uses.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub consumes: Vec<String>,
     /// What kind of work it is; it routes the item with its rigor.
     pub kind: WorkKind,
     /// The rigor the planner asks for. The effective rigor is never below
@@ -205,6 +263,9 @@ impl Application {
         if !item.data_effects.is_empty() {
             why.push("changes stored data".into());
         }
+        for interface in self.shared_interfaces(id) {
+            why.push(format!("shares interface {interface} with another lane"));
+        }
         if work_failures >= STRICT_AFTER_FAILURES {
             why.push(format!("{work_failures} work failures"));
         }
@@ -221,6 +282,139 @@ impl Application {
             floor,
             why,
         })
+    }
+
+    /// The interfaces item `id` provides or consumes that cross a lane.
+    fn shared_interfaces(&self, id: &str) -> Vec<String> {
+        let Some(item) = self.items.get(id) else {
+            return Vec::new();
+        };
+        item.provides
+            .iter()
+            .chain(&item.consumes)
+            .filter(|interface| {
+                self.items.values().any(|other| {
+                    other.lane != item.lane
+                        && (other.provides.contains(interface)
+                            || other.consumes.contains(interface))
+                })
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Items that provide or consume an interface whose spec this revision
+    /// changes or removes: both sides start again on the new text.
+    pub fn interface_changes(&self, old: &Application) -> BTreeSet<String> {
+        let changed: BTreeSet<&String> = old
+            .interfaces
+            .iter()
+            .filter(|(id, interface)| {
+                self.interfaces
+                    .get(*id)
+                    .is_none_or(|new| new.spec != interface.spec)
+            })
+            .map(|(id, _)| id)
+            .collect();
+        self.items
+            .iter()
+            .chain(&old.items)
+            .filter(|(_, item)| {
+                item.provides
+                    .iter()
+                    .chain(&item.consumes)
+                    .any(|interface| changed.contains(interface))
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// Sets each interface's version from `old`: kept while its spec stays,
+    /// one up when it changes. The planner never writes versions.
+    fn version_interfaces(&mut self, old: &Application) {
+        for (id, interface) in &mut self.interfaces {
+            interface.version = match old.interfaces.get(id) {
+                Some(previous) if previous.spec == interface.spec => previous.version,
+                Some(previous) => previous.version + 1,
+                None => 1,
+            };
+        }
+    }
+
+    /// The interfaces an order for item `id` works against, for its text.
+    pub fn interface_brief(&self, id: &str) -> String {
+        let Some(item) = self.items.get(id) else {
+            return String::new();
+        };
+        let mut brief = String::new();
+        for (verb, ids) in [("You provide", &item.provides), ("You use", &item.consumes)] {
+            for interface_id in ids {
+                if let Some(interface) = self.interfaces.get(interface_id) {
+                    brief.push_str(&format!(
+                        "\n{verb} interface {interface_id} v{} ({:?}), exactly as specified; a change to it is a plan amendment:\n{}\n",
+                        interface.version,
+                        interface.kind,
+                        interface.spec.trim_end()
+                    ));
+                }
+            }
+        }
+        brief
+    }
+
+    fn validate_interfaces(&self, errors: &mut ValidationErrors) {
+        for (id, interface) in &self.interfaces {
+            errors.check(identifier(id));
+            errors.check(text(&interface.spec, "spec").with_context(|| format!("interface {id}")));
+            errors.require(interface.spec.len() <= MAX_SPEC_BYTES, || {
+                format!("interface {id}: spec is over {MAX_SPEC_BYTES} bytes; keep the contract, link the rest")
+            });
+            match self.items.get(&interface.owner) {
+                Some(owner) => {
+                    errors.require(owner.provides.contains(id), || {
+                        format!(
+                            "interface {id}: its owner {} must list it in provides",
+                            interface.owner
+                        )
+                    });
+                    if let Some(check) = &interface.check {
+                        errors.require(
+                            self.check_configuration
+                                .get(&owner.repo)
+                                .is_some_and(|checks| checks.checks.contains_key(check)),
+                            || {
+                                format!(
+                                    "interface {id}: check {check} is not a profile of {}",
+                                    owner.repo
+                                )
+                            },
+                        );
+                    }
+                }
+                None => errors.require(false, || {
+                    format!("interface {id}: unknown owner {}", interface.owner)
+                }),
+            }
+        }
+        for (id, item) in &self.items {
+            for interface in &item.provides {
+                match self.interfaces.get(interface) {
+                    Some(found) => errors.require(found.owner == *id, || {
+                        format!("{id} provides {interface}, owned by {}: an interface has exactly one owner", found.owner)
+                    }),
+                    None => errors.require(false, || format!("{id}: unknown interface {interface}")),
+                }
+            }
+            for interface in &item.consumes {
+                match self.interfaces.get(interface) {
+                    Some(found) => errors.require(
+                        found.owner != *id && item.dependencies.contains(&found.owner),
+                        || format!("{id} consumes {interface}, owned by {}: add {} to its dependencies", found.owner, found.owner),
+                    ),
+                    None => errors.require(false, || format!("{id}: unknown interface {interface}")),
+                }
+            }
+        }
     }
 
     /// Small work nothing else builds on: a change or bug fix in a few
@@ -438,7 +632,42 @@ impl Application {
                     text(answer, "answer").with_context(|| format!("decision {}", decision.id)),
                 );
             }
+            errors.require(
+                !decision.one_way || decision.alternatives.len() >= 2,
+                || {
+                    format!(
+                        "decision {} is one-way: give at least 2 alternatives with their tradeoffs",
+                        decision.id
+                    )
+                },
+            );
+            for alternative in &decision.alternatives {
+                errors.require(
+                    !alternative.option.trim().is_empty()
+                        && !alternative.tradeoffs.trim().is_empty(),
+                    || {
+                        format!(
+                            "decision {}: each alternative needs an option and its tradeoffs",
+                            decision.id
+                        )
+                    },
+                );
+            }
+            errors.require(
+                decision.criteria.len() <= 6
+                    && decision
+                        .criteria
+                        .iter()
+                        .all(|criterion| !criterion.trim().is_empty()),
+                || {
+                    format!(
+                        "decision {}: give at most 6 non-empty criteria",
+                        decision.id
+                    )
+                },
+            );
         }
+        self.validate_interfaces(&mut errors);
         errors.require(!self.scopes.is_empty(), || {
             "application needs scopes".into()
         });
@@ -833,6 +1062,7 @@ pub fn store(task: &Task, mut proposal: Application, reason: &str) -> Result<Vec
             }
         }
     }
+    proposal.version_interfaces(&task.state()?.application);
     proposal.validate()?;
     proposal.validate_existing_tests(&config)?;
     proposal.confirmed_revision = None;
@@ -862,6 +1092,7 @@ pub fn store(task: &Task, mut proposal: Application, reason: &str) -> Result<Vec
                     })
             })
             .cloned()
+            .chain(proposal.interface_changes(old))
             .collect::<BTreeSet<_>>();
         for (id, milestone) in &old.milestones {
             if milestone.release_record.is_some() {
@@ -900,6 +1131,7 @@ pub struct Amendment {
     pub decisions: Vec<Decision>,
     pub check_configuration: BTreeMap<String, Option<crate::check_profiles::RepositoryChecks>>,
     pub existing_protected_tests: BTreeMap<String, Option<Vec<String>>>,
+    pub interfaces: BTreeMap<String, Option<Interface>>,
 }
 
 /// Applies `changes` to `base` as the next revision after `current`.
@@ -924,6 +1156,7 @@ fn amended(base: &Application, current: u64, changes: Amendment) -> Application 
     apply(&mut next.items, changes.items);
     apply(&mut next.milestones, changes.milestones);
     apply(&mut next.check_configuration, changes.check_configuration);
+    apply(&mut next.interfaces, changes.interfaces);
     apply(
         &mut next.existing_protected_tests,
         changes.existing_protected_tests,
@@ -967,6 +1200,19 @@ pub fn outline(application: &Application) -> serde_json::Value {
         })
         .collect::<serde_json::Map<_, _>>()
         .into();
+    if !application.interfaces.is_empty() {
+        outline["interfaces"] = application
+            .interfaces
+            .iter()
+            .map(|(id, interface)| {
+                (
+                    id.clone(),
+                    serde_json::json!({"version":interface.version,"owner":interface.owner,"kind":interface.kind}),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>()
+            .into();
+    }
     outline
 }
 
@@ -980,7 +1226,15 @@ pub fn items(application: &Application, ids: &[String]) -> Result<serde_json::Va
             .with_context(|| format!("revision {} has no item {id}", application.revision))?;
         contracts.insert(id.clone(), serde_json::to_value(item)?);
     }
-    Ok(serde_json::json!({"revision":application.revision,"items":contracts}))
+    let interfaces: BTreeMap<&String, &Interface> = ids
+        .iter()
+        .filter_map(|id| application.items.get(id))
+        .flat_map(|item| item.provides.iter().chain(&item.consumes))
+        .filter_map(|id| application.interfaces.get_key_value(id))
+        .collect();
+    Ok(
+        serde_json::json!({"revision":application.revision,"items":contracts,"interfaces":interfaces}),
+    )
 }
 
 pub fn confirm(task: &Task, revision: u64, approve: bool) -> Result<()> {
@@ -1033,6 +1287,12 @@ pub fn confirm(task: &Task, revision: u64, approve: bool) -> Result<()> {
                     })
                 })
                 .map(|(id, _)| id.clone())
+                .chain(
+                    application
+                        .interface_changes(old)
+                        .into_iter()
+                        .filter(|id| application.items.contains_key(id)),
+                )
                 .collect();
             let mut dependents = BTreeSet::new();
             loop {
@@ -1825,6 +2085,226 @@ pub mod tests {
         assert_eq!((item.kind, item.rigor), (WorkKind::Feature, None));
     }
 
+    /// A back item that provides notes-api and a front item that uses it.
+    fn interfaced() -> Application {
+        let mut application = baseline();
+        let back = application.items.get_mut("S01-B01").unwrap();
+        back.provides = vec!["notes-api".into()];
+        let mut front = back.clone();
+        front.lane = "front".into();
+        front.provides.clear();
+        front.consumes = vec!["notes-api".into()];
+        front.dependencies = vec!["S01-B01".into()];
+        application.items.insert("S01-F01".into(), front);
+        application
+            .milestones
+            .get_mut("M01")
+            .unwrap()
+            .required
+            .push("S01-F01".into());
+        application.interfaces.insert(
+            "notes-api".into(),
+            Interface {
+                version: 1,
+                owner: "S01-B01".into(),
+                kind: InterfaceKind::Http,
+                spec: "GET /notes -> 200 {notes: [{id: int, title: str}]}".into(),
+                check: None,
+            },
+        );
+        application
+    }
+
+    #[test]
+    fn an_interface_has_one_owner_and_its_consumers_depend_on_it() {
+        interfaced().validate().unwrap();
+        let errors = |change: fn(&mut Application)| {
+            let mut application = interfaced();
+            change(&mut application);
+            application.validate().unwrap_err().to_string()
+        };
+        let error = errors(|application| {
+            application
+                .items
+                .get_mut("S01-F01")
+                .unwrap()
+                .dependencies
+                .clear();
+        });
+        assert!(
+            error.contains(
+                "S01-F01 consumes notes-api, owned by S01-B01: add S01-B01 to its dependencies"
+            ),
+            "{error}"
+        );
+        let error = errors(|application| {
+            application.items.get_mut("S01-F01").unwrap().provides = vec!["notes-api".into()];
+        });
+        assert!(
+            error.contains("an interface has exactly one owner"),
+            "{error}"
+        );
+        let error = errors(|application| {
+            application.items.get_mut("S01-F01").unwrap().consumes = vec!["auth-api".into()];
+        });
+        assert!(
+            error.contains("S01-F01: unknown interface auth-api"),
+            "{error}"
+        );
+        let error = errors(|application| {
+            application.interfaces.get_mut("notes-api").unwrap().spec = "x".repeat(5_000);
+        });
+        assert!(error.contains("spec is over 4096 bytes"), "{error}");
+        let error = errors(|application| {
+            application.interfaces.get_mut("notes-api").unwrap().check = Some("contract".into());
+        });
+        assert!(
+            error.contains("check contract is not a profile of app"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn items_sharing_an_interface_across_lanes_are_strict() {
+        let application = interfaced();
+        for id in ["S01-B01", "S01-F01"] {
+            let routing = application.routing(id, 0).unwrap();
+            assert_eq!(routing.floor, Rigor::Strict, "{id}");
+            assert_eq!(
+                routing.why,
+                ["shares interface notes-api with another lane"]
+            );
+        }
+    }
+
+    #[test]
+    fn a_spec_change_raises_the_version_and_resets_both_sides() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        let approved = Application {
+            confirmed_revision: Some(1),
+            approved_revision: Some(1),
+            ..interfaced()
+        };
+        task.transaction(|tx| {
+            tx.state.application = approved.clone();
+            for (id, status) in [
+                ("S01-B01", crate::state::StepStatus::Accepted),
+                ("S01-F01", crate::state::StepStatus::Reported),
+            ] {
+                tx.state.steps.push(crate::state::Step {
+                    id: id.into(),
+                    title: id.into(),
+                    status,
+                    attempts: 1,
+                    spec: None,
+                    review_since: None,
+                });
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        let mut same = approved.clone();
+        same.revision = 2;
+        same.interfaces.get_mut("notes-api").unwrap().version = 9;
+        store(&task, same, "only the goal wording").unwrap();
+        assert_eq!(
+            task.state()
+                .unwrap()
+                .application_proposal
+                .unwrap()
+                .interfaces["notes-api"]
+                .version,
+            1,
+            "the planner never sets the version; an unchanged spec keeps it"
+        );
+
+        let mut changed = approved;
+        changed.revision = 2;
+        changed.interfaces.get_mut("notes-api").unwrap().spec =
+            "GET /notes -> 200 {notes: [{id: str, title: str}]}".into();
+        let affected = store(&task, changed, "ids become strings").unwrap();
+        assert_eq!(affected, ["S01-B01", "S01-F01"]);
+        let pending = task.state().unwrap().application_proposal.unwrap();
+        assert_eq!(pending.interfaces["notes-api"].version, 2);
+
+        confirm(&task, 2, false).unwrap();
+        confirm(&task, 2, true).unwrap();
+        let state = task.state().unwrap();
+        assert!(
+            state
+                .steps
+                .iter()
+                .all(|step| step.status == crate::state::StepStatus::Rejected),
+            "the provider and its consumer start again on the new spec: {:?}",
+            state.steps
+        );
+    }
+
+    #[test]
+    fn an_item_reads_the_specs_it_builds_or_uses() {
+        let application = interfaced();
+        let brief = application.interface_brief("S01-F01");
+        assert!(
+            brief.contains("You use interface notes-api v1 (Http)"),
+            "{brief}"
+        );
+        assert!(brief.contains("GET /notes -> 200"), "{brief}");
+        assert!(
+            application
+                .interface_brief("S01-B01")
+                .contains("You provide interface notes-api")
+        );
+        assert!(baseline().interface_brief("S01-B01").is_empty());
+
+        let read = items(&application, &["S01-F01".into()]).unwrap();
+        assert_eq!(read["interfaces"]["notes-api"]["owner"], "S01-B01");
+        let outline = outline(&application);
+        assert_eq!(outline["interfaces"]["notes-api"]["version"], 1);
+        assert!(outline["interfaces"]["notes-api"].get("spec").is_none());
+    }
+
+    #[test]
+    fn a_one_way_decision_needs_alternatives() {
+        let mut application = baseline();
+        application.decisions = vec![Decision {
+            id: "auth".into(),
+            round: 1,
+            question: "How do clients authenticate?".into(),
+            recommendation: "Cookie session".into(),
+            one_way: true,
+            criteria: vec!["Works for the browser".into()],
+            alternatives: vec![Alternative {
+                option: "Cookie session".into(),
+                tradeoffs: "Simple in a browser; needs CSRF care".into(),
+                cost: "low".into(),
+            }],
+            ..Default::default()
+        }];
+        let error = application.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("decision auth is one-way: give at least 2 alternatives"),
+            "{error}"
+        );
+        application.decisions[0].alternatives.push(Alternative {
+            option: "JWT bearer".into(),
+            tradeoffs: "Works for CLI and mobile; hard to revoke".into(),
+            cost: "medium".into(),
+        });
+        application.validate().unwrap();
+    }
+
+    #[test]
+    fn an_old_baseline_without_interfaces_or_alternatives_loads() {
+        let mut value = serde_json::to_value(baseline()).unwrap();
+        assert!(value.get("interfaces").is_none(), "nothing new is written");
+        value["decisions"] = serde_json::json!([{"id":"Q1","round":1,"question":"Goal?","recommendation":"Accounts","prerequisites":[],"answer":null}]);
+        let application: Application = serde_json::from_value(value).unwrap();
+        assert!(application.interfaces.is_empty());
+        assert!(!application.decisions[0].one_way);
+    }
+
     #[test]
     fn reviewed_order_errors_identify_the_unknown_item() {
         let mut application = baseline();
@@ -2125,6 +2605,7 @@ pub mod tests {
                 recommendation: "Accounts".into(),
                 prerequisites: vec![],
                 answer: None,
+                ..Default::default()
             },
             Decision {
                 id: "Q2".into(),
@@ -2133,6 +2614,7 @@ pub mod tests {
                 recommendation: "Name".into(),
                 prerequisites: vec!["Q1".into()],
                 answer: None,
+                ..Default::default()
             },
         ];
         assert_eq!(question_frontier(&application)[0].id, "Q1");

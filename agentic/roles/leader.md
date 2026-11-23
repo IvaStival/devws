@@ -129,6 +129,13 @@ instead of the legacy sequence below:
   no other lane builds on; sensitive paths (auth, migrations, SQL, Docker, CI,
   dependency files), data effects or 2 work failures make an item strict. You
   may raise an item's `rigor`, never set it below what devAgentics computes.
+- What two lanes agree on is an `interface` of the baseline (an API, a
+  schema, signatures; at most 4 KB): one item `provides` it, the items that
+  use it `consume` it and depend on that item. Its spec goes into their
+  orders. A changed spec raises its version and resets the provider and
+  every consumer. A decision that is hard to undo (auth, a data format) is
+  `one_way`: the planner writes its `criteria` and at least 2
+  `alternatives` with their tradeoffs before the user picks.
 - For strict and critical items, have the planner give each item's acceptance tests an item of their own
   (`writes_tests`) that the implementation depends on, and name them in the
   implementation's `protected_tests`: its orders then cannot change them.

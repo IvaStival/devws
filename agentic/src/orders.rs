@@ -308,13 +308,16 @@ pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
         if agent.group() == Group::Senior && !forbidden.iter().any(|glob| glob == "**") {
             forbidden.push("**".to_string());
         }
+        // The interfaces travel in the order's text, so the worker reads the
+        // exact spec it builds or uses, and a resent order keeps it.
+        let interfaces = tx.state.application.interface_brief(&request.step);
         let order = Order {
             read: request.read.clone(),
             targets: request.targets.clone(),
             id: id.clone(),
             step: request.step.clone(),
             agent: agent.id.clone(),
-            text: request.text.clone(),
+            text: format!("{}{interfaces}", request.text),
             allowed,
             forbidden,
             check,
@@ -1723,6 +1726,49 @@ mod tests {
             );
         }
         assert!(f.task.log_lines().unwrap()[0].contains("\"kind\":\"order\""));
+    }
+
+    #[test]
+    fn an_order_carries_the_specs_of_the_interfaces_its_item_uses() {
+        let f = fixture(None);
+        f.task
+            .transaction(|tx| {
+                let application = &mut tx.state.application;
+                application.items.insert(
+                    "s1".into(),
+                    crate::execution::Contract {
+                        consumes: vec!["auth-api".into()],
+                        ..Default::default()
+                    },
+                );
+                application.interfaces.insert(
+                    "auth-api".into(),
+                    crate::execution::Interface {
+                        version: 2,
+                        owner: "s0".into(),
+                        kind: crate::execution::InterfaceKind::Http,
+                        spec: "POST /login {email,password} -> 204 + Set-Cookie: session".into(),
+                        check: None,
+                    },
+                );
+                Ok(())
+            })
+            .unwrap();
+        let id = send_order(&f.task, request("s1")).unwrap();
+        let state = f.task.state().unwrap();
+        let message = state
+            .queue
+            .iter()
+            .find(|message| message.order.as_deref() == Some(&id))
+            .unwrap();
+        assert!(
+            message
+                .text
+                .contains("You use interface auth-api v2 (Http)")
+                && message.text.contains("POST /login {email,password} -> 204"),
+            "{}",
+            message.text
+        );
     }
 
     #[test]

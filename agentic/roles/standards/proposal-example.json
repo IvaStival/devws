@@ -49,6 +49,7 @@
         "acceptance": ["The frozen status test passes"],
         "standards": "1",
         "kind": "feature",
+        "provides": ["status-cli"],
         "protected_tests": ["tests/test_status.py"]
       }
     },
@@ -67,6 +68,13 @@
         },
         "selected": ["unit"],
         "candidate": ["unit"]
+      }
+    },
+    "interfaces": {
+      "status-cli": {
+        "owner": "status-command",
+        "kind": "cli",
+        "spec": "python3 status.py prints the line 'ready' and exits 0; any output error exits 1."
       }
     },
     "milestones": {
