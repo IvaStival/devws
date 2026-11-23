@@ -681,3 +681,15 @@ It is the `attention` section of the workflow status, and the "Attention" sectio
 - **Explaining the number:**
   - On `bugfix-one-file`, B must show ≥1 light acceptance and no planner or reviewer cost. If it doesn't, the routing did not engage, and the run measured nothing about it.
   - Record leader calls per accepted step: the expected cause of any gain.
+
+**Two-way decisions (23-11-2026, approved by the user).**
+
+*What changed:*
+- Only `one_way` decisions wait for the user's answer. `Decision::settled` is true when a decision is answered or reversible, and `resolved()` and the interview frontier use it.
+- A reversible decision takes its recommendation. It is listed in the workflow status as `assumed_decisions`, so the leader names it at confirmation.
+- `answerable` still lets the user answer an assumed decision to overrule it.
+- `leader.md` explains this.
+
+*Effect on existing baselines:* their decisions are two-way by default, so they are no longer asked. Planners must mark the hard-to-undo ones as `one_way`.
+
+*Tests:* the old frontier test now uses one-way decisions, and one new test covers the rest. 546 tests pass.

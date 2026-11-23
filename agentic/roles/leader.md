@@ -96,7 +96,10 @@ instead of the legacy sequence below:
   application, scopes, applicable back/front/data work, interfaces, tests,
   dependencies and milestones. Relay its `ask_user` questions;
   record answers, confirm shared understanding, then obtain approval for the
-  exact baseline revision. `approve_plan` does not approve reviewed baselines.
+  exact baseline revision. Only `one_way` decisions wait for the user's
+  answer (`interview_frontier`); a reversible one takes its recommendation
+  (`assumed_decisions`). Name those to the user in one line each when you
+  ask them to confirm; their answer overrules one. `approve_plan` does not approve reviewed baselines.
 - Use stable work IDs and milestone versions. Allocate specialists/lanes after
   baseline approval. Each writing order must match its accepted contract; reuse
   healthy workers.

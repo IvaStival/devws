@@ -59,6 +59,17 @@ pub struct Decision {
     pub alternatives: Vec<Alternative>,
 }
 
+impl Decision {
+    /// Settled: answered, or a reversible choice that takes its
+    /// recommendation. Only a one-way decision waits for the user's answer.
+    pub fn settled(&self) -> bool {
+        self.answer
+            .as_ref()
+            .is_some_and(|answer| !answer.trim().is_empty())
+            || !self.one_way
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Alternative {
@@ -873,12 +884,8 @@ impl Application {
         Ok(())
     }
     pub fn resolved(&self) -> bool {
-        self.decisions.iter().all(|decision| {
-            decision
-                .answer
-                .as_ref()
-                .is_some_and(|answer| !answer.trim().is_empty())
-        }) && self.items.values().all(|item| item.questions.is_empty())
+        self.decisions.iter().all(Decision::settled)
+            && self.items.values().all(|item| item.questions.is_empty())
     }
     pub fn approved(&self) -> bool {
         self.approved_revision == Some(self.revision)
@@ -1515,7 +1522,18 @@ fn weakened(
     None
 }
 
+/// The questions the user is asked now: one-way decisions without an answer
+/// whose prerequisites are settled. A reversible decision is not asked; it
+/// takes its recommendation (`assumed`), which the user may still overrule.
 pub fn question_frontier(application: &Application) -> Vec<&Decision> {
+    answerable(application)
+        .into_iter()
+        .filter(|decision| decision.one_way)
+        .collect()
+}
+
+/// Decisions the user may answer now: unanswered, prerequisites settled.
+pub fn answerable(application: &Application) -> Vec<&Decision> {
     application
         .decisions
         .iter()
@@ -1525,8 +1543,21 @@ pub fn question_frontier(application: &Application) -> Vec<&Decision> {
                     application
                         .decisions
                         .iter()
-                        .any(|prerequisite| prerequisite.id == *id && prerequisite.answer.is_some())
+                        .any(|prerequisite| prerequisite.id == *id && prerequisite.settled())
                 })
+        })
+        .collect()
+}
+
+/// Reversible decisions taking their recommendation: shown at confirmation,
+/// so the user sees what was assumed for them.
+pub fn assumed(application: &Application) -> Vec<serde_json::Value> {
+    application
+        .decisions
+        .iter()
+        .filter(|decision| !decision.one_way && decision.answer.is_none())
+        .map(|decision| {
+            serde_json::json!({"id": decision.id, "question": decision.question, "recommendation": decision.recommendation})
         })
         .collect()
 }
@@ -2605,6 +2636,7 @@ pub mod tests {
                 recommendation: "Accounts".into(),
                 prerequisites: vec![],
                 answer: None,
+                one_way: true,
                 ..Default::default()
             },
             Decision {
@@ -2614,6 +2646,7 @@ pub mod tests {
                 recommendation: "Name".into(),
                 prerequisites: vec!["Q1".into()],
                 answer: None,
+                one_way: true,
                 ..Default::default()
             },
         ];
@@ -2628,6 +2661,54 @@ pub mod tests {
         application.revision += 1;
         assert!(!application.approved());
     }
+    #[test]
+    fn only_one_way_decisions_wait_for_the_user_and_the_rest_take_their_recommendation() {
+        let mut application = baseline();
+        application.decisions = vec![
+            Decision {
+                id: "format".into(),
+                round: 1,
+                question: "Output format?".into(),
+                recommendation: "One plain-text line".into(),
+                ..Default::default()
+            },
+            Decision {
+                id: "auth".into(),
+                round: 1,
+                question: "How do clients authenticate?".into(),
+                recommendation: "Cookie session".into(),
+                prerequisites: vec!["format".into()],
+                one_way: true,
+                ..Default::default()
+            },
+        ];
+        let asked: Vec<&str> = question_frontier(&application)
+            .iter()
+            .map(|decision| decision.id.as_str())
+            .collect();
+        assert_eq!(
+            asked,
+            ["auth"],
+            "a reversible prerequisite does not hold it back"
+        );
+        assert_eq!(
+            assumed(&application),
+            [
+                serde_json::json!({"id":"format","question":"Output format?","recommendation":"One plain-text line"})
+            ]
+        );
+        assert!(!application.resolved(), "the one-way decision is open");
+        assert!(
+            answerable(&application)
+                .iter()
+                .any(|decision| decision.id == "format"),
+            "the user may still overrule an assumed one"
+        );
+        application.decisions[1].answer = Some("Cookie session".into());
+        assert!(application.resolved());
+        assert!(assumed(&application).len() == 1 && question_frontier(&application).is_empty());
+    }
+
     #[test]
     fn old_application_defaults_to_unapproved() {
         let application: Application = serde_json::from_str("{}").unwrap();
