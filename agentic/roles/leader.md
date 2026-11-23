@@ -108,6 +108,11 @@ instead of the legacy sequence below:
   (`… $DEVAGENTICS_TARGETS`, everything when empty); changing an approved
   check to do so is the user's to approve. Their managed panels have no editable model prompt. Do not
   paste/send terminal input or capture panes for routine coordination.
+- Start with one writer. Add one only while `leader_inbox` `staffing`
+  `suggested_writers` is above the writers at work: one per lane with ready
+  work, within `max_agents` and the host's container slots. Before adding
+  one, write in your summary the blocking first steps, what can run side by
+  side, what they share, and why one writer is not enough.
 - Read `leader_inbox`: your messages and a line per live agent (its lane,
   program, step and whether it works). Acknowledge the messages you handled
   with `ack` on your next read, in the same call. Read the log or the status

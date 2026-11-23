@@ -1161,6 +1161,71 @@ pub(crate) fn run_container_artifacts(
     Ok(run_container_capture(config, source, readonly, command, artifacts, None)?.0)
 }
 
+/// The containers this host runs at once at `config`'s caps: as many as its
+/// CPUs and its free memory hold, at least one.
+pub fn host_slots(config: &Configuration) -> usize {
+    let cpus = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let by_cpu = cpus / config.cpus.unwrap_or(1).max(1) as usize;
+    let memory_mb = u64::from(config.memory_mb.unwrap_or(MEMORY_LIMIT_MB).max(1));
+    let by_memory = fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|text| available_memory_mb(&text))
+        .map_or(usize::MAX, |free| {
+            usize::try_from(free / memory_mb).unwrap_or(usize::MAX)
+        });
+    by_cpu.min(by_memory).max(1)
+}
+
+/// `MemAvailable` of /proc/meminfo, in MB.
+fn available_memory_mb(meminfo: &str) -> Option<u64> {
+    meminfo
+        .lines()
+        .find_map(|line| line.strip_prefix("MemAvailable:"))
+        .and_then(|rest| {
+            rest.trim()
+                .trim_end_matches("kB")
+                .trim()
+                .parse::<u64>()
+                .ok()
+        })
+        .map(|kilobytes| kilobytes / 1024)
+}
+
+/// A container slot of this host, held until it is dropped: a lock on one of
+/// a few files, which the system releases even when the holder dies.
+struct Slot {
+    _lock: fs::File,
+}
+
+/// A free slot of `slots` in `folder`, if any. Each slot is a file of its
+/// own: nothing shared to count, so no counter to go wrong.
+fn free_slot(folder: &Path, slots: usize) -> Result<Option<Slot>> {
+    fs::create_dir_all(folder)?;
+    for slot in 0..slots {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(folder.join(format!("slot-{slot}")))?;
+        if fs2::FileExt::try_lock_exclusive(&file).is_ok() {
+            return Ok(Some(Slot { _lock: file }));
+        }
+    }
+    Ok(None)
+}
+
+/// Waits for a container slot: on a busy host a check queues rather than
+/// starving the others into timeouts.
+fn take_slot(config: &Configuration) -> Result<Slot> {
+    let folder = crate::home::Home::from_env()?.root().join("runner-slots");
+    loop {
+        if let Some(slot) = free_slot(&folder, host_slots(config))? {
+            return Ok(slot);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
 fn run_container_capture(
     config: &Configuration,
     source: &Path,
@@ -1190,6 +1255,8 @@ fn run_container_capture(
         );
     }
     let endpoint = configured_endpoint(config)?;
+    // Held until the container is gone; its timeout starts once it runs.
+    let _slot = take_slot(config)?;
     let mut child = docker(&endpoint)
         .args(&arguments)
         .stdin(Stdio::null())
@@ -1734,6 +1801,36 @@ pub fn overview(task: &Task) -> Result<serde_json::Value> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn a_host_runs_as_many_containers_as_its_free_memory_and_cpus_hold() {
+        let meminfo = "MemTotal:       32000000 kB\nMemAvailable:   12582912 kB\n";
+        assert_eq!(available_memory_mb(meminfo), Some(12_288));
+        assert_eq!(available_memory_mb("MemTotal: 1 kB\n"), None);
+        let huge = Configuration {
+            memory_mb: Some(MEMORY_LIMIT_MB),
+            cpus: Some(u32::MAX),
+            ..configuration()
+        };
+        assert_eq!(host_slots(&huge), 1, "never fewer than one");
+    }
+
+    #[test]
+    fn a_container_waits_for_a_free_slot_and_gets_it_when_one_is_released() {
+        let folder = tempfile::TempDir::new().unwrap();
+        let first = free_slot(folder.path(), 2).unwrap().unwrap();
+        let second = free_slot(folder.path(), 2).unwrap().unwrap();
+        assert!(
+            free_slot(folder.path(), 2).unwrap().is_none(),
+            "both slots busy"
+        );
+        drop(first);
+        assert!(
+            free_slot(folder.path(), 2).unwrap().is_some(),
+            "a released slot is free"
+        );
+        drop(second);
+    }
 
     #[test]
     fn compact_failure_surfaces_buried_diagnostics_and_skips_visible_duplicates() {

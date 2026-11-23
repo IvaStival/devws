@@ -578,3 +578,26 @@ Checked on two real tasks:
 - A second reviewer on signals.
 
 *Verification:* 535 tests pass, clippy and fmt are clean, and all 4 Docker tests pass.
+
+**M6 result (23-11-2026).**
+
+*Container slots:*
+- `runner::host_slots` gives min(CPUs ÷ CPUs per container, `MemAvailable` ÷ memory per container), at least 1.
+- Every container (checks, `execute`, image tries) first takes a slot: an exclusive lock on one of N files in `~/.devagentics/runner-slots/`. It waits for a free one and never fails for lack of one.
+- The lock is released when the container ends, and the system releases it if the holder dies.
+- The container's timeout starts only once it runs.
+
+*Staffing advice:*
+- `leader_inbox` shows `staffing`:
+  - `independent_lanes_ready`: lanes with ready, unassigned work;
+  - `host_slots`;
+  - `suggested_writers` = min(lanes, `max_agents`, slots).
+- An item waiting on another's interface is not ready, so it doesn't count.
+
+*Leader rule:*
+- Start with one writer, and add one only while `suggested_writers` is above the writers at work.
+- Before adding one, write the throughput checkpoint in the summary.
+
+*Verification:* 538 tests pass (3 new: memory parsing and the minimum of one, slot waiting and release, staffing limits). The 4 Docker tests pass with slots on.
+
+*Side effect:* the Docker tests created the empty slot files in the real `~/.devagentics/runner-slots/`.

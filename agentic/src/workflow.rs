@@ -6,6 +6,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 
 /// Each baseline item: its stage, whether it is assigned, and whether it is
 /// ready to start or what blocks it.
@@ -517,9 +518,31 @@ pub(crate) fn leader_inbox(task: &Task) -> Result<Value> {
         .filter(|item| item["ready"] == true && item["assigned"] == false)
         .map(|item| json!({"id": item["id"], "lane": item["lane"], "rigor": item["rigor"]}))
         .collect();
+    let staffing = staffing(
+        &ready_not_started,
+        task.config()?.max_agents,
+        state.runner.as_ref().map(crate::runner::host_slots),
+    );
     Ok(
-        json!({"messages": messages, "team": team, "ready_not_started": ready_not_started, "next": "handle the messages, then read again with ack [their ids]"}),
+        json!({"messages": messages, "team": team, "ready_not_started": ready_not_started, "staffing": staffing, "next": "handle the messages, then read again with ack [their ids]"}),
     )
+}
+
+/// How many writers the ready work can use: one per lane that has ready
+/// work (a lane takes one writer, and an item waiting on another's interface
+/// is not ready), no more than the task allows or the host's container slots
+/// hold. A suggestion: the leader decides.
+fn staffing(ready: &[Value], max_agents: usize, host_slots: Option<usize>) -> Value {
+    let lanes: BTreeSet<&str> = ready
+        .iter()
+        .filter_map(|item| item["lane"].as_str())
+        .collect();
+    let slots = host_slots.unwrap_or(1);
+    json!({
+        "independent_lanes_ready": lanes.len(),
+        "host_slots": slots,
+        "suggested_writers": lanes.len().min(max_agents).min(slots),
+    })
 }
 
 pub fn block_unverified_runner(task: &Task) -> Result<()> {
@@ -587,6 +610,24 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn staffing_suggests_one_writer_per_ready_lane_within_the_limits() {
+        let ready = [
+            json!({"id": "B1", "lane": "back"}),
+            json!({"id": "B2", "lane": "back"}),
+            json!({"id": "F1", "lane": "front"}),
+            json!({"id": "D1", "lane": "docs"}),
+        ];
+        let suggested =
+            |max_agents, slots| staffing(&ready, max_agents, slots)["suggested_writers"].clone();
+        assert_eq!(staffing(&ready, 3, Some(8))["independent_lanes_ready"], 3);
+        assert_eq!(suggested(3, Some(8)), 3);
+        assert_eq!(suggested(2, Some(8)), 2, "the task's limit");
+        assert_eq!(suggested(3, Some(1)), 1, "the host's container slots");
+        assert_eq!(suggested(3, None), 1, "no runner: one at a time");
+        assert_eq!(staffing(&[], 3, Some(8))["suggested_writers"], 0);
     }
 
     #[test]
