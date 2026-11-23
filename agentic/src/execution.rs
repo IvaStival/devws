@@ -72,6 +72,169 @@ pub struct Contract {
     pub protected_tests: Vec<String>,
     /// This item writes the protected tests (of the items that depend on it).
     pub writes_tests: bool,
+    /// What kind of work it is; it routes the item with its rigor.
+    pub kind: WorkKind,
+    /// The rigor the planner asks for. The effective rigor is never below
+    /// the floor devAgentics computes from the item's facts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rigor: Option<Rigor>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkKind {
+    Change,
+    Bugfix,
+    /// Older baselines have no kind: they keep today's full process.
+    #[default]
+    Feature,
+    Interface,
+    Investigation,
+}
+
+/// How much process an item gets, lowest first: the order is the ranking.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Rigor {
+    Light,
+    #[default]
+    Standard,
+    Strict,
+    Critical,
+}
+
+impl Rigor {
+    /// What an item at this rigor needs before it is accepted.
+    pub fn required(self) -> &'static [&'static str] {
+        match self {
+            Rigor::Light => &["candidate_check", "accept_reason"],
+            Rigor::Standard => &["candidate_check", "review"],
+            Rigor::Strict | Rigor::Critical => &["test_first_item", "candidate_check", "review"],
+        }
+    }
+}
+
+/// Paths whose change is risky whatever its size: access control, stored
+/// data, builds, CI and dependencies. A glob that names one makes its item
+/// strict. Matching is by path part and errs on the strict side ("authors/"
+/// counts as auth): too much rigor costs a review, too little a defect.
+const SENSITIVE_WORDS: &[&str] = &["auth", "migration"];
+const SENSITIVE_FILES: &[&str] = &[
+    "cargo.toml",
+    "cargo.lock",
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "requirements.txt",
+    "pyproject.toml",
+    "go.mod",
+    "go.sum",
+    "gemfile",
+];
+const SENSITIVE_PREFIXES: &[&str] = &["dockerfile", ".github", ".gitlab-ci", "docker-compose"];
+const SENSITIVE_SUFFIXES: &[&str] = &[".sql"];
+/// The most globs a light item may change.
+const LIGHT_GLOBS: usize = 3;
+/// Work failures after which an item gets a stricter review.
+const STRICT_AFTER_FAILURES: u32 = 2;
+
+fn sensitive(glob: &str) -> bool {
+    glob.split('/').any(|part| {
+        let part = part.to_ascii_lowercase();
+        SENSITIVE_WORDS.iter().any(|word| part.contains(word))
+            || SENSITIVE_FILES.contains(&part.as_str())
+            || SENSITIVE_PREFIXES
+                .iter()
+                .any(|prefix| part.starts_with(prefix))
+            || SENSITIVE_SUFFIXES
+                .iter()
+                .any(|suffix| part.ends_with(suffix))
+    })
+}
+
+/// Whether items are routed by risk (`task.toml` `routing`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingMode {
+    #[default]
+    On,
+    Off,
+}
+
+/// The rigor an item gets and why: the floor comes from facts about the item,
+/// never from an agent's judgment, and a declared rigor may only raise it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Routing {
+    pub kind: WorkKind,
+    pub rigor: Rigor,
+    pub floor: Rigor,
+    pub why: Vec<String>,
+}
+
+impl Routing {
+    /// The routing under the task's mode: with routing off nothing is light.
+    pub fn under(mut self, mode: RoutingMode) -> Routing {
+        if mode == RoutingMode::Off && self.rigor < Rigor::Standard {
+            self.rigor = Rigor::Standard;
+            self.why.push("routing is off for this task".into());
+        }
+        self
+    }
+}
+
+impl Application {
+    /// The routing of item `id` after `work_failures` failures of its own work.
+    pub fn routing(&self, id: &str, work_failures: u32) -> Result<Routing> {
+        let item = self
+            .items
+            .get(id)
+            .with_context(|| format!("there is no item {id}"))?;
+        let mut why = Vec::new();
+        let touched: Vec<&String> = item.allowed.iter().filter(|glob| sensitive(glob)).collect();
+        if !touched.is_empty() {
+            why.push(format!(
+                "sensitive path {}",
+                touched
+                    .iter()
+                    .map(|glob| glob.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !item.data_effects.is_empty() {
+            why.push("changes stored data".into());
+        }
+        if work_failures >= STRICT_AFTER_FAILURES {
+            why.push(format!("{work_failures} work failures"));
+        }
+        let floor = if !why.is_empty() {
+            Rigor::Strict
+        } else if self.light_shaped(id, item) {
+            Rigor::Light
+        } else {
+            Rigor::Standard
+        };
+        Ok(Routing {
+            kind: item.kind,
+            rigor: item.rigor.map_or(floor, |declared| declared.max(floor)),
+            floor,
+            why,
+        })
+    }
+
+    /// Small work nothing else builds on: a change or bug fix in a few
+    /// explicit globs that no item in another lane depends on.
+    fn light_shaped(&self, id: &str, item: &Contract) -> bool {
+        let depended_on_elsewhere = self.items.values().any(|other| {
+            other.lane != item.lane && other.dependencies.iter().any(|dependency| dependency == id)
+        });
+        matches!(item.kind, WorkKind::Change | WorkKind::Bugfix)
+            && item.allowed.len() <= LIGHT_GLOBS
+            && item.allowed.iter().all(|glob| glob != "**" && glob != "*")
+            && item.data_effects.is_empty()
+            && !depended_on_elsewhere
+    }
 }
 
 impl Contract {
@@ -305,6 +468,16 @@ impl Application {
             ] {
                 errors.check(text(value, name).with_context(|| format!("item {id}")));
             }
+            if let (Some(declared), Ok(routing)) = (item.rigor, self.routing(id, 0)) {
+                errors.require(declared >= routing.floor, || {
+                    format!(
+                        "{id}: rigor {declared:?} is below its floor {:?} ({})",
+                        routing.floor,
+                        routing.why.join("; ")
+                    )
+                    .to_lowercase()
+                });
+            }
             errors.require(item.standards == STANDARDS_VERSION, || {
                 format!("{id}: unknown coding standards version; expected {STANDARDS_VERSION}")
             });
@@ -536,6 +709,14 @@ impl Application {
 pub fn proposal_example() -> Result<serde_json::Value> {
     Ok(serde_json::from_str(include_str!(
         "../roles/standards/proposal-example.json"
+    ))?)
+}
+
+/// A baseline the leader proposes itself for small work: one light item, no
+/// planner, no test-first item.
+pub fn light_proposal_example() -> Result<serde_json::Value> {
+    Ok(serde_json::from_str(include_str!(
+        "../roles/standards/proposal-example-light.json"
     ))?)
 }
 
@@ -1016,6 +1197,9 @@ pub fn user_approval_needed(approved: &Application, proposal: &Application) -> O
         if old.writes_tests != new.writes_tests {
             return Some(format!("it changes whether {id} writes tests"));
         }
+        if new.rigor.unwrap_or_default() < old.rigor.unwrap_or_default() {
+            return Some(format!("it lowers the rigor of {id}"));
+        }
     }
     if approved.goal != proposal.goal
         || approved.non_goals != proposal.non_goals
@@ -1123,6 +1307,16 @@ pub mod tests {
             pending.items["status-command"].protected_tests,
             ["tests/test_status.py"]
         );
+    }
+
+    #[test]
+    fn the_light_proposal_example_passes_the_validator_and_routes_light() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        store_input(&task, &light_proposal_example().unwrap()).unwrap();
+        let pending = task.state().unwrap().application_proposal.unwrap();
+        let routing = pending.routing("readme-port", 0).unwrap();
+        assert_eq!(routing.rigor, Rigor::Light);
     }
 
     #[test]
@@ -1471,6 +1665,166 @@ pub mod tests {
             ..Default::default()
         }
     }
+    fn routed(change: impl FnOnce(&mut Contract)) -> Application {
+        let mut application = baseline();
+        change(application.items.get_mut("S01-B01").unwrap());
+        application
+    }
+
+    #[test]
+    fn a_small_change_nothing_builds_on_is_light() {
+        let application = routed(|item| {
+            item.kind = WorkKind::Change;
+            item.allowed = vec!["README.md".into()];
+        });
+        let routing = application.routing("S01-B01", 0).unwrap();
+        assert_eq!((routing.floor, routing.rigor), (Rigor::Light, Rigor::Light));
+        assert_eq!(
+            Rigor::Light.required(),
+            ["candidate_check", "accept_reason"]
+        );
+    }
+
+    #[test]
+    fn sensitive_paths_and_data_effects_make_an_item_strict_whatever_its_size() {
+        let application = routed(|item| {
+            item.kind = WorkKind::Change;
+            item.allowed = vec!["api/auth/**".into(), "migrations/0002.sql".into()];
+            item.data_effects = vec!["adds sessions table".into()];
+        });
+        let routing = application.routing("S01-B01", 0).unwrap();
+        assert_eq!(routing.floor, Rigor::Strict);
+        assert_eq!(
+            routing.why,
+            [
+                "sensitive path api/auth/**, migrations/0002.sql",
+                "changes stored data"
+            ]
+        );
+        for glob in [
+            "Dockerfile",
+            ".github/workflows/ci.yml",
+            "web/package.json",
+            "db/schema.sql",
+        ] {
+            assert!(sensitive(glob), "{glob}");
+        }
+        assert!(!sensitive("docs/guide.md"));
+    }
+
+    #[test]
+    fn features_broad_globs_and_shared_work_stay_standard() {
+        let feature = routed(|item| item.allowed = vec!["src/notes.py".into()]);
+        assert_eq!(
+            feature.routing("S01-B01", 0).unwrap().floor,
+            Rigor::Standard,
+            "kind defaults to feature"
+        );
+
+        let broad = routed(|item| {
+            item.kind = WorkKind::Bugfix;
+            item.allowed = vec!["**".into()];
+        });
+        assert_eq!(broad.routing("S01-B01", 0).unwrap().floor, Rigor::Standard);
+
+        let mut shared = routed(|item| {
+            item.kind = WorkKind::Change;
+            item.allowed = vec!["api/notes.py".into()];
+        });
+        let mut client = shared.items["S01-B01"].clone();
+        client.lane = "front".into();
+        client.dependencies = vec!["S01-B01".into()];
+        shared.items.insert("S01-F01".into(), client);
+        assert_eq!(
+            shared.routing("S01-B01", 0).unwrap().floor,
+            Rigor::Standard,
+            "another lane builds on it"
+        );
+    }
+
+    #[test]
+    fn repeated_work_failures_raise_the_rigor_and_a_declared_rigor_only_raises_it() {
+        let application = routed(|item| {
+            item.kind = WorkKind::Change;
+            item.allowed = vec!["README.md".into()];
+            item.rigor = Some(Rigor::Standard);
+        });
+        let routing = application.routing("S01-B01", 0).unwrap();
+        assert_eq!(
+            (routing.floor, routing.rigor),
+            (Rigor::Light, Rigor::Standard)
+        );
+        let routing = application.routing("S01-B01", 2).unwrap();
+        assert_eq!(routing.rigor, Rigor::Strict);
+        assert_eq!(routing.why, ["2 work failures"]);
+    }
+
+    #[test]
+    fn with_routing_off_nothing_is_light() {
+        let application = routed(|item| {
+            item.kind = WorkKind::Change;
+            item.allowed = vec!["README.md".into()];
+        });
+        let routing = application
+            .routing("S01-B01", 0)
+            .unwrap()
+            .under(RoutingMode::Off);
+        assert_eq!(routing.rigor, Rigor::Standard);
+        assert_eq!(routing.why, ["routing is off for this task"]);
+        let strict = routed(|item| item.allowed = vec!["api/auth/**".into()])
+            .routing("S01-B01", 0)
+            .unwrap()
+            .under(RoutingMode::Off);
+        assert_eq!(strict.rigor, Rigor::Strict, "off never lowers");
+        let config: crate::task::TaskConfig =
+            toml::from_str("id = \"t\"\nbranch = \"b\"\nworkspace = \"w\"\n").unwrap();
+        assert_eq!(config.routing, RoutingMode::On, "older task.toml routes");
+    }
+
+    #[test]
+    fn a_declared_rigor_below_the_floor_is_refused() {
+        let application = routed(|item| {
+            item.allowed = vec!["api/auth/**".into()];
+            item.rigor = Some(Rigor::Light);
+        });
+        let error = application.validate().unwrap_err().to_string();
+        assert!(
+            error.contains(
+                "s01-b01: rigor light is below its floor strict (sensitive path api/auth/**)"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn lowering_an_approved_items_rigor_needs_the_user() {
+        let mut approved = approved();
+        approved.items.get_mut("S01-B01").unwrap().rigor = Some(Rigor::Strict);
+        let mut proposal = approved.clone();
+        proposal.revision = 7;
+        proposal.items.get_mut("S01-B01").unwrap().rigor = None;
+        assert_eq!(
+            user_approval_needed(&approved, &proposal).as_deref(),
+            Some("it lowers the rigor of S01-B01")
+        );
+        proposal.items.get_mut("S01-B01").unwrap().rigor = Some(Rigor::Critical);
+        assert_eq!(
+            user_approval_needed(&approved, &proposal),
+            None,
+            "raising is free"
+        );
+    }
+
+    #[test]
+    fn an_old_baseline_without_kind_or_rigor_loads_as_a_standard_feature() {
+        let mut value = serde_json::to_value(baseline().items["S01-B01"].clone()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("kind");
+        assert!(object.get("rigor").is_none());
+        let item: Contract = serde_json::from_value(value).unwrap();
+        assert_eq!((item.kind, item.rigor), (WorkKind::Feature, None));
+    }
+
     #[test]
     fn reviewed_order_errors_identify_the_unknown_item() {
         let mut application = baseline();

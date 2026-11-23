@@ -43,6 +43,10 @@ pub struct TaskConfig {
     /// worktree of its own.
     #[serde(default)]
     pub lanes: Vec<Lane>,
+    /// `off` gives every item at least standard rigor: today's full review,
+    /// whatever its facts say. The rollback for risk routing.
+    #[serde(default)]
+    pub routing: crate::execution::RoutingMode,
 }
 
 /// An area of a repo (back, front, docs…): its files, and the worktree on a
@@ -239,6 +243,7 @@ mod tests {
             max_attempts: crate::task::DEFAULT_MAX_ATTEMPTS,
             check_profiles: Default::default(),
             lanes: Vec::new(),
+            routing: Default::default(),
             repos: vec![Repo {
                 name: "app".to_string(),
                 worktree: "/work/app-feat-login".into(),

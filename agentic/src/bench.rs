@@ -23,8 +23,13 @@ pub struct Report {
     pub first_pass: u64,
     /// Orders after a step's first.
     pub corrective_orders: u64,
+    /// Independent reviews: a light acceptance signed by the leader is not one.
     pub reviews: u64,
     pub reviews_asking_changes: u64,
+    /// Light items the leader accepted on its reason, without a reviewer.
+    pub light_acceptances: u64,
+    /// Items by the rigor they are routed at now.
+    pub items_by_rigor: BTreeMap<crate::execution::Rigor, u64>,
     /// Blocking review findings by category, plus failed candidate checks as
     /// integration defects.
     pub corrections: BTreeMap<Category, u64>,
@@ -37,11 +42,28 @@ pub struct Report {
     pub unknown_historical_timing: bool,
     pub interventions: Interventions,
     pub milestones_ready: Vec<String>,
+    /// The application has milestones and every one is ready.
+    pub integrated: bool,
+    /// Submitted reviews per step that had one: how many rounds review took.
+    pub review_rounds_per_reviewed_step: Option<f64>,
+    /// Work failures recorded on a step after it was first accepted, by step:
+    /// defects acceptance let through. A lower bound: a defect found in
+    /// another step's check is not traced back to the step that caused it.
+    pub escaped_defects: BTreeMap<String, u64>,
     /// Questions agents asked the code graph.
     pub graph_queries: u64,
     /// None when the team's usage could not be read.
     pub usage: Option<Usage>,
     pub estimated_api_cost: CostCoverage,
+    /// The run's cost when it integrated and every agent was priced: one
+    /// success, so this is its cost per integrated success. A run that did
+    /// not integrate has none; sum its cost into the runs that did.
+    pub cost_per_integrated_success: Option<f64>,
+    /// Usage summed by role, the leader as `leader`.
+    pub usage_by_role: BTreeMap<String, Usage>,
+    /// Leader tool calls over MCP per accepted step, from telemetry: each call
+    /// rereads the leader's whole context, so this drives the leader's cost.
+    pub leader_calls_per_accepted_step: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload_telemetry: Option<crate::telemetry::Summary>,
 }
@@ -94,6 +116,70 @@ impl Report {
     pub fn first_pass_rate(&self) -> Option<f64> {
         (self.accepted > 0).then(|| self.first_pass as f64 / self.accepted as f64)
     }
+}
+
+/// A complete price is the only one worth dividing: an unpriced or missing
+/// agent would make the cost per success look lower than it was.
+fn cost_per_integrated_success(integrated: bool, cost: &CostCoverage) -> Option<f64> {
+    let complete = cost.unpriced_agents == 0 && cost.missing_agents == 0;
+    cost.observed_usd.filter(|_| integrated && complete)
+}
+
+/// Leader tool calls; discovery and handshakes are not moves.
+fn leader_calls(telemetry: &crate::telemetry::Summary) -> u64 {
+    telemetry
+        .mcp
+        .get(crate::state::LEADER)
+        .into_iter()
+        .flatten()
+        .filter(|(operation, _)| {
+            !matches!(
+                operation.as_str(),
+                "tools/list" | "initialize" | "ping" | "unknown_method" | "invalid_json"
+            )
+        })
+        .map(|(_, payloads)| payloads.calls as u64)
+        .sum()
+}
+
+fn escaped_defects(state: &State, log: &[Entry]) -> BTreeMap<String, u64> {
+    let mut first_accepted: BTreeMap<&str, u64> = BTreeMap::new();
+    for entry in log
+        .iter()
+        .filter(|entry| entry.kind == Kind::Review && entry.text == "accepted")
+    {
+        if let Some(step) = &entry.step {
+            let at = first_accepted.entry(step).or_insert(entry.at);
+            *at = (*at).min(entry.at);
+        }
+    }
+    first_accepted
+        .into_iter()
+        .filter_map(|(step, accepted_at)| {
+            let escaped = state
+                .step_failures
+                .get(step)
+                .into_iter()
+                .flatten()
+                .filter(|failure| failure.at > accepted_at && crate::failures::counts(failure))
+                .count() as u64;
+            (escaped > 0).then(|| (step.to_string(), escaped))
+        })
+        .collect()
+}
+
+fn review_rounds_per_reviewed_step(state: &State) -> Option<f64> {
+    let mut rounds: BTreeMap<&str, u64> = BTreeMap::new();
+    for review in state
+        .reviews
+        .iter()
+        .filter(|review| review.verdict.is_some() && review.reviewer != crate::state::LEADER)
+    {
+        if let Some(order) = state.orders.iter().find(|order| order.id == review.order) {
+            *rounds.entry(&order.step).or_default() += 1;
+        }
+    }
+    (!rounds.is_empty()).then(|| rounds.values().sum::<u64>() as f64 / rounds.len() as f64)
 }
 
 /// The report of a task's state and log; `usage` is the team's total.
@@ -151,8 +237,14 @@ pub fn build(
         reviews: state
             .reviews
             .iter()
-            .filter(|review| review.verdict.is_some())
+            .filter(|review| review.verdict.is_some() && review.reviewer != crate::state::LEADER)
             .count() as u64,
+        light_acceptances: state
+            .reviews
+            .iter()
+            .filter(|review| review.reviewer == crate::state::LEADER)
+            .count() as u64,
+        items_by_rigor: BTreeMap::new(),
         reviews_asking_changes: state
             .reviews
             .iter()
@@ -169,7 +261,15 @@ pub fn build(
             permission_requests: state.permissions.len() as u64,
             attempt_allowances: state.attempt_limits.len() as u64,
         },
+        integrated: !state.application.milestones.is_empty()
+            && state
+                .application
+                .milestones
+                .keys()
+                .all(|id| milestones_ready.contains(id)),
         milestones_ready,
+        review_rounds_per_reviewed_step: review_rounds_per_reviewed_step(state),
+        escaped_defects: escaped_defects(state, log),
         graph_queries: state
             .timing
             .intervals
@@ -178,6 +278,9 @@ pub fn build(
             .count() as u64,
         usage,
         estimated_api_cost: CostCoverage::default(),
+        cost_per_integrated_success: None,
+        usage_by_role: BTreeMap::new(),
+        leader_calls_per_accepted_step: None,
         payload_telemetry: None,
     }
 }
@@ -207,14 +310,33 @@ pub fn report(task: &Task, devws: &dyn crate::devws::Devws) -> Result<Report> {
         .as_ref()
         .filter(|team| !team.by_agent.is_empty())
         .map(|team| crate::board_usage::total(&team.by_role));
-    let mut report = build(&task.config()?.id, &state, &log, milestones_ready, usage);
+    let config = task.config()?;
+    let mut report = build(&config.id, &state, &log, milestones_ready, usage);
+    for id in state.application.items.keys() {
+        let routing = state
+            .application
+            .routing(id, crate::failures::work_failures(&state, id))?
+            .under(config.routing);
+        *report.items_by_rigor.entry(routing.rigor).or_default() += 1;
+    }
     report.estimated_api_cost = CostCoverage::from_readings(
         state.agents.len() + 1,
         team_usage
             .iter()
             .flat_map(|team| team.by_agent.values().copied()),
     );
+    report.cost_per_integrated_success =
+        cost_per_integrated_success(report.integrated, &report.estimated_api_cost);
+    for (role, usage) in team_usage.iter().flat_map(|team| &team.by_role) {
+        let sum = report.usage_by_role.entry(role.clone()).or_default();
+        *sum = sum.plus(*usage);
+    }
     report.payload_telemetry = crate::telemetry::summary(task)?;
+    report.leader_calls_per_accepted_step = report
+        .payload_telemetry
+        .as_ref()
+        .filter(|_| report.accepted > 0)
+        .map(|telemetry| leader_calls(telemetry) as f64 / report.accepted as f64);
     Ok(report)
 }
 
@@ -244,6 +366,23 @@ fn lines(report: &Report) -> Vec<(String, String)> {
         (
             "reviews (asking changes)".into(),
             format!("{} ({})", report.reviews, report.reviews_asking_changes),
+        ),
+        (
+            "light acceptances (no reviewer)".into(),
+            report.light_acceptances.to_string(),
+        ),
+        (
+            "items by rigor".into(),
+            if report.items_by_rigor.is_empty() {
+                "-".into()
+            } else {
+                report
+                    .items_by_rigor
+                    .iter()
+                    .map(|(rigor, number)| format!("{rigor:?} {number}").to_lowercase())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
         ),
         (
             "candidate check failures".into(),
@@ -287,6 +426,41 @@ fn lines(report: &Report) -> Vec<(String, String)> {
         },
     ));
     lines.push((
+        "integrated".into(),
+        if report.integrated { "yes" } else { "no" }.into(),
+    ));
+    lines.push((
+        "review rounds per reviewed step".into(),
+        report
+            .review_rounds_per_reviewed_step
+            .map_or("-".into(), |rounds| format!("{rounds:.1}")),
+    ));
+    lines.push((
+        "escaped defects (lower bound)".into(),
+        if report.escaped_defects.is_empty() {
+            "0".into()
+        } else {
+            let steps: Vec<String> = report
+                .escaped_defects
+                .iter()
+                .map(|(step, number)| format!("{step} {number}"))
+                .collect();
+            format!(
+                "{} ({})",
+                report.escaped_defects.values().sum::<u64>(),
+                steps.join(", ")
+            )
+        },
+    ));
+    lines.push((
+        "leader MCP calls per accepted step".into(),
+        report
+            .leader_calls_per_accepted_step
+            .map_or("unknown (telemetry off)".into(), |calls| {
+                format!("{calls:.1}")
+            }),
+    ));
+    lines.push((
         "tokens in / out / cache".into(),
         report.usage.map_or("unknown".into(), |usage| {
             format!("{} / {} / {}", usage.input, usage.output, usage.cache)
@@ -296,6 +470,36 @@ fn lines(report: &Report) -> Vec<(String, String)> {
         "cost at API prices".into(),
         report.estimated_api_cost.display(),
     ));
+    lines.push((
+        "cost per integrated success".into(),
+        report.cost_per_integrated_success.map_or_else(
+            || {
+                if report.integrated {
+                    "unknown (incomplete pricing)".into()
+                } else {
+                    "- (not integrated)".into()
+                }
+            },
+            |cost| format!("${cost:.2}"),
+        ),
+    ));
+    let total: f64 = report.usage_by_role.values().map(|usage| usage.cost).sum();
+    for (role, usage) in &report.usage_by_role {
+        let share = if total > 0.0 {
+            format!(" ({:.0}%)", usage.cost / total * 100.0)
+        } else {
+            String::new()
+        };
+        let unpriced = if usage.unpriced {
+            ", unpriced usage"
+        } else {
+            ""
+        };
+        lines.push((
+            format!("  cost: {role}"),
+            format!("${:.2}{share}{unpriced}", usage.cost),
+        ));
+    }
     lines.push((
         "agent price coverage".into(),
         format!(
@@ -407,6 +611,24 @@ mod tests {
             rationale: "why".into(),
             resolution: None,
             category,
+        }
+    }
+
+    fn accepted(at: u64, step: &str) -> Entry {
+        Entry {
+            step: Some(step.into()),
+            ..entry(at, Kind::Review, "accepted")
+        }
+    }
+
+    fn failure(at: u64, kind: crate::failures::FailureKind) -> crate::failures::Failure {
+        crate::failures::Failure {
+            at,
+            order: Some("o9".into()),
+            kind,
+            summary: "failed".into(),
+            diagnosis: None,
+            resolved_by: None,
         }
     }
 
@@ -585,5 +807,159 @@ mod tests {
             table.contains("correction: TestWeakening"),
             "a measure only one run has still shows"
         );
+    }
+
+    #[test]
+    fn a_run_integrates_only_with_every_milestone_ready() {
+        let mut state = run();
+        assert!(
+            !build("bench-1", &state, &[], vec![], None).integrated,
+            "no milestones"
+        );
+        state.application.milestones = BTreeMap::from([
+            ("M01".into(), crate::execution::Milestone::default()),
+            ("M02".into(), crate::execution::Milestone::default()),
+        ]);
+        assert!(!build("bench-1", &state, &[], vec!["M01".into()], None).integrated);
+        let report = build(
+            "bench-1",
+            &state,
+            &[],
+            vec!["M01".into(), "M02".into()],
+            None,
+        );
+        assert!(report.integrated);
+        assert!(
+            render(&report)
+                .lines()
+                .any(|line| line.trim_start().starts_with("integrated") && line.ends_with("yes"))
+        );
+    }
+
+    #[test]
+    fn cost_per_success_needs_an_integrated_run_and_complete_pricing() {
+        let priced = CostCoverage::from_readings(
+            2,
+            [
+                Usage {
+                    cost: 2.76,
+                    ..Usage::default()
+                },
+                Usage {
+                    cost: 1.80,
+                    ..Usage::default()
+                },
+            ],
+        );
+        let success = cost_per_integrated_success(true, &priced).unwrap();
+        assert!((success - 4.56).abs() < 1e-9);
+        assert_eq!(cost_per_integrated_success(false, &priced), None);
+        let missing = CostCoverage::from_readings(3, [Usage::default()]);
+        assert_eq!(
+            cost_per_integrated_success(true, &missing),
+            None,
+            "a missing agent would make it look cheaper than it was"
+        );
+    }
+
+    #[test]
+    fn a_work_failure_after_acceptance_is_an_escaped_defect() {
+        use crate::failures::FailureKind;
+        let mut state = run();
+        state.step_failures = BTreeMap::from([(
+            "S01-B01".into(),
+            vec![
+                failure(900, FailureKind::CheckFailed),
+                failure(1_500, FailureKind::CheckFailed),
+                failure(1_600, FailureKind::RevisionReset),
+            ],
+        )]);
+        let log = [accepted(1_000, "S01-B01"), accepted(1_700, "S01-B01")];
+        let report = build("bench-1", &state, &log, vec![], None);
+        assert_eq!(
+            report.escaped_defects,
+            BTreeMap::from([("S01-B01".into(), 1)]),
+            "the failure before acceptance was caught; a revision reset is no defect"
+        );
+        assert!(render(&report).contains("1 (S01-B01 1)"));
+    }
+
+    #[test]
+    fn a_light_acceptance_is_counted_apart_from_independent_reviews() {
+        let mut state = run();
+        state.reviews.push(Review {
+            id: "r4".into(),
+            order: "o1".into(),
+            reviewer: crate::state::LEADER.into(),
+            verdict: Some(Verdict::Approved),
+            ..Review::default()
+        });
+        let report = build("bench-1", &state, &[], vec![], None);
+        assert_eq!((report.reviews, report.light_acceptances), (2, 1));
+        assert_eq!(
+            report.review_rounds_per_reviewed_step,
+            Some(2.0),
+            "S01-B01's light acceptance is no review round"
+        );
+    }
+
+    #[test]
+    fn review_rounds_count_submitted_reviews_per_reviewed_step() {
+        let report = build("bench-1", &run(), &[], vec![], None);
+        assert_eq!(
+            report.review_rounds_per_reviewed_step,
+            Some(2.0),
+            "S01-F01 had two submitted reviews; the open one on S01-B01 is no round"
+        );
+        let empty = build("bench-1", &State::default(), &[], vec![], None);
+        assert_eq!(empty.review_rounds_per_reviewed_step, None);
+    }
+
+    #[test]
+    fn leader_calls_leave_out_discovery_and_other_agents() {
+        let calls = |number| crate::telemetry::Payloads {
+            calls: number,
+            ..crate::telemetry::Payloads::default()
+        };
+        let telemetry = crate::telemetry::Summary {
+            mcp: BTreeMap::from([
+                (
+                    crate::state::LEADER.to_string(),
+                    BTreeMap::from([
+                        ("tools/list".into(), calls(3)),
+                        ("initialize".into(), calls(1)),
+                        ("task_status.progress".into(), calls(4)),
+                        ("send_order".into(), calls(2)),
+                    ]),
+                ),
+                (
+                    "worker-1".into(),
+                    BTreeMap::from([("worker".into(), calls(9))]),
+                ),
+            ]),
+            ..crate::telemetry::Summary::default()
+        };
+        assert_eq!(leader_calls(&telemetry), 6);
+    }
+
+    #[test]
+    fn cost_by_role_shows_each_role_and_its_share() {
+        let mut report = build("bench-1", &run(), &[], vec![], None);
+        for (role, cost) in [("leader", 3.0), ("code-reviewer", 1.0)] {
+            report.usage_by_role.insert(
+                role.into(),
+                Usage {
+                    cost,
+                    ..Usage::default()
+                },
+            );
+        }
+        let text = render(&report);
+        assert!(
+            text.contains("cost: leader") && text.contains("$3.00 (75%)"),
+            "{text}"
+        );
+        assert!(text.contains("$1.00 (25%)"), "{text}");
+        assert!(text.contains("unknown (telemetry off)"));
     }
 }

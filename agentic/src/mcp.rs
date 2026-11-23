@@ -222,8 +222,8 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "accept_step",
-            "Accept a step that was reported and checked. For a senior's step this approves its execution plan.",
-            json!({ "step": text("The step's id") }),
+            "Accept a step that was reported and checked. For a senior's step this approves its execution plan. A light item (ready_work rigor light) may be accepted without an independent review: read its git_diff and give accept_reason; its candidate check must pass.",
+            json!({ "step": text("The step's id"), "accept_reason": text("Light items only, instead of a review: what you read in the diff and why it is right") }),
             &["step"],
         ),
         tool(
@@ -993,11 +993,23 @@ impl Server<'_> {
             ),
             "accept_step" => {
                 let step = string(arguments, "step")?;
+                let reason = arguments["accept_reason"].as_str();
+                if let Some(reason) = reason {
+                    crate::reviews::accept_light(self.task, &step, reason)?;
+                }
                 orders::accept_step(self.task, &step).map_err(|error| {
                     crate::failures::note_stale(self.task, Some(&step), None, error)
                 })?;
-                self.record_decision(&step, "accepted", "The leader accepted it.");
-                Ok("Accepted.".to_string())
+                self.record_decision(
+                    &step,
+                    "accepted",
+                    reason.unwrap_or("The leader accepted it."),
+                );
+                Ok(if reason.is_some() {
+                    "Accepted as light, on your reason.".to_string()
+                } else {
+                    "Accepted.".to_string()
+                })
             }
             "reject_step" => {
                 let step = string(arguments, "step")?;

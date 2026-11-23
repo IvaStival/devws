@@ -1,7 +1,7 @@
 # Engineering workflows for devAgentics: the PStack ideas, done cheaply
 
 - **Date** 22-11-2026 · **Branch** `feat/opencode-workers`
-- **Status** Proposed, awaiting your decision. Revised 22-11-2026 after reading PStack's source skills (section 9). No source code changed yet. Implementation (M0 onward) starts only after a separate approval.
+- **Status** In progress on branch `feat/pstack-workflows` (worktree `../devws-pstack`), started 23-11-2026. M0 and M2 implemented and tested, not committed. M1 waits for the CLI work; M3–M8 not started. Revised 22-11-2026 after reading PStack's source skills (section 9).
 - **Related plans:** builds on [token-optimization](../2026-11-21-214851_token-optimization/plan.md) and [cto-leader](../2026-11-19-200000_cto-leader/plan.md) and does not duplicate them.
 
 ## Context
@@ -419,3 +419,84 @@ The first draft used the PStack map page and the 22 playbooks. This review reads
 | Babysit, Shipping, Autopilot (merge automation) | devAgentics stops at `open_prs`, and merging stays your decision |
 | "Never ask the human" for everything reversible | Your baseline confirm and approval gates stay. Only reversible *planning questions* stop asking (9.2 point 4) |
 | `reflect` (skill edits from a transcript) | Our equivalent is M5's automatic knowledge notes plus the `correct`-ordered recurrence line, which needs no transcript-mining turn |
+
+## 10. Working beside the CLI work (23-11-2026)
+
+A Codex session is moving the leader from MCP to the CLI in the main working tree. It has `leader-read <task> progress|order <id>`, gated by `state.leader_cli`, and its write paths stay on MCP. This plan runs in parallel without touching that tree.
+
+**Isolation.**
+- The branch `feat/pstack-workflows` lives in its own worktree, `../devws-pstack`.
+- Its base is a snapshot commit (`0553df5`) of the uncommitted tree, built with a temporary index. The main tree's files and index are unchanged.
+- **Integration:** once the CLI work is committed, run `git rebase --onto <that commit> 0553df5 feat/pstack-workflows`. This replays only this plan's commits.
+
+**Files left alone until the CLI work lands:** `main.rs`, `mcp.rs`, `worker_tools.rs`, `start.rs`, `task.rs`, `state.rs`, `check_profiles.rs`, `tests/flow.rs`. So the order is:
+- **Now:** M0 (`bench.rs`, done) and the pure parts of M2, M3, M5 and M7 (`execution.rs`, `reviews.rs`, `failures.rs`, `notes.rs`, `workflow.rs`).
+- **After the CLI work lands:** M1 (`worker_tools.rs`, `start.rs`, `leader.md`), plus the MCP and CLI wiring of every milestone.
+
+**The CLI rule for this plan.** It is the same rule the token plan uses:
+- **Reads:** every new leader read is one function that returns JSON in its own module. Both the MCP tool and a `leader-read` view print that same value, as `status::progress` does today. That covers:
+  - kind, rigor and required steps per item;
+  - staffing;
+  - `guide` topics;
+  - the Attention list;
+  - the risk brief.
+
+  Proposed views: `leader-read <task> ready`, `guide <topic>` and `attention`. Parity tests compare the CLI and MCP JSON, as the CLI pilot already does.
+- **Writes stay on MCP**, where authorization and the gates live: `accept_reason`, proposals with `kind` and `rigor`, budgets, finding repros.
+- **Workers keep the worker MCP.** That follows the token plan's variant B, so the worker `guide` stays a worker MCP action.
+- **Telemetry:** `leader-read` does not record a telemetry observation yet. So M0's "leader MCP calls per accepted step" misses CLI reads. Add the observation in `main.rs` when the CLI work lands. The bench line says "MCP" until then.
+
+**M0 result (23-11-2026).** `bench report` now shows:
+- integrated (every milestone ready);
+- cost per integrated success (only with complete pricing; otherwise "unknown" or "not integrated");
+- cost by role with share;
+- review rounds per reviewed step;
+- escaped defects, a lower bound: work failures recorded on a step after it was first accepted;
+- leader MCP calls per accepted step (from telemetry).
+
+The JSON report carries the same fields. Six new tests pass. `cargo test` (508), `clippy -D warnings` and `fmt --check` are green.
+
+Checked on two real tasks:
+- `feat-system-observer`: 63 of 86 steps accepted, 1.6 review rounds per reviewed step, 0 escaped defects, not integrated.
+- `bench-reviewed-20261115-230210`.
+
+**Still open:** the saved Codex Notes baseline is a usage file, not a task directory, so the "report on the saved Notes run" acceptance waits for a fresh Notes run with telemetry on. Per-rigor counts come with M2.
+
+**M2 result (23-11-2026).**
+
+*What was added:*
+- `Contract.kind` (change, bugfix, feature, interface, investigation; the default is feature) and an optional `Contract.rigor`.
+- `Application::routing(id, work_failures)`, a pure function. It gives strict on sensitive paths, data effects or ≥2 work failures. It gives light for a change or bugfix in ≤3 explicit globs that no item in another lane depends on. Everything else is standard. A declared rigor only raises it.
+- `task.toml` `routing = "off"` keeps every item at standard or above.
+
+*What the agents see:*
+- `ready_work` and the inbox show `kind`, `rigor`, `required` and `rigor_why`.
+- A declared rigor below the floor is refused at propose time.
+- Lowering an approved item's rigor needs the user.
+
+*How a light item is accepted:*
+- `reviews::accept_light` runs the candidate check. It needs the check to exist and pass.
+- It then records an approved review signed by the leader with `accept_reason`, bound like any review.
+- `validate` rechecks that the item is still light, so a later failure or a new sensitive path makes that approval stale.
+- The leader's `accept_step` takes `accept_reason`.
+
+*Other changes:*
+- The review binding was extracted from `reviews::request` into `bind`, shared by both paths.
+- The bench counts light acceptances apart from independent reviews and shows items by rigor.
+- `leader.md` explains routing: propose small work yourself, `accept_reason` for light items, test-first items only for strict and critical.
+- `proposal-example.json` shows `kind`.
+
+*Verification:*
+- `cargo test` passes: 520 tests, including 12 new routing, light-acceptance and bench tests.
+- The four Docker tests pass. One is new: `a_light_item_merges_on_its_candidate_check_and_the_leaders_reason` (candidate check, leader-signed approval, merge, no reviewer). The existing independent-review lifecycle also passes after the `bind` refactor.
+- `clippy -D warnings` and `fmt --check` are green.
+- `make check` has two failures, `test_guide` and `test_workspace_template`. Both fail the same way on the untouched snapshot `0553df5`, so they are not caused by this work.
+
+*Not done:*
+- No new bugfix rule. Every item already needs a non-empty `tests` list, and a "names a regression test" check would be guesswork.
+- ~~No light `proposal_example`~~. Done 23-11-2026: `application_workflow action=proposal_example` with `input.variant = "light"` returns a one-item baseline (`proposal-example-light.json`). Tests check that it validates and routes light, and that the leader gets it by variant.
+
+*Touches files of the CLI work* (small hunks, for the rebase):
+- `mcp.rs`: the `accept_step` schema and arm.
+- `runner.rs`: test only, one new Docker case.
+- `start.rs`, `check_profiles.rs`, `task.rs`: `routing` in `TaskConfig` and its literals.

@@ -2283,16 +2283,22 @@ mod docker_tests {
     #[test]
     #[ignore = "requires explicit local Docker image and isolated containers"]
     fn reviewed_source_checks_independent_review_merge_and_milestone() {
-        reviewed_source_lifecycle(false);
+        reviewed_source_lifecycle(false, false);
+    }
+
+    #[test]
+    #[ignore = "requires explicit local Docker image and isolated containers"]
+    fn a_light_item_merges_on_its_candidate_check_and_the_leaders_reason() {
+        reviewed_source_lifecycle(false, true);
     }
 
     #[test]
     #[ignore = "requires explicit local Docker image and isolated containers"]
     fn reviewed_opencode_workers_checkpoint_check_and_submit_independent_review() {
-        reviewed_source_lifecycle(true);
+        reviewed_source_lifecycle(true, false);
     }
 
-    fn reviewed_source_lifecycle(opencode: bool) {
+    fn reviewed_source_lifecycle(opencode: bool, light: bool) {
         let root = tempfile::TempDir::new().unwrap();
         let (home, devws, task, repo) = crate::board::tests::started(&root);
         let devws = devws.with_kind("opencode", crate::providers::Kind::Opencode);
@@ -2353,6 +2359,9 @@ mod docker_tests {
         item.repo = repo_name.clone();
         item.allowed = vec!["src/**".into()];
         item.profiles = vec!["unit".into()];
+        if light {
+            item.kind = crate::execution::WorkKind::Change;
+        }
         crate::execution::store(&task, application, "complete baseline").unwrap();
         crate::execution::confirm(&task, 1, false).unwrap();
         crate::execution::confirm(&task, 1, true).unwrap();
@@ -2466,6 +2475,41 @@ mod docker_tests {
         let before = checks::head(repo.path()).unwrap();
         assert!(crate::orders::accept_step(&task, "S01-B01").is_err());
         assert_eq!(checks::head(repo.path()).unwrap(), before);
+        if light {
+            let error = crate::reviews::accept_light(&task, "S01-B01", "")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("accept_reason"), "{error}");
+            crate::reviews::accept_light(
+                &task,
+                "S01-B01",
+                "replaces old.rs with new.rs as ordered",
+            )
+            .unwrap();
+            let state = task.state().unwrap();
+            let review = state.reviews.last().unwrap();
+            assert_eq!(review.reviewer, crate::state::LEADER);
+            assert!(
+                !review.candidate_evidence.is_empty(),
+                "bound to the passing candidate check"
+            );
+            crate::orders::accept_step(&task, "S01-B01").unwrap();
+            assert!(
+                repo.path().join("src/new.rs").exists(),
+                "merged into the task branch"
+            );
+            assert!(!repo.path().join("src/old.rs").exists());
+            assert_eq!(
+                task.state().unwrap().steps[0].status,
+                crate::state::StepStatus::Accepted
+            );
+            assert_eq!(
+                task.state().unwrap().reviews.len(),
+                1,
+                "no independent review was requested"
+            );
+            return;
+        }
         let review = crate::reviews::request(&task, &order, &reviewer.id).unwrap();
         let resumed_source = crate::reviews::checkout(&task, &review);
         assert_eq!(

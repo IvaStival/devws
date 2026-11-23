@@ -1343,6 +1343,7 @@ mod tests {
                 check_profiles: Default::default(),
                 repos: vec![],
                 lanes: vec![],
+                routing: Default::default(),
             },
         )
         .unwrap();

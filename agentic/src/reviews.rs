@@ -320,46 +320,8 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
         reviewer_agent.live && !reviewer_agent.writes && reviewer_agent.role == "code-reviewer",
         "assigned reviewer must be a live read-only code-reviewer"
     );
-    let author = state.agent(&order.agent).context("unknown author")?;
-    let workplace = crate::lanes::workplace(task, author)?;
-    let source = checks::head(&workplace.worktree)?;
-    let config = task.config()?;
-    let repo = config
-        .repos
-        .iter()
-        .find(|repo| repo.name == author.repo)
-        .context("unknown repo")?;
-    let target = checks::head(&repo.worktree)?;
-    let evidence = evidence(task, order_id)?;
-    let lane = crate::lanes::get(
-        task,
-        author
-            .lane
-            .as_deref()
-            .context("reviewed implementation requires an isolated lane")?,
-    )?;
-    let candidate = crate::integration::candidate(task, &lane)?;
-    let candidate_evidence = match &checked {
-        Some(evidence) => {
-            ensure!(
-                evidence.matches(&candidate),
-                "the branch moved during the candidate check: request the review again"
-            );
-            evidence.hash()?
-        }
-        None => String::new(),
-    };
-    crate::integration::require_candidate_evidence(
-        task,
-        &lane.repo,
-        &Review {
-            id: "the requested review".into(),
-            order: order.id.clone(),
-            candidate: candidate.clone(),
-            candidate_evidence: candidate_evidence.clone(),
-            ..Review::default()
-        },
-    )?;
+    let bound = bind(task, &state, order, checked.as_ref())?;
+    let repo = bound.repo.clone();
     if state.workflow == Workflow::Reviewed {
         ensure!(
             !state
@@ -387,7 +349,7 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
                 "add",
                 "--detach",
                 checkout.to_str().context("invalid review checkout path")?,
-                &candidate.commit,
+                &bound.review.candidate.commit,
             ],
         )?;
         crate::runner::prepare(task, reviewer, &checkout, true)?;
@@ -400,22 +362,9 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
         tx.state.next_id += 1;
         let review = Review {
             id: format!("r{}", tx.state.next_id),
-            order: order_id.into(),
-            author: order.agent.clone(),
             reviewer: reviewer.into(),
-            baseline_revision: state.application.revision,
-            order_revision: state.revision(order_id),
-            base: order.base.clone(),
-            source,
-            target,
-            evidence,
-            candidate,
-            candidate_evidence,
-            verdict: None,
-            findings: vec![],
-            summary: None,
             requested_at: crate::log::now(),
-            submitted_at: None,
+            ..bound.review
         };
         tx.state.reviews.push(review.clone());
         tx.state.say(reviewer,format!("Independently review {} for order {} using review_diff, inspect surrounding source through execute, then review_submit. Source {}, target {}, integration tree {}. Do not modify code.",review.id,review.order,review.source,review.target,review.candidate.tree));
@@ -428,6 +377,155 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
         Ok(review)
     })
 }
+/// What a review is bound to, taken once the candidate check passed: the
+/// author's source, the task's target, the order's evidence and the exact
+/// merge candidate. Shared by an independent review and a light acceptance.
+struct Bound {
+    repo: crate::task::Repo,
+    review: Review,
+}
+
+fn bind(
+    task: &Task,
+    state: &crate::state::State,
+    order: &crate::state::Order,
+    checked: Option<&crate::integration::CandidateEvidence>,
+) -> Result<Bound> {
+    let author = state.agent(&order.agent).context("unknown author")?;
+    let workplace = crate::lanes::workplace(task, author)?;
+    let source = checks::head(&workplace.worktree)?;
+    let config = task.config()?;
+    let repo = config
+        .repos
+        .iter()
+        .find(|repo| repo.name == author.repo)
+        .context("unknown repo")?
+        .clone();
+    let target = checks::head(&repo.worktree)?;
+    let lane = crate::lanes::get(
+        task,
+        author
+            .lane
+            .as_deref()
+            .context("reviewed implementation requires an isolated lane")?,
+    )?;
+    let candidate = crate::integration::candidate(task, &lane)?;
+    let candidate_evidence = match checked {
+        Some(evidence) => {
+            ensure!(
+                evidence.matches(&candidate),
+                "the branch moved during the candidate check: request the review again"
+            );
+            evidence.hash()?
+        }
+        None => String::new(),
+    };
+    let review = Review {
+        id: "the requested review".into(),
+        order: order.id.clone(),
+        author: order.agent.clone(),
+        baseline_revision: state.application.revision,
+        order_revision: state.revision(&order.id),
+        base: order.base.clone(),
+        source,
+        target,
+        evidence: evidence(task, &order.id)?,
+        candidate,
+        candidate_evidence,
+        ..Review::default()
+    };
+    crate::integration::require_candidate_evidence(task, &lane.repo, &review)?;
+    Ok(Bound { repo, review })
+}
+
+/// A light item accepted on the leader's reading of its diff instead of an
+/// independent review. It needs the item to be light now and a passing
+/// candidate check; it is recorded as an approved review signed by the
+/// leader, so the merge and every staleness rule treat it like any other.
+pub fn accept_light(task: &Task, step: &str, reason: &str) -> Result<String> {
+    ensure!(
+        !reason.trim().is_empty(),
+        "a light item needs accept_reason: what you read in the diff and why it is right"
+    );
+    let order_id = {
+        let state = task.state()?;
+        ensure!(
+            state.workflow == Workflow::Reviewed,
+            "light acceptance is for reviewed tasks"
+        );
+        light(task, &state, step)?;
+        state
+            .orders
+            .iter()
+            .rev()
+            .find(|order| order.step == step)
+            .map(|order| order.id.clone())
+            .context("the step has no order")?
+    };
+    let checked = check_candidate_first(task, &order_id)?.context(
+        "a light item skips the review only after a passing candidate check, and this \
+         repo has none: request an independent review",
+    )?;
+    let _control = task.control_lock()?;
+    let state = task.state()?;
+    light(task, &state, step)?;
+    let order = state
+        .orders
+        .iter()
+        .find(|order| order.id == order_id)
+        .context("unknown order")?;
+    ensure!(
+        state
+            .steps
+            .iter()
+            .any(|found| found.id == step && found.status == StepStatus::Reported),
+        "implementation must report passing checks first"
+    );
+    let bound = bind(task, &state, order, Some(&checked))?;
+    task.transaction(|tx| {
+        tx.state.next_id += 1;
+        let now = crate::log::now();
+        let review = Review {
+            id: format!("r{}", tx.state.next_id),
+            reviewer: crate::state::LEADER.into(),
+            verdict: Some(Verdict::Approved),
+            summary: Some(reason.trim().into()),
+            requested_at: now,
+            submitted_at: Some(now),
+            ..bound.review
+        };
+        tx.log(
+            Kind::Review,
+            None,
+            Some(step),
+            &format!("light acceptance {}: {}", review.id, reason.trim()),
+        );
+        let id = review.id.clone();
+        tx.state.reviews.push(review);
+        Ok(id)
+    })
+}
+
+/// The step's item is light now: a rise in rigor since (a failure, a new
+/// sensitive path) takes the shortcut away.
+fn light(task: &Task, state: &crate::state::State, step: &str) -> Result<()> {
+    let routing = state
+        .application
+        .routing(step, crate::failures::work_failures(state, step))?
+        .under(task.config()?.routing);
+    ensure!(
+        routing.rigor == crate::execution::Rigor::Light,
+        "{step} is {:?}, not light: it needs an independent review{}",
+        routing.rigor,
+        if routing.why.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", routing.why.join("; "))
+        }
+    );
+    Ok(())
+}
+
 pub fn validate(task: &Task, review: &Review) -> Result<()> {
     let state = task.state()?;
     let order = state
@@ -439,11 +537,15 @@ pub fn validate(task: &Task, review: &Review) -> Result<()> {
         review.author == order.agent && review.author != review.reviewer,
         "invalid review identities"
     );
-    let reviewer = state.agent(&review.reviewer).context("unknown reviewer")?;
-    ensure!(
-        !reviewer.writes && reviewer.role == "code-reviewer",
-        "reviewer capability changed"
-    );
+    if review.reviewer == crate::state::LEADER {
+        light(task, &state, &order.step)?;
+    } else {
+        let reviewer = state.agent(&review.reviewer).context("unknown reviewer")?;
+        ensure!(
+            !reviewer.writes && reviewer.role == "code-reviewer",
+            "reviewer capability changed"
+        );
+    }
     ensure!(
         state.contract_bindings.get(&order.id) == state.application.items.get(&order.step)
             && state.revision(&order.id) == review.order_revision
@@ -846,6 +948,118 @@ mod tests {
         assert_eq!(task.state().unwrap().steps[0].status, StepStatus::Reported);
         assert!(request(&task, "o-review", &author.id).is_err());
     }
+    fn light_candidate(
+        kind: crate::execution::WorkKind,
+        allowed: &str,
+    ) -> (tempfile::TempDir, Task) {
+        let root = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, repo) = crate::board::tests::started(&root);
+        let head = checks::head(repo.path()).unwrap();
+        task.transaction(|tx| {
+            tx.state.workflow = Workflow::Reviewed;
+            let mut application = crate::execution::tests::baseline();
+            let item = application.items.get_mut("S01-B01").unwrap();
+            item.kind = kind;
+            item.allowed = vec![allowed.into()];
+            tx.state.application = application;
+            tx.state.steps.push(crate::state::Step {
+                id: "S01-B01".into(),
+                title: "Implementation".into(),
+                status: StepStatus::Reported,
+                attempts: 1,
+                spec: None,
+                review_since: None,
+            });
+            tx.state.orders.push(crate::state::Order {
+                read: Vec::new(),
+                targets: Vec::new(),
+                id: "o1".into(),
+                step: "S01-B01".into(),
+                agent: "executor-1".into(),
+                text: "work".into(),
+                allowed: vec![],
+                forbidden: vec![],
+                check: None,
+                base: head,
+                status: crate::state::OrderStatus::Closed,
+                delivered: true,
+                stalled: false,
+                plan: None,
+            });
+            Ok(())
+        })
+        .unwrap();
+        (root, task)
+    }
+
+    #[test]
+    fn a_light_acceptance_needs_a_reason_a_light_item_and_a_candidate_check() {
+        use crate::execution::WorkKind;
+        let (_root, task) = light_candidate(WorkKind::Change, "README.md");
+        let error = accept_light(&task, "S01-B01", "  ")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("accept_reason"), "{error}");
+
+        let error = accept_light(&task, "S01-B01", "one-line port fix, matches the server")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("only after a passing candidate check"),
+            "no candidate check ran: {error}"
+        );
+
+        let (_root, task) = light_candidate(WorkKind::Feature, "src/notes.py");
+        let error = accept_light(&task, "S01-B01", "looks right")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("S01-B01 is Standard, not light: it needs an independent review"),
+            "{error}"
+        );
+        let (_root, task) = light_candidate(WorkKind::Change, "api/auth/session.py");
+        let error = accept_light(&task, "S01-B01", "looks right")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("(sensitive path api/auth/session.py)"),
+            "{error}"
+        );
+        assert!(task.state().unwrap().reviews.is_empty(), "nothing recorded");
+    }
+
+    #[test]
+    fn a_leader_signed_review_goes_stale_once_the_item_is_no_longer_light() {
+        let (_root, task) = light_candidate(crate::execution::WorkKind::Change, "README.md");
+        task.transaction(|tx| {
+            for (at, order) in [(10, "o-first"), (20, "o-second")] {
+                crate::failures::record(
+                    &mut tx.state,
+                    "S01-B01",
+                    Some(order),
+                    crate::failures::FailureKind::CheckFailed,
+                    "tests fail",
+                    at,
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+        let review = Review {
+            id: "r1".into(),
+            order: "o1".into(),
+            author: "executor-1".into(),
+            reviewer: crate::state::LEADER.into(),
+            verdict: Some(Verdict::Approved),
+            ..Review::default()
+        };
+        let error = validate(&task, &review).unwrap_err().to_string();
+        assert!(
+            error.contains("is Strict, not light") && error.contains("2 work failures"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn review_rounds_asking_for_changes_count_against_the_steps_attempts() {
         let root = tempfile::TempDir::new().unwrap();

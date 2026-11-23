@@ -29,6 +29,7 @@
         "profiles": ["test-syntax"],
         "acceptance": ["The unit test fails before implementation and compiles"],
         "standards": "1",
+        "kind": "feature",
         "writes_tests": true
       },
       "status-command": {
@@ -47,6 +48,7 @@
         "profiles": ["unit"],
         "acceptance": ["The frozen status test passes"],
         "standards": "1",
+        "kind": "feature",
         "protected_tests": ["tests/test_status.py"]
       }
     },

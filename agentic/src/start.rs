@@ -261,6 +261,7 @@ pub fn start_task_with_workflow(
                     check_profiles: Default::default(),
                     repos: vec![repo.clone()],
                     lanes: Vec::new(),
+                    routing: Default::default(),
                 };
                 let task = Task::create(home, &config)?;
                 task.transaction(|tx| {

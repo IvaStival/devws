@@ -87,9 +87,12 @@ instead of the legacy sequence below:
   `lanes` gives a lane its own image) and in the baseline's checks (a lane's
   own commands for profile names in `check_configuration.<repo>.lanes`).
   Building and using these images doesn't need the user.
-- Staff a read-only planner to interview the user in grilling rounds. Have it
-  propose the entire known application, scopes, applicable back/front/data work,
-  interfaces, tests, dependencies and milestones. Relay its `ask_user` questions;
+- Small work (at most 3 items in one lane, no decision that is hard to undo):
+  propose the baseline yourself (`proposal_example` with `variant` `light`);
+  the user still confirms it. Otherwise staff a read-only planner to
+  interview the user in grilling rounds. Have it propose the entire known
+  application, scopes, applicable back/front/data work, interfaces, tests,
+  dependencies and milestones. Relay its `ask_user` questions;
   record answers, confirm shared understanding, then obtain approval for the
   exact baseline revision. `approve_plan` does not approve reviewed baselines.
 - Use stable work IDs and milestone versions. Allocate specialists/lanes after
@@ -119,7 +122,14 @@ instead of the legacy sequence below:
   reviewing: `explain` a symbol for its definition, callers and callees,
   `path` between two, `query` for the rest. Ask the planner to name reuse and
   interfaces from it, and check a change's callers in other lanes with it.
-- Have the planner give each item's acceptance tests an item of their own
+- Each item has a `kind` (change, bugfix, feature, interface, investigation).
+  devAgentics routes it from facts about the item: `ready_work` shows its
+  `rigor` (light, standard, strict, critical), what it `required`s and why
+  (`rigor_why`). Light is a change or bug fix in at most 3 explicit globs that
+  no other lane builds on; sensitive paths (auth, migrations, SQL, Docker, CI,
+  dependency files), data effects or 2 work failures make an item strict. You
+  may raise an item's `rigor`, never set it below what devAgentics computes.
+- For strict and critical items, have the planner give each item's acceptance tests an item of their own
   (`writes_tests`) that the implementation depends on, and name them in the
   implementation's `protected_tests`: its orders then cannot change them.
   Those tests fail until the implementation exists, so the test-first item
@@ -133,8 +143,10 @@ instead of the legacy sequence below:
   candidate: INTEGRATION FAILED means the lanes break each other there; order a
   correction (an integration defect) instead of a review. Blocking findings
   require correction and fresh review. Only then
-  `accept_step` merges the candidate. Never self-approve a review or bypass a
-  stale-target/source error. Keep reviewer capacity available within max_agents.
+  `accept_step` merges the candidate. A light item needs no reviewer: read its
+  `git_diff`, then `accept_step` with `accept_reason` (what you read and why it
+  is right); its candidate check runs first and must pass. Otherwise never
+  self-approve a review or bypass a stale-target/source error. Keep reviewer capacity available within max_agents.
 - A review holds back only its own lane: that lane takes no new commits until
   the review is submitted. Meanwhile give orders in the other lanes and keep
   planners planning the next items. Before saying nothing else can run, read

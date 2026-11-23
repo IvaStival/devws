@@ -89,7 +89,11 @@ pub fn ready_work(task: &Task) -> Result<Vec<Value>> {
         })()
         .err()
         .map(|error| error.to_string());
-        items.push(json!({"id":id,"scope":item.scope,"role":item.role,"lane":item.lane,"stage":stage,"assigned":assigned,"reusable_worker":reusable,"ready":reason.is_none(),"blocked":reason}));
+        let routing = state
+            .application
+            .routing(id, crate::failures::work_failures(&state, id))?
+            .under(config.routing);
+        items.push(json!({"id":id,"scope":item.scope,"role":item.role,"lane":item.lane,"kind":routing.kind,"rigor":routing.rigor,"required":routing.rigor.required(),"rigor_why":routing.why,"stage":stage,"assigned":assigned,"reusable_worker":reusable,"ready":reason.is_none(),"blocked":reason}));
     }
     Ok(items)
 }
@@ -240,6 +244,7 @@ pub fn call(task: &Task, action: &str, input: &Value) -> Result<Value> {
             Some(name) => section(task, name, input),
             None => compact(task),
         },
+        "proposal_example" if input["variant"] == "light" => execution::light_proposal_example(),
         "proposal_example" => execution::proposal_example(),
         "runner_images" => crate::runner::images(),
         "project_overview" => crate::runner::overview(task),
@@ -510,7 +515,7 @@ pub(crate) fn leader_inbox(task: &Task) -> Result<Value> {
     let ready_not_started: Vec<Value> = ready_work(task)?
         .into_iter()
         .filter(|item| item["ready"] == true && item["assigned"] == false)
-        .map(|item| json!({"id": item["id"], "lane": item["lane"]}))
+        .map(|item| json!({"id": item["id"], "lane": item["lane"], "rigor": item["rigor"]}))
         .collect();
     Ok(
         json!({"messages": messages, "team": team, "ready_not_started": ready_not_started, "next": "handle the messages, then read again with ack [their ids]"}),
@@ -582,6 +587,55 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn the_leader_asks_for_the_light_example_by_variant() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        let light = call(&task, "proposal_example", &json!({"variant": "light"})).unwrap();
+        assert_eq!(
+            light["application"]["items"]["readme-port"]["kind"],
+            "change"
+        );
+        let full = call(&task, "proposal_example", &json!({})).unwrap();
+        assert!(full["application"]["items"].get("status-command").is_some());
+    }
+
+    #[test]
+    fn ready_work_shows_each_items_rigor_and_what_it_needs() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        task.transaction(|tx| {
+            let mut application = baseline();
+            let item = application.items.get_mut("S01-B01").unwrap();
+            item.kind = crate::execution::WorkKind::Change;
+            item.allowed = vec!["README.md".into()];
+            tx.state.application = application;
+            Ok(())
+        })
+        .unwrap();
+        let item = ready_work(&task).unwrap().remove(0);
+        assert_eq!(item["kind"], "change");
+        assert_eq!(item["rigor"], "light");
+        assert_eq!(
+            item["required"],
+            json!(["candidate_check", "accept_reason"])
+        );
+
+        task.transaction(|tx| {
+            tx.state
+                .application
+                .items
+                .get_mut("S01-B01")
+                .unwrap()
+                .allowed = vec!["api/auth/**".into()];
+            Ok(())
+        })
+        .unwrap();
+        let item = ready_work(&task).unwrap().remove(0);
+        assert_eq!(item["rigor"], "strict");
+        assert_eq!(item["rigor_why"], json!(["sensitive path api/auth/**"]));
     }
 
     #[test]

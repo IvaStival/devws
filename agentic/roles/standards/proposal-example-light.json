@@ -1,0 +1,49 @@
+{
+  "reason": "Fix the port the README documents; one file, nothing builds on it.",
+  "application": {
+    "revision": 1,
+    "goal": "The README documents the port the API listens on.",
+    "non_goals": ["No change to the server."],
+    "decisions": [],
+    "scopes": {"docs-port": "The README's run instructions."},
+    "items": {
+      "readme-port": {
+        "scope": "docs-port",
+        "title": "Document port 8000 in the README",
+        "role": "documentation",
+        "repo": "example-repo",
+        "lane": "docs",
+        "kind": "change",
+        "allowed": ["README.md"],
+        "reuse": ["The README's existing run section"],
+        "interfaces": ["None: text only"],
+        "behavior": ["The run section says the API listens on port 8000"],
+        "errors": ["None"],
+        "tests": ["grep -q 'port 8000' README.md"],
+        "profiles": ["docs"],
+        "acceptance": ["The README names port 8000 and no longer names 3000"],
+        "standards": "1"
+      }
+    },
+    "check_configuration": {
+      "example-repo": {
+        "environments": {"default": {}},
+        "checks": {
+          "docs": {
+            "command": "grep -q 'port 8000' README.md && ! grep -q 'port 3000' README.md",
+            "environment": "default"
+          }
+        },
+        "selected": ["docs"],
+        "candidate": ["docs"]
+      }
+    },
+    "milestones": {
+      "docs-port": {
+        "version": "1.0.1",
+        "title": "README port fixed",
+        "required": ["readme-port"]
+      }
+    }
+  }
+}
