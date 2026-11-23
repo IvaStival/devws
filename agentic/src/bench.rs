@@ -611,6 +611,7 @@ mod tests {
             rationale: "why".into(),
             resolution: None,
             category,
+            pre_existing: false,
         }
     }
 

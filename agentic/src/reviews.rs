@@ -2,6 +2,7 @@
 use crate::{checks, execution::Workflow, log::Kind, state::StepStatus, task::Task};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -23,7 +24,7 @@ pub enum Category {
     IntegrationDefect,
     TestWeakening,
 }
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Finding {
     pub file: String,
@@ -35,6 +36,10 @@ pub struct Finding {
     /// Required for a blocking finding.
     #[serde(default)]
     pub category: Option<Category>,
+    /// Its line is outside what the change touched: a problem the base
+    /// already had, reported but never blocking.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pre_existing: bool,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,6 +69,10 @@ pub struct Review {
     pub requested_at: u64,
     #[serde(default)]
     pub submitted_at: Option<u64>,
+    /// Weakened tests devAgentics found in the change itself, before any
+    /// reviewer read it: an approval must resolve each one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub automatic: Vec<Finding>,
 }
 pub fn pending<'a>(state: &'a crate::state::State, reviewer: &str) -> Option<&'a Review> {
     state
@@ -367,7 +376,15 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
             ..bound.review
         };
         tx.state.reviews.push(review.clone());
-        tx.state.say(reviewer,format!("Independently review {} for order {} using review_diff, inspect surrounding source through execute, then review_submit. Source {}, target {}, integration tree {}. Do not modify code.",review.id,review.order,review.source,review.target,review.candidate.tree));
+        let automatic = if review.automatic.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " devAgentics already found weakened tests in {}: see automatic in review_diff; an approval must resolve each.",
+                review.automatic.iter().map(|finding| finding.file.as_str()).collect::<Vec<_>>().join(", ")
+            )
+        };
+        tx.state.say(reviewer,format!("Independently review {} for order {} using review_diff, inspect surrounding source through execute, then review_submit. Try to break each acceptance line; report a bug or a regression, not style. A line the change did not touch is the base's problem: name it in one line, never block on it.{automatic} Source {}, target {}, integration tree {}. Do not modify code.",review.id,review.order,review.source,review.target,review.candidate.tree));
         tx.log(
             Kind::Review,
             Some(reviewer),
@@ -420,7 +437,18 @@ fn bind(
         }
         None => String::new(),
     };
+    let diff = checks::git(
+        &workplace.worktree,
+        &[
+            "diff",
+            "-U0",
+            "--no-ext-diff",
+            "--no-textconv",
+            &format!("{target}...{source}"),
+        ],
+    )?;
     let review = Review {
+        automatic: weakened_tests(&diff),
         id: "the requested review".into(),
         order: order.id.clone(),
         author: order.agent.clone(),
@@ -482,6 +510,17 @@ pub fn accept_light(task: &Task, step: &str, reason: &str) -> Result<String> {
         "implementation must report passing checks first"
     );
     let bound = bind(task, &state, order, Some(&checked))?;
+    ensure!(
+        bound.review.automatic.is_empty(),
+        "the change weakens tests ({}): a light item cannot skip its review, request one",
+        bound
+            .review
+            .automatic
+            .iter()
+            .map(|finding| finding.file.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     task.transaction(|tx| {
         tx.state.next_id += 1;
         let now = crate::log::now();
@@ -524,6 +563,139 @@ fn light(task: &Task, state: &crate::state::State, step: &str) -> Result<()> {
         }
     );
     Ok(())
+}
+
+/// Lines that assert, in the languages the teams write tests in.
+const ASSERTIONS: &[&str] = &["assert", "expect(", ".should", "t.error", "t.fatal"];
+/// Ways to switch a test off.
+const SKIPS: &[&str] = &[
+    "@skip",
+    "unittest.skip",
+    "pytest.mark.skip",
+    "pytest.skip(",
+    "skiptest(",
+    ".skip(",
+    "xit(",
+    "xdescribe(",
+    "#[ignore",
+    "t.skip(",
+];
+
+fn is_test_file(path: &str) -> bool {
+    path.split('/').any(|part| {
+        let part = part.to_ascii_lowercase();
+        part == "tests"
+            || part == "test"
+            || part == "spec"
+            || part == "__tests__"
+            || part.starts_with("test_")
+            || part.contains("_test.")
+            || part.contains(".test.")
+            || part.contains(".spec.")
+    })
+}
+
+/// What a change does to its test files, read from its unified diff: per
+/// file, more assertion lines removed than added, or a test switched off.
+/// Code finds it, so no reviewer spends tokens on it and none can miss it.
+pub fn weakened_tests(diff: &str) -> Vec<Finding> {
+    #[derive(Default)]
+    struct Count {
+        line: u64,
+        removed: u64,
+        added: u64,
+        skips: u64,
+    }
+    let mut files: BTreeMap<String, Count> = BTreeMap::new();
+    let mut file: Option<String> = None;
+    let mut line = 0;
+    let mut old_file: Option<String> = None;
+    for text in diff.lines() {
+        if let Some(path) = text.strip_prefix("--- a/") {
+            old_file = Some(path.to_string());
+            continue;
+        }
+        if let Some(path) = text.strip_prefix("+++ ") {
+            file = path
+                .strip_prefix("b/")
+                .map(str::to_string)
+                .or_else(|| old_file.clone());
+            continue;
+        }
+        if let Some(hunk) = text.strip_prefix("@@ ") {
+            line = hunk_start(hunk).map_or(1, |(start, _)| start.max(1));
+            continue;
+        }
+        let Some(path) = file.as_ref().filter(|path| is_test_file(path)) else {
+            continue;
+        };
+        let lowered = text.to_ascii_lowercase();
+        let asserts = ASSERTIONS.iter().any(|word| lowered.contains(word));
+        let count = files.entry(path.clone()).or_default();
+        if count.line == 0 {
+            count.line = line;
+        }
+        if text.starts_with('-') && asserts {
+            count.removed += 1;
+        } else if text.starts_with('+') {
+            count.added += u64::from(asserts);
+            count.skips += u64::from(SKIPS.iter().any(|skip| lowered.contains(skip)));
+        }
+    }
+    files
+        .into_iter()
+        .filter(|(_, count)| count.removed > count.added || count.skips > 0)
+        .map(|(file, count)| Finding {
+            file,
+            line: count.line.max(1),
+            severity: "high".into(),
+            blocking: true,
+            rationale: format!(
+                "found by devAgentics: {} assertion lines removed, {} added, {} tests switched off",
+                count.removed, count.added, count.skips
+            ),
+            category: Some(Category::TestWeakening),
+            ..Finding::default()
+        })
+        .collect()
+}
+
+/// The new-file start and length of a hunk header (`-a,b +c,d @@`).
+fn hunk_start(header: &str) -> Option<(u64, u64)> {
+    let new = header.split(' ').find(|part| part.starts_with('+'))?;
+    let mut numbers = new[1..].split(',');
+    let start = numbers.next()?.parse().ok()?;
+    let length = numbers
+        .next()
+        .map_or(Some(1), |length| length.parse().ok())?;
+    Some((start, length))
+}
+
+/// The lines a unified diff touches in each new file.
+fn touched(diff: &str) -> BTreeMap<String, Vec<(u64, u64)>> {
+    let mut touched: BTreeMap<String, Vec<(u64, u64)>> = BTreeMap::new();
+    let mut file = None;
+    for text in diff.lines() {
+        if let Some(path) = text.strip_prefix("+++ ") {
+            file = path.strip_prefix("b/").map(str::to_string);
+        } else if let (Some(path), Some(hunk)) = (&file, text.strip_prefix("@@ "))
+            && let Some(range) = hunk_start(hunk)
+        {
+            touched.entry(path.clone()).or_default().push(range);
+        }
+    }
+    touched
+}
+
+/// A finding is about the change when its line is within a few lines of a
+/// hunk of its file: a reviewer points at the line it means, or next to it.
+fn in_change(touched: &BTreeMap<String, Vec<(u64, u64)>>, finding: &Finding) -> bool {
+    const NEAR: u64 = 3;
+    touched.get(&finding.file).is_some_and(|ranges| {
+        ranges.iter().any(|(start, length)| {
+            finding.line + NEAR >= *start && finding.line <= start + length.max(&1) + NEAR
+        })
+    })
 }
 
 pub fn validate(task: &Task, review: &Review) -> Result<()> {
@@ -647,6 +819,62 @@ pub fn submit(
              or test_weakening)"
         );
     }
+    validate(task, review)?;
+    let mut findings = findings;
+    let author = state.agent(&review.author).context("unknown author")?;
+    let workplace = crate::lanes::workplace(task, author)?;
+    let changed = touched(&checks::git(
+        &workplace.worktree,
+        &[
+            "diff",
+            "-U0",
+            "--no-ext-diff",
+            "--no-textconv",
+            &format!("{}...{}", review.target, review.source),
+        ],
+    )?);
+    for finding in &mut findings {
+        if finding.blocking && !in_change(&changed, finding) {
+            finding.blocking = false;
+            finding.pre_existing = true;
+        }
+    }
+    ensure!(
+        verdict != Verdict::ChangesRequested
+            || !findings.iter().any(|finding| finding.pre_existing)
+            || findings.iter().any(|finding| finding.blocking)
+            || !review.automatic.is_empty(),
+        "every blocking finding is outside this change ({}): the base already had it. \
+         Approve and name it in your summary in one line, or point at the changed line it is about",
+        findings
+            .iter()
+            .filter(|finding| finding.pre_existing)
+            .map(|finding| format!("{}:{}", finding.file, finding.line))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    for automatic in &review.automatic {
+        let resolved = findings.iter().any(|finding| {
+            finding.file == automatic.file
+                && finding
+                    .resolution
+                    .as_ref()
+                    .is_some_and(|reason| !reason.trim().is_empty())
+        });
+        ensure!(
+            verdict != Verdict::Approved || resolved,
+            "devAgentics found weakened tests in {} ({}): request changes, or add a finding on \
+             that file whose resolution says why the change is right",
+            automatic.file,
+            automatic.rationale
+        );
+        if !findings
+            .iter()
+            .any(|finding| finding.file == automatic.file)
+        {
+            findings.push(automatic.clone());
+        }
+    }
     ensure!(
         verdict != Verdict::Approved
             || findings.iter().all(|finding| !finding.blocking
@@ -656,7 +884,6 @@ pub fn submit(
                     .is_some_and(|reason| !reason.trim().is_empty())),
         "blocking findings remain"
     );
-    validate(task, review)?;
     let step = state
         .orders
         .iter()
@@ -834,6 +1061,7 @@ mod tests {
             rationale: "no build evidence".into(),
             resolution: None,
             category: Some(Category::EnvironmentMismatch),
+            pre_existing: false,
         };
         let changes = submitted_message(
             "r312",
@@ -1060,6 +1288,94 @@ mod tests {
         );
     }
 
+    const WEAKENING: &str = "diff --git a/tests/test_api.py b/tests/test_api.py
+--- a/tests/test_api.py
++++ b/tests/test_api.py
+@@ -30,2 +30,0 @@ def test_delete_missing(self):
+-        self.assertEqual(response.status, 404)
+-        self.assertEqual(body, {'error': 'not_found'})
+@@ -44,0 +43,1 @@ class TestNotes:
++    @unittest.skip('flaky')
+diff --git a/api/notes_api.py b/api/notes_api.py
+--- a/api/notes_api.py
++++ b/api/notes_api.py
+@@ -10,1 +10,1 @@
+-        assert note_id > 0
++        return 200
+diff --git a/web/list.test.ts b/web/list.test.ts
+--- a/web/list.test.ts
++++ b/web/list.test.ts
+@@ -5,1 +5,1 @@
+-  expect(items).toHaveLength(2)
++  expect(items).toHaveLength(3)
+";
+
+    #[test]
+    fn code_finds_removed_assertions_and_switched_off_tests() {
+        let found = weakened_tests(WEAKENING);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let finding = &found[0];
+        assert_eq!(
+            (finding.file.as_str(), finding.line),
+            ("tests/test_api.py", 30)
+        );
+        assert!(finding.blocking);
+        assert_eq!(finding.category, Some(Category::TestWeakening));
+        assert_eq!(
+            finding.rationale,
+            "found by devAgentics: 2 assertion lines removed, 0 added, 1 tests switched off"
+        );
+        assert!(
+            found
+                .iter()
+                .all(|finding| finding.file != "api/notes_api.py"),
+            "an assert in product code is not a test"
+        );
+        assert!(
+            found
+                .iter()
+                .all(|finding| finding.file != "web/list.test.ts"),
+            "a changed assertion is not a weaker one"
+        );
+        assert!(weakened_tests("").is_empty());
+    }
+
+    #[test]
+    fn a_deleted_test_file_counts_its_assertions() {
+        let diff = "--- a/tests/test_old.py
++++ /dev/null
+@@ -1,2 +0,0 @@
+-def test_old():
+-    assert old() == 1
+";
+        let found = weakened_tests(diff);
+        assert_eq!(found[0].file, "tests/test_old.py");
+    }
+
+    #[test]
+    fn a_finding_far_from_every_changed_line_is_the_bases() {
+        let changed = touched(WEAKENING);
+        let at = |file: &str, line| Finding {
+            file: file.into(),
+            line,
+            ..Finding::default()
+        };
+        assert!(in_change(&changed, &at("api/notes_api.py", 10)));
+        assert!(
+            in_change(&changed, &at("api/notes_api.py", 13)),
+            "near the hunk"
+        );
+        assert!(!in_change(&changed, &at("api/notes_api.py", 80)));
+        assert!(
+            !in_change(&changed, &at("api/other.py", 10)),
+            "a file the change left alone"
+        );
+        assert!(
+            in_change(&changed, &at("tests/test_api.py", 30)),
+            "a deletion's place"
+        );
+    }
+
     #[test]
     fn review_rounds_asking_for_changes_count_against_the_steps_attempts() {
         let root = tempfile::TempDir::new().unwrap();
@@ -1191,6 +1507,7 @@ mod tests {
             rationale: "the assertion was removed".into(),
             resolution: None,
             category: None,
+            pre_existing: false,
         };
         let error = submit(
             &task,

@@ -1005,11 +1005,19 @@ impl Server<'_> {
                     "accepted",
                     reason.unwrap_or("The leader accepted it."),
                 );
-                Ok(if reason.is_some() {
+                let state = self.task.state()?;
+                for lesson in crate::failures::lessons(&state, &step) {
+                    crate::notes::record(self.task, self.devws, &lesson);
+                }
+                let mut answer = if reason.is_some() {
                     "Accepted as light, on your reason.".to_string()
                 } else {
                     "Accepted.".to_string()
-                })
+                };
+                for line in crate::failures::repeated(&state, &step) {
+                    answer.push_str(&format!("\n{line}"));
+                }
+                Ok(answer)
             }
             "reject_step" => {
                 let step = string(arguments, "step")?;

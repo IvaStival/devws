@@ -1,7 +1,7 @@
 # Engineering workflows for devAgentics: the PStack ideas, done cheaply
 
 - **Date** 22-11-2026 · **Branch** `feat/opencode-workers`
-- **Status** In progress on branch `feat/pstack-workflows` (worktree `../devws-pstack`), started 23-11-2026. M0 and M2 committed (`11a91db`). M3 implemented and tested. M1 waits for the CLI work; M4–M8 not started. Revised 22-11-2026 after reading PStack's source skills (section 9).
+- **Status** In progress on branch `feat/pstack-workflows` (worktree `../devws-pstack`), started 23-11-2026. Committed: M0, M2 (`11a91db`), M3 (`6d216e7`). Done in the next commit: part of M4, part of M5 (learning) and part of M7 (deterministic review). Waiting for the CLI work: M1, the M4 system profile, M5 budgets. M6 and M8 not started. Revised 22-11-2026 after reading PStack's source skills (section 9).
 - **Related plans:** builds on [token-optimization](../2026-11-21-214851_token-optimization/plan.md) and [cto-leader](../2026-11-19-200000_cto-leader/plan.md) and does not duplicate them.
 
 ## Context
@@ -542,3 +542,39 @@ Checked on two real tasks:
 *Not done yet:*
 - Two-way decisions defaulting to the recommendation (9.2 point 4). Every existing decision is two-way by default, so turning this on would stop all interview questions until planners mark one-way ones. It needs its own decision.
 - Interface checks at the milestone. They belong to M4.
+
+**M4, M5 and M7, first parts (23-11-2026).**
+
+*Correction to the audit:* `prs::open_prs` already refuses until every milestone is ready (`prs.rs:42-53`). The table in section 1 was wrong, and that part of M4 needs no work.
+
+*M4, interface checks:* `milestones::validate` now also runs the `check` profile of every interface the milestone's items provide (`milestones::profiles`, tested).
+
+*M4, not done:* the `system` profile kind with services on an `--internal` network. It needs `check_profiles.rs` and `runner.rs`, the CLI-work files.
+
+*M5, learning:*
+- When `accept_step` accepts a step with diagnosed work failures, `failures::lessons` turns each cause into one knowledge note for the item's lane: cause, evidence, fix, step and order. There's no agent turn, and `knowledge_for` hands the note to the next orders there.
+- `failures::repeated` checks whether the same cause was diagnosed in ≥2 items of a lane. If so, `accept_step`'s answer tells the leader to make the mistake impossible: design, then a type, then a check whose error names the fix, then a test, and docs last.
+- This is shown once, at acceptance, not on every inbox read.
+
+*M5, not done:*
+- Budgets: `task.rs`, `watch.rs`.
+- Proving a new check fails on the recorded failing commit.
+- `Diagnosis.premise`.
+
+*M7, deterministic review:*
+- **Test weakening.** At review binding, `reviews::weakened_tests` reads the change's unified diff. A test file that loses more assertion lines than it gains, or that switches a test off, becomes an automatic blocking `test_weakening` finding on the review.
+  - The reviewer sees it through `review_diff`, because it is part of the review record.
+  - An approval must resolve each one with a finding on that file.
+  - A light acceptance with any automatic finding is refused.
+- **Findings outside the change.** At submit, a blocking finding more than 3 lines from every changed hunk of its file is marked `pre_existing` and does not block. A "changes requested" whose only blocking findings are pre-existing is refused with the reason.
+- **The reviewer's order** now says: try to break each acceptance line, no style findings, name an old problem in one line without blocking on it.
+- **Tests:** scanner, deleted test file and hunk proximity are unit-tested. The lifecycle Docker test checks the pre-existing refusal, and all 4 Docker tests pass.
+
+*M7, not done:*
+- Rerunning repro commands.
+- The safety fact.
+- The risk brief's callers in other lanes.
+- Preferring a reviewer on a different program (`team.rs`).
+- A second reviewer on signals.
+
+*Verification:* 535 tests pass, clippy and fmt are clean, and all 4 Docker tests pass.

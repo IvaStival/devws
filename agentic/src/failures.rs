@@ -399,6 +399,99 @@ pub fn status_json(state: &State, step: &str) -> serde_json::Value {
     })
 }
 
+/// What the leader's diagnoses of an accepted step taught, as knowledge for
+/// its lane: the next orders there carry it, so the next agent does not make
+/// the same mistake. One note per cause; devAgentics writes them, no agent
+/// turn.
+pub fn lessons(state: &State, step: &str) -> Vec<crate::memory::Note> {
+    let Some(lane) = state
+        .application
+        .items
+        .get(step)
+        .map(|item| item.lane.clone())
+    else {
+        return Vec::new();
+    };
+    let mut seen = Vec::new();
+    let mut notes = Vec::new();
+    for failure in state.step_failures.get(step).into_iter().flatten() {
+        let Some(diagnosis) = &failure.diagnosis else {
+            continue;
+        };
+        if !diagnosis.cause.is_work() || seen.contains(&diagnosis.cause) {
+            continue;
+        }
+        seen.push(diagnosis.cause);
+        notes.push(crate::memory::Note {
+            kind: crate::memory::NoteKind::Knowledge,
+            title: format!("{} in {step}", cause_name(diagnosis.cause)),
+            body: format!(
+                "cause: {}\nevidence: {}\nfix: {}\nfrom: step {step}{}, accepted",
+                cause_name(diagnosis.cause),
+                diagnosis.evidence.trim(),
+                diagnosis.change.trim(),
+                failure
+                    .order
+                    .as_ref()
+                    .map_or(String::new(), |order| format!(", order {order}")),
+            ),
+            author: crate::state::LEADER.into(),
+            step: Some(step.into()),
+            area: Some(lane.clone()),
+        });
+    }
+    notes
+}
+
+/// The causes of `step` that other items of its lane were also diagnosed
+/// with: a lesson the team keeps relearning belongs in a check or a
+/// standard, not in another note.
+pub fn repeated(state: &State, step: &str) -> Vec<String> {
+    let Some(lane) = state.application.items.get(step).map(|item| &item.lane) else {
+        return Vec::new();
+    };
+    let causes = |id: &str| -> Vec<Cause> {
+        state
+            .step_failures
+            .get(id)
+            .into_iter()
+            .flatten()
+            .filter_map(|failure| failure.diagnosis.as_ref().map(|diagnosis| diagnosis.cause))
+            .filter(|cause| cause.is_work())
+            .collect()
+    };
+    let mut lines = Vec::new();
+    let mut own = causes(step);
+    own.dedup();
+    for cause in own {
+        let mut steps: Vec<&str> = state
+            .application
+            .items
+            .iter()
+            .filter(|(id, item)| item.lane == *lane && causes(id).contains(&cause))
+            .map(|(id, _)| id.as_str())
+            .collect();
+        steps.sort_unstable();
+        if steps.len() >= 2 {
+            lines.push(format!(
+                "{} repeated in lane {lane} ({}): make it impossible instead of noting it again. \
+                 Fix it at the highest level that works: the design, then a type, then a check \
+                 whose error names the fix, then a test; a standard or doc only for a judgment call.",
+                cause_name(cause),
+                steps.join(", ")
+            ));
+        }
+    }
+    lines
+}
+
+fn cause_name(cause: Cause) -> String {
+    serde_json::to_value(cause)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,6 +503,81 @@ mod tests {
             evidence: "useSystemMutations.test.tsx:757 expected 'mutation remains'".into(),
             change: "keep the unrelated mutation's cache entry".into(),
         }
+    }
+
+    fn diagnosed(steps: &[(&str, &str, Cause)]) -> State {
+        let mut state = State::default();
+        for (step, lane, cause) in steps {
+            state.application.items.insert(
+                (*step).into(),
+                crate::execution::Contract {
+                    lane: (*lane).into(),
+                    ..Default::default()
+                },
+            );
+            state
+                .step_failures
+                .entry((*step).into())
+                .or_default()
+                .push(Failure {
+                    at: 1,
+                    order: Some(format!("o-{step}")),
+                    kind: FailureKind::CheckFailed,
+                    summary: "tests fail".into(),
+                    diagnosis: Some(diagnosis(*cause)),
+                    resolved_by: Some("o-next".into()),
+                });
+        }
+        state
+    }
+
+    #[test]
+    fn an_accepted_steps_diagnoses_become_knowledge_for_its_lane() {
+        let mut state = diagnosed(&[("B3", "back", Cause::MissingContext)]);
+        state.step_failures.get_mut("B3").unwrap().push(Failure {
+            at: 2,
+            order: Some("o-env".into()),
+            kind: FailureKind::CheckEnvironment,
+            summary: "docker down".into(),
+            diagnosis: Some(diagnosis(Cause::Environment)),
+            resolved_by: None,
+        });
+        let notes = lessons(&state, "B3");
+        assert_eq!(notes.len(), 1, "the environment taught the code nothing");
+        let note = &notes[0];
+        assert_eq!(note.kind, crate::memory::NoteKind::Knowledge);
+        assert_eq!(note.area.as_deref(), Some("back"));
+        assert_eq!(note.title, "missing_context in B3");
+        assert!(
+            note.body
+                .contains("evidence: useSystemMutations.test.tsx:757")
+                && note
+                    .body
+                    .contains("fix: keep the unrelated mutation's cache entry")
+                && note.body.contains("from: step B3, order o-B3"),
+            "{}",
+            note.body
+        );
+        assert!(lessons(&diagnosed(&[]), "B3").is_empty());
+    }
+
+    #[test]
+    fn a_cause_two_items_of_a_lane_share_asks_for_a_structural_fix() {
+        let state = diagnosed(&[
+            ("B3", "back", Cause::MissingContext),
+            ("B5", "back", Cause::MissingContext),
+            ("F1", "front", Cause::MissingContext),
+            ("B6", "back", Cause::ImplementationDefect),
+        ]);
+        let lines = repeated(&state, "B5");
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].starts_with("missing_context repeated in lane back (B3, B5)"),
+            "another lane's does not count: {}",
+            lines[0]
+        );
+        assert!(lines[0].contains("then a check whose error names the fix"));
+        assert!(repeated(&state, "B6").is_empty(), "once is no pattern");
     }
 
     fn order(id: &str, agent: &str) -> Order {

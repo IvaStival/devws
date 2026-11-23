@@ -2577,6 +2577,29 @@ mod docker_tests {
         assert!(crate::orders::accept_step(&task, "S01-B01").is_err());
         assert_eq!(checks::head(repo.path()).unwrap(), advanced);
         let refreshed = crate::reviews::request(&task, &order, &reviewer.id).unwrap();
+        let outside = crate::reviews::Finding {
+            file: "src/elsewhere.rs".into(),
+            line: 40,
+            severity: "high".into(),
+            blocking: true,
+            rationale: "an old bug the change never touched".into(),
+            category: Some(crate::reviews::Category::ImplementationDefect),
+            ..crate::reviews::Finding::default()
+        };
+        let error = crate::reviews::submit(
+            &task,
+            &reviewer.pane,
+            &refreshed.id,
+            crate::reviews::Verdict::ChangesRequested,
+            vec![outside],
+            "Old bug",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("every blocking finding is outside this change (src/elsewhere.rs:40)"),
+            "{error}"
+        );
         crate::reviews::submit(
             &task,
             &reviewer.pane,

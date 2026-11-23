@@ -108,6 +108,32 @@ pub fn ready(task: &Task, id: &str) -> Result<bool> {
                 .all(|phase| phase.outcome == crate::check_profiles::Outcome::Passed),
     )
 }
+/// The profiles a milestone runs, by repo: its items' own, and the check of
+/// every interface they provide, so the lanes are tested against what they
+/// agreed on once their work is together.
+fn profiles(
+    application: &crate::execution::Application,
+    milestone: &crate::execution::Milestone,
+) -> Result<BTreeMap<String, BTreeSet<String>>> {
+    let mut selected: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for item in &milestone.required {
+        let contract = application
+            .items
+            .get(item)
+            .context("milestone contract missing")?;
+        let repo = selected.entry(contract.repo.clone()).or_default();
+        repo.extend(contract.profiles.iter().cloned());
+        repo.extend(
+            contract
+                .provides
+                .iter()
+                .filter_map(|interface| application.interfaces.get(interface))
+                .filter_map(|interface| interface.check.clone()),
+        );
+    }
+    Ok(selected)
+}
+
 pub fn validate(task: &Task, id: &str) -> Result<Evidence> {
     let _operation = task.control_lock()?;
     let state = task.state()?;
@@ -117,19 +143,10 @@ pub fn validate(task: &Task, id: &str) -> Result<Evidence> {
         .milestones
         .get(id)
         .context("unknown milestone")?;
-    let mut selected: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for item in &milestone.required {
         validate_item(&state, item)?;
-        let contract = state
-            .application
-            .items
-            .get(item)
-            .context("milestone contract missing")?;
-        selected
-            .entry(contract.repo.clone())
-            .or_default()
-            .extend(contract.profiles.iter().cloned());
     }
+    let selected = profiles(&state.application, milestone)?;
     for dependency in &milestone.dependencies {
         ensure!(
             state
@@ -241,6 +258,32 @@ pub fn validate(task: &Task, id: &str) -> Result<Evidence> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_milestone_runs_its_items_profiles_and_their_interface_checks() {
+        let mut application = crate::execution::tests::baseline();
+        application
+            .items
+            .get_mut("S01-B01")
+            .unwrap()
+            .provides
+            .push("notes-api".into());
+        application.interfaces.insert(
+            "notes-api".into(),
+            crate::execution::Interface {
+                version: 1,
+                owner: "S01-B01".into(),
+                kind: crate::execution::InterfaceKind::Http,
+                spec: "GET /notes".into(),
+                check: Some("contract".into()),
+            },
+        );
+        let selected = profiles(&application, &application.milestones["M01"]).unwrap();
+        assert_eq!(
+            selected["app"],
+            BTreeSet::from(["backend".to_string(), "contract".to_string()])
+        );
+    }
 
     fn audit() -> State {
         serde_json::from_value(json!({
