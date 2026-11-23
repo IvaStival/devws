@@ -384,7 +384,7 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
                 review.automatic.iter().map(|finding| finding.file.as_str()).collect::<Vec<_>>().join(", ")
             )
         };
-        tx.state.say(reviewer,format!("Independently review {} for order {} using review_diff, inspect surrounding source through execute, then review_submit. Try to break each acceptance line; report a bug or a regression, not style. A line the change did not touch is the base's problem: name it in one line, never block on it.{automatic} Source {}, target {}, integration tree {}. Do not modify code.",review.id,review.order,review.source,review.target,review.candidate.tree));
+        tx.state.say(reviewer,format!("Independently review {} for order {} using review_diff, inspect surrounding source through execute, then review_submit. Try to break each acceptance line; report a bug or a regression, not style. Say in your summary the one fact the change is safe because of, and how you know it (a run beats a line you point at, which beats your word). A line the change did not touch is the base's problem: name it in one line, never block on it.{automatic} Source {}, target {}, integration tree {}. Do not modify code.",review.id,review.order,review.source,review.target,review.candidate.tree));
         tx.log(
             Kind::Review,
             Some(reviewer),
@@ -892,7 +892,15 @@ pub fn submit(
         .context("unknown review order")?;
     // The leader may have ended its turn waiting for this review: the inbox
     // message is what starts its next one.
-    let message = submitted_message(id, &agent.id, &step, &verdict, &findings, summary);
+    let mut message = submitted_message(id, &agent.id, &step, &verdict, &findings, summary);
+    if verdict == Verdict::Approved
+        && let Some(why) = second_opinion(&state, &step)?
+    {
+        message.push_str(&format!(
+            " Before accepting: {why}, so ask a second code-reviewer for a fresh review \
+             (review_request), on another program when one is available."
+        ));
+    }
     let reviewer = agent.id.clone();
     task.transaction(|tx| {
         tx.state.say(crate::state::LEADER, message);
@@ -965,6 +973,29 @@ fn submitted_message(
          ({blocking} blocking, {other} other findings).\n{summary}\nNext: {next}."
     )
 }
+/// Why an approved step deserves a second review, if it does: its rigor is
+/// critical, or its history shows one reviewer is not enough. Only then: a
+/// second reviewer on every step would double the review cost.
+fn second_opinion(state: &crate::state::State, step: &str) -> Result<Option<String>> {
+    let routing = state
+        .application
+        .routing(step, crate::failures::work_failures(state, step))?;
+    if routing.rigor == crate::execution::Rigor::Critical {
+        return Ok(Some("its rigor is critical".into()));
+    }
+    let rounds = changes_requested(state, step);
+    if rounds >= 2 {
+        return Ok(Some(format!("reviews asked for changes {rounds} times")));
+    }
+    let integration = state
+        .step_failures
+        .get(step)
+        .into_iter()
+        .flatten()
+        .any(|failure| failure.kind == crate::failures::FailureKind::IntegrationFailed);
+    Ok(integration.then(|| "its merge candidate failed integration".into()))
+}
+
 pub fn require_approval(task: &Task, step: &str) -> Result<()> {
     let state = task.state()?;
     if state.workflow == Workflow::Legacy {
@@ -1309,6 +1340,53 @@ diff --git a/web/list.test.ts b/web/list.test.ts
 -  expect(items).toHaveLength(2)
 +  expect(items).toHaveLength(3)
 ";
+
+    #[test]
+    fn a_second_review_is_asked_only_on_a_signal() {
+        let (_root, task) = light_candidate(crate::execution::WorkKind::Feature, "src/notes.py");
+        let state = task.state().unwrap();
+        assert_eq!(
+            second_opinion(&state, "S01-B01").unwrap(),
+            None,
+            "a plain standard item"
+        );
+
+        let mut critical = state.clone();
+        critical.application.items.get_mut("S01-B01").unwrap().rigor =
+            Some(crate::execution::Rigor::Critical);
+        assert_eq!(
+            second_opinion(&critical, "S01-B01").unwrap().as_deref(),
+            Some("its rigor is critical")
+        );
+
+        let mut integration = state.clone();
+        crate::failures::record(
+            &mut integration,
+            "S01-B01",
+            Some("o1"),
+            crate::failures::FailureKind::IntegrationFailed,
+            "lanes break each other",
+            5,
+        );
+        assert_eq!(
+            second_opinion(&integration, "S01-B01").unwrap().as_deref(),
+            Some("its merge candidate failed integration")
+        );
+
+        let mut rounds = state;
+        for number in 0..2 {
+            rounds.reviews.push(Review {
+                id: format!("r{number}"),
+                order: "o1".into(),
+                verdict: Some(Verdict::ChangesRequested),
+                ..Review::default()
+            });
+        }
+        assert_eq!(
+            second_opinion(&rounds, "S01-B01").unwrap().as_deref(),
+            Some("reviews asked for changes 2 times")
+        );
+    }
 
     #[test]
     fn code_finds_removed_assertions_and_switched_off_tests() {

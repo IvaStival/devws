@@ -601,3 +601,17 @@ Checked on two real tasks:
 *Verification:* 538 tests pass (3 new: memory parsing and the minimum of one, slot waiting and release, staffing limits). The 4 Docker tests pass with slots on.
 
 *Side effect:* the Docker tests created the empty slot files in the real `~/.devagentics/runner-slots/`.
+
+**M7, more (23-11-2026).**
+
+*Second opinion on signals:*
+- When a review approves a step that is critical, had ≥2 reviews asking for changes, or whose candidate failed integration, the leader's message says why and asks for a second code-reviewer before accepting, on another program when one is available.
+- The newest review decides, as before. No other step gets a second review.
+
+*Safety fact:* the reviewer's brief asks for the one fact the change is safe because of, and how the reviewer knows it: a run beats a pointed line, which beats their word.
+
+*Tests:* one new test (`second_opinion`). The 4 Docker tests pass.
+
+*Deferred, each to be added only if M8 shows it pays:*
+- **Repro reruns.** They need runner execution at submit.
+- **A reviewer on a different program by default.** The program is chosen at spawn time through roles, accounts and the Codex opt-ins, before the author is known. For now the leader is told when it matters.
