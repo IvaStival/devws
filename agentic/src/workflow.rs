@@ -542,8 +542,19 @@ pub(crate) fn leader_inbox(task: &Task) -> Result<Value> {
         task.config()?.max_agents,
         state.runner.as_ref().map(crate::runner::host_slots),
     );
+    // Every report, review and question reaches the leader as a message, and
+    // the dispatcher wakes an idle leader when one arrives (watch.rs): an
+    // empty inbox is the end of the turn, not a reason to read it again.
+    // Each read rereads the leader's whole context.
+    let next = if !messages.is_empty() {
+        "handle the messages, then read again with ack [their ids]"
+    } else if !ready_not_started.is_empty() {
+        "no messages: start the ready work below, or end your turn"
+    } else {
+        "nothing for you now: end your turn. devAgentics wakes you when a message arrives; do not read the inbox again or wait in a loop"
+    };
     Ok(
-        json!({"messages": messages, "team": team, "ready_not_started": ready_not_started, "staffing": staffing, "next": "handle the messages, then read again with ack [their ids]"}),
+        json!({"messages": messages, "team": team, "ready_not_started": ready_not_started, "staffing": staffing, "next": next}),
     )
 }
 
@@ -878,6 +889,33 @@ mod tests {
         let inbox = call(&task, "leader_inbox", &json!({})).unwrap();
         assert_eq!(inbox["messages"][0]["text"], "hammer-1 reports");
         assert!(inbox["ready_not_started"].is_array());
+    }
+
+    #[test]
+    fn an_empty_inbox_ends_the_leaders_turn_instead_of_another_read() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        let inbox = call(&task, "leader_inbox", &json!({})).unwrap();
+        assert_eq!(inbox["messages"], json!([]));
+        assert_eq!(inbox["ready_not_started"], json!([]));
+        assert!(
+            inbox["next"]
+                .as_str()
+                .unwrap()
+                .starts_with("nothing for you now: end your turn"),
+            "{inbox}"
+        );
+        task.transaction(|tx| {
+            tx.state
+                .say(crate::state::LEADER, "hammer-1 reports".into());
+            Ok(())
+        })
+        .unwrap();
+        let inbox = call(&task, "leader_inbox", &json!({})).unwrap();
+        assert_eq!(
+            inbox["next"],
+            "handle the messages, then read again with ack [their ids]"
+        );
     }
 
     #[test]

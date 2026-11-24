@@ -149,3 +149,10 @@ The Notes fixture with a Claude leader (Opus 5.5) and Codex workers. Everything 
 | CLI reads | 0 | 3 (one polling loop refused) |
 
 The `cli` run cost 26% less, but the CLI reads aren't what saved it. The Claude leader made only 3 reads. Most of the gap is the planning choice: the `cli` leader marked its two test items as `change`, which made them light (no reviewer agent), while the `mcp` leader marked all four as `feature`. It also made fewer leader calls. One pair can't separate these effects. CLI reads stay opt-in for Claude. For them to matter, Claude would have to prefer them: its role text still steers it to the MCP `leader_inbox`, and it tried to poll the inbox in a shell loop. The leader alone costs more than a whole Codex team did ($2.87–$3.20).
+
+### Fixes after the first Claude pair (24-11-2026, approved by the user)
+
+The user kept the leader models as they are (strong models on Claude and Codex). Two fixes:
+
+1. **No inbox polling.** An empty inbox with no ready work now answers "nothing for you now: end your turn. devAgentics wakes you when a message arrives; do not read the inbox again or wait in a loop". The leader's role says the same. In the MCP-only run, 43 of the leader's 171 calls were inbox reads, with a median of 337 bytes. Each call rereads about 77,000 tokens of context.
+2. **Test-only items are light whatever their label.** An item that only writes tests counts if it is marked `writes_tests` or every path is a test path. It is light when it has at most 3 explicit globs, no data effects, nothing in another lane builds on it, and no strict work depends on it; otherwise it keeps its review. In the pair, the same test items were light under the label `change` and standard under `feature`, which meant 2 extra reviewer runs.

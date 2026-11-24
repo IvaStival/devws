@@ -122,8 +122,11 @@ this workflow:
   side, what they share, and why one writer is not enough.
 - Read `leader_inbox`: your messages and a line per live agent (its lane,
   program, step and whether it works). Acknowledge the messages you handled
-  with `ack` on your next read, in the same call. Read the log or the status
-  only for what the inbox does not say. Native worker turns consume their own
+  with `ack` on your next read, in the same call. When the inbox has nothing
+  for you and no ready work waits, end your turn: devAgentics wakes you when a
+  message arrives. Never read it again to wait, and never wait in a shell
+  loop: each read costs a full turn. Read the log or the status only for what
+  the inbox does not say. Native worker turns consume their own
   queued messages. Readiness,
   capacity, environmental failures and pending reviews are in workflow status.
 - Workflow status is an outline: read one part with `section` (`runner`,
@@ -138,7 +141,8 @@ this workflow:
   devAgentics routes it from facts about the item: `ready_work` shows its
   `rigor` (light, standard, strict, critical), what it `required`s and why
   (`rigor_why`). Light is a change or bug fix in at most 3 explicit globs that
-  no other lane builds on; sensitive paths (auth, migrations, SQL, Docker, CI,
+  no other lane builds on, or an item that only writes tests, unless strict work
+  builds on those tests; sensitive paths (auth, migrations, SQL, Docker, CI,
   dependency files), data effects or 2 work failures make an item strict. You
   may raise an item's `rigor`, never set it below what devAgentics computes.
 - What two lanes agree on is an `interface` of the baseline (an API, a

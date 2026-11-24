@@ -208,6 +208,21 @@ const LIGHT_GLOBS: usize = 3;
 /// Work failures after which an item gets a stricter review.
 const STRICT_AFTER_FAILURES: u32 = 2;
 
+/// A test file or folder by the usual names: `tests/`, `test_*.py`,
+/// `*_test.go`, `*.test.ts`, `*.spec.js` …
+fn test_path(glob: &str) -> bool {
+    glob.split('/').any(|part| {
+        let part = part.to_ascii_lowercase();
+        matches!(
+            part.as_str(),
+            "test" | "tests" | "__tests__" | "spec" | "specs"
+        ) || part.starts_with("test_")
+            || part.contains("_test.")
+            || part.contains(".test.")
+            || part.contains(".spec.")
+    })
+}
+
 fn sensitive(glob: &str) -> bool {
     glob.split('/').any(|part| {
         let part = part.to_ascii_lowercase();
@@ -259,6 +274,28 @@ impl Application {
             .items
             .get(id)
             .with_context(|| format!("there is no item {id}"))?;
+        let mut why = self.strict_reasons(id, item);
+        if work_failures >= STRICT_AFTER_FAILURES {
+            why.push(format!("{work_failures} work failures"));
+        }
+        let floor = if !why.is_empty() {
+            Rigor::Strict
+        } else if self.light_shaped(id, item) || self.tests_only_for_unstrict_work(id, item) {
+            Rigor::Light
+        } else {
+            Rigor::Standard
+        };
+        Ok(Routing {
+            kind: item.kind,
+            rigor: item.rigor.map_or(floor, |declared| declared.max(floor)),
+            floor,
+            why,
+        })
+    }
+
+    /// What makes item `id` strict whatever its failures: a sensitive path,
+    /// stored data, or an interface shared with another lane.
+    fn strict_reasons(&self, id: &str, item: &Contract) -> Vec<String> {
         let mut why = Vec::new();
         let touched: Vec<&String> = item.allowed.iter().filter(|glob| sensitive(glob)).collect();
         if !touched.is_empty() {
@@ -277,22 +314,7 @@ impl Application {
         for interface in self.shared_interfaces(id) {
             why.push(format!("shares interface {interface} with another lane"));
         }
-        if work_failures >= STRICT_AFTER_FAILURES {
-            why.push(format!("{work_failures} work failures"));
-        }
-        let floor = if !why.is_empty() {
-            Rigor::Strict
-        } else if self.light_shaped(id, item) {
-            Rigor::Light
-        } else {
-            Rigor::Standard
-        };
-        Ok(Routing {
-            kind: item.kind,
-            rigor: item.rigor.map_or(floor, |declared| declared.max(floor)),
-            floor,
-            why,
-        })
+        why
     }
 
     /// The interfaces item `id` provides or consumes that cross a lane.
@@ -431,14 +453,35 @@ impl Application {
     /// Small work nothing else builds on: a change or bug fix in a few
     /// explicit globs that no item in another lane depends on.
     fn light_shaped(&self, id: &str, item: &Contract) -> bool {
+        matches!(item.kind, WorkKind::Change | WorkKind::Bugfix) && self.small_and_local(id, item)
+    }
+
+    fn small_and_local(&self, id: &str, item: &Contract) -> bool {
         let depended_on_elsewhere = self.items.values().any(|other| {
             other.lane != item.lane && other.dependencies.iter().any(|dependency| dependency == id)
         });
-        matches!(item.kind, WorkKind::Change | WorkKind::Bugfix)
-            && item.allowed.len() <= LIGHT_GLOBS
+        item.allowed.len() <= LIGHT_GLOBS
             && item.allowed.iter().all(|glob| glob != "**" && glob != "*")
             && item.data_effects.is_empty()
             && !depended_on_elsewhere
+    }
+
+    /// An item that only writes tests is light whatever kind the planner
+    /// gave it: the same work was light or standard depending on a word. Its
+    /// tests run on every candidate and the implementation's review sees
+    /// them. Not when work built on them is strict: that keeps a reviewed
+    /// test-first step.
+    fn tests_only_for_unstrict_work(&self, id: &str, item: &Contract) -> bool {
+        let tests_only = !item.allowed.is_empty()
+            && (item.writes_tests || item.allowed.iter().all(|glob| test_path(glob)));
+        let builds_on_it_strictly = self.items.iter().any(|(other_id, other)| {
+            other.dependencies.iter().any(|dependency| dependency == id)
+                && (!self.strict_reasons(other_id, other).is_empty()
+                    || other
+                        .rigor
+                        .is_some_and(|declared| declared >= Rigor::Strict))
+        });
+        tests_only && self.small_and_local(id, item) && !builds_on_it_strictly
     }
 }
 
@@ -1992,6 +2035,84 @@ pub mod tests {
         assert_eq!(
             Rigor::Light.required(),
             ["candidate_check", "accept_reason"]
+        );
+    }
+
+    /// The Notes shape: a test item, and an implementation that depends on
+    /// it and protects its tests, both labelled feature, in one lane.
+    fn tests_then_implementation(implementation_allowed: &str) -> Application {
+        let mut application = baseline();
+        let template = application.items["S01-B01"].clone();
+        application.items.clear();
+        application.items.insert(
+            "api-tests".into(),
+            Contract {
+                kind: WorkKind::Feature,
+                allowed: vec!["tests/test_notes_api.py".into()],
+                writes_tests: true,
+                dependencies: vec![],
+                data_effects: vec![],
+                ..template.clone()
+            },
+        );
+        application.items.insert(
+            "api-impl".into(),
+            Contract {
+                kind: WorkKind::Feature,
+                allowed: vec![implementation_allowed.into()],
+                dependencies: vec!["api-tests".into()],
+                protected_tests: vec!["tests/test_notes_api.py".into()],
+                data_effects: vec![],
+                ..template
+            },
+        );
+        application
+    }
+
+    #[test]
+    fn an_item_that_only_writes_tests_is_light_whatever_its_label() {
+        let application = tests_then_implementation("api/notes_api.py");
+        let tests = application.routing("api-tests", 0).unwrap();
+        assert_eq!((tests.floor, tests.rigor), (Rigor::Light, Rigor::Light));
+        let implementation = application.routing("api-impl", 0).unwrap();
+        assert_eq!(
+            implementation.rigor,
+            Rigor::Standard,
+            "the code keeps its reviewer"
+        );
+
+        let mut by_path = application.clone();
+        by_path.items.get_mut("api-tests").unwrap().writes_tests = false;
+        assert_eq!(by_path.routing("api-tests", 0).unwrap().floor, Rigor::Light);
+        for glob in [
+            "tests/test_notes.py",
+            "web/src/app.test.ts",
+            "pkg/store_test.go",
+            "spec/models/user_spec.rb",
+        ] {
+            assert!(test_path(glob), "{glob}");
+        }
+        assert!(!test_path("api/notes_api.py"));
+        assert!(!test_path("docs/testing.md"));
+    }
+
+    #[test]
+    fn tests_for_strict_work_keep_their_review() {
+        let application = tests_then_implementation("api/auth/session.py");
+        assert_eq!(
+            application.routing("api-impl", 0).unwrap().floor,
+            Rigor::Strict
+        );
+        assert_eq!(
+            application.routing("api-tests", 0).unwrap().floor,
+            Rigor::Standard,
+            "a reviewed test-first step for strict work"
+        );
+        let mut declared = tests_then_implementation("api/notes_api.py");
+        declared.items.get_mut("api-impl").unwrap().rigor = Some(Rigor::Critical);
+        assert_eq!(
+            declared.routing("api-tests", 0).unwrap().floor,
+            Rigor::Standard
         );
     }
 
