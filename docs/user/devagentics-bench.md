@@ -220,7 +220,9 @@ as MCP. Each program limits the Leader's shell to the one command:
   log says why ("leader reads stay on MCP: …"). Claude is accepted only
   on versions the probe passed (2.1.331). After a Claude update, run
   `scripts/probe_claude_leader.sh` and add the version it prints to
-  `CLAUDE_VERIFIED` in `agentic/src/start.rs`.
+  `CLAUDE_VERIFIED` in `agentic/src/start.rs`. The probe makes a
+  disposable reviewed task, requires the read to run and print its JSON,
+  and requires each other command to be refused as that exact command.
 
 The commands require the matching worktree and an opted-in reviewed task. Other
 Leader operations and the entire worker workflow continue through MCP.
@@ -243,7 +245,12 @@ devagentics bench report <task> --leader-transcript ~/.codex/sessions/…/rollou
 ```
 
 The report then shows `leader CLI reads (ledger / transcripts)` and
-counts the larger of the two in `leader calls per accepted step`.
+counts the larger of the two in `leader calls per accepted step`. A
+transcript call counts only when it is one plain `<devagentics>
+leader-read <task> <view>` invocation for this task and its result
+succeeded (Codex `exit_code` 0, a Claude tool result without an error).
+Mentions in prompts, `printf` or `echo`, chains, failed reads and calls
+without a result are not counted.
 Both arms retain MCP. Record the narrower `task_status` schema in the
 CLI arm and the regular schema in the MCP arm.
 

@@ -151,43 +151,101 @@ fn leader_calls(telemetry: &crate::telemetry::Summary, transcript_reads: Option<
 }
 
 /// The `leader-read <task> <view>` commands a leader ran, by view, from its
-/// transcripts: Codex's tool calls (`custom_tool_call`, `function_call`) and
-/// Claude's Bash `tool_use`. Only the commands are read, never their output
-/// or the conversation.
+/// transcripts (Codex rollouts, Claude sessions). A call counts only when it
+/// is one plain invocation of that command for this task, the way the
+/// leader's rule allows it, and its result says it succeeded: Codex's
+/// `exit_code` 0, a Claude `tool_result` that is no error. Text that only
+/// mentions the command (a prompt, `printf`, a chain) is not a read.
 pub fn cli_reads_in_transcript(transcript: &str, task: &str) -> BTreeMap<String, u64> {
-    let marker = format!("leader-read {task} ");
-    let mut reads = BTreeMap::new();
+    let mut commands: BTreeMap<String, String> = BTreeMap::new();
+    let mut succeeded = std::collections::BTreeSet::new();
     for line in transcript.lines() {
         let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
         let payload = &event["payload"];
-        let mut commands: Vec<&str> = Vec::new();
-        if matches!(
-            payload["type"].as_str(),
-            Some("custom_tool_call" | "function_call")
-        ) {
-            commands.extend(payload["input"].as_str());
-            commands.extend(payload["arguments"].as_str());
+        let call = payload["call_id"].as_str().map(str::to_string);
+        match payload["type"].as_str() {
+            Some("custom_tool_call") => {
+                if let (Some(call), Some(command)) = (
+                    call,
+                    payload["input"].as_str().and_then(codex_script_command),
+                ) {
+                    commands.insert(call, command);
+                }
+            }
+            Some("function_call") => {
+                let arguments: serde_json::Value = payload["arguments"]
+                    .as_str()
+                    .and_then(|text| serde_json::from_str(text).ok())
+                    .unwrap_or_default();
+                if let (Some(call), Some(command)) = (call, arguments["cmd"].as_str()) {
+                    commands.insert(call, command.to_string());
+                }
+            }
+            Some("custom_tool_call_output" | "function_call_output") => {
+                let output = payload["output"].to_string();
+                if let Some(call) = call
+                    && (output.contains("\\\"exit_code\\\":0,")
+                        || output.contains("\\\"exit_code\\\":0}"))
+                {
+                    succeeded.insert(call);
+                }
+            }
+            _ => {}
         }
         for block in event["message"]["content"].as_array().into_iter().flatten() {
-            if block["type"] == "tool_use" && block["name"] == "Bash" {
-                commands.extend(block["input"]["command"].as_str());
-            }
-        }
-        for command in commands {
-            for (index, _) in command.match_indices(&marker) {
-                let view: String = command[index + marker.len()..]
-                    .chars()
-                    .take_while(char::is_ascii_alphabetic)
-                    .collect();
-                if !view.is_empty() {
-                    *reads.entry(format!("cli:{view}")).or_default() += 1;
+            let id = block["id"].as_str().or(block["tool_use_id"].as_str());
+            match (block["type"].as_str(), id) {
+                (Some("tool_use"), Some(id)) if block["name"] == "Bash" => {
+                    if let Some(command) = block["input"]["command"].as_str() {
+                        commands.insert(id.to_string(), command.to_string());
+                    }
                 }
+                (Some("tool_result"), Some(id)) if block["is_error"] != true => {
+                    succeeded.insert(id.to_string());
+                }
+                _ => {}
             }
         }
     }
+    let mut reads = BTreeMap::new();
+    for (call, command) in &commands {
+        if succeeded.contains(call)
+            && let Some(view) = leader_read_view(command, task)
+        {
+            *reads.entry(format!("cli:{view}")).or_default() += 1;
+        }
+    }
     reads
+}
+
+/// The `cmd` string of a Codex code-mode `exec_command` call.
+fn codex_script_command(script: &str) -> Option<String> {
+    let start = script.find("cmd:")? + "cmd:".len();
+    let literal = script[start..].trim_start();
+    let mut stream = serde_json::Deserializer::from_str(literal).into_iter::<String>();
+    stream.next()?.ok()
+}
+
+/// The view when `command` is exactly `<devagentics> leader-read <task>
+/// <view> …`, with no shell operator that could make it something else.
+fn leader_read_view(command: &str, task: &str) -> Option<String> {
+    let command = command.trim();
+    if command.contains(['\n', ';', '&', '|', '>', '<', '`', '$', '(', ')']) {
+        return None;
+    }
+    let rest = if let Some(quoted) = command.strip_prefix('\'') {
+        let (program, rest) = quoted.split_once('\'')?;
+        (program.rsplit('/').next()? == "devagentics").then_some(rest)?
+    } else {
+        let (program, rest) = command.split_once(' ')?;
+        (program.rsplit('/').next()? == "devagentics").then_some(rest)?
+    };
+    let mut words = rest.split_whitespace();
+    (words.next()? == "leader-read" && words.next()? == task).then_some(())?;
+    let view = words.next()?;
+    matches!(view, "progress" | "order" | "inbox" | "guide").then(|| view.to_string())
 }
 
 fn escaped_defects(state: &State, log: &[Entry]) -> BTreeMap<String, u64> {
@@ -1051,23 +1109,63 @@ mod tests {
     }
 
     #[test]
-    fn cli_reads_are_counted_from_codex_and_claude_transcripts_only_for_the_task() {
-        let codex = serde_json::json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"exec",
-            "input":"text(await tools.exec_command({cmd:\"'/bin/devagentics' leader-read feat-x progress\"}));"}});
-        let claude = serde_json::json!({"type":"assistant","message":{"content":[
-            {"type":"tool_use","name":"Bash","input":{"command":"/bin/devagentics leader-read feat-x order o1"}}]}});
-        let other_task = serde_json::json!({"type":"response_item","payload":{"type":"function_call",
-            "arguments":"{\"cmd\":\"devagentics leader-read feat-y inbox\"}"}});
-        let mentioned = serde_json::json!({"type":"response_item","payload":{"type":"message",
-            "content":[{"text":"use `devagentics leader-read feat-x progress`"}]}});
-        let transcript = [codex.clone(), claude, other_task, mentioned, codex]
+    fn only_cli_reads_that_ran_for_the_task_are_counted() {
+        let codex_call = |id: &str, cmd: &str| {
+            serde_json::json!({"type":"response_item","payload":{"type":"custom_tool_call","call_id":id,"name":"exec",
+                "input":format!("text(await tools.exec_command({{cmd:{},max_output_tokens:2000}}));", serde_json::json!(cmd))}})
+        };
+        let codex_output = |id: &str, exit: u8| {
+            let inner = serde_json::json!({"exit_code": exit, "output": "{}"}).to_string();
+            serde_json::json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":id,
+                "output":[{"type":"input_text","text":"Script completed"},{"type":"input_text","text":inner}]}})
+        };
+        let claude = |id: &str, command: &str, error: bool| {
+            [
+                serde_json::json!({"type":"assistant","message":{"content":[
+                    {"type":"tool_use","id":id,"name":"Bash","input":{"command":command}}]}}),
+                serde_json::json!({"type":"user","message":{"content":[
+                    {"type":"tool_result","tool_use_id":id,"is_error":error,"content":"{}"}]}}),
+            ]
+        };
+        let mut events = vec![
+            codex_call("c1", "'/bin/devagentics' leader-read feat-x progress"),
+            codex_output("c1", 0),
+            codex_call("c2", "printf '%s' 'devagentics leader-read feat-x inbox'"),
+            codex_output("c2", 0),
+            codex_call("c3", "/bin/devagentics leader-read feat-x inbox"),
+            codex_output("c3", 1),
+            codex_call("c4", "/bin/devagentics leader-read feat-x progress; ls"),
+            codex_output("c4", 0),
+            codex_call("c5", "/bin/devagentics leader-read feat-y inbox"),
+            codex_output("c5", 0),
+            codex_call("c6", "/bin/devagentics leader-read feat-x inbox"),
+            serde_json::json!({"type":"response_item","payload":{"type":"message",
+                "content":[{"text":"use `devagentics leader-read feat-x progress`"}]}}),
+        ];
+        events.extend(claude(
+            "t1",
+            "/bin/devagentics leader-read feat-x order o1",
+            false,
+        ));
+        events.extend(claude(
+            "t2",
+            "/bin/devagentics leader-read feat-x order o2",
+            true,
+        ));
+        events.extend(claude(
+            "t3",
+            "echo /bin/devagentics leader-read feat-x order o3",
+            false,
+        ));
+        let transcript = events
             .iter()
             .map(|event| event.to_string())
             .collect::<Vec<_>>()
             .join("\n");
         assert_eq!(
             cli_reads_in_transcript(&transcript, "feat-x"),
-            BTreeMap::from([("cli:order".into(), 1), ("cli:progress".into(), 2)])
+            BTreeMap::from([("cli:order".into(), 1), ("cli:progress".into(), 1)]),
+            "printf, a failed read, a chain, another task, a call with no result and an echo are not reads"
         );
     }
 
