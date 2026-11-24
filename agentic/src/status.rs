@@ -368,7 +368,7 @@ mod tests {
         assert_eq!(
             summary["leader"],
             json!({
-                "program": "claude", "other": "codex (gpt-6.1-sol)",
+                "program": "claude (claude-opus-5-5)", "other": "codex (gpt-6.1-sol)",
                 "other_limits": { "five_hour_percent": null, "week_percent": null },
                 "other_run_out": false, "switch_pending": null,
             })

@@ -1217,7 +1217,7 @@ mod tests {
             .expect("moved back");
         assert_eq!(
             what,
-            "the leader moved to claude: codex has used 95% of its 5-hour window"
+            "the leader moved to claude (claude-opus-5-5): codex has used 95% of its 5-hour window"
         );
         assert!(
             devws
@@ -1251,7 +1251,10 @@ mod tests {
 
         assert!(!switch_pending(&task).unwrap());
         let said = request_switch(&home, &task, &devws, Some("the user wants Claude")).unwrap();
-        assert_eq!(said, "The leader moves to claude once its turn is over.");
+        assert_eq!(
+            said,
+            "The leader moves to claude (claude-opus-5-5) once its turn is over."
+        );
         assert!(switch_pending(&task).unwrap());
         assert_eq!(
             hand_over(&home, &task, &devws, "d").unwrap(),
@@ -1263,15 +1266,15 @@ mod tests {
         let what = hand_over(&home, &task, &devws, "d")
             .unwrap()
             .expect("moved");
-        assert_eq!(what, "the leader moved to claude: the user wants Claude");
+        assert_eq!(
+            what,
+            "the leader moved to claude (claude-opus-5-5): the user wants Claude"
+        );
         assert_eq!(leader_agent(&task).as_deref(), Some("claude"));
         assert!(!switch_pending(&task).unwrap(), "the request is done");
-        assert!(
-            task.log_lines()
-                .unwrap()
-                .iter()
-                .any(|line| line.contains("the leader moved to claude: the user wants Claude"))
-        );
+        assert!(task.log_lines().unwrap().iter().any(|line| {
+            line.contains("the leader moved to claude (claude-opus-5-5): the user wants Claude")
+        }));
 
         // And back again, with no reason given.
         request_switch(&home, &task, &devws, None).unwrap();
@@ -1301,7 +1304,7 @@ mod tests {
         let said = request_lead(&home, &task, &devws, "claude_work", None).unwrap();
         assert_eq!(
             said,
-            "The leader moves to claude_work once its turn is over."
+            "The leader moves to claude_work (claude-opus-5-5) once its turn is over."
         );
         assert_eq!(
             hand_over(&home, &task, &devws, "d").unwrap(),
@@ -1313,7 +1316,10 @@ mod tests {
         let what = hand_over(&home, &task, &devws, "d")
             .unwrap()
             .expect("moved");
-        assert_eq!(what, "the leader moved to claude_work: the user asked");
+        assert_eq!(
+            what,
+            "the leader moved to claude_work (claude-opus-5-5): the user asked"
+        );
         assert_eq!(leader_agent(&task).as_deref(), Some("claude_work"));
         assert_eq!(
             task.state().unwrap().leader_pick.as_deref(),
@@ -1581,7 +1587,7 @@ mod tests {
         );
         assert_eq!(
             message,
-            "codex is turned off for this task: the leader stays on claude"
+            "codex is turned off for this task: the leader stays on claude (claude-opus-5-5)"
         );
         // Run out, the leader would move on its own; not to an account that is off.
         devws.set_limits("claude", five_hour(99));
@@ -1599,7 +1605,7 @@ mod tests {
         );
         assert_eq!(
             message,
-            "codex has used 97% of its 5-hour window: the leader stays on claude"
+            "codex has used 97% of its 5-hour window: the leader stays on claude (claude-opus-5-5)"
         );
         assert!(!switch_pending(&task).unwrap());
 
@@ -1663,7 +1669,8 @@ mod tests {
 
         let same = led_by(&role, "claude_work", &devws).unwrap();
         assert_eq!(same.agent, "claude_work");
-        assert_eq!(same.effort.as_deref(), Some("high"));
+        assert_eq!(same.effort.as_deref(), Some("medium"));
+        assert_eq!(same.model.as_deref(), Some("claude-opus-5-5"));
         assert_eq!(
             same.fallback, role.fallback,
             "it can still move to the fallback"

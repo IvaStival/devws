@@ -1,7 +1,9 @@
 +++
 description = "The CTO: talks to you, opens agents, gives every order, reviews"
 agent = "claude"
-effort = "high"
+# Opus 5.5 at medium: a strong model for the problems, at its normal effort.
+model = "claude-opus-5-5"
+effort = "medium"
 writes = false
 
 # The leader's other program. It moves when asked (switch_leader), or when
