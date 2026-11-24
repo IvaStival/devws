@@ -398,21 +398,15 @@ enum SwitchArg {
     Global,
     Floor,
     Senior,
+    /// A reviewed task's leader, when Claude and Codex have both run out
+    Leader,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
 enum GroupArg {
     Floor,
     Senior,
-}
-
-impl From<GroupArg> for roles::Group {
-    fn from(group: GroupArg) -> Self {
-        match group {
-            GroupArg::Floor => roles::Group::Floor,
-            GroupArg::Senior => roles::Group::Senior,
-        }
-    }
+    Leader,
 }
 
 #[derive(Clone, Copy, PartialEq, ValueEnum)]
@@ -899,6 +893,7 @@ fn run() -> Result<()> {
                         SwitchArg::Global => settings.enabled = on,
                         SwitchArg::Floor => settings.floor.enabled = on,
                         SwitchArg::Senior => settings.senior.enabled = on,
+                        SwitchArg::Leader => settings.leader.enabled = on,
                     }
                 }
                 OpencodeAction::Model { group, model } => {
@@ -908,8 +903,12 @@ fn run() -> Result<()> {
                             "name the model as provider/model, as `opencode models` lists it: {model}"
                         );
                     }
-                    settings.group_mut(group.into())?.model =
-                        Some(model.to_string()).filter(|model| !model.is_empty());
+                    let settings = match group {
+                        GroupArg::Floor => settings.group_mut(roles::Group::Floor)?,
+                        GroupArg::Senior => settings.group_mut(roles::Group::Senior)?,
+                        GroupArg::Leader => &mut settings.leader,
+                    };
+                    settings.model = Some(model.to_string()).filter(|model| !model.is_empty());
                 }
                 OpencodeAction::Account { name } => {
                     devws.agent_kind(&name).ok().filter(|kind| kind.provider().own_switches()).with_context(|| {

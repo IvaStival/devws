@@ -21,6 +21,9 @@ pub struct OpencodeSettings {
     pub account: String,
     pub floor: GroupSettings,
     pub senior: GroupSettings,
+    /// A reviewed task's leader, as its last resort: when its own program
+    /// and its fallback have both used their limits (crate::leader).
+    pub leader: GroupSettings,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -40,6 +43,7 @@ impl Default for OpencodeSettings {
             account: DEFAULT_ACCOUNT.to_string(),
             floor: GroupSettings::default(),
             senior: GroupSettings::default(),
+            leader: GroupSettings::default(),
         }
     }
 }
@@ -76,7 +80,8 @@ impl OpencodeSettings {
         match group {
             Group::Floor => Some(&self.floor),
             Group::Senior => Some(&self.senior),
-            // The leader runs the team; it never runs on opencode.
+            // A leader is never started as a worker is: it moves to opencode
+            // only as its last resort (`leader_candidate`).
             Group::Cto => None,
         }
     }
@@ -85,7 +90,7 @@ impl OpencodeSettings {
         match group {
             Group::Floor => Ok(&mut self.floor),
             Group::Senior => Ok(&mut self.senior),
-            Group::Cto => bail!("the leader does not run on opencode"),
+            Group::Cto => bail!("the leader's opencode settings are `leader`, not a group's"),
         }
     }
 
@@ -107,10 +112,19 @@ impl OpencodeSettings {
                 settings.model.as_deref().unwrap_or("-")
             )
         };
+        let leader_state = if self.leader.enabled && !self.enabled {
+            "ignored"
+        } else {
+            switch(self.leader.enabled)
+        };
         [
             format!("global\t{}", switch(self.enabled)),
             group_line(Group::Floor),
             group_line(Group::Senior),
+            format!(
+                "leader\t{leader_state}\t{}",
+                self.leader.model.as_deref().unwrap_or("-")
+            ),
             format!("account\t{}", self.account),
         ]
         .join("\n")
@@ -120,6 +134,21 @@ impl OpencodeSettings {
     /// the group's are both on.
     pub fn allows(&self, group: Group) -> bool {
         self.enabled && self.group(group).is_some_and(|settings| settings.enabled)
+    }
+
+    /// The leader's last resort: the account and model, when the global and
+    /// leader switches are on and the leader has a model.
+    pub fn leader_candidate(&self) -> Option<Fallback> {
+        if !(self.enabled && self.leader.enabled) {
+            return None;
+        }
+        Some(Fallback {
+            agent: self.account.clone(),
+            model: Some(self.leader.model.clone()?),
+            effort: None,
+            approvals: None,
+            sandbox: None,
+        })
     }
 
     /// The program a `group` agent tries first, when opencode is on for it
@@ -202,10 +231,29 @@ mod tests {
     }
 
     #[test]
-    fn the_leader_never_runs_on_opencode() {
+    fn the_leader_is_never_a_worker_group_and_runs_on_opencode_only_when_switched_on() {
         let mut settings = switched_on(Some("opencode/deepseek-v4.1-flash"));
         assert!(!settings.allows(Group::Cto));
         assert!(settings.group_mut(Group::Cto).is_err());
+        assert_eq!(settings.leader_candidate(), None, "its switch is off");
+        settings.leader.enabled = true;
+        assert_eq!(settings.leader_candidate(), None, "it has no model");
+        settings.leader.model = Some("opencode/strong".into());
+        assert_eq!(
+            settings.leader_candidate().unwrap().model.as_deref(),
+            Some("opencode/strong")
+        );
+        settings.enabled = false;
+        assert_eq!(
+            settings.leader_candidate(),
+            None,
+            "the global switch is off"
+        );
+        assert!(
+            settings
+                .describe()
+                .contains("leader\tignored\topencode/strong")
+        );
     }
 
     #[test]
@@ -213,7 +261,7 @@ mod tests {
         let mut settings = switched_on(Some("opencode/deepseek-v4.1-flash"));
         assert_eq!(
             settings.describe(),
-            "global\ton\nfloor\ton\topencode/deepseek-v4.1-flash\nsenior\toff\t-\naccount\topencode"
+            "global\ton\nfloor\ton\topencode/deepseek-v4.1-flash\nsenior\toff\t-\nleader\toff\t-\naccount\topencode"
         );
         settings.enabled = false;
         assert!(

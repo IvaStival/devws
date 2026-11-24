@@ -63,10 +63,11 @@ credit_line() {
 }
 
 rows() {
-  local global floor senior floor_model senior_model registered
+  local global floor senior leader floor_model senior_model leader_model registered
   global="$(field global)"
   IFS=$'\t' read -r floor floor_model <<<"$(field floor)"
   IFS=$'\t' read -r senior senior_model <<<"$(field senior)"
+  IFS=$'\t' read -r leader leader_model <<<"$(field leader)"
   registered="not registered: register and log in"
   ! registered || registered="$(agent_home "$account")"
   printf 'global   OpenCode (mandatory): %s\n' "$global"
@@ -74,6 +75,8 @@ rows() {
   printf 'floor-model    Floor model: %s\n' "$floor_model"
   printf 'senior   Seniors: %s\n' "$senior"
   printf 'senior-model   Senior model: %s\n' "$senior_model"
+  printf 'leader   Leader when Claude and Codex run out: %s\n' "$leader"
+  printf 'leader-model   Leader model: %s\n' "$leader_model"
   printf 'account  Account: %s (%s)\n' "$account" "$registered"
   [ "$registered" = "${registered#not}" ] && printf 'login    Log in again (opencode auth login)\n'
   [ "$registered" = "${registered#not}" ] && printf '%s\n' "$(credit_line)"
@@ -147,12 +150,13 @@ while :; do
   case "${choice%% *}" in
     '') exit 0 ;;
     global) "$agentic" opencode switch global "$(flipped "$(field global)")" >/dev/null ;;
-    floor | senior)
+    floor | senior | leader)
       state="$(field "${choice%% *}")"
       "$agentic" opencode switch "${choice%% *}" "$(flipped "${state%%$'\t'*}")" >/dev/null
       ;;
     floor-model) choose_model floor ;;
     senior-model) choose_model senior ;;
+    leader-model) choose_model leader ;;
     account) register || pause ;;
     login) login || pause ;;
     credit) set_balance ;;

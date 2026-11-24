@@ -468,6 +468,8 @@ devagentics opencode show                          # switches, models, account
 devagentics opencode switch global on              # mandatory: off, nothing runs on opencode
 devagentics opencode switch floor on               # and/or: senior
 devagentics opencode model floor opencode/<model>  # from `opencode models`
+devagentics opencode switch leader on              # a reviewed leader, when Claude and Codex run out
+devagentics opencode model leader opencode/<model> # a stronger one you pay for
 ```
 
 - **Switches.** The global switch is mandatory: while it is off, the floor's
@@ -475,9 +477,15 @@ devagentics opencode model floor opencode/<model>  # from `opencode models`
   no agent runs on opencode, even one whose role names it. With both on, a
   group's agents try opencode first, on the group's model, and fall back to
   their role's Claude or Codex program when opencode cannot start them. These
-  switches do not move the leader: a reviewed task's leader runs on opencode
-  only when you pick an opencode account to lead it, and then in an isolated
-  configuration with only the leader's tools (legacy tasks refuse it). Saved
+  switches do not move the leader. A reviewed task's leader runs on opencode
+  when you pick an opencode account to lead it, or as its last resort: with
+  `devagentics opencode switch leader on` and `devagentics opencode model
+  leader <provider/model>`, a leader whose program and fallback have both used
+  95% of a window moves to opencode on that model when the account has credit
+  left (the devws menu's balance; unknown or zero credit keeps it waiting), and
+  moves back to its own program, or else the fallback, once one has room. On
+  opencode it runs in an isolated configuration with only the leader's tools;
+  legacy tasks never use it. Saved
   in `~/.devagentics/opencode.toml`;
   agents started from then on follow it.
 - **Account.** The screen registers the `opencode` devws agent (its folder is

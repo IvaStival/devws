@@ -541,47 +541,8 @@ pub fn hand_over(
     }
     let role = leader_role(home, task, devws)?;
     let state = task.state()?;
-    // A pick moves the leader to the picked account, wherever it runs now;
-    // otherwise it moves between its role's program and the fallback.
-    let moving_to_pick = state.leader_switch.is_some()
-        && state.leader_pick.as_deref() == Some(role.agent.as_str())
-        && state.leader_agent.as_deref() != Some(role.agent.as_str());
-    let (now, other) = if moving_to_pick {
-        let running = state.leader_agent.clone().unwrap_or_default();
-        (
-            Role {
-                agent: running,
-                model: None,
-                ..role.clone()
-            },
-            Role {
-                fallback: None,
-                ..role.clone()
-            },
-        )
-    } else {
-        let Some(pair) = now_and_other(&role, &state) else {
-            return Ok(None);
-        };
-        pair
-    };
-    if !crate::accounts::is_enabled(&state, &other.agent) {
+    let Some((now, other, why)) = next_leader(home, &role, &state, devws)? else {
         return Ok(None);
-    }
-    if state.workflow == crate::execution::Workflow::Reviewed
-        && !reviewed_leader_allowed(devws.agent_kind(&other.agent)?, state.codex_team)
-    {
-        return Ok(None);
-    }
-    let why = match &state.leader_switch {
-        Some(asked) => asked.clone(),
-        None => {
-            let Some(out) = reason_to_move(devws.limits(&now.agent)?, devws.limits(&other.agent)?)
-            else {
-                return Ok(None);
-            };
-            format!("{} has used {out}", now.agent)
-        }
     };
     let workspace = task.config()?.workspace;
     let Some(pane) = devws.pane_with_role(&workspace, "agent")? else {
@@ -614,6 +575,121 @@ pub fn hand_over(
         Ok(())
     })?;
     Ok(Some(what))
+}
+
+/// Where the leader moves next, from where, and why; `None` when it stays.
+/// A pick moves it to the picked account, wherever it runs now; otherwise it
+/// moves between its role's program and the fallback. When both have used
+/// their limits, a reviewed task's leader moves to OpenCode if the user
+/// switched the leader on there (`devagentics opencode switch leader on`,
+/// with a model) and its account has credit left; from OpenCode it moves
+/// back to the first of the two with room again, its role's own first.
+fn next_leader(
+    home: &Home,
+    role: &Role,
+    state: &State,
+    devws: &dyn Devws,
+) -> Result<Option<(Role, Role, String)>> {
+    let reviewed = state.workflow == crate::execution::Workflow::Reviewed;
+    let opencode = crate::opencode::OpencodeSettings::load(home)?;
+    let last_resort = opencode.leader_candidate().map(|fallback| Role {
+        agent: fallback.agent,
+        model: fallback.model,
+        effort: None,
+        fallback: None,
+        ..role.clone()
+    });
+    let usable = |candidate: &Role| -> Result<bool> {
+        Ok(crate::accounts::is_enabled(state, &candidate.agent)
+            && (!reviewed
+                || reviewed_leader_allowed(devws.agent_kind(&candidate.agent)?, state.codex_team)))
+    };
+    let moving_to_pick = state.leader_switch.is_some()
+        && state.leader_pick.as_deref() == Some(role.agent.as_str())
+        && state.leader_agent.as_deref() != Some(role.agent.as_str());
+    if moving_to_pick {
+        let running = state.leader_agent.clone().unwrap_or_default();
+        let now = Role {
+            agent: running,
+            model: None,
+            ..role.clone()
+        };
+        let other = Role {
+            fallback: None,
+            ..role.clone()
+        };
+        let why = state.leader_switch.clone().unwrap_or_default();
+        return Ok(usable(&other)?.then_some((now, other, why)));
+    }
+    let own = Role {
+        fallback: None,
+        ..role.clone()
+    };
+    let fallback = role.on_fallback();
+    if let Some(now) = last_resort.as_ref().filter(|last| {
+        reviewed
+            && state.leader_agent.as_deref() == Some(last.agent.as_str())
+            && last.agent != own.agent
+            && fallback
+                .as_ref()
+                .is_none_or(|fallback| fallback.agent != last.agent)
+    }) {
+        for back in std::iter::once(own).chain(fallback) {
+            let limits = devws.limits(&back.agent)?;
+            if usable(&back)?
+                && past_limit(limits.week).is_none()
+                && past_limit(limits.five_hour).is_none()
+            {
+                let why = format!("{} has room again", back.agent);
+                return Ok(Some((now.clone(), back, why)));
+            }
+        }
+        return Ok(None);
+    }
+    let Some((now, other)) = now_and_other(role, state) else {
+        return Ok(None);
+    };
+    if let Some(asked) = &state.leader_switch {
+        return Ok(usable(&other)?.then_some((now, other, asked.clone())));
+    }
+    let (now_limits, other_limits) = (devws.limits(&now.agent)?, devws.limits(&other.agent)?);
+    // Both out (the other may still be waiting out a window): OpenCode
+    // leads now instead of the team waiting, when the user set it up.
+    if let (Some(now_out), Some(other_out)) = (run_out_of(now_limits), run_out_of(other_limits))
+        && let Some(last) = last_resort.filter(|_| reviewed)
+        && usable(&last)?
+        && devws
+            .credit(&last.agent)?
+            .is_some_and(|credit| credit.left() > 0.0)
+    {
+        let why = format!(
+            "{} has used {now_out} and {} {other_out}",
+            now.agent, other.agent
+        );
+        return Ok(Some((now, last, why)));
+    }
+    let Some(out) = reason_to_move(now_limits, other_limits) else {
+        return Ok(None);
+    };
+    Ok(usable(&other)?.then(|| {
+        let why = format!("{} has used {out}", now.agent);
+        (now, other, why)
+    }))
+}
+
+/// The window an account has used up, the week first.
+fn run_out_of(limits: Limits) -> Option<RunOut> {
+    past_limit(limits.week)
+        .map(|used| RunOut {
+            window: "week",
+            used,
+        })
+        .or_else(|| {
+            past_limit(limits.five_hour).map(|used| RunOut {
+                window: "5-hour window",
+                used,
+            })
+        })
 }
 
 /// How long a move waits for the outgoing leader's handoff note.
@@ -1001,6 +1077,123 @@ mod tests {
         assert!(
             !args(&task).contains("leader-read"),
             "a claude that does not run stays on MCP"
+        );
+    }
+
+    /// A reviewed task led by claude, codex as its fallback, and the
+    /// leader's opencode switch on with a model.
+    fn team_with_opencode_leader(
+        dir: &TempDir,
+        credit: Option<f64>,
+    ) -> (Home, FakeDevws, Task, TempDir) {
+        let (home, devws, task, repo) = team(dir, 40, 20);
+        let mut devws = devws.with_kind("opencode", Program::Opencode);
+        if let Some(left) = credit {
+            devws = devws.with_credit(
+                "opencode",
+                crate::devws::Credit {
+                    balance: left,
+                    used: 0.0,
+                },
+            );
+        }
+        task.transaction(|tx| {
+            tx.state.workflow = crate::execution::Workflow::Reviewed;
+            tx.state.codex_team = true;
+            Ok(())
+        })
+        .unwrap();
+        crate::opencode::OpencodeSettings {
+            enabled: true,
+            leader: crate::opencode::GroupSettings {
+                enabled: true,
+                model: Some("opencode/strong".into()),
+            },
+            ..Default::default()
+        }
+        .save(&home)
+        .unwrap();
+        (home, devws, task, repo)
+    }
+
+    #[test]
+    fn with_claude_and_codex_used_up_the_leader_moves_to_opencode_and_back() {
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, _repo) = team_with_opencode_leader(&dir, Some(5.0));
+        idle_leader(&devws, &task);
+        devws.set_limits("claude", limits(10, 96));
+        devws.set_limits("codex", limits(97, 20));
+        let what = hand_over(&home, &task, &devws, "d")
+            .unwrap()
+            .expect("moved to opencode");
+        assert_eq!(
+            what,
+            "the leader moved to opencode (opencode/strong): claude has used 96% of its week and codex 97% of its 5-hour window"
+        );
+        assert_eq!(leader_agent(&task).as_deref(), Some("opencode"));
+        let on_opencode = args(&task);
+        assert!(on_opencode.starts_with("--devagentics-leader\0d\0opencode-leader\0feat-x\0"));
+        assert!(on_opencode.contains("\0--model\0opencode/strong\0"));
+
+        devws.set_state("%1", PaneState::Done);
+        assert_eq!(
+            hand_over(&home, &task, &devws, "d").unwrap(),
+            None,
+            "both still out"
+        );
+        devws.set_limits("codex", limits(10, 20));
+        let back = hand_over(&home, &task, &devws, "d")
+            .unwrap()
+            .expect("codex has room");
+        assert_eq!(
+            back,
+            "the leader moved to codex (gpt-6.1-sol): codex has room again"
+        );
+        assert_eq!(leader_agent(&task).as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn the_leader_moves_to_opencode_only_with_credit_its_switch_and_a_reviewed_task() {
+        let out = |dir: &TempDir, credit: Option<f64>| {
+            let (home, devws, task, repo) = team_with_opencode_leader(dir, credit);
+            idle_leader(&devws, &task);
+            devws.set_limits("claude", limits(10, 96));
+            devws.set_limits("codex", limits(10, 97));
+            (home, devws, task, repo)
+        };
+        for credit in [None, Some(0.0)] {
+            let dir = TempDir::new().unwrap();
+            let (home, devws, task, _repo) = out(&dir, credit);
+            assert_eq!(
+                hand_over(&home, &task, &devws, "d").unwrap(),
+                None,
+                "{credit:?}"
+            );
+            assert_eq!(leader_agent(&task).as_deref(), Some("claude"));
+        }
+
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, _repo) = out(&dir, Some(5.0));
+        let mut settings = crate::opencode::OpencodeSettings::load(&home).unwrap();
+        settings.leader.enabled = false;
+        settings.save(&home).unwrap();
+        assert_eq!(
+            hand_over(&home, &task, &devws, "d").unwrap(),
+            None,
+            "switch off"
+        );
+
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, _repo) = out(&dir, Some(5.0));
+        task.transaction(|tx| {
+            tx.state.workflow = crate::execution::Workflow::Legacy;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            hand_over(&home, &task, &devws, "d").unwrap(),
+            None,
+            "legacy task"
         );
     }
 

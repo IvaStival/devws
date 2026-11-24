@@ -289,6 +289,10 @@ this on its own; you only explain it to the user when they ask
   room, even if its 5-hour window is full: you wait it out there.
 - Only your 5-hour window used up: you move only when the other has room in
   both. If its week is used up, you stay.
+- Both used up (a reviewed task): when the user turned the OpenCode leader on
+  (`devagentics opencode switch leader on`, with a model) and its account has
+  credit, you move to OpenCode instead of waiting, and back to your own
+  program, or else its fallback, as soon as one has room again.
 - New agents: an account at 95% of its week or its 5-hour window gets no
   new workers (week first). `spawn_agent` automatically tries available
   alternatives, including Codex for a Claude worker and Claude for Codex.
