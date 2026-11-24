@@ -5,12 +5,15 @@ mod board;
 mod board_tui;
 mod board_usage;
 mod board_view;
+mod check_logs;
 mod check_profiles;
 mod checks;
+mod code_access;
 mod details_view;
 mod devws;
 mod executable;
 mod execution;
+mod failures;
 mod graph;
 mod history;
 mod home;
@@ -43,6 +46,7 @@ mod state;
 mod status;
 mod task;
 mod team;
+mod telemetry;
 mod watch;
 mod worker;
 mod worker_tools;
@@ -164,7 +168,17 @@ enum Command {
         summary: String,
     },
     /// The leader's tools, as an MCP server on standard input and output
-    Mcp { task: String },
+    Mcp {
+        task: String,
+        #[arg(long, hide = true)]
+        leader_cli_catalog: bool,
+    },
+    /// Read-only CLI for an opted-in Codex leader, from the task worktree root
+    LeaderRead {
+        task: String,
+        #[command(subcommand)]
+        view: LeaderReadView,
+    },
     /// The team board and the dispatcher (the workspace's team pane)
     Board {
         task: String,
@@ -193,6 +207,16 @@ enum Command {
 enum Switch {
     On,
     Off,
+}
+
+#[derive(Subcommand)]
+enum LeaderReadView {
+    /// Read pending Leader messages without acknowledging them
+    Inbox,
+    /// Compact task progress
+    Progress,
+    /// A single order and its check evidence
+    Order { id: String },
 }
 
 #[derive(Subcommand)]
@@ -279,13 +303,15 @@ enum TaskAction {
     /// stay in its snapshot and nothing has network, but its shell can read
     /// host files. Restart the leader to move it
     CodexTeam { task: String, switch: Switch },
+    /// Prefer direct CLI reads for a reviewed Codex leader
+    LeaderCli { task: String, switch: Switch },
     /// You turn the code graph (Graphify, code only and offline) on or off
     /// for this task's leader and workers: built per commit in the task
     /// folder, never in the project
     Graph { task: String, switch: Switch },
     /// You allow a step more attempts than the task's limit (orders and
-    /// reviews asking for changes): `limit` in all. The leader can only
-    /// record your yes from its conversation (allow_attempts).
+    /// reviews asking for changes): `limit` in all. The leader can do it too
+    /// (allow_attempts), with its reason in the log.
     Attempts {
         task: String,
         step: String,
@@ -693,6 +719,23 @@ fn run() -> Result<()> {
                     }
                 );
             }
+            TaskAction::LeaderCli { task, switch } => {
+                let enabled = matches!(switch, Switch::On);
+                open(&task)?.transaction(|tx| {
+                    anyhow::ensure!(
+                        !enabled
+                            || tx.state.workflow == execution::Workflow::Reviewed
+                                && tx.state.codex_team,
+                        "leader CLI requires a reviewed Codex team"
+                    );
+                    tx.state.leader_cli = enabled;
+                    Ok(())
+                })?;
+                println!(
+                    "Leader CLI {}. Reopen the leader to refresh its instructions.",
+                    if enabled { "enabled" } else { "disabled" }
+                );
+            }
             TaskAction::Graph { task, switch } => {
                 let enabled = matches!(switch, Switch::On);
                 if enabled {
@@ -1025,13 +1068,50 @@ fn run() -> Result<()> {
                 notes::record_report(&task, &devws, &author, &reported, word, &summary);
             }
         }
-        Command::Mcp { task } => {
+        Command::LeaderRead { task, view } => {
+            anyhow::ensure!(
+                task::slug(&task) == task,
+                "INVALID_TASK: expected a task ID"
+            );
+            let task = open(&task)?;
+            let folder = std::env::current_dir()?.canonicalize()?;
+            anyhow::ensure!(
+                task.config()?
+                    .repos
+                    .first()
+                    .and_then(|repo| repo.worktree.canonicalize().ok())
+                    .as_ref()
+                    == Some(&folder),
+                "WRONG_WORKTREE: run from the task's primary worktree root"
+            );
+            let state = task.state()?;
+            anyhow::ensure!(
+                state.workflow == execution::Workflow::Reviewed
+                    && state.codex_team
+                    && state.leader_cli,
+                "CLI_DISABLED: use the Leader MCP tools"
+            );
+            let (operation, snapshot) = match view {
+                LeaderReadView::Progress => ("task_status", status::progress(&task)?),
+                LeaderReadView::Order { id } => ("task_status", status::order(&task, &id)?),
+                LeaderReadView::Inbox => ("leader_inbox", workflow::leader_inbox(&task)?),
+            };
+            println!(
+                "{}",
+                mcp::fitting(operation, serde_json::to_string(&snapshot)?)?
+            );
+        }
+        Command::Mcp {
+            task,
+            leader_cli_catalog,
+        } => {
             let task = open(&task)?;
             mcp::Server {
                 task: &task,
                 home: &home,
                 devws: &devws,
                 gh: prs::gh_command(),
+                leader_cli_catalog,
             }
             .serve(std::io::stdin().lock(), std::io::stdout().lock())?;
         }

@@ -137,6 +137,7 @@ mod tests {
 
     fn request(agent: &str, step: &str, plan: Option<&str>) -> OrderRequest {
         OrderRequest {
+            diagnosis: None,
             read: Vec::new(),
             targets: Vec::new(),
             profiles: Vec::new(),

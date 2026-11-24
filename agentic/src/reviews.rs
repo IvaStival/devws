@@ -91,7 +91,7 @@ pub fn check_results(state: &crate::state::State, review: &Review) -> serde_json
 }
 
 pub fn resumption(state: &crate::state::State, reviewer: &str) -> Option<String> {
-    pending(state, reviewer).map(|review| format!("Resume independent review {} for order {}. Call status and review_diff, inspect the immutable candidate through execute, then review_submit. Do not modify code.", review.id, review.order))
+    pending(state, reviewer).map(|review| format!("Resume independent review {} for order {}. Call status with input.view=brief and review_diff, inspect the immutable candidate through execute, then review_submit. Do not modify code.", review.id, review.order))
 }
 pub fn checkout(task: &Task, review: &Review) -> std::path::PathBuf {
     task.dir()
@@ -122,7 +122,7 @@ fn evidence(task: &Task, order: &str) -> Result<String> {
             && evidence.base == assignment.base
             && evidence.revision == state.revision(order)
             && evidence.head == checks::head(&workplace.worktree)?,
-        "check evidence is stale"
+        crate::failures::Stale("check evidence is stale".into())
     );
     let work = checks::inspect(
         &workplace.worktree,
@@ -203,10 +203,33 @@ fn check_candidate_first(
     let failed = failed_phases(&evidence.phases);
     let step = order.step.clone();
     let message = integration_failure(&step, &evidence.phases, !order.targets.is_empty());
+    let environment_only = evidence
+        .phases
+        .iter()
+        .filter(|phase| phase.outcome != crate::check_profiles::Outcome::Passed)
+        .all(|phase| {
+            matches!(
+                phase.outcome,
+                crate::check_profiles::Outcome::EnvironmentFailure
+                    | crate::check_profiles::Outcome::RunnerFailure
+            )
+        });
     task.transaction(|tx| {
         if let Some(found) = tx.state.step_mut(&step) {
             found.set_status(StepStatus::Failed, crate::log::now());
         }
+        crate::failures::record(
+            &mut tx.state,
+            &step,
+            Some(&order.id),
+            if environment_only {
+                crate::failures::FailureKind::CheckEnvironment
+            } else {
+                crate::failures::FailureKind::IntegrationFailed
+            },
+            &failed.join("; "),
+            crate::log::now(),
+        );
         tx.state.say(crate::state::LEADER, message);
         tx.log(
             Kind::Check,
@@ -260,8 +283,9 @@ fn integration_failure(step: &str, phases: &[crate::check_profiles::Phase], full
         }
     }
     message.push_str(
-        "\nOrder a correction (an integration defect), or escalate when the failure is not this step's.",
+        "\nOrder a correction (an integration defect), or escalate when the failure is not this step's. ",
     );
+    message.push_str(&crate::failures::guidance(step, None));
     message
 }
 
@@ -283,7 +307,7 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
     );
     crate::orders::ensure_attempt_left(
         &state,
-        changes_requested(&state, &order.step),
+        crate::failures::work_failures(&state, &order.step),
         &order.step,
         task.config()?.max_attempts,
     )?;
@@ -451,7 +475,9 @@ pub fn validate(task: &Task, review: &Review) -> Result<()> {
         .context("unknown repo")?;
     ensure!(
         crate::history::only_history_since(&repo.worktree, &review.target)?,
-        "review target changed beyond the team's history: request a fresh review"
+        crate::failures::Stale(
+            "review target changed beyond the team's history: request a fresh review".into()
+        )
     );
     ensure!(
         review.candidate.source == review.source
@@ -473,7 +499,7 @@ pub fn validate(task: &Task, review: &Review) -> Result<()> {
     );
     ensure!(
         evidence(task, &order.id)? == review.evidence,
-        "review evidence changed"
+        crate::failures::Stale("review evidence changed".into())
     );
     crate::integration::require_candidate_evidence(task, &repo.name, review)?;
     Ok(())
@@ -548,11 +574,20 @@ pub fn submit(
             .find(|review| review.id == id)
             .context("review disappeared")?;
         let now = crate::log::now();
+        let failed = match verdict {
+            Verdict::ChangesRequested => Some(crate::failures::FailureKind::ChangesRequested),
+            Verdict::Blocked => Some(crate::failures::FailureKind::ReviewBlocked),
+            Verdict::Approved => None,
+        };
+        let reviewed = review.order.clone();
         review.verdict = Some(verdict);
         review.findings = findings;
         review.summary = Some(summary.into());
         review.submitted_at = Some(now);
         let requested = review.requested_at;
+        if let Some(kind) = failed {
+            crate::failures::record(&mut tx.state, &step, Some(&reviewed), kind, summary, now);
+        }
         if requested > 0 {
             tx.state
                 .timing
@@ -854,9 +889,20 @@ mod tests {
                 tx.state.reviews.push(Review {
                     id: format!("r{number}"),
                     order: "o1".into(),
-                    verdict: Some(verdict),
+                    verdict: Some(verdict.clone()),
                     ..Review::default()
                 });
+                // Each round of changes ended an order of its own.
+                if verdict == Verdict::ChangesRequested {
+                    crate::failures::record(
+                        &mut tx.state,
+                        "S01-B01",
+                        Some(&format!("o-round-{number}")),
+                        crate::failures::FailureKind::ChangesRequested,
+                        "changes requested",
+                        number as u64,
+                    );
+                }
             }
             Ok(())
         })
@@ -865,7 +911,11 @@ mod tests {
         assert_eq!(changes_requested(&task.state().unwrap(), "other"), 0);
 
         // Three rounds of changes use up a limit of 3, whatever the default.
-        crate::orders::allow_attempts(&task, "S01-B01", 3).unwrap();
+        task.transaction(|tx| {
+            tx.state.attempt_limits.insert("S01-B01".into(), 3);
+            Ok(())
+        })
+        .unwrap();
         let error = request(&task, "o1", "reviewer-1").unwrap_err().to_string();
         assert!(error.contains("3 attempts"), "{error}");
 

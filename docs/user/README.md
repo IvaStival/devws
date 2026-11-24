@@ -5,3 +5,4 @@ Use devws to manage development workspaces and devAgentics to coordinate agent t
 - [Workspace guide](../guide/README.md)
 - [Agent-team usage](../../agentic/docs/usage.md)
 - [Reliable team execution](devagentics-execution.md)
+- [Arquitetura híbrida e economia de tokens](devagentics-hybrid.md)

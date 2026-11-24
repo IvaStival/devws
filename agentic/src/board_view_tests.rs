@@ -1240,9 +1240,12 @@ fn what_the_leader_is_reviewing_has_its_own_card_and_does_not_need_you() {
     assert!(!text.lines().next().unwrap().contains("need you"), "{text}");
 }
 
+// A step that used every attempt is the leader's to settle (more attempts,
+// another approach, or closing it), not a question for the user.
 #[test]
-fn a_step_that_failed_for_good_needs_you_with_a_red_cross() {
+fn a_step_that_failed_for_good_is_the_leaders_with_a_red_cross() {
     let mut board = board();
+    let before = attention(&board, None);
     board.steps.push(StepRow {
         id: "B1-1-AT".into(),
         title: "Registry tests".into(),
@@ -1250,12 +1253,16 @@ fn a_step_that_failed_for_good_needs_you_with_a_red_cross() {
         attempts: 6,
     });
     let rows = entries(&board, View::Overview, false, &[], None);
-    let failed = rows
-        .iter()
-        .find(|entry| entry.id == "failed:B1-1-AT")
-        .expect("the failed step is under NEEDS YOU");
-    let place = |id: &str| rows.iter().position(|entry| entry.id == id).unwrap();
-    assert!(place("heading:NEEDS YOU") < place("failed:B1-1-AT"));
+    assert!(
+        !rows.iter().any(|entry| entry.id == "failed:B1-1-AT"),
+        "the failed step is not under NEEDS YOU"
+    );
+    assert_eq!(
+        attention(&board, None),
+        before,
+        "it adds nothing for the user"
+    );
+    assert!(StepStatus::Exhausted.waits_for_leader());
     assert_eq!(step_mark(StepStatus::Exhausted), '✕');
     assert_eq!(mark_color(Some('✕')), Some(Color::Red));
     assert_eq!(step_word(StepStatus::Exhausted), "failed");
@@ -1264,7 +1271,6 @@ fn a_step_that_failed_for_good_needs_you_with_a_red_cross() {
         "failed",
         "two statuses, one word"
     );
-    assert!(failed.attention);
 }
 
 #[test]

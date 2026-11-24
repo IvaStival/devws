@@ -820,7 +820,10 @@ impl Team<'_> {
                 .iter_mut()
                 .filter(|order| order.agent == id && order.status == OrderStatus::Open)
                 .collect();
-            let steps: Vec<_> = open.iter().map(|order| order.step.clone()).collect();
+            let steps: Vec<_> = open
+                .iter()
+                .map(|order| (order.step.clone(), order.id.clone()))
+                .collect();
             for order in tx
                 .state
                 .orders
@@ -829,10 +832,18 @@ impl Team<'_> {
             {
                 order.status = OrderStatus::Closed;
             }
-            for step in steps {
-                if let Some(step) = tx.state.step_mut(&step) {
-                    step.set_status(StepStatus::Blocked, crate::log::now());
+            for (step, order) in steps {
+                if let Some(found) = tx.state.step_mut(&step) {
+                    found.set_status(StepStatus::Blocked, crate::log::now());
                 }
+                crate::failures::record(
+                    &mut tx.state,
+                    &step,
+                    Some(&order),
+                    crate::failures::FailureKind::AgentStopped,
+                    &format!("{id} was stopped with the order open"),
+                    crate::log::now(),
+                );
             }
             tx.state.cancel_probe(id);
             tx.state.queue.retain(|message| message.to != id);

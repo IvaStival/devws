@@ -191,7 +191,7 @@ fn leader_role(home: &Home, task: &Task, devws: &dyn Devws) -> Result<Role> {
 /// What the new leader does first after a handover.
 fn take_over(before: &Role, why: &str) -> String {
     format!(
-        "You take over as the leader from {}: {why}. Its conversation is gone. Call task_status and read_log to catch up, then tell the user in one line that you took over, and go on.",
+        "You take over as the leader from {}: {why}. Its conversation is gone. Call task_status and read_log to catch up, read_file the project's CLAUDE.md and memory_search the team's knowledge, then tell the user in one line that you took over, and go on.",
         program(before)
     )
 }
@@ -614,6 +614,7 @@ fn handed_memory(task: &Task, devws: &dyn Devws, why: &str) -> Result<String> {
         task,
         devws,
         &crate::memory::Note {
+            area: None,
             kind: crate::memory::NoteKind::Digest,
             title: "Where the task stood when the leader moved".into(),
             body: digest.clone(),
@@ -1092,6 +1093,7 @@ mod tests {
             &task,
             &devws,
             &crate::memory::Note {
+                area: None,
                 kind: crate::memory::NoteKind::Handoff,
                 title: "Mid B3".into(),
                 body: "B3 waits for review r484; ask the reviewer first.".into(),

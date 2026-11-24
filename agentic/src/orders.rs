@@ -41,6 +41,9 @@ pub struct OrderRequest {
     pub read: Vec<String>,
     /// Where its checks run; none: everywhere.
     pub targets: Vec<String>,
+    /// Why the step failed and what this order changes: required when it
+    /// failed since its last order (failures.rs).
+    pub diagnosis: Option<crate::failures::Diagnosis>,
 }
 
 /// The attempts a step gets: the task's, or what the user allowed it.
@@ -53,59 +56,61 @@ pub fn attempt_limit(state: &State, step: &str, max_attempts: u32) -> u32 {
 }
 
 /// Refuses another try at a step that has had `used` of its attempts: the
-/// leader escalates instead, and only the user allows more.
+/// leader allows more when the next one can succeed (`allow_attempts`).
 pub fn ensure_attempt_left(state: &State, used: u32, step: &str, max_attempts: u32) -> Result<()> {
     let limit = attempt_limit(state, step, max_attempts);
     if used >= limit {
         bail!(
-            "step {step} has had {used} attempts, the most it is allowed: escalate it to the user \
-             (they can allow more with `devagentics task attempts <task> {step} <limit>`)"
+            "step {step} has had {used} attempts, the most it is allowed: when the next one can \
+             succeed, give it more with allow_attempts and say why; when it keeps failing the same \
+             way, change the approach or close it"
         );
     }
     Ok(())
 }
 
-/// The user allows a step `limit` attempts in all, more than it has had.
+/// The user allows a step `limit` attempts in all, more than it has had
+/// (`devagentics task attempts`); it also lets the next order past the
+/// same-cause rule once.
 pub fn allow_attempts(task: &Task, step: &str, limit: u32) -> Result<()> {
+    set_attempt_limit(
+        task,
+        step,
+        limit,
+        format!("the user allowed {limit} attempts"),
+    )?;
     task.transaction(|tx| {
-        let used = tx
-            .state
-            .steps
-            .iter()
-            .find(|found| found.id == step)
-            .with_context(|| format!("there is no step {step}"))?
-            .attempts;
+        tx.state.diagnosis_waivers.insert(step.to_string());
+        Ok(())
+    })
+}
+
+/// The leader gives a step `limit` attempts in all, more than it has had,
+/// when the next one can succeed: its reason goes in the log.
+pub fn leader_allows_attempts(task: &Task, step: &str, limit: u32, reason: &str) -> Result<()> {
+    let reason = reason.trim();
+    anyhow::ensure!(!reason.is_empty(), "say why the next attempt can succeed");
+    set_attempt_limit(
+        task,
+        step,
+        limit,
+        format!("the leader allowed {limit} attempts: {reason}"),
+    )
+}
+
+fn set_attempt_limit(task: &Task, step: &str, limit: u32, what: String) -> Result<()> {
+    task.transaction(|tx| {
+        anyhow::ensure!(
+            tx.state.steps.iter().any(|found| found.id == step),
+            "there is no step {step}"
+        );
+        let used = crate::failures::work_failures(&tx.state, step);
         if limit <= used {
             bail!("step {step} has had {used} attempts already: allow more than that");
         }
         tx.state.attempt_limits.insert(step.to_string(), limit);
         tx.state.step_retries.remove(step);
-        tx.log(
-            Kind::Review,
-            None,
-            Some(step),
-            &format!("the user allowed {limit} attempts"),
-        );
-        Ok(())
-    })
-}
-
-/// The leader records the user's yes to more attempts, with their words: the
-/// same allowance as `devagentics task attempts`, the approval in the log.
-pub fn allow_attempts_for_user(task: &Task, step: &str, limit: u32, user_said: &str) -> Result<()> {
-    let said = user_said.trim();
-    anyhow::ensure!(
-        !said.is_empty(),
-        "quote the user's words that approved it: only the user allows more attempts"
-    );
-    allow_attempts(task, step, limit)?;
-    task.transaction(|tx| {
-        tx.log(
-            Kind::Review,
-            Some(LEADER),
-            Some(step),
-            &format!("recorded by the leader; the user said \"{said}\""),
-        );
+        tx.log(Kind::Review, None, Some(step), &what);
         Ok(())
     })
 }
@@ -164,7 +169,7 @@ pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
         );
         request.allowed = item.allowed.clone();
         request.profiles = item.profiles.clone();
-        request.forbidden = item.forbidden_for_order(&request.forbidden);
+        request.forbidden = state.application.order_forbidden(&item, &request.forbidden);
         Some(item)
     } else {
         None
@@ -247,8 +252,37 @@ pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
             }
             _ => {}
         }
-        if let Some(step) = tx.state.steps.iter().find(|step| step.id == request.step) {
-            ensure_attempt_left(&tx.state, step.attempts, &step.id, max_attempts)?;
+        let id = format!("o{}", tx.state.next_number());
+        if tx.state.steps.iter().any(|step| step.id == request.step) {
+            let approach = crate::failures::Approach {
+                agent: agent.id.clone(),
+                plan: request.plan.clone(),
+                contract: crate::failures::contract_hash(contract.as_ref())?,
+                allowed: allowed.clone(),
+                read: request.read.clone(),
+                targets: request.targets.clone(),
+            };
+            crate::failures::resolve(
+                &mut tx.state,
+                &request.step,
+                request.diagnosis.clone(),
+                &approach,
+                &id,
+                crate::log::now(),
+            )?;
+            let used = crate::failures::work_failures(&tx.state, &request.step);
+            ensure_attempt_left(&tx.state, used, &request.step, max_attempts)?;
+            if let Some(diagnosis) = &request.diagnosis {
+                tx.log(
+                    Kind::Review,
+                    None,
+                    Some(&request.step),
+                    &format!(
+                        "diagnosed {:?}: {} → {}",
+                        diagnosis.cause, diagnosis.evidence, diagnosis.change
+                    ),
+                );
+            }
         }
         match tx.state.step_mut(&request.step) {
             Some(step) => {
@@ -274,7 +308,6 @@ pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
         if agent.group() == Group::Senior && !forbidden.iter().any(|glob| glob == "**") {
             forbidden.push("**".to_string());
         }
-        let id = format!("o{}", tx.state.next_number());
         let order = Order {
             read: request.read.clone(),
             targets: request.targets.clone(),
@@ -519,9 +552,22 @@ pub fn report(
         return task.transaction(|tx| {
             validate_snapshot(&tx.state, &order, revision)?;
             close(tx, &order, StepStatus::Blocked);
+            crate::failures::record(
+                &mut tx.state,
+                &order.step,
+                Some(&order.id),
+                crate::failures::FailureKind::AgentBlocked,
+                summary,
+                crate::log::now(),
+            );
             tx.state.say(
                 LEADER,
-                format!("{} is blocked on step {}: {summary}", agent.id, order.step),
+                format!(
+                    "{} is blocked on step {}: {summary}\n{}",
+                    agent.id,
+                    order.step,
+                    crate::failures::guidance(&order.step, Some(&order.id))
+                ),
             );
             tx.log(
                 Kind::Report,
@@ -618,7 +664,19 @@ pub fn report(
         );
         tx.log(Kind::Report, Some(&agent.id), Some(&order.step), summary);
         tx.log(Kind::Check, Some(&agent.id), Some(&order.step), &message);
-        tx.state.say(LEADER, message.clone());
+        let mut told = message.clone();
+        if !passed {
+            crate::failures::record(
+                &mut tx.state,
+                &order.step,
+                Some(&order.id),
+                check_failure(&work, &evidence, check.as_ref()),
+                &first_lines(&message),
+                crate::log::now(),
+            );
+            told.push_str(&crate::failures::guidance(&order.step, Some(&order.id)));
+        }
+        tx.state.say(LEADER, told);
         Ok(if passed {
             "Reported to the leader, who will review it. Wait for the next order.".to_string()
         } else {
@@ -626,6 +684,43 @@ pub fn report(
                 .to_string()
         })
     })
+}
+
+/// What kind of failure a report's checks found: the work's (tests, file
+/// rules), maybe the work's (a timeout), or only the environment's.
+fn check_failure(
+    work: &checks::Work,
+    evidence: &crate::check_profiles::Evidence,
+    legacy: Option<&CheckRun>,
+) -> crate::failures::FailureKind {
+    use crate::check_profiles::Outcome;
+    use crate::failures::FailureKind;
+    let work_failed = !work.uncommitted.is_empty()
+        || !work.follows_the_rules()
+        || legacy.is_some_and(|run| !run.passed && !run.timed_out)
+        || evidence.phases.iter().any(|phase| {
+            matches!(
+                phase.outcome,
+                Outcome::TestFailure | Outcome::RequiredTestsSkipped | Outcome::FilePolicyFailure
+            )
+        });
+    if work_failed {
+        FailureKind::CheckFailed
+    } else if legacy.is_some_and(|run| run.timed_out)
+        || evidence
+            .phases
+            .iter()
+            .any(|phase| phase.outcome == Outcome::Timeout)
+    {
+        FailureKind::CheckTimeout
+    } else {
+        FailureKind::CheckEnvironment
+    }
+}
+
+/// The start of a long message, for a failure's summary.
+fn first_lines(message: &str) -> String {
+    message.lines().take(6).collect::<Vec<_>>().join(" | ")
 }
 
 pub(crate) fn authoritative<'a>(
@@ -683,6 +778,16 @@ pub fn report_findings(
             Outcome::Blocked => (StepStatus::Blocked, "is blocked"),
         };
         close(tx, &order, status);
+        if outcome == Outcome::Blocked {
+            crate::failures::record(
+                &mut tx.state,
+                &order.step,
+                Some(&order.id),
+                crate::failures::FailureKind::AgentBlocked,
+                summary,
+                crate::log::now(),
+            );
+        }
         tx.state.say(
             LEADER,
             format!(
@@ -815,7 +920,7 @@ pub fn accept_step(task: &Task, step: &str) -> Result<()> {
         .and_then(|order| state.agent(&order.agent))
         .and_then(|agent| agent.lane.as_deref());
     if let (true, Some(lane)) = (reported, lane) {
-        crate::lanes::merge_into_task(task, &crate::lanes::get(task, lane)?)?;
+        crate::lanes::merge_into_task(task, &crate::lanes::get(task, lane)?, step)?;
     }
     task.transaction(|tx| {
         let found = tx
@@ -871,7 +976,8 @@ pub fn close_step(task: &Task, step: &str, reason: &str) -> Result<()> {
             StepStatus::Reported
             | StepStatus::Failed
             | StepStatus::Blocked
-            | StepStatus::Rejected => {}
+            | StepStatus::Rejected
+            | StepStatus::Exhausted => {}
             StepStatus::Ordered => {
                 bail!("step {step} is still being worked on: stop its agent first")
             }
@@ -931,6 +1037,21 @@ pub fn reject_step(task: &Task, step: &str, reason: &str) -> Result<()> {
             );
         }
         found.set_status(StepStatus::Rejected, crate::log::now());
+        let last = tx
+            .state
+            .orders
+            .iter()
+            .rev()
+            .find(|order| order.step == step)
+            .map(|order| order.id.clone());
+        crate::failures::record(
+            &mut tx.state,
+            step,
+            last.as_deref(),
+            crate::failures::FailureKind::LeaderRejected,
+            reason,
+            crate::log::now(),
+        );
         tx.log(
             Kind::Review,
             None,
@@ -966,9 +1087,10 @@ pub(crate) fn ensure_contract(
         "specialist/repository/lane does not match accepted contract"
     );
     let lane = crate::lanes::get(task, &item.lane)?;
-    let runner = task
-        .state()?
+    let state = task.state()?;
+    let runner = state
         .runner
+        .as_ref()
         .context("isolated runner not configured")?;
     for path in item.allowed.iter().chain(&item.supporting_files) {
         anyhow::ensure!(
@@ -978,7 +1100,11 @@ pub(crate) fn ensure_contract(
     }
     // The implementer reads its protected tests: they must be in its source
     // snapshot, which leaves the runner's protected paths out entirely.
-    for path in &item.protected_tests {
+    for path in item
+        .protected_tests
+        .iter()
+        .chain(state.application.existing_tests(&item.repo))
+    {
         anyhow::ensure!(
             checks::within(&runner.source_paths, path)?
                 && !checks::within(&runner.protected_paths, path)?,
@@ -1079,6 +1205,7 @@ mod tests {
 
     fn request(step: &str) -> OrderRequest {
         OrderRequest {
+            diagnosis: None,
             read: Vec::new(),
             targets: Vec::new(),
             profiles: Vec::new(),
@@ -1137,6 +1264,7 @@ mod tests {
         let error = send_order(
             &f.task,
             OrderRequest {
+                diagnosis: None,
                 plan: None,
                 ..request("s1")
             },
@@ -1147,6 +1275,7 @@ mod tests {
         let error = send_order(
             &f.task,
             OrderRequest {
+                diagnosis: None,
                 plan: Some("s9".into()),
                 ..request("s1")
             },
@@ -1337,7 +1466,11 @@ mod tests {
         assert!(report(&f.task, "%5", &id, Outcome::Done, "done", SHORT).is_err());
         assert_eq!(f.task.state().unwrap(), before);
         delivered_report(&f.task, "%5", Outcome::Blocked, "blocked", SHORT).unwrap();
-        let next = send_order(&f.task, request("s1")).unwrap();
+        let next = send_order(
+            &f.task,
+            diagnosed("s1", crate::failures::Cause::MissingContext),
+        )
+        .unwrap();
         f.task
             .transaction(|tx| {
                 tx.state
@@ -1597,6 +1730,7 @@ mod tests {
         send_order(
             &f.task,
             OrderRequest {
+                diagnosis: None,
                 spec: Some("H2f".into()),
                 ..request("s1")
             },
@@ -1610,7 +1744,11 @@ mod tests {
         commit_file(f.repo.path(), "src/a.rs", "x\n", "a");
         delivered_report(&f.task, "%5", Outcome::Done, "done", SHORT).unwrap();
         reject_step(&f.task, "s1", "again").unwrap();
-        send_order(&f.task, request("s1")).unwrap();
+        send_order(
+            &f.task,
+            diagnosed("s1", crate::failures::Cause::ImplementationDefect),
+        )
+        .unwrap();
         assert_eq!(
             f.task.state().unwrap().steps[1].spec.as_deref(),
             Some("H2f"),
@@ -1804,24 +1942,46 @@ mod tests {
 
     /// Reports s1 done and sends it back, as a leader does with work it
     /// does not accept.
+    /// An order after a failure, with the leader's diagnosis.
+    fn diagnosed(step: &str, cause: crate::failures::Cause) -> OrderRequest {
+        OrderRequest {
+            diagnosis: Some(crate::failures::Diagnosis {
+                cause,
+                evidence: "the report and the diff show it".into(),
+                change: "do it the other way".into(),
+            }),
+            ..request(step)
+        }
+    }
+
     fn send_back(f: &Fixture, file: &str) {
         commit_file(f.repo.path(), file, "x\n", file);
         delivered_report(&f.task, "%5", Outcome::Done, "done", SHORT).unwrap();
         reject_step(&f.task, "s1", "not yet").unwrap();
     }
 
+    // Attempts are failures of the work: a rejection the leader diagnosed
+    // as the work's counts, and the limit stops the next order.
     #[test]
-    fn a_step_gets_at_most_the_tasks_attempts_until_the_user_allows_more() {
+    fn a_step_gets_at_most_the_tasks_attempts_until_more_are_allowed() {
+        use crate::failures::Cause;
         let f = fixture(None);
-        for (attempt, file) in ["src/a.rs", "src/b.rs", "src/c.rs"].iter().enumerate() {
-            send_order(&f.task, request("s1")).unwrap();
-            assert_eq!(status(&f, "s1"), StepStatus::Ordered, "attempt {attempt}");
+        send_order(&f.task, request("s1")).unwrap();
+        send_back(&f, "src/a.rs");
+        for (cause, file) in [
+            (Cause::ImplementationDefect, "src/b.rs"),
+            (Cause::TestDefect, "src/c.rs"),
+        ] {
+            send_order(&f.task, diagnosed("s1", cause)).unwrap();
+            assert_eq!(status(&f, "s1"), StepStatus::Ordered);
             send_back(&f, file);
         }
 
-        let error = send_order(&f.task, request("s1")).unwrap_err().to_string();
+        let error = send_order(&f.task, diagnosed("s1", Cause::PlanDefect))
+            .unwrap_err()
+            .to_string();
         assert!(
-            error.contains("3 attempts") && error.contains("devagentics task attempts"),
+            error.contains("3 attempts") && error.contains("allow_attempts"),
             "{error}"
         );
         assert_eq!(
@@ -1830,16 +1990,58 @@ mod tests {
             "a refused order leaves the step as it was"
         );
 
+        // The refused order kept nothing: two failures are diagnosed as the
+        // work's, the third is diagnosed with the next order.
         assert!(
-            allow_attempts(&f.task, "s1", 3).is_err(),
+            allow_attempts(&f.task, "s1", 2).is_err(),
             "a limit the step already reached allows nothing"
         );
         allow_attempts(&f.task, "s1", 4).unwrap();
-        send_order(&f.task, request("s1")).unwrap();
-        assert_eq!(f.task.state().unwrap().steps[1].attempts, 4);
+        send_order(&f.task, diagnosed("s1", Cause::PlanDefect)).unwrap();
+        assert_eq!(f.task.state().unwrap().steps[1].attempts, 4, "orders");
         send_back(&f, "src/d.rs");
-        assert!(send_order(&f.task, request("s1")).is_err());
+        assert!(send_order(&f.task, diagnosed("s1", Cause::MissingContext)).is_err());
         assert!(allow_attempts(&f.task, "nope", 9).is_err());
+    }
+
+    // A failure that was not the work's (the environment, devAgentics) costs
+    // nothing: the step is ordered again as often as it takes.
+    #[test]
+    fn failures_that_are_not_the_works_use_no_attempts() {
+        use crate::failures::Cause;
+        let f = fixture(None);
+        send_order(&f.task, request("s1")).unwrap();
+        send_back(&f, "src/a.rs");
+        for (round, cause) in [Cause::Environment, Cause::Devagentics, Cause::OtherWork]
+            .into_iter()
+            .cycle()
+            .take(5)
+            .enumerate()
+        {
+            send_order(&f.task, diagnosed("s1", cause)).unwrap();
+            send_back(&f, &format!("src/round{round}.rs"));
+        }
+        let state = f.task.state().unwrap();
+        assert_eq!(crate::failures::work_failures(&state, "s1"), 0);
+        send_order(&f.task, diagnosed("s1", Cause::Environment)).unwrap();
+    }
+
+    // A failed step is not ordered again blind: the order says why it failed.
+    #[test]
+    fn a_reorder_after_a_failed_step_needs_a_diagnosis() {
+        let f = fixture(None);
+        send_order(&f.task, request("s1")).unwrap();
+        send_back(&f, "src/a.rs");
+        let error = send_order(&f.task, request("s1")).unwrap_err().to_string();
+        assert!(error.contains("diagnosis"), "{error}");
+        assert_eq!(status(&f, "s1"), StepStatus::Rejected);
+        send_order(
+            &f.task,
+            diagnosed("s1", crate::failures::Cause::ImplementationDefect),
+        )
+        .unwrap();
+        let log = f.task.log_lines().unwrap().join("\n");
+        assert!(log.contains("diagnosed ImplementationDefect"), "{log}");
     }
 
     #[test]
@@ -1861,8 +2063,12 @@ mod tests {
         );
         assert!(accept_step(&f.task, "nope").is_err());
 
-        // Sent back: ordered again, and it counts as another attempt.
-        send_order(&f.task, request("s1")).unwrap();
+        // Sent back: ordered again with the leader's diagnosis.
+        send_order(
+            &f.task,
+            diagnosed("s1", crate::failures::Cause::ImplementationDefect),
+        )
+        .unwrap();
         assert_eq!(f.task.state().unwrap().steps[1].attempts, 2);
         commit_file(f.repo.path(), "src/b.rs", "x\n", "b");
         delivered_report(&f.task, "%5", Outcome::Done, "done again", SHORT).unwrap();

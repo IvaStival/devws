@@ -64,11 +64,10 @@ pub fn session_name(folder: &Path) -> String {
 }
 
 /// What the leader does first when the team starts.
-pub const LEADER_FIRST: &str =
-    "Call task_status, then tell the user in one line that you are ready for their goal, and wait.";
+pub const LEADER_FIRST: &str = "Call task_status. Learn the project first: application_workflow project_overview, then read_file its CLAUDE.md, AGENTS.md and README and the docs they point to, and memory_search the team's knowledge. Then tell the user in one line that you are ready for their goal, and wait.";
 /// What the leader does first when the task carries on from the history in
 /// its repo (history.rs).
-pub const LEADER_CONTINUES: &str = "This task continues from the team history in the repo (.devagentics/history): its accepted steps, approved plan and execution plans are loaded. Call task_status and read the plan, then tell the user in one line what is done and what comes next, and wait.";
+pub const LEADER_CONTINUES: &str = "This task continues from the team history in the repo (.devagentics/history): its accepted steps, approved plan and execution plans are loaded. Call task_status and read the plan. Learn the project first: application_workflow project_overview, then read_file its CLAUDE.md, AGENTS.md and README and the docs they point to, and memory_search the team's knowledge. Then tell the user in one line what is done and what comes next, and wait.";
 /// What any other agent does first.
 pub const AGENT_FIRST: &str = "Reply with exactly: ready — then wait for your first order.";
 
@@ -118,12 +117,22 @@ pub fn write_leader_args(
         && adapter == Some(crate::providers::ReviewedAdapter::Codex)
         && state.codex_team
     {
+        let first_message = if state.leader_cli {
+            let binary = crate::check_profiles::shell_quote(command);
+            format!(
+                "{first_message}\n\nFrom the task worktree root, use `{binary} leader-read {id} progress` for routine status, `{binary} leader-read {id} order ORDER_ID` for one order, and `{binary} leader-read {id} inbox` when you only need to read pending messages. For inbox handling, follow these instructions in place of the earlier inbox instruction. When acknowledging handled IDs and reading the next batch, use the single MCP application_workflow action=leader_inbox with input.ack. When you only need to acknowledge handled IDs, use action=inbox_ack with input.ids. Use MCP as a fallback if a CLI read fails and for other team operations.",
+                id = config.id
+            )
+        } else {
+            first_message
+        };
         crate::worker_tools::codex_leader_arguments(
             command,
             &config.id,
             &first_message,
             leader.model.as_deref(),
             leader.effort.as_deref(),
+            state.leader_cli,
         )
     } else if reviewed {
         anyhow::ensure!(
@@ -303,7 +312,7 @@ pub fn start_task_with_workflow(
     // Carrying on: the steps it has came from the repo's history, or from
     // earlier in this home; either way the leader catches up first.
     let first = if task.state()?.workflow == crate::execution::Workflow::Reviewed {
-        "This task uses reviewed planning. Call application_workflow with action=status. Interview the user and prepare an application baseline; use stable scope/step IDs and milestone release versions. Confirm shared understanding, then record explicit approval for the exact baseline revision. Configure and verify a local source-only container image through the exact-call external permission flow before starting specialists. Read your inbox with application_workflow action=leader_inbox (an action of that tool, not a tool of its own), and acknowledge what you handled with input.ack [ids] on your next read, never by terminal capture. Do not bypass missing capabilities with direct shell, task-state edits or a legacy restart."
+        "This task uses reviewed planning. Call application_workflow with action=status. Learn the project first: application_workflow project_overview, then read_file its CLAUDE.md, AGENTS.md and README and the docs they point to, and memory_search the team's knowledge. Interview the user and prepare an application baseline; use stable scope/step IDs and milestone release versions. Confirm shared understanding, then record explicit approval for the exact baseline revision. Configure and verify a local source-only container image through the exact-call external permission flow before starting specialists. Read your inbox with application_workflow action=leader_inbox (an action of that tool, not a tool of its own), and acknowledge what you handled with input.ack [ids] on your next read, never by terminal capture. Do not bypass missing capabilities with direct shell, task-state edits or a legacy restart."
     } else if task.state()?.steps.is_empty() {
         LEADER_FIRST
     } else {
@@ -445,6 +454,7 @@ mod tests {
             &task,
             &devws,
             &crate::memory::Note {
+                area: None,
                 kind: crate::memory::NoteKind::Handoff,
                 title: "End of day".into(),
                 body: "A2 waits for the user's answer on SSO.".into(),

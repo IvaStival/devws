@@ -1,0 +1,226 @@
+{
+  "wrapper_example": {
+    "outcomes": {
+      "rejected": 9
+    },
+    "seeds": {
+      "check_shape": {
+        "attempts": [
+          {
+            "attempt": 1,
+            "feedback_bytes": 2808,
+            "usage": {
+              "input_tokens": 18819,
+              "cached_input_tokens": 12288,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 3445,
+              "reasoning_output_tokens": 204
+            },
+            "outcome": "rejected"
+          },
+          {
+            "attempt": 2,
+            "feedback_bytes": 311,
+            "usage": {
+              "input_tokens": 18816,
+              "cached_input_tokens": 12288,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 2650,
+              "reasoning_output_tokens": 41
+            },
+            "outcome": "rejected"
+          },
+          {
+            "attempt": 3,
+            "feedback_bytes": 351,
+            "usage": {
+              "input_tokens": 18846,
+              "cached_input_tokens": 12288,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 3519,
+              "reasoning_output_tokens": 160
+            },
+            "outcome": "rejected"
+          }
+        ],
+        "validator_accepted": false
+      },
+      "semantic": {
+        "attempts": [
+          {
+            "attempt": 1,
+            "feedback_bytes": 845,
+            "usage": {
+              "input_tokens": 17666,
+              "cached_input_tokens": 12288,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 4407,
+              "reasoning_output_tokens": 415
+            },
+            "outcome": "rejected"
+          },
+          {
+            "attempt": 2,
+            "feedback_bytes": 137,
+            "usage": {
+              "input_tokens": 19478,
+              "cached_input_tokens": 12288,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 3980,
+              "reasoning_output_tokens": 82
+            },
+            "outcome": "rejected"
+          },
+          {
+            "attempt": 3,
+            "feedback_bytes": 137,
+            "usage": {
+              "input_tokens": 19477,
+              "cached_input_tokens": 12288,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 4498,
+              "reasoning_output_tokens": 503
+            },
+            "outcome": "rejected"
+          }
+        ],
+        "validator_accepted": false
+      },
+      "check_environment": {
+        "attempts": [
+          {
+            "attempt": 1,
+            "feedback_bytes": 182,
+            "usage": {
+              "input_tokens": 19035,
+              "cached_input_tokens": 12288,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 4820,
+              "reasoning_output_tokens": 354
+            },
+            "outcome": "rejected"
+          },
+          {
+            "attempt": 2,
+            "feedback_bytes": 137,
+            "usage": {
+              "input_tokens": 19990,
+              "cached_input_tokens": 12288,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 4596,
+              "reasoning_output_tokens": 142
+            },
+            "outcome": "rejected"
+          },
+          {
+            "attempt": 3,
+            "feedback_bytes": 137,
+            "usage": {
+              "input_tokens": 19982,
+              "cached_input_tokens": 12288,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 4684,
+              "reasoning_output_tokens": 220
+            },
+            "outcome": "rejected"
+          }
+        ],
+        "validator_accepted": false
+      }
+    }
+  },
+  "submission_example": {
+    "outcomes": {
+      "rejected": 6
+    },
+    "seeds": {
+      "check_shape": {
+        "attempts": [
+          {
+            "attempt": 1,
+            "feedback_bytes": 2808,
+            "usage": {
+              "input_tokens": 18753,
+              "cached_input_tokens": 12288,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 3833,
+              "reasoning_output_tokens": 173
+            },
+            "outcome": "rejected"
+          },
+          {
+            "attempt": 2,
+            "feedback_bytes": 424,
+            "usage": {
+              "input_tokens": 19127,
+              "cached_input_tokens": 12288,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 1306,
+              "reasoning_output_tokens": 1202
+            },
+            "outcome": "rejected"
+          }
+        ],
+        "validator_accepted": false
+      },
+      "semantic": {
+        "attempts": [
+          {
+            "attempt": 1,
+            "feedback_bytes": 845,
+            "usage": {
+              "input_tokens": 18534,
+              "cached_input_tokens": 12288,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 4359,
+              "reasoning_output_tokens": 510
+            },
+            "outcome": "rejected"
+          },
+          {
+            "attempt": 2,
+            "feedback_bytes": 392,
+            "usage": {
+              "input_tokens": 19338,
+              "cached_input_tokens": 14592,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 3575,
+              "reasoning_output_tokens": 336
+            },
+            "outcome": "rejected"
+          }
+        ],
+        "validator_accepted": false
+      },
+      "check_environment": {
+        "attempts": [
+          {
+            "attempt": 1,
+            "feedback_bytes": 182,
+            "usage": {
+              "input_tokens": 19903,
+              "cached_input_tokens": 12288,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 5006,
+              "reasoning_output_tokens": 516
+            },
+            "outcome": "rejected"
+          },
+          {
+            "attempt": 2,
+            "feedback_bytes": 334,
+            "usage": {
+              "input_tokens": 19992,
+              "cached_input_tokens": 12288,
+              "cache_write_input_tokens": 0,
+              "output_tokens": 3891,
+              "reasoning_output_tokens": 71
+            },
+            "outcome": "rejected"
+          }
+        ],
+        "validator_accepted": false
+      }
+    }
+  }
+}

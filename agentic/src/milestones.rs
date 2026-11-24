@@ -1,4 +1,5 @@
 //! Final integration evidence is bound to code trees, not step numbering.
+use crate::state::{OrderStatus, State, StepStatus};
 use crate::{checks, task::Task};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -37,6 +38,51 @@ fn configuration(task: &Task) -> Result<String> {
         task.state()?.runner,
     ))?)
 }
+
+fn validate_item(state: &State, item: &str) -> Result<()> {
+    ensure!(
+        state
+            .steps
+            .iter()
+            .any(|step| step.id == item && step.status == StepStatus::Accepted),
+        "milestone item {item} is not accepted"
+    );
+    if let Some(journal) = state.integrations.get(item) {
+        ensure!(
+            journal.accepted
+                && state.reviews.iter().any(|review| {
+                    review.id == journal.review
+                        && review.verdict == Some(crate::reviews::Verdict::Approved)
+                        && review.candidate == journal.candidate
+                }),
+            "milestone has missing review evidence"
+        );
+        return Ok(());
+    }
+
+    // An accepted findings-only order never produces a merge journal. Prior
+    // writing orders still require integration evidence, even after reassignment.
+    let contract = state
+        .application
+        .items
+        .get(item)
+        .context("milestone contract missing")?;
+    let mut orders = state.orders.iter().rev().filter(|order| order.step == item);
+    let latest = orders
+        .next()
+        .context("milestone implementation lacks reviewed integration")?;
+    ensure!(
+        latest.delivered
+            && latest.status == OrderStatus::Closed
+            && state
+                .agent(&latest.agent)
+                .is_some_and(|agent| !agent.writes && agent.role == contract.role)
+            && orders.all(|order| state.agent(&order.agent).is_some_and(|agent| !agent.writes)),
+        "milestone implementation lacks reviewed integration"
+    );
+    Ok(())
+}
+
 pub fn ready(task: &Task, id: &str) -> Result<bool> {
     let state = task.state()?;
     let Some(evidence) = state.milestone_evidence.get(id) else {
@@ -44,6 +90,11 @@ pub fn ready(task: &Task, id: &str) -> Result<bool> {
     };
     Ok(
         state.application.milestones.get(id) == Some(&evidence.milestone)
+            && evidence
+                .milestone
+                .required
+                .iter()
+                .all(|item| validate_item(&state, item).is_ok())
             && evidence
                 .contracts
                 .iter()
@@ -68,27 +119,7 @@ pub fn validate(task: &Task, id: &str) -> Result<Evidence> {
         .context("unknown milestone")?;
     let mut selected: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for item in &milestone.required {
-        ensure!(
-            state
-                .steps
-                .iter()
-                .any(|step| step.id == *item && step.status == crate::state::StepStatus::Accepted),
-            "milestone item {item} is not accepted"
-        );
-        let journal = state
-            .integrations
-            .get(item)
-            .context("milestone implementation lacks reviewed integration")?;
-        ensure!(
-            journal.accepted
-                && state
-                    .reviews
-                    .iter()
-                    .any(|review| review.id == journal.review
-                        && review.verdict == Some(crate::reviews::Verdict::Approved)
-                        && review.candidate == journal.candidate),
-            "milestone has missing review evidence"
-        );
+        validate_item(&state, item)?;
         let contract = state
             .application
             .items
@@ -195,10 +226,61 @@ pub fn validate(task: &Task, id: &str) -> Result<Evidence> {
         serde_json::to_vec_pretty(&evidence)?,
     )?;
     task.transaction(|tx| {
+        for item in &milestone.required {
+            validate_item(&tx.state, item)?;
+        }
         tx.state
             .milestone_evidence
             .insert(id.into(), evidence.clone());
         Ok(())
     })?;
     Ok(evidence)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn audit() -> State {
+        serde_json::from_value(json!({
+            "application": {"items": {"audit": {"role": "planner"}}},
+            "steps": [{"id": "audit", "title": "Audit", "status": "accepted", "attempts": 1}],
+            "agents": [{
+                "id": "planner-1", "role": "planner", "agent": "codex", "repo": "notes",
+                "session": "dev-notes", "pane": "%3", "writes": false, "live": false, "ready": true
+            }],
+            "orders": [{
+                "id": "o1", "step": "audit", "agent": "planner-1", "text": "Audit",
+                "allowed": [], "forbidden": [], "base": "base", "status": "closed", "delivered": true
+            }]
+        })).unwrap()
+    }
+
+    #[test]
+    fn a_completed_read_only_audit_does_not_require_a_merge() {
+        let mut state = audit();
+        validate_item(&state, "audit").unwrap();
+        state.steps[0].status = StepStatus::Reported;
+        assert!(validate_item(&state, "audit").is_err());
+        state.steps[0].status = StepStatus::Accepted;
+        state.orders[0].delivered = false;
+        assert!(validate_item(&state, "audit").is_err());
+    }
+
+    #[test]
+    fn a_past_writer_still_requires_integration_after_read_only_reassignment() {
+        let mut state = audit();
+        let mut writer = state.agents[0].clone();
+        writer.id = "executor-1".into();
+        writer.role = "executor".into();
+        writer.writes = true;
+        let mut writing_order = state.orders[0].clone();
+        writing_order.id = "o0".into();
+        writing_order.agent = writer.id.clone();
+        state.agents.push(writer);
+        state.orders.insert(0, writing_order);
+        let error = validate_item(&state, "audit").unwrap_err();
+        assert!(error.to_string().contains("lacks reviewed integration"));
+    }
 }

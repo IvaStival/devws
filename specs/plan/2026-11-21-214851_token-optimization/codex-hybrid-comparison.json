@@ -1,0 +1,868 @@
+{
+  "runner_image": "sha256:360886f612d19502c7c8e5ab760fc47c9317ed8e78630dbbe53f657157d56282",
+  "validation_command": "python3 -m unittest discover -s tests -t .",
+  "compact_mcp": {
+    "merged_commit": "94adfdf5e1d262eb58f18f30f5c3ecf8c6345500",
+    "tests_passed": 13,
+    "ready_milestones": [
+      "notes-release"
+    ],
+    "plan_revision": 4,
+    "original_goal_contract_acceptance_unchanged": true,
+    "provider": {
+      "by_agent": {
+        "code-reviewer-1": {
+          "cache_read": 568064,
+          "cache_write": 0,
+          "max_request_input": 38935,
+          "output": 2335,
+          "priced_responses": 20,
+          "responses": 20,
+          "standard_short_context_api_equivalent_usd": 0.22502640000000002,
+          "threads": 1,
+          "turns": 2,
+          "uncached_input": 72435
+        },
+        "code-reviewer-2": {
+          "cache_read": 756992,
+          "cache_write": 0,
+          "max_request_input": 47386,
+          "output": 2676,
+          "priced_responses": 24,
+          "responses": 24,
+          "standard_short_context_api_equivalent_usd": 0.2269332,
+          "threads": 1,
+          "turns": 2,
+          "uncached_input": 62237
+        },
+        "code-reviewer-3": {
+          "cache_read": 2303360,
+          "cache_write": 0,
+          "max_request_input": 97187,
+          "output": 6384,
+          "priced_responses": 43,
+          "responses": 43,
+          "standard_short_context_api_equivalent_usd": 0.5851979999999999,
+          "threads": 1,
+          "turns": 6,
+          "uncached_input": 145511
+        },
+        "executor-1": {
+          "cache_read": 11601152,
+          "cache_write": 0,
+          "max_request_input": 181790,
+          "output": 20849,
+          "priced_responses": 118,
+          "responses": 118,
+          "standard_short_context_api_equivalent_usd": 0.1608747200000001,
+          "threads": 1,
+          "turns": 12,
+          "uncached_input": 344387
+        },
+        "leader": {
+          "cache_read": 19500672,
+          "cache_write": 0,
+          "max_request_input": 184469,
+          "output": 22841,
+          "priced_responses": 184,
+          "responses": 184,
+          "standard_short_context_api_equivalent_usd": 2.2323833000000013,
+          "threads": 1,
+          "turns": 3,
+          "uncached_input": 359273
+        },
+        "planner-1": {
+          "cache_read": 2682880,
+          "cache_write": 0,
+          "max_request_input": 104076,
+          "output": 21920,
+          "priced_responses": 52,
+          "responses": 52,
+          "standard_short_context_api_equivalent_usd": 0.6989500000000001,
+          "threads": 1,
+          "turns": 6,
+          "uncached_input": 105731
+        }
+      },
+      "by_model": {
+        "gpt-6-luna": {
+          "cache_read": 15061632,
+          "cache_write": 0,
+          "max_request_input": 184469,
+          "output": 22948,
+          "priced_responses": 140,
+          "responses": 140,
+          "standard_short_context_api_equivalent_usd": 0.21406882000000016,
+          "uncached_input": 519785
+        },
+        "gpt-6.1-sol": {
+          "cache_read": 18723072,
+          "cache_write": 0,
+          "max_request_input": 151549,
+          "output": 42662,
+          "priced_responses": 214,
+          "responses": 214,
+          "standard_short_context_api_equivalent_usd": 2.8781392000000006,
+          "uncached_input": 289606
+        },
+        "gpt-6.2-sol": {
+          "cache_read": 3628416,
+          "cache_write": 0,
+          "max_request_input": 97187,
+          "output": 11395,
+          "priced_responses": 87,
+          "responses": 87,
+          "standard_short_context_api_equivalent_usd": 1.0371575999999998,
+          "uncached_input": 280183
+        }
+      },
+      "price_basis": "standard short-context API equivalent per response, excluding any unknown model, cache TTL, or long-context rate",
+      "pricing_snapshot_date": "2026-11-22",
+      "pricing_source": "https://developers.openai.com/api/docs/pricing",
+      "provider": "codex",
+      "rates_per_million_input_cache_read_output": {
+        "gpt-6-luna": [
+          0.1,
+          0.01,
+          0.5
+        ],
+        "gpt-6.1-sol": [
+          2,
+          0.1,
+          10
+        ],
+        "gpt-6.2-sol": [
+          2,
+          0.1,
+          10
+        ]
+      },
+      "totals": {
+        "cache_read": 37413120,
+        "cache_write": 0,
+        "output": 77005,
+        "priced_responses": 441,
+        "responses": 441,
+        "standard_short_context_api_equivalent_usd": 4.1293656200000015,
+        "threads": 6,
+        "turns": 31,
+        "uncached_input": 1089574
+      },
+      "transcript_minus_worker_stream": {
+        "code-reviewer-1": {
+          "cache_read": 0,
+          "output": 0,
+          "turns": 0,
+          "uncached_input": 0
+        },
+        "code-reviewer-2": {
+          "cache_read": 0,
+          "output": 0,
+          "turns": 0,
+          "uncached_input": 0
+        },
+        "code-reviewer-3": {
+          "cache_read": 0,
+          "output": 0,
+          "turns": 0,
+          "uncached_input": 0
+        },
+        "executor-1": {
+          "cache_read": 1788288,
+          "output": 941,
+          "turns": 2,
+          "uncached_input": 179576
+        },
+        "planner-1": {
+          "cache_read": 0,
+          "output": 0,
+          "turns": 0,
+          "uncached_input": 0
+        }
+      },
+      "usage_source": "deduplicated token_usage_record"
+    },
+    "mcp_totals": {
+      "calls": 581,
+      "failures": 69,
+      "response_bytes": 1681904
+    },
+    "mcp_by_operation": {
+      "leader/task_status": {
+        "calls": 3,
+        "failures": 0,
+        "response_bytes": 55464
+      },
+      "leader/application_workflow.status": {
+        "calls": 31,
+        "failures": 4,
+        "response_bytes": 115322
+      },
+      "leader/application_workflow": {
+        "calls": 26,
+        "failures": 4,
+        "response_bytes": 105682
+      },
+      "leader/memory_search": {
+        "calls": 2,
+        "failures": 0,
+        "response_bytes": 3702
+      },
+      "leader/read_file": {
+        "calls": 10,
+        "failures": 3,
+        "response_bytes": 7972
+      },
+      "leader/application_workflow.leader_inbox": {
+        "calls": 85,
+        "failures": 0,
+        "response_bytes": 54820
+      },
+      "leader/application_workflow.proposal_example": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 2272
+      },
+      "leader/graph": {
+        "calls": 1,
+        "failures": true,
+        "response_bytes": 193
+      },
+      "leader/spawn_agent": {
+        "calls": 5,
+        "failures": 0,
+        "response_bytes": 1057
+      },
+      "leader/memory_save": {
+        "calls": 12,
+        "failures": 0,
+        "response_bytes": 2426
+      },
+      "leader/send_order": {
+        "calls": 23,
+        "failures": 3,
+        "response_bytes": 4431
+      },
+      "worker/status.brief": {
+        "calls": 30,
+        "failures": 0,
+        "response_bytes": 24583
+      },
+      "worker/status": {
+        "calls": 15,
+        "failures": 0,
+        "response_bytes": 124731
+      },
+      "worker/execute.compact": {
+        "calls": 31,
+        "failures": 0,
+        "response_bytes": 45767
+      },
+      "worker/proposal_example": {
+        "calls": 2,
+        "failures": 0,
+        "response_bytes": 7162
+      },
+      "worker/application_read": {
+        "calls": 24,
+        "failures": 0,
+        "response_bytes": 243432
+      },
+      "worker/execute": {
+        "calls": 31,
+        "failures": 0,
+        "response_bytes": 110709
+      },
+      "leader/task_status.progress": {
+        "calls": 18,
+        "failures": 0,
+        "response_bytes": 17807
+      },
+      "worker/memory_search": {
+        "calls": 6,
+        "failures": 0,
+        "response_bytes": 11717
+      },
+      "leader/git_log": {
+        "calls": 2,
+        "failures": 0,
+        "response_bytes": 559
+      },
+      "leader/git_diff": {
+        "calls": 18,
+        "failures": 2,
+        "response_bytes": 23825
+      },
+      "worker/ask": {
+        "calls": 4,
+        "failures": 4,
+        "response_bytes": 622
+      },
+      "leader/configure_checks": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 116
+      },
+      "worker/plan_write": {
+        "calls": 7,
+        "failures": 2,
+        "response_bytes": 1474
+      },
+      "worker/checkpoint": {
+        "calls": 27,
+        "failures": 15,
+        "response_bytes": 3494
+      },
+      "worker/memory_save": {
+        "calls": 17,
+        "failures": 0,
+        "response_bytes": 4590
+      },
+      "worker/check": {
+        "calls": 16,
+        "failures": 3,
+        "response_bytes": 10678
+      },
+      "worker/report": {
+        "calls": 22,
+        "failures": 9,
+        "response_bytes": 3318
+      },
+      "leader/snapshot_path": {
+        "calls": 3,
+        "failures": 0,
+        "response_bytes": 512
+      },
+      "leader/read_plan": {
+        "calls": 7,
+        "failures": 0,
+        "response_bytes": 132361
+      },
+      "worker/plan_proposal": {
+        "calls": 3,
+        "failures": 2,
+        "response_bytes": 2387
+      },
+      "leader/escalate": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 190
+      },
+      "leader/reject_step": {
+        "calls": 5,
+        "failures": 1,
+        "response_bytes": 669
+      },
+      "leader/add_lane": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 367
+      },
+      "worker/plan_read.excerpt": {
+        "calls": 3,
+        "failures": 0,
+        "response_bytes": 19640
+      },
+      "leader/accept_step": {
+        "calls": 11,
+        "failures": 3,
+        "response_bytes": 1199
+      },
+      "worker/plan_read": {
+        "calls": 15,
+        "failures": 0,
+        "response_bytes": 393446
+      },
+      "leader/read_check_log": {
+        "calls": 14,
+        "failures": 0,
+        "response_bytes": 4249
+      },
+      "leader/task_status.order": {
+        "calls": 6,
+        "failures": 0,
+        "response_bytes": 3135
+      },
+      "worker/plan_amend": {
+        "calls": 3,
+        "failures": 0,
+        "response_bytes": 540
+      },
+      "worker/review_diff": {
+        "calls": 11,
+        "failures": 2,
+        "response_bytes": 130075
+      },
+      "worker/review_submit": {
+        "calls": 15,
+        "failures": 8,
+        "response_bytes": 2280
+      },
+      "leader/close_step": {
+        "calls": 5,
+        "failures": 2,
+        "response_bytes": 682
+      },
+      "leader/stop_agent": {
+        "calls": 5,
+        "failures": 0,
+        "response_bytes": 579
+      },
+      "worker/plan_read.outline": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 497
+      },
+      "leader/read_log": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 981
+      },
+      "leader/run_check": {
+        "calls": 1,
+        "failures": true,
+        "response_bytes": 190
+      }
+    },
+    "mcp_setup": {
+      "leader/initialize": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 166
+      },
+      "leader/tools/list": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 22162
+      },
+      "worker/initialize": {
+        "calls": 28,
+        "failures": 0,
+        "response_bytes": 4340
+      },
+      "worker/tools/list": {
+        "calls": 28,
+        "failures": 0,
+        "response_bytes": 56140
+      }
+    },
+    "worker_turn_results": {
+      "codex.finished": 28,
+      "codex.failed": 1
+    },
+    "leader_direct_cli": {
+      "calls": {},
+      "successful": 0,
+      "other_or_inflight": 0
+    }
+  },
+  "hybrid_cli": {
+    "merged_commit": "fc59b1014cd3803278eb1f7b243a78040c63475c",
+    "tests_passed": 21,
+    "ready_milestones": [
+      "notes-release"
+    ],
+    "plan_revision": 2,
+    "original_goal_contract_acceptance_unchanged": true,
+    "provider": {
+      "by_agent": {
+        "code-reviewer-1": {
+          "cache_read": 2072320,
+          "cache_write": 0,
+          "max_request_input": 83520,
+          "output": 6431,
+          "priced_responses": 42,
+          "responses": 42,
+          "standard_short_context_api_equivalent_usd": 0.5688560000000001,
+          "threads": 1,
+          "turns": 6,
+          "uncached_input": 148657
+        },
+        "executor-1": {
+          "cache_read": 13130496,
+          "cache_write": 0,
+          "max_request_input": 183317,
+          "output": 31229,
+          "priced_responses": 135,
+          "responses": 135,
+          "standard_short_context_api_equivalent_usd": 0.18159185999999997,
+          "threads": 1,
+          "turns": 12,
+          "uncached_input": 346724
+        },
+        "leader": {
+          "cache_read": 17461632,
+          "cache_write": 0,
+          "max_request_input": 141094,
+          "output": 22305,
+          "priced_responses": 206,
+          "responses": 206,
+          "standard_short_context_api_equivalent_usd": 2.034612739999999,
+          "threads": 1,
+          "turns": 5,
+          "uncached_input": 286102
+        },
+        "planner-1": {
+          "cache_read": 1048960,
+          "cache_write": 0,
+          "max_request_input": 56465,
+          "output": 13715,
+          "priced_responses": 33,
+          "responses": 33,
+          "standard_short_context_api_equivalent_usd": 0.41311000000000003,
+          "threads": 1,
+          "turns": 3,
+          "uncached_input": 85532
+        }
+      },
+      "by_model": {
+        "gpt-6-luna": {
+          "cache_read": 15733120,
+          "cache_write": 0,
+          "max_request_input": 183317,
+          "output": 32757,
+          "priced_responses": 156,
+          "responses": 156,
+          "standard_short_context_api_equivalent_usd": 0.22196380000000004,
+          "uncached_input": 482541
+        },
+        "gpt-6.1-sol": {
+          "cache_read": 15907968,
+          "cache_write": 0,
+          "max_request_input": 119429,
+          "output": 34492,
+          "priced_responses": 218,
+          "responses": 218,
+          "standard_short_context_api_equivalent_usd": 2.4073507999999983,
+          "uncached_input": 235817
+        },
+        "gpt-6.2-sol": {
+          "cache_read": 2072320,
+          "cache_write": 0,
+          "max_request_input": 83520,
+          "output": 6431,
+          "priced_responses": 42,
+          "responses": 42,
+          "standard_short_context_api_equivalent_usd": 0.5688560000000001,
+          "uncached_input": 148657
+        }
+      },
+      "price_basis": "standard short-context API equivalent per response, excluding any unknown model, cache TTL, or long-context rate",
+      "pricing_snapshot_date": "2026-11-22",
+      "pricing_source": "https://developers.openai.com/api/docs/pricing",
+      "provider": "codex",
+      "rates_per_million_input_cache_read_output": {
+        "gpt-6-luna": [
+          0.1,
+          0.01,
+          0.5
+        ],
+        "gpt-6.1-sol": [
+          2,
+          0.1,
+          10
+        ],
+        "gpt-6.2-sol": [
+          2,
+          0.1,
+          10
+        ]
+      },
+      "totals": {
+        "cache_read": 33713408,
+        "cache_write": 0,
+        "output": 73680,
+        "priced_responses": 416,
+        "responses": 416,
+        "standard_short_context_api_equivalent_usd": 3.1981705999999996,
+        "threads": 4,
+        "turns": 26,
+        "uncached_input": 867015
+      },
+      "transcript_minus_worker_stream": {
+        "code-reviewer-1": {
+          "cache_read": 0,
+          "output": 0,
+          "turns": 0,
+          "uncached_input": 0
+        },
+        "executor-1": {
+          "cache_read": 882304,
+          "output": 457,
+          "turns": 1,
+          "uncached_input": 165984
+        },
+        "planner-1": {
+          "cache_read": 0,
+          "output": 0,
+          "turns": 0,
+          "uncached_input": 0
+        }
+      },
+      "usage_source": "deduplicated token_usage_record"
+    },
+    "mcp_totals": {
+      "calls": 466,
+      "failures": 44,
+      "response_bytes": 1009895
+    },
+    "mcp_by_operation": {
+      "leader/task_status": {
+        "calls": 3,
+        "failures": 0,
+        "response_bytes": 50732
+      },
+      "leader/application_workflow": {
+        "calls": 20,
+        "failures": 6,
+        "response_bytes": 31584
+      },
+      "leader/memory_search": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 1263
+      },
+      "leader/application_workflow.leader_inbox": {
+        "calls": 94,
+        "failures": 0,
+        "response_bytes": 54365
+      },
+      "leader/application_workflow.status": {
+        "calls": 19,
+        "failures": 2,
+        "response_bytes": 71412
+      },
+      "leader/read_file": {
+        "calls": 12,
+        "failures": 3,
+        "response_bytes": 14716
+      },
+      "leader/graph": {
+        "calls": 1,
+        "failures": true,
+        "response_bytes": 196
+      },
+      "leader/application_workflow.proposal_example": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 2272
+      },
+      "leader/spawn_agent": {
+        "calls": 3,
+        "failures": 0,
+        "response_bytes": 623
+      },
+      "leader/send_order": {
+        "calls": 18,
+        "failures": 3,
+        "response_bytes": 3420
+      },
+      "leader/memory_save": {
+        "calls": 12,
+        "failures": 0,
+        "response_bytes": 2463
+      },
+      "leader/git_log": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 170
+      },
+      "worker/status.brief": {
+        "calls": 22,
+        "failures": 0,
+        "response_bytes": 17082
+      },
+      "worker/status": {
+        "calls": 10,
+        "failures": 0,
+        "response_bytes": 115390
+      },
+      "worker/execute.compact": {
+        "calls": 50,
+        "failures": 0,
+        "response_bytes": 104581
+      },
+      "worker/application_read": {
+        "calls": 6,
+        "failures": 0,
+        "response_bytes": 39711
+      },
+      "worker/proposal_example": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 3581
+      },
+      "worker/memory_search": {
+        "calls": 3,
+        "failures": 0,
+        "response_bytes": 5755
+      },
+      "worker/execute": {
+        "calls": 21,
+        "failures": 0,
+        "response_bytes": 89718
+      },
+      "worker/ask": {
+        "calls": 1,
+        "failures": true,
+        "response_bytes": 156
+      },
+      "worker/plan_write": {
+        "calls": 4,
+        "failures": 1,
+        "response_bytes": 838
+      },
+      "worker/checkpoint": {
+        "calls": 26,
+        "failures": 12,
+        "response_bytes": 3499
+      },
+      "worker/check": {
+        "calls": 15,
+        "failures": 1,
+        "response_bytes": 11341
+      },
+      "worker/report": {
+        "calls": 17,
+        "failures": 3,
+        "response_bytes": 2822
+      },
+      "leader/read_log": {
+        "calls": 6,
+        "failures": 0,
+        "response_bytes": 3887
+      },
+      "leader/read_plan": {
+        "calls": 3,
+        "failures": 0,
+        "response_bytes": 40538
+      },
+      "worker/plan_read": {
+        "calls": 15,
+        "failures": 1,
+        "response_bytes": 215186
+      },
+      "worker/plan_proposal": {
+        "calls": 4,
+        "failures": 3,
+        "response_bytes": 2746
+      },
+      "worker/memory_save": {
+        "calls": 9,
+        "failures": 0,
+        "response_bytes": 2531
+      },
+      "leader/accept_step": {
+        "calls": 8,
+        "failures": 2,
+        "response_bytes": 869
+      },
+      "leader/escalate": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 190
+      },
+      "leader/add_lane": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 353
+      },
+      "leader/configure_checks": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 116
+      },
+      "leader/git_diff": {
+        "calls": 13,
+        "failures": 0,
+        "response_bytes": 30781
+      },
+      "leader/read_check_log": {
+        "calls": 17,
+        "failures": 0,
+        "response_bytes": 7404
+      },
+      "worker/result_read": {
+        "calls": 1,
+        "failures": true,
+        "response_bytes": 106
+      },
+      "worker/review_diff": {
+        "calls": 7,
+        "failures": 1,
+        "response_bytes": 69048
+      },
+      "worker/review_submit": {
+        "calls": 8,
+        "failures": 2,
+        "response_bytes": 1080
+      },
+      "leader/reject_step": {
+        "calls": 8,
+        "failures": 0,
+        "response_bytes": 1056
+      },
+      "leader/run_check": {
+        "calls": 1,
+        "failures": true,
+        "response_bytes": 190
+      },
+      "worker/plan_read.outline": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 774
+      },
+      "worker/plan_read.excerpt": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 5350
+      }
+    },
+    "mcp_setup": {
+      "leader/initialize": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 166
+      },
+      "leader/tools/list": {
+        "calls": 1,
+        "failures": false,
+        "response_bytes": 21858
+      },
+      "worker/initialize": {
+        "calls": 22,
+        "failures": 0,
+        "response_bytes": 3410
+      },
+      "worker/tools/list": {
+        "calls": 22,
+        "failures": 0,
+        "response_bytes": 44110
+      }
+    },
+    "worker_turn_results": {
+      "codex.finished": 22,
+      "codex.failed": 1
+    },
+    "leader_direct_cli": {
+      "calls": {
+        "progress": 12,
+        "order": 3
+      },
+      "successful": 15,
+      "other_or_inflight": 0
+    }
+  },
+  "observed_api_equivalent_cost_reduction_percent": 22.55,
+  "limitations": [
+    "One concurrent Codex Notes delivery per configuration. Independent agent decisions, tests and repairs introduce variance.",
+    "Same binary and compatible compact output views. The hybrid advertises full status on MCP and sends routine status and order lookup to direct CLI.",
+    "Both arms shared Codex account and quota, with separate task homes and provider sessions.",
+    "The benchmark prices observed usage at frozen short-context API-equivalent rates rather than measuring subscription billing.",
+    "Quota interrupted both arms after merge; only the no-edit evidence refreshes were explicitly recovered after verifying source and lane state.",
+    "Cost uses deduplicated provider transcript usage. Worker-stream coverage is incomplete around recovery. Observed transcript response pricing is complete.",
+    "Compact MCP added a scheduling planning order and additional reviewer identities. The authored focused tests, defects, and corrective orders differ."
+  ],
+  "initial_git_tree": "5cfc642342a39df3549638db229d9c4a2e1f62e9",
+  "binary_sha256": "3f177f14c1fcb803253fdc11655ddab31b21cb58a99baeaca01680fa3db9dbd2"
+}

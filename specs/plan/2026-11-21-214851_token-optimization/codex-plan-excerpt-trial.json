@@ -1,0 +1,52 @@
+{
+  "model": "gpt-6.1-sol",
+  "effort": "medium",
+  "expected": {
+    "api_write_file": "api/notes_api.py",
+    "api_check": "python3 -m unittest tests.test_api",
+    "client_approved_dependency": "notes-tests",
+    "combined_check": "python3 -m unittest discover -s tests -t ."
+  },
+  "arms": {
+    "full": {
+      "payload_bytes": 48687,
+      "usage": {
+        "input_tokens": 26860,
+        "cached_input_tokens": 14592,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 64,
+        "reasoning_output_tokens": 0
+      },
+      "score": 4,
+      "matched": true,
+      "provider_exit": 0,
+      "observed": {
+        "api_write_file": "api/notes_api.py",
+        "api_check": "python3 -m unittest tests.test_api",
+        "client_approved_dependency": "notes-tests",
+        "combined_check": "python3 -m unittest discover -s tests -t ."
+      }
+    },
+    "excerpt": {
+      "payload_bytes": 5242,
+      "usage": {
+        "input_tokens": 16677,
+        "cached_input_tokens": 14592,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 64,
+        "reasoning_output_tokens": 0
+      },
+      "score": 4,
+      "matched": true,
+      "provider_exit": 0,
+      "observed": {
+        "api_write_file": "api/notes_api.py",
+        "api_check": "python3 -m unittest tests.test_api",
+        "client_approved_dependency": "notes-tests",
+        "combined_check": "python3 -m unittest discover -s tests -t ."
+      }
+    }
+  },
+  "input_reduction_percent": 37.91,
+  "scope": "one paired interpretation of the saved Notes execution plan, excerpt lines 1\u201318, without an outline call in the model prompt"
+}

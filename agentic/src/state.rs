@@ -37,6 +37,8 @@ pub struct State {
     /// The user put this reviewed task's whole team, leader included, on
     /// Codex (`devagentics task codex-team`).
     pub codex_team: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub leader_cli: bool,
     /// The user turned on the code graph (Graphify) for this task's agents
     /// (`devagentics task graph`).
     pub graph_enabled: bool,
@@ -50,6 +52,10 @@ pub struct State {
     /// Steps that used their attempts, and where devAgentics's one retry of
     /// each stands.
     pub step_retries: std::collections::BTreeMap<String, StepRetry>,
+    /// Why each step failed, oldest first (failures.rs).
+    pub step_failures: std::collections::BTreeMap<String, Vec<crate::failures::Failure>>,
+    /// Steps the user let past the same-cause rule once (`task attempts`).
+    pub diagnosis_waivers: std::collections::BTreeSet<String>,
     /// Steps the leader was reminded it left waiting, with the wait it was
     /// reminded of (`review_since`, 0 when unknown): a new wait is reminded
     /// again.
@@ -197,7 +203,7 @@ pub enum StepStatus {
     /// its work is not needed. Nothing merged.
     Closed,
     /// It used every attempt, and the one retry devAgentics gave it after a
-    /// wait: it needs the user.
+    /// wait: the leader allows more, changes the approach or closes it.
     Exhausted,
 }
 
@@ -230,11 +236,16 @@ pub struct Step {
 }
 
 impl StepStatus {
-    /// The leader has to act on it: accept, reject, close or order it again.
+    /// The leader has to act on it: accept, reject, close or order it again;
+    /// for a step that used every attempt, allow more or change the approach.
     pub fn waits_for_leader(self) -> bool {
         matches!(
             self,
-            StepStatus::Reported | StepStatus::Failed | StepStatus::Blocked | StepStatus::Rejected
+            StepStatus::Reported
+                | StepStatus::Failed
+                | StepStatus::Blocked
+                | StepStatus::Rejected
+                | StepStatus::Exhausted
         )
     }
 }

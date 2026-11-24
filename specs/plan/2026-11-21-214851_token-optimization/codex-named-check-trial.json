@@ -1,0 +1,206 @@
+{
+  "model": "gpt-6.1-sol",
+  "effort": "medium",
+  "attempt_limit": 2,
+  "pricing_basis": "same short-context API-rate snapshot as codex-baseline.json",
+  "trial": {
+    "prior": {
+      "totals": {
+        "attempts": 6,
+        "accepted_cases": 0,
+        "uncached_input": 39615,
+        "cache_read": 76032,
+        "output": 21970,
+        "estimated_api_equivalent_usd": 0.3065332
+      },
+      "cases": {
+        "check_shape": {
+          "attempts": [
+            {
+              "attempt": 1,
+              "feedback_bytes": 2808,
+              "usage": {
+                "input_tokens": 18753,
+                "cached_input_tokens": 12288,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 3833,
+                "reasoning_output_tokens": 173
+              },
+              "outcome": "rejected"
+            },
+            {
+              "attempt": 2,
+              "feedback_bytes": 424,
+              "usage": {
+                "input_tokens": 19127,
+                "cached_input_tokens": 12288,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 1306,
+                "reasoning_output_tokens": 1202
+              },
+              "outcome": "rejected"
+            }
+          ],
+          "validator_accepted": false
+        },
+        "semantic": {
+          "attempts": [
+            {
+              "attempt": 1,
+              "feedback_bytes": 845,
+              "usage": {
+                "input_tokens": 18534,
+                "cached_input_tokens": 12288,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 4359,
+                "reasoning_output_tokens": 510
+              },
+              "outcome": "rejected"
+            },
+            {
+              "attempt": 2,
+              "feedback_bytes": 392,
+              "usage": {
+                "input_tokens": 19338,
+                "cached_input_tokens": 14592,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 3575,
+                "reasoning_output_tokens": 336
+              },
+              "outcome": "rejected"
+            }
+          ],
+          "validator_accepted": false
+        },
+        "check_environment": {
+          "attempts": [
+            {
+              "attempt": 1,
+              "feedback_bytes": 182,
+              "usage": {
+                "input_tokens": 19903,
+                "cached_input_tokens": 12288,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 5006,
+                "reasoning_output_tokens": 516
+              },
+              "outcome": "rejected"
+            },
+            {
+              "attempt": 2,
+              "feedback_bytes": 334,
+              "usage": {
+                "input_tokens": 19992,
+                "cached_input_tokens": 12288,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 3891,
+                "reasoning_output_tokens": 71
+              },
+              "outcome": "rejected"
+            }
+          ],
+          "validator_accepted": false
+        }
+      }
+    },
+    "current": {
+      "totals": {
+        "attempts": 6,
+        "accepted_cases": 1,
+        "uncached_input": 35108,
+        "cache_read": 80640,
+        "output": 23717,
+        "estimated_api_equivalent_usd": 0.31545
+      },
+      "cases": {
+        "check_shape": {
+          "attempts": [
+            {
+              "attempt": 1,
+              "feedback_bytes": 3036,
+              "usage": {
+                "input_tokens": 18791,
+                "cached_input_tokens": 14592,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 3637,
+                "reasoning_output_tokens": 144
+              },
+              "outcome": "rejected"
+            },
+            {
+              "attempt": 2,
+              "feedback_bytes": 590,
+              "usage": {
+                "input_tokens": 19022,
+                "cached_input_tokens": 14592,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 4000,
+                "reasoning_output_tokens": 488
+              },
+              "outcome": "validator_accepted"
+            }
+          ],
+          "validator_accepted": true
+        },
+        "semantic": {
+          "attempts": [
+            {
+              "attempt": 1,
+              "feedback_bytes": 1011,
+              "usage": {
+                "input_tokens": 18558,
+                "cached_input_tokens": 12288,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 3503,
+                "reasoning_output_tokens": 303
+              },
+              "outcome": "rejected"
+            },
+            {
+              "attempt": 2,
+              "feedback_bytes": 406,
+              "usage": {
+                "input_tokens": 19372,
+                "cached_input_tokens": 12288,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 3743,
+                "reasoning_output_tokens": 456
+              },
+              "outcome": "rejected"
+            }
+          ],
+          "validator_accepted": false
+        },
+        "check_environment": {
+          "attempts": [
+            {
+              "attempt": 1,
+              "feedback_bytes": 742,
+              "usage": {
+                "input_tokens": 20010,
+                "cached_input_tokens": 12288,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 4169,
+                "reasoning_output_tokens": 346
+              },
+              "outcome": "rejected"
+            },
+            {
+              "attempt": 2,
+              "feedback_bytes": 391,
+              "usage": {
+                "input_tokens": 19995,
+                "cached_input_tokens": 14592,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 4665,
+                "reasoning_output_tokens": 197
+              },
+              "outcome": "rejected"
+            }
+          ],
+          "validator_accepted": false
+        }
+      }
+    }
+  }
+}

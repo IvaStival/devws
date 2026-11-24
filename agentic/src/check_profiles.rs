@@ -127,6 +127,20 @@ pub fn failure_excerpt(log: &std::path::Path) -> String {
     excerpt.chars().take(1500).collect()
 }
 
+/// The last `lines` lines of a check's log, without terminal colours; empty
+/// when the log cannot be read.
+pub fn log_tail(log: &std::path::Path, lines: usize) -> String {
+    let Ok(text) = fs::read_to_string(log) else {
+        return String::new();
+    };
+    let all: Vec<&str> = text.lines().collect();
+    all[all.len().saturating_sub(lines)..]
+        .iter()
+        .map(|line| without_colours(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn without_colours(line: &str) -> String {
     let mut plain = String::with_capacity(line.len());
     let mut characters = line.chars();
@@ -254,7 +268,9 @@ pub fn validate(config: &RepositoryChecks) -> Result<()> {
         let environment = config
             .environments
             .get(&profile.environment)
-            .with_context(|| format!("unknown environment {}", profile.environment))?;
+            .with_context(|| {
+                format!("unknown environment {:?} for check {name}; declare it in this repository's environments", profile.environment)
+            })?;
         for key in environment.values.keys().chain(environment.sources.keys()) {
             if key.is_empty()
                 || key.len() > 128
@@ -482,7 +498,7 @@ pub fn execute(task: &Task, order: &Order, timeout: Duration) -> Result<Evidence
                     &order.forbidden,
                 )? != work
             {
-                bail!("cached evidence is stale");
+                bail!(crate::failures::Stale("cached evidence is stale".into()));
             }
             Ok(())
         })?;
@@ -585,7 +601,9 @@ pub fn execute(task: &Task, order: &Order, timeout: Duration) -> Result<Evidence
                 &order.forbidden,
             )? != work
         {
-            bail!("check inputs changed; evidence is stale");
+            bail!(crate::failures::Stale(
+                "check inputs changed; evidence is stale".into()
+            ));
         }
         tx.state
             .timing
@@ -617,7 +635,9 @@ pub fn validate_configuration(
     let selected = order_checks(&config, state, order, agent);
     let signature = signature(state, selected.as_ref(), order)?;
     if !same_configuration(state.workflow, &signature, &evidence.configuration)? {
-        bail!("check configuration changed; evidence is stale");
+        bail!(crate::failures::Stale(
+            "check configuration changed; evidence is stale".into()
+        ));
     }
     Ok(())
 }
@@ -679,7 +699,7 @@ fn container_script(prefix: &str, targets: &[String], command: &str) -> String {
     )
 }
 
-fn shell_quote(value: &str) -> String {
+pub(crate) fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 /// Where a check runs: the runner workspace of `agent`, in `lane`'s image,

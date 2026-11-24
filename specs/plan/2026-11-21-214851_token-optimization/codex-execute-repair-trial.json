@@ -1,0 +1,61 @@
+{
+  "model": "gpt-6.1-sol",
+  "effort": "medium",
+  "full_wire_bytes": 74821,
+  "compact_wire_bytes": 2916,
+  "responses": {
+    "full": {
+      "provider_exit": 0,
+      "usage": {
+        "input_tokens": 30793,
+        "cached_input_tokens": 12288,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 20,
+        "reasoning_output_tokens": 0
+      },
+      "observed": {
+        "needs_result": false,
+        "function": "active_count",
+        "replacement": "return total"
+      },
+      "repair_passed": true,
+      "estimated_api_equivalent_usd": 0.0384388
+    },
+    "compact": {
+      "provider_exit": 0,
+      "usage": {
+        "input_tokens": 16276,
+        "cached_input_tokens": 14592,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 14,
+        "reasoning_output_tokens": 0
+      },
+      "observed": {
+        "needs_result": true,
+        "stream": "stderr"
+      },
+      "estimated_api_equivalent_usd": 0.0049672
+    },
+    "retrieved": {
+      "provider_exit": 0,
+      "usage": {
+        "input_tokens": 34148,
+        "cached_input_tokens": 26880,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 34,
+        "reasoning_output_tokens": 0
+      },
+      "observed": {
+        "needs_result": false,
+        "function": "active_count",
+        "replacement": "return total"
+      },
+      "retrieval_wire_bytes": 6871,
+      "repair_passed": true,
+      "estimated_api_equivalent_usd": 0.017564,
+      "usage_source": "cumulative across compact response and resumed retrieval; do not add to the compact turn"
+    }
+  },
+  "pricing_basis": "same frozen short-context API-rate snapshot as codex-baseline.json",
+  "scope": "synthetic one-line Python repair, both proposed fixes independently applied in scratch and checked by the same two-test Docker suite"
+}

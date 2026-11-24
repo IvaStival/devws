@@ -1,0 +1,78 @@
+{
+  "reason": "Define the initial status command and how it is checked.",
+  "application": {
+    "revision": 1,
+    "goal": "The status command prints ready.",
+    "non_goals": ["No network access."],
+    "decisions": [{
+      "id": "status-format",
+      "round": 1,
+      "question": "What format should the command print?",
+      "recommendation": "One plain-text line.",
+      "prerequisites": [],
+      "answer": "One plain-text line."
+    }],
+    "scopes": {"status-command": "A local status command and its unit test."},
+    "items": {
+      "status-tests": {
+        "scope": "status-command",
+        "title": "Write status command unit tests",
+        "role": "executor",
+        "repo": "example-repo",
+        "lane": "status",
+        "allowed": ["tests/test_status.py"],
+        "reuse": ["Existing unittest setup"],
+        "interfaces": ["Call status.main()"],
+        "behavior": ["Assert the printed status and exit code"],
+        "errors": ["Fail if output differs"],
+        "tests": ["python3 -m unittest tests.test_status"],
+        "profiles": ["test-syntax"],
+        "acceptance": ["The unit test fails before implementation and compiles"],
+        "standards": "1",
+        "writes_tests": true
+      },
+      "status-command": {
+        "scope": "status-command",
+        "title": "Implement the status command",
+        "role": "executor",
+        "repo": "example-repo",
+        "lane": "status",
+        "dependencies": ["status-tests"],
+        "allowed": ["status.py"],
+        "reuse": ["Existing status entry point"],
+        "interfaces": ["status.main() prints ready and returns zero"],
+        "behavior": ["Print one line"],
+        "errors": ["Report output errors with a nonzero exit"],
+        "tests": ["python3 -m unittest tests.test_status"],
+        "profiles": ["unit"],
+        "acceptance": ["The frozen status test passes"],
+        "standards": "1",
+        "protected_tests": ["tests/test_status.py"]
+      }
+    },
+    "check_configuration": {
+      "example-repo": {
+        "environments": {"default": {}},
+        "checks": {
+          "test-syntax": {
+            "command": "python3 -m py_compile tests/test_status.py",
+            "environment": "default"
+          },
+          "unit": {
+            "command": "python3 -m unittest tests.test_status",
+            "environment": "default"
+          }
+        },
+        "selected": ["unit"],
+        "candidate": ["unit"]
+      }
+    },
+    "milestones": {
+      "status-release": {
+        "version": "1.0.0",
+        "title": "Status command ready",
+        "required": ["status-tests", "status-command"]
+      }
+    }
+  }
+}

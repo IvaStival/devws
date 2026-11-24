@@ -31,6 +31,9 @@ pub enum NoteKind {
     Report,
     /// The task's state when the leader moved (devAgentics writes it).
     Digest,
+    /// How an area of the code works (its files, conventions, traps, how to
+    /// test it): handed to every order there, so nobody reads it all again.
+    Knowledge,
 }
 
 impl NoteKind {
@@ -40,6 +43,7 @@ impl NoteKind {
             "gotcha" => Self::Gotcha,
             "handoff" => Self::Handoff,
             "finding" => Self::Finding,
+            "knowledge" => Self::Knowledge,
             _ => return None,
         })
     }
@@ -52,6 +56,7 @@ impl NoteKind {
             Self::Finding => "finding",
             Self::Report => "report",
             Self::Digest => "digest",
+            Self::Knowledge => "knowledge",
         }
     }
 
@@ -74,6 +79,9 @@ pub struct Note {
     /// The agent that wrote it (`leader`, `hammer-12`).
     pub author: String,
     pub step: Option<String>,
+    /// For knowledge: the lane (back) or the path prefix (backend/app/) it
+    /// is about.
+    pub area: Option<String>,
 }
 
 /// A page read back.
@@ -415,6 +423,7 @@ mod tests {
 
     fn note(kind: NoteKind, title: &str) -> Note {
         Note {
+            area: None,
             kind,
             title: title.into(),
             body: "The registry needs the token first.".into(),

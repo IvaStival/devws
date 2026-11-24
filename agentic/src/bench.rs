@@ -41,6 +41,44 @@ pub struct Report {
     pub graph_queries: u64,
     /// None when the team's usage could not be read.
     pub usage: Option<Usage>,
+    pub estimated_api_cost: CostCoverage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload_telemetry: Option<crate::telemetry::Summary>,
+}
+
+/// Coverage of the available pane and archived readings. An agent may have
+/// additional sessions that those readings do not cover.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct CostCoverage {
+    pub observed_usd: Option<f64>,
+    pub observed_agents: usize,
+    pub unpriced_agents: usize,
+    pub missing_agents: usize,
+}
+
+impl CostCoverage {
+    fn from_readings(expected_agents: usize, readings: impl IntoIterator<Item = Usage>) -> Self {
+        let mut coverage = Self::default();
+        for usage in readings {
+            coverage.observed_agents += 1;
+            coverage.unpriced_agents += usize::from(usage.unpriced);
+            if !usage.unpriced || usage.cost > 0.0 {
+                *coverage.observed_usd.get_or_insert(0.0) += usage.cost;
+            }
+        }
+        coverage.missing_agents = expected_agents.saturating_sub(coverage.observed_agents);
+        coverage
+    }
+
+    fn display(&self) -> String {
+        match self.observed_usd {
+            Some(cost) if self.unpriced_agents == 0 && self.missing_agents == 0 => {
+                format!("${cost:.2} observed")
+            }
+            Some(cost) => format!("${cost:.2} priced subtotal (incomplete coverage)"),
+            None => "unknown".into(),
+        }
+    }
 }
 
 /// What the run needed from a person.
@@ -139,6 +177,8 @@ pub fn build(
             .filter(|interval| interval.category == "graph_queries")
             .count() as u64,
         usage,
+        estimated_api_cost: CostCoverage::default(),
+        payload_telemetry: None,
     }
 }
 
@@ -160,17 +200,22 @@ pub fn report(task: &Task, devws: &dyn crate::devws::Devws) -> Result<Report> {
             milestones_ready.push(id.clone());
         }
     }
-    let usage = crate::board_usage::UsageReader::new(std::time::Duration::ZERO)
+    let team_usage = crate::board_usage::UsageReader::new(std::time::Duration::ZERO)
         .of_team(task, devws)
-        .ok()
+        .ok();
+    let usage = team_usage
+        .as_ref()
+        .filter(|team| !team.by_agent.is_empty())
         .map(|team| crate::board_usage::total(&team.by_role));
-    Ok(build(
-        &task.config()?.id,
-        &state,
-        &log,
-        milestones_ready,
-        usage,
-    ))
+    let mut report = build(&task.config()?.id, &state, &log, milestones_ready, usage);
+    report.estimated_api_cost = CostCoverage::from_readings(
+        state.agents.len() + 1,
+        team_usage
+            .iter()
+            .flat_map(|team| team.by_agent.values().copied()),
+    );
+    report.payload_telemetry = crate::telemetry::summary(task)?;
+    Ok(report)
 }
 
 /// The report as lines of `name  value`.
@@ -249,13 +294,16 @@ fn lines(report: &Report) -> Vec<(String, String)> {
     ));
     lines.push((
         "cost at API prices".into(),
-        report.usage.map_or("unknown".into(), |usage| {
-            format!(
-                "${:.2}{}",
-                usage.cost,
-                if usage.unpriced { " or more" } else { "" }
-            )
-        }),
+        report.estimated_api_cost.display(),
+    ));
+    lines.push((
+        "agent price coverage".into(),
+        format!(
+            "{} observed, {} with unpriced usage, {} missing",
+            report.estimated_api_cost.observed_agents,
+            report.estimated_api_cost.unpriced_agents,
+            report.estimated_api_cost.missing_agents,
+        ),
     ));
     lines
 }
@@ -473,21 +521,55 @@ mod tests {
     }
 
     #[test]
+    fn observed_cost_distinguishes_unknown_from_zero_and_partial_pricing() {
+        let unknown = Usage {
+            unpriced: true,
+            ..Usage::default()
+        };
+        let zero = Usage::default();
+        let paid = Usage {
+            cost: 0.42,
+            ..Usage::default()
+        };
+
+        let coverage = CostCoverage::from_readings(2, [unknown]);
+        assert_eq!(coverage.observed_usd, None);
+        assert_eq!(coverage.unpriced_agents, 1);
+        assert_eq!(coverage.missing_agents, 1);
+        assert_eq!(coverage.display(), "unknown");
+        assert!(serde_json::to_value(&coverage).unwrap()["observed_usd"].is_null());
+
+        let coverage = CostCoverage::from_readings(1, [zero]);
+        assert_eq!(coverage.display(), "$0.00 observed");
+
+        let coverage = CostCoverage::from_readings(3, [unknown, paid]);
+        assert_eq!(
+            coverage.display(),
+            "$0.42 priced subtotal (incomplete coverage)"
+        );
+        assert_eq!(coverage.observed_agents, 2);
+        assert_eq!(coverage.missing_agents, 1);
+
+        let partially_priced = Usage {
+            unpriced: true,
+            ..paid
+        };
+        let coverage = CostCoverage::from_readings(1, [partially_priced]);
+        assert_eq!(coverage.observed_usd, Some(0.42));
+        assert_eq!(coverage.unpriced_agents, 1);
+    }
+
+    #[test]
     fn two_runs_compare_line_by_line() {
         let legacy = build("legacy-1", &State::default(), &[], vec![], None);
-        let reviewed = build(
-            "reviewed-1",
-            &run(),
-            &[],
-            vec!["M01".into()],
-            Some(Usage {
-                input: 10,
-                output: 5,
-                cache: 0,
-                cost: 1.5,
-                unpriced: false,
-            }),
-        );
+        let usage = Usage {
+            input: 10,
+            output: 5,
+            cost: 1.5,
+            ..Usage::default()
+        };
+        let mut reviewed = build("reviewed-1", &run(), &[], vec!["M01".into()], Some(usage));
+        reviewed.estimated_api_cost = CostCoverage::from_readings(1, [usage]);
         let table = compare(&legacy, &reviewed);
         let first_pass = table
             .lines()

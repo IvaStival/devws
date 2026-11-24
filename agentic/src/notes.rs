@@ -22,6 +22,15 @@ fn prefix(task: &Task) -> Result<String> {
 /// agent on it looks; the rest by kind. Handoffs and digests are about the
 /// whole task, whatever step they name.
 fn path_of(task: &str, note: &Note, stamp: &str) -> String {
+    if note.kind == NoteKind::Knowledge
+        && let Some(area) = &note.area
+    {
+        return format!(
+            "tasks/{task}/knowledge/{}/knowledge-{stamp}-{}.md",
+            crate::memory::slug(area),
+            crate::memory::slug(&note.title)
+        );
+    }
     match &note.step {
         Some(step) if !matches!(note.kind, NoteKind::Handoff | NoteKind::Digest) => format!(
             "tasks/{task}/steps/{}/{}-{stamp}-{}.md",
@@ -41,6 +50,14 @@ pub fn save(task: &Task, devws: &dyn Devws, note: &Note) -> Result<Option<String
     }
     ensure!(!note.title.trim().is_empty(), "a note needs a title");
     ensure!(!note.body.trim().is_empty(), "a note needs a body");
+    ensure!(
+        note.kind != NoteKind::Knowledge
+            || note
+                .area
+                .as_deref()
+                .is_some_and(|area| !area.trim().is_empty()),
+        "knowledge names its area: a lane (back) or a path prefix (backend/app/)"
+    );
     // Milliseconds: two notes with one title in a second keep apart.
     let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S%3f").to_string();
     let path = path_of(&task.config()?.id, note, &stamp);
@@ -94,6 +111,7 @@ pub fn record_report(
         task,
         devws,
         &Note {
+            area: None,
             kind: NoteKind::Report,
             title: format!("{} {outcome} · order {}", order.step, order.id),
             body: summary.to_string(),
@@ -133,6 +151,47 @@ pub fn about_step(task: &Task, devws: &dyn Devws, step: &str) -> Result<Vec<Page
         &format!("{}steps/{}/", prefix(task)?, crate::memory::slug(step)),
         MAX_NOTES,
     )
+}
+
+/// The most knowledge notes an order carries.
+const MAX_KNOWLEDGE: usize = 6;
+
+/// The team's knowledge of where an order works: notes whose area is its
+/// lane or a folder above its files, newest first.
+pub fn knowledge_for(
+    task: &Task,
+    devws: &dyn Devws,
+    lane: Option<&str>,
+    paths: &[String],
+) -> Result<Vec<Page>> {
+    let mut areas: std::collections::BTreeSet<String> =
+        lane.map(crate::memory::slug).into_iter().collect();
+    for path in paths {
+        // The folders above it, up to the first glob character.
+        let parts: Vec<&str> = path
+            .split('/')
+            .take_while(|part| !part.contains(['*', '?', '[']))
+            .collect();
+        for end in 1..=parts.len() {
+            areas.insert(crate::memory::slug(&parts[..end].join("/")));
+        }
+    }
+    areas.remove("");
+    if areas.is_empty() {
+        return Ok(Vec::new());
+    }
+    let folder = format!("{}knowledge/", prefix(task)?);
+    let pages = devws.memory().recent(TASKS_PROJECT, &folder, 200)?;
+    Ok(pages
+        .into_iter()
+        .filter(|page| {
+            page.path
+                .strip_prefix(&folder)
+                .and_then(|rest| rest.split('/').next())
+                .is_some_and(|area| areas.contains(area))
+        })
+        .take(MAX_KNOWLEDGE)
+        .collect())
 }
 
 /// The pages as one block an agent is handed: fenced and labelled as history
@@ -285,7 +344,7 @@ pub fn digest(task: &Task, headline: &str) -> Result<String> {
 /// The kinds an agent may save itself; reports and digests are devAgentics'.
 pub fn agent_kind(name: &str) -> Result<NoteKind> {
     NoteKind::parse(name)
-        .ok_or_else(|| anyhow::anyhow!("kind is decision, gotcha, handoff or finding"))
+        .ok_or_else(|| anyhow::anyhow!("kind is decision, gotcha, handoff, finding or knowledge"))
 }
 
 #[cfg(test)]
@@ -295,6 +354,7 @@ mod tests {
 
     fn note(kind: NoteKind, title: &str, body: &str) -> Note {
         Note {
+            area: None,
             kind,
             title: title.into(),
             body: body.into(),
@@ -336,6 +396,66 @@ mod tests {
             save(&task, &devws, &note(NoteKind::Gotcha, " ", "x")).is_err(),
             "no title"
         );
+    }
+
+    // What one agent learned about an area reaches every order there, so
+    // the next worker does not read it all again.
+    #[test]
+    fn knowledge_of_an_area_goes_to_the_orders_there() {
+        let dir = TempDir::new().unwrap();
+        let (_home, devws, task, _repo) = crate::board::tests::started(&dir);
+        let devws = devws.with_memory();
+        let knowledge = |area: Option<&str>, title: &str| Note {
+            area: area.map(str::to_string),
+            kind: NoteKind::Knowledge,
+            title: title.into(),
+            body: "SystemFlowRepository reads through the observer connection.".into(),
+            author: "leader".into(),
+            step: None,
+        };
+        let path = save(
+            &task,
+            &devws,
+            &knowledge(Some("backend/app/"), "Repositories"),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            path.starts_with("tasks/feat-x/knowledge/backend-app/"),
+            "{path}"
+        );
+        save(
+            &task,
+            &devws,
+            &knowledge(Some("back"), "How the back lane tests"),
+        )
+        .unwrap();
+        save(&task, &devws, &knowledge(Some("web/src/"), "Front hooks")).unwrap();
+        assert!(
+            save(&task, &devws, &knowledge(None, "Nowhere")).is_err(),
+            "knowledge names its area"
+        );
+
+        let titles = |lane: Option<&str>, paths: &[&str]| {
+            let paths: Vec<String> = paths.iter().map(|path| path.to_string()).collect();
+            knowledge_for(&task, &devws, lane, &paths)
+                .unwrap()
+                .into_iter()
+                .filter_map(|page| page.title)
+                .collect::<Vec<_>>()
+        };
+        let back = titles(Some("back"), &["backend/app/Repositories/**"]);
+        assert!(back.contains(&"Repositories".to_string()), "{back:?}");
+        assert!(
+            back.contains(&"How the back lane tests".to_string()),
+            "{back:?}"
+        );
+        assert!(!back.contains(&"Front hooks".to_string()), "{back:?}");
+        assert_eq!(
+            titles(Some("front"), &["web/src/hooks/a.ts"]),
+            ["Front hooks"]
+        );
+        assert!(titles(None, &["docs/**"]).is_empty());
     }
 
     #[test]

@@ -1,5 +1,8 @@
 # Using devAgentics
 
+[How devAgentics works](how-it-works.md) explains the pieces, a step from
+start to finish, and every tool the leader and the workers use.
+
 devAgentics runs a team of agents on one task. You talk to one of them, the
 **leader**; the leader opens the others (a planner, executors, any role you
 write), gives each one order at a time, checks the results, and opens linked
@@ -308,9 +311,13 @@ waiting for you takes it as your answer.
 | `devagentics board <task> [--once] [--view <view>]` | The team board (and the dispatcher): the workspace's team pane. `--once` prints it as text |
 | `devagentics watch <task> [--once]` | The dispatcher alone, with the log as plain lines |
 | `devagentics mcp <task>` | The leader's tools, as an MCP server on stdio |
+| `devagentics task leader-cli <task> on\|off` | Opt a reviewed Codex task in or out of direct Leader status reads |
+| `devagentics leader-read <task> progress` | Compact JSON progress from the opted-in task's primary worktree root |
+| `devagentics leader-read <task> order <id>` | Compact JSON order and check evidence from the same worktree root |
+| `devagentics leader-read <task> inbox` | Pending Leader messages, roster and ready work. Acknowledge handled IDs through MCP. |
 
 The leader's tools: `task_status`, `approve_plan`, `spawn_agent`, `add_lane`, `add_repo`,
-`send_order`, `read_plan`, `answer_question`, `accept_step`, `reject_step`, `close_step`, `allow_attempts`, `stop_agent`, `set_check`, `read_log`,
+`send_order`, `read_plan`, `answer_question`, `accept_step`, `reject_step`, `close_step`, `allow_attempts`, `read_check_log`, `snapshot_path`, `read_file`, `search_code`, `git_log`, `git_diff`, `stop_agent`, `set_check`, `read_log`,
 `escalate`, `switch_leader`, `open_prs`.
 
 ## Roles
@@ -524,13 +531,20 @@ devagentics opencode model floor opencode/<model>  # from `opencode models`
 
 See the [order, recovery and isolated-check guide](../../docs/user/devagentics-execution.md) for required report IDs, audited amendments, interrupt/resume, named check configuration and result formats.
 
-A step gets the task's `max_attempts` (5, in `task.toml`): orders, and reviews
-asking for changes. When they are used, devAgentics waits 15 minutes and gives
+A step gets the task's `max_attempts` (5, in `task.toml`) failures of its
+work: failed checks, reviews asking for changes, and failures the leader
+diagnosed as the work's. Re-checks after stale evidence, revision resets,
+stopped agents and the environment cost none, and every re-order after a
+failure carries the leader's diagnosis (see
+[How devAgentics works](how-it-works.md#failure-history-and-diagnosis)).
+Tasks started before this count from zero; a step that had already failed
+needs one diagnosis. When they are used, devAgentics waits 15 minutes and gives
 the step one more attempt on its own; if that fails too, the step shows a red
-✕ "failed" under NEEDS YOU and the leader escalates to you. `devagentics task
-attempts <task> <step> <limit>` allows that step more (and starts the retry
-over); so does a yes you give the leader, which it records with
-`allow_attempts`, your words in the log. In reviewed tasks,
+✕ "failed" and waits for the leader. The leader settles it without asking
+you: when the next attempt can succeed, it gives the step more with
+`allow_attempts` (its reason in the log and its next summary); otherwise it
+changes the approach or closes the step. You can still allow more yourself
+with `devagentics task attempts <task> <step> <limit>`. In reviewed tasks,
 candidate checks test each merge candidate before its review, protected tests
 cannot be changed by the work they judge, and `devagentics task
 codex-reviewers <task> on` lets Codex run the read-only reviewers.

@@ -29,6 +29,7 @@ pub struct Server<'a> {
     pub devws: &'a dyn Devws,
     /// The program that opens pull requests (`gh`).
     pub gh: String,
+    pub leader_cli_catalog: bool,
 }
 
 fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
@@ -46,7 +47,7 @@ fn tools() -> Vec<Value> {
     let mut tools = vec![
         tool(
             "application_workflow",
-            "Project application planning. Actions: status (an outline; input.section for one part in full, e.g. runner; section application or proposal with input.items [ids] for those full contracts), propose (input.application: the whole next revision), amend (input.changes: only what changes in the next revision, by id, null removes; input.reason), answer, confirm, approve, milestones, preview_adoption, adopt, review_request, provision_roles, runner_configure (input.configuration; its lanes: {lane: {image, image_mounts}} give a lane its own image), image_build (input: name, dockerfile, context_files, repo; builds a runner image on the user's rootless Docker and returns its ID), recover_turn, validate_milestone, leader_inbox (your messages and a line per live agent; input.ack [ids] acknowledges the ones you handled in the same call), inbox_ack, runner_images, project_overview, preflight_retry. provision_roles changes managed storage outside the project and requires exact-call external authorization; so does a runner_configure that changes docker_host. Other runner changes and image builds are yours to decide. When status proposal_approval.needs_user is true, record confirm/approve only after the user's explicit answer for that exact revision; when false (it only adds checks), approve it yourself. Material proposals never inherit approval. Preview is read-only; runner enforcement may block adoption.",
+            "Project application planning. Actions: status (an outline; input.section for one part in full, e.g. runner; section application or proposal with input.items [ids] for those full contracts), proposal_example (validated submission example), propose (input.application: the whole next revision; input.reason required), amend (input.changes: only what changes in the next revision, by id, null removes; input.reason), answer, confirm, approve, milestones, preview_adoption, adopt, review_request, provision_roles, runner_configure (input.configuration; its lanes: {lane: {image, image_mounts}} give a lane its own image), image_build (input: name, dockerfile, context_files, repo; builds a runner image on the user's rootless Docker and returns its ID), recover_turn, validate_milestone, leader_inbox (your messages and a line per live agent; input.ack [ids] acknowledges the ones you handled in the same call), inbox_ack, runner_images, project_overview, preflight_retry. provision_roles changes managed storage outside the project and requires exact-call external authorization; so does a runner_configure that changes docker_host. Other runner changes and image builds are yours to decide. When status proposal_approval.needs_user is true, record confirm/approve only after the user's explicit answer for that exact revision; when false (it changes only how steps are carried out, adds steps or adds checks), approve it yourself and tell the user what changed. Material proposals never inherit approval. Preview is read-only; runner enforcement may block adoption.",
             json!({"action":text("Workflow action"),"input":{"type":"object"}}),
             &["action"],
         ),
@@ -82,8 +83,8 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "task_status",
-            "Where the team stands: the plan, repos, agents and their states, steps, what waits for you, limits, the recent log. Call it first, after any pause, and whenever you are unsure.",
-            json!({}),
+            "Where the team stands. Use view=progress for routine updates, view=order with order ID for its plan and checks, or no arguments for full roles, accounts, failures, limits and recent log.",
+            json!({"view":{"type":"string","enum":["full","progress","order"]},"order":text("Order ID, required for view=order")}),
             &[],
         ),
         tool(
@@ -94,13 +95,13 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "allow_attempts",
-            "Record the user's explicit approval of more attempts for a step (orders and reviews asking for changes, in all): only after they said yes to it in this conversation, quoting their words; never on your own.",
+            "Give a step more attempts (orders and reviews asking for changes, in all) when the next one can succeed: the cause is understood and fixable, or the failure came from devAgentics or the environment. Your decision; say why (it goes in the log, and in your next summary). When it keeps failing the same way, change the approach or close it instead.",
             json!({
                 "step": text("The step's id"),
                 "limit": { "type": "integer", "description": "Attempts in all, more than it has had" },
-                "user_said": text("The user's words that approved it"),
+                "reason": text("Why the next attempt can succeed"),
             }),
-            &["step", "limit", "user_said"],
+            &["step", "limit", "reason"],
         ),
         tool(
             "set_usage_limit_approval",
@@ -143,12 +144,13 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "memory_save",
-            "Save a note in the team's memory for whoever comes after you (the next leader, a replacing agent): a decision and why, a gotcha, a handoff (what you were doing, what you decided, what comes next) or a finding. Keep it short; the task's state is already exact in task_status.",
+            "Save a note in the team's memory for whoever comes after you (the next leader, a replacing agent): a decision and why, a gotcha, a handoff (what you were doing, what you decided, what comes next), a finding, or knowledge of an area of the code (how it works, its key files, conventions, traps, how to test it), which goes with every order there so workers do not read it all again. Keep it short; the task's state is already exact in task_status.",
             json!({
-                "kind": text("decision, gotcha, handoff or finding"),
+                "kind": text("decision, gotcha, handoff, finding or knowledge"),
                 "title": text("A few words"),
                 "body": text("The note, markdown"),
                 "step": text("The step it is about, if one"),
+                "area": text("For knowledge (required): the lane (back) or the folder it is about (backend/app/Services/)"),
             }),
             &["kind", "title", "body"],
         ),
@@ -166,7 +168,7 @@ fn tools() -> Vec<Value> {
         ),
         tool(
             "send_order",
-            "Give an agent one order. It is typed into the agent when it can take it. devAgentics checks the result itself when the agent reports: a clean tree, only the allowed files, the check.",
+            "Give an agent one order. It is typed into the agent when it can take it. devAgentics checks the result itself when the agent reports: a clean tree, only the allowed files, the check. Ordering a step that failed since its last order needs a `diagnosis` (task_status needs_diagnosis): what caused it and what this order changes. Only failures of the work count as attempts; a re-check after stale evidence, a reset or the environment is free.",
             json!({
                 "agent": text("The agent's id (executor-1)"),
                 "step": text("The plan's step this is (s1, 2…); the same step again after a failure"),
@@ -180,6 +182,16 @@ fn tools() -> Vec<Value> {
                 "check": text("The command that decides it is done; the repo's by default. `true` for an order that changes no files"),
                 "plan": text("For a factory-floor agent (required): the senior's step whose accepted execution plan this order follows"),
                 "spec": text("The plan part this step belongs to, as a release version: a new part takes task_status's next_version (1.3.0) and its steps are named 1.3.1, 1.3.2…; the board shows finished work by it. Give it on the first order of a step"),
+                "diagnosis": {
+                    "type": "object",
+                    "description": "Required when the step failed since its last order (task_status needs_diagnosis). The same cause twice with the same agent, contract, plan, files and targets is refused: change the approach",
+                    "properties": {
+                        "cause": { "type": "string", "enum": ["implementation_defect", "test_defect", "plan_defect", "missing_context", "integration_conflict", "other_work", "environment", "devagentics"], "description": "The root cause you found; the last three are not the work's fault and cost no attempt" },
+                        "evidence": text("What shows it: the log lines, file:line or diff (read_check_log, git_diff, read_file)"),
+                        "change": text("What this order does differently because of it"),
+                    },
+                    "required": ["cause", "evidence", "change"],
+                },
             }),
             &["agent", "step", "title", "text"],
         ),
@@ -237,6 +249,74 @@ fn tools() -> Vec<Value> {
             "Set the command that decides a step is done in a repo.",
             json!({ "repo": text("The repo's name"), "command": text("The command, run in the worktree") }),
             &["repo", "command"],
+        ),
+        tool(
+            "read_check_log",
+            "Read a check run you cannot open yourself: each profile's outcome and the last lines of its log (the failing profiles', or the one you name). `of`: order (the order's own checks, default) or candidate (its lane's merge candidate, which review_request checks).",
+            json!({
+                "order": text("The order's id (o695)"),
+                "of": { "type": "string", "enum": ["order", "candidate"], "description": "Which run (order by default)" },
+                "profile": text("Only this profile's log"),
+                "lines": { "type": "integer", "description": "Last lines of each log (60 by default, at most 300)" },
+            }),
+            &["order"],
+        ),
+        tool(
+            "snapshot_path",
+            "Whether a path is in the containers' copy of the project (workers and checks run on it), and the rule that decides it: the runner's source_paths and protected_paths, or the built-in secret and data rules.",
+            json!({
+                "path": text("The path from the repo's root (backend/.env.example)"),
+                "lane": text("The lane whose runner image it is for; none for the main one"),
+            }),
+            &["path"],
+        ),
+        tool(
+            "read_file",
+            "Read a file of the project with numbered lines, or list a folder (path . for the root). Committed code only, never secrets, data or protected paths. Read the project's CLAUDE.md, docs and the code around a failure yourself before deciding.",
+            json!({
+                "path": text("The path from the repo's root"),
+                "at": text("Where: task (the task branch, default), lane:<name>, an order (o123: its own changes) or a commit"),
+                "repo": text("The repo; the first by default"),
+                "start": { "type": "integer", "description": "The first line (1 by default)" },
+                "lines": { "type": "integer", "description": "How many lines (300 by default, at most 1500)" },
+            }),
+            &["path"],
+        ),
+        tool(
+            "search_code",
+            "Search the project's committed code for a text (or a regular expression): the matching lines with file and line number.",
+            json!({
+                "pattern": text("What to find (fixed text unless regex)"),
+                "at": text("Where: task (the task branch, default), lane:<name>, an order (o123: its own changes) or a commit"),
+                "repo": text("The repo; the first by default"),
+                "glob": text("Only paths matching this glob (backend/**/*.php)"),
+                "regex": { "type": "boolean", "description": "The pattern is an extended regular expression" },
+            }),
+            &["pattern"],
+        ),
+        tool(
+            "git_log",
+            "The commits of the task branch, a lane or an order (its own), newest first.",
+            json!({
+                "at": text("Where: task (the task branch, default), lane:<name>, an order (o123: its own changes) or a commit"),
+                "repo": text("The repo; the first by default"),
+                "path": text("Only commits that touched this path"),
+                "limit": { "type": "integer", "description": "How many (20 by default, at most 100)" },
+            }),
+            &[],
+        ),
+        tool(
+            "git_diff",
+            "What changed: an order's work (at=o123), a lane against the task branch (at=lane:back), or between from and to. Files you may not read are only counted.",
+            json!({
+                "at": text("Where: task (the task branch, default), lane:<name>, an order (o123: its own changes) or a commit"),
+                "repo": text("The repo; the first by default"),
+                "from": text("Compare from this (same names as at)"),
+                "to": text("Compare to this (same names as at)"),
+                "path": text("Only this path"),
+                "stat": { "type": "boolean", "description": "Only the changed files and their line counts" },
+            }),
+            &[],
         ),
         tool(
             "read_log",
@@ -306,6 +386,12 @@ fn effect(name: &str) -> Option<Effect> {
         | "close_step"
         | "set_check"
         | "read_log"
+        | "read_check_log"
+        | "snapshot_path"
+        | "read_file"
+        | "search_code"
+        | "git_log"
+        | "git_diff"
         | "escalate"
         | "switch_leader"
         | "authorize_action" => Some(Effect::System),
@@ -392,13 +478,28 @@ impl Server<'_> {
                 output.flush()?;
                 continue;
             }
-            let response = match serde_json::from_str::<Value>(&line) {
-                Ok(request) => self.handle(&request),
+            let started = crate::telemetry::start(self.task);
+            let request = serde_json::from_str::<Value>(&line);
+            let response = match &request {
+                Ok(request) => self.handle(request),
                 Err(error) => Some(failure(Value::Null, -32700, &format!("not JSON: {error}"))),
             };
             if let Some(response) = response {
-                writeln!(output, "{response}")?;
+                let wire = response.to_string();
+                writeln!(output, "{wire}")?;
                 output.flush()?;
+                if let Some(started) = started {
+                    let operation = request.as_ref().map_or("invalid_json", leader_operation);
+                    crate::telemetry::mcp(
+                        self.task,
+                        LEADER,
+                        operation,
+                        line.len(),
+                        &wire,
+                        &response,
+                        started,
+                    );
+                }
             }
         }
         Ok(())
@@ -418,7 +519,39 @@ impl Server<'_> {
                 }),
             ),
             "ping" => success(id, json!({})),
-            "tools/list" => success(id, json!({ "tools": tools() })),
+            "tools/list" => {
+                let mut catalog = tools();
+                if self.leader_cli_catalog
+                    && self.task.state().is_ok_and(|state| {
+                        state.leader_cli
+                            && state.codex_team
+                            && state.workflow == crate::execution::Workflow::Reviewed
+                    })
+                {
+                    for entry in &mut catalog {
+                        match entry["name"].as_str() {
+                            Some("task_status") => {
+                                *entry = tool(
+                                    "task_status",
+                                    "Effect: system. Full team status.",
+                                    json!({}),
+                                    &[],
+                                );
+                            }
+                            Some("application_workflow") => {
+                                if let Some(description) = entry["description"].as_str() {
+                                    entry["description"] = json!(description.replace(
+                                        "leader_inbox (your messages and a line per live agent; input.ack [ids] acknowledges the ones you handled in the same call)",
+                                        "leader_inbox (fallback or combined read with input.ack [ids])",
+                                    ));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                success(id, json!({ "tools": catalog }))
+            }
             "tools/call" => {
                 let name = request["params"]["name"].as_str().unwrap_or("");
                 let result = self
@@ -458,6 +591,7 @@ impl Server<'_> {
             self.task,
             self.devws,
             &crate::memory::Note {
+                area: None,
                 kind: crate::memory::NoteKind::Decision,
                 title: format!("{step} {what}: {title}"),
                 body: why.to_string(),
@@ -621,9 +755,20 @@ impl Server<'_> {
                 &string(arguments, "action")?,
                 arguments.get("input").unwrap_or(&json!({})),
             )?)?),
-            "task_status" => Ok(serde_json::to_string(&status::summary(
-                self.task, self.devws, self.home,
-            )?)?),
+            "task_status" => {
+                let view = arguments.get("view").map(Value::as_str);
+                ensure!(
+                    arguments.get("order").is_none() || view == Some(Some("order")),
+                    "task_status order is only valid with view=order"
+                );
+                let snapshot = match view {
+                    None | Some(Some("full")) => status::summary(self.task, self.devws, self.home)?,
+                    Some(Some("progress")) => status::progress(self.task)?,
+                    Some(Some("order")) => status::order(self.task, &string(arguments, "order")?)?,
+                    _ => anyhow::bail!("task_status view must be full, progress or order"),
+                };
+                Ok(serde_json::to_string(&snapshot)?)
+            }
             "approve_plan" => {
                 self.team().approve()?;
                 Ok("Plan approved: agents that write may start.".to_string())
@@ -651,11 +796,11 @@ impl Server<'_> {
                     .as_u64()
                     .and_then(|limit| u32::try_from(limit).ok())
                     .context("limit must be a whole number")?;
-                orders::allow_attempts_for_user(
+                orders::leader_allows_attempts(
                     self.task,
                     &step,
                     limit,
-                    &string(arguments, "user_said")?,
+                    &string(arguments, "reason")?,
                 )?;
                 Ok(format!(
                     "Step {step} may have {limit} attempts in all: send its order again."
@@ -735,6 +880,7 @@ impl Server<'_> {
             ),
             "memory_save" => {
                 let note = crate::memory::Note {
+                    area: optional_string(arguments, "area"),
                     kind: crate::notes::agent_kind(&string(arguments, "kind")?)?,
                     title: string(arguments, "title")?,
                     body: string(arguments, "body")?,
@@ -774,9 +920,36 @@ impl Server<'_> {
                 if !block.is_empty() {
                     text = format!("{text}\n\n{block}");
                 }
+                // And what the team learned about where it works: its lane, the
+                // folders of the files it changes and reads.
+                let state = self.task.state()?;
+                let lane = state.agent(&agent).and_then(|found| found.lane.clone());
+                let mut paths = strings(arguments, "allowed")?;
+                paths.extend(strings(arguments, "read")?);
+                if let Some(item) = state.application.items.get(&step) {
+                    paths.extend(item.allowed.iter().cloned());
+                }
+                let area =
+                    crate::notes::knowledge_for(self.task, self.devws, lane.as_deref(), &paths)
+                        .unwrap_or_default();
+                let block = crate::notes::fenced(
+                    "What the team knows about this area: rely on it and read only what it does not cover; save what you learn with memory_save kind=knowledge and its area",
+                    &area,
+                );
+                if !block.is_empty() {
+                    text = format!("{text}\n\n{block}");
+                }
                 let id = orders::send_order(
                     self.task,
                     OrderRequest {
+                        diagnosis: if arguments["diagnosis"].is_null() {
+                            None
+                        } else {
+                            Some(
+                                serde_json::from_value(arguments["diagnosis"].clone())
+                                    .context("diagnosis is {cause, evidence, change}")?,
+                            )
+                        },
                         read: strings(arguments, "read")?,
                         targets: strings(arguments, "targets")?,
                         profiles: strings(arguments, "profiles")?,
@@ -820,7 +993,9 @@ impl Server<'_> {
             ),
             "accept_step" => {
                 let step = string(arguments, "step")?;
-                orders::accept_step(self.task, &step)?;
+                orders::accept_step(self.task, &step).map_err(|error| {
+                    crate::failures::note_stale(self.task, Some(&step), None, error)
+                })?;
                 self.record_decision(&step, "accepted", "The leader accepted it.");
                 Ok("Accepted.".to_string())
             }
@@ -849,6 +1024,64 @@ impl Server<'_> {
                 Ok("Set.".to_string())
             }
             "read_log" => self.read_log(arguments),
+            "read_file" => crate::code_access::read_file(
+                self.task,
+                &string(arguments, "path")?,
+                optional_string(arguments, "at").as_deref(),
+                optional_string(arguments, "repo").as_deref(),
+                arguments["start"].as_u64().map(|value| value as usize),
+                arguments["lines"].as_u64().map(|value| value as usize),
+            ),
+            "search_code" => crate::code_access::search_code(
+                self.task,
+                &string(arguments, "pattern")?,
+                optional_string(arguments, "at").as_deref(),
+                optional_string(arguments, "repo").as_deref(),
+                optional_string(arguments, "glob").as_deref(),
+                arguments["regex"].as_bool().unwrap_or(false),
+            ),
+            "git_log" => crate::code_access::git_log(
+                self.task,
+                optional_string(arguments, "at").as_deref(),
+                optional_string(arguments, "repo").as_deref(),
+                optional_string(arguments, "path").as_deref(),
+                arguments["limit"].as_u64().map(|value| value as usize),
+            ),
+            "git_diff" => crate::code_access::git_diff(
+                self.task,
+                optional_string(arguments, "at").as_deref(),
+                optional_string(arguments, "from").as_deref(),
+                optional_string(arguments, "to").as_deref(),
+                optional_string(arguments, "repo").as_deref(),
+                optional_string(arguments, "path").as_deref(),
+                arguments["stat"].as_bool().unwrap_or(false),
+            ),
+            "read_check_log" => {
+                let candidate = match optional_string(arguments, "of").as_deref() {
+                    None | Some("order") => false,
+                    Some("candidate") => true,
+                    Some(other) => bail!("of is order or candidate, not {other}"),
+                };
+                crate::check_logs::read(
+                    self.task,
+                    &string(arguments, "order")?,
+                    candidate,
+                    optional_string(arguments, "profile").as_deref(),
+                    arguments["lines"].as_u64().unwrap_or(60) as usize,
+                )
+            }
+            "snapshot_path" => {
+                let runner = self
+                    .task
+                    .state()?
+                    .runner
+                    .context("there is no isolated runner configured: nothing is copied yet")?;
+                let lane = optional_string(arguments, "lane");
+                crate::runner::snapshot_decision(
+                    &string(arguments, "path")?,
+                    &runner.for_lane(lane.as_deref()),
+                )
+            }
             "escalate" => self.escalate(&string(arguments, "question")?),
             "switch_leader" => {
                 let said = leader::request_switch(
@@ -920,6 +1153,33 @@ impl Server<'_> {
     }
 }
 
+fn leader_operation(request: &Value) -> &str {
+    match request["method"].as_str() {
+        Some("tools/list") => "tools/list",
+        Some("tools/call") => match request["params"]["name"].as_str() {
+            Some("application_workflow") => match request["params"]["arguments"]["action"].as_str()
+            {
+                Some("leader_inbox") => "application_workflow.leader_inbox",
+                Some("inbox_ack") => "application_workflow.inbox_ack",
+                Some("proposal_example") => "application_workflow.proposal_example",
+                Some("status") => "application_workflow.status",
+                _ => "application_workflow",
+            },
+            Some("task_status") if request["params"]["arguments"]["view"] == "progress" => {
+                "task_status.progress"
+            }
+            Some("task_status") if request["params"]["arguments"]["view"] == "order" => {
+                "task_status.order"
+            }
+            Some(name) if effect(name).is_some() => name,
+            _ => "unknown_tool",
+        },
+        Some("initialize") => "initialize",
+        Some("ping") => "ping",
+        _ => "unknown_method",
+    }
+}
+
 /// One request line answered by a fresh `binary` server with `arguments`:
 /// a request carries all it needs, so nothing is lost between servers. When
 /// that server cannot answer, the request gets the reason.
@@ -963,7 +1223,7 @@ fn relayed(binary: &Path, arguments: &[OsString], line: &str) -> Vec<u8> {
 const MAX_RESULT_CHARS: usize = 80_000;
 
 /// A result too big for the leader becomes what to ask for instead.
-fn fitting(name: &str, text: String) -> Result<String> {
+pub(crate) fn fitting(name: &str, text: String) -> Result<String> {
     let size = text.chars().count();
     ensure!(
         size <= MAX_RESULT_CHARS,
@@ -1025,6 +1285,7 @@ mod tests {
                 home: &self.home,
                 devws: &self.devws,
                 gh: "gh".to_string(),
+                leader_cli_catalog: false,
             }
         }
 
@@ -1179,6 +1440,109 @@ mod tests {
     }
 
     #[test]
+    fn order_status_returns_one_closed_order_and_bounded_check_results() {
+        use crate::check_profiles::{Evidence, Outcome, Phase};
+
+        let fixture = fixture();
+        fixture
+            .task
+            .transaction(|tx| {
+                tx.state.orders.push(serde_json::from_value(json!({
+                    "id": "o7", "step": "api", "agent": "executor-1", "text": "private order text",
+                    "allowed": [], "forbidden": [], "base": "base", "status": "closed",
+                    "delivered": true, "plan": "execution-api"
+                }))?);
+                tx.state.order_revisions.insert("o7".into(), 2);
+                tx.state.check_evidence.insert(
+                    "o7".into(),
+                    Evidence {
+                        order: "o7".into(),
+                        revision: 1,
+                        base: "base".into(),
+                        head: "head".into(),
+                        configuration: "private check configuration".into(),
+                        run: "private/run".into(),
+                        phases: vec![
+                            Phase {
+                                profile: "unit".into(),
+                                outcome: Outcome::TestFailure,
+                                exit_code: Some(1),
+                                seconds: 1,
+                                diagnostic: "é".repeat(300),
+                                log: "private/log".into(),
+                            };
+                            9
+                        ],
+                    },
+                );
+                Ok(())
+            })
+            .unwrap();
+        let (failed, text) = fixture.call("task_status", json!({"view":"order","order":"o7"}));
+        assert!(!failed, "{text}");
+        let value: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["status"], "closed");
+        assert_eq!(value["plan"], "execution-api");
+        let evidence = &value["check_evidence"];
+        assert_eq!(evidence["matches_order_revision"], false);
+        assert_eq!(evidence["phase_count"], 9);
+        assert_eq!(evidence["phases"].as_array().unwrap().len(), 8);
+        let phase = &evidence["phases"][0];
+        assert_eq!(phase["exit_code"], 1);
+        assert_eq!(phase["diagnostic"].as_str().unwrap().chars().count(), 180);
+        assert_eq!(phase["diagnostic_truncated"], true);
+        assert!(!text.contains("private"));
+        assert!(
+            fixture
+                .call("task_status", json!({"view":"order","order":"foreign"}))
+                .0
+        );
+        assert!(fixture.call("task_status", json!({"view":"order"})).0);
+    }
+
+    #[test]
+    fn progress_status_prioritizes_attention_and_preserves_full_status() {
+        use crate::state::{Step, StepStatus};
+
+        let fixture = fixture();
+        fixture
+            .task
+            .transaction(|tx| {
+                tx.state.say(LEADER, "report to read in the inbox".into());
+                for index in 0..24 {
+                    tx.state.steps.push(Step {
+                        id: format!("step-{index}"),
+                        title: "Progress fixture".into(),
+                        status: if index == 23 {
+                            StepStatus::Failed
+                        } else {
+                            StepStatus::Ordered
+                        },
+                        attempts: 1,
+                        spec: None,
+                        review_since: (index == 23).then_some(10),
+                    });
+                }
+                Ok(())
+            })
+            .unwrap();
+        let (failed, text) = fixture.call("task_status", json!({"view":"progress"}));
+        assert!(!failed, "{text}");
+        let progress: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(progress["active_step_count"], 24);
+        assert_eq!(progress["active_steps"].as_array().unwrap().len(), 20);
+        assert_eq!(progress["active_steps"][0]["id"], "step-23");
+        assert_eq!(progress["pending"]["inbox"], 1);
+        assert!(progress.get("recent_log").is_none());
+        let (failed, full) = fixture.call("task_status", json!({}));
+        assert!(!failed, "{full}");
+        let full: Value = serde_json::from_str(&full).unwrap();
+        assert_eq!(full["steps"].as_array().unwrap().len(), 24);
+        assert!(full["recent_log"].is_array());
+        assert!(fixture.call("task_status", json!({"view":"bogus"})).0);
+    }
+
+    #[test]
     fn the_leader_saves_a_handoff_and_finds_it_fenced_as_history() {
         let f = fixture();
         f.devws.memory_on();
@@ -1243,6 +1607,12 @@ mod tests {
                 "close_step",
                 "stop_agent",
                 "set_check",
+                "read_check_log",
+                "snapshot_path",
+                "read_file",
+                "search_code",
+                "git_log",
+                "git_diff",
                 "read_log",
                 "escalate",
                 "switch_leader",
@@ -1345,47 +1715,127 @@ mod tests {
         assert!(failed && text.contains("list of strings"), "{text}");
     }
 
-    // The user says yes to more attempts in the leader's conversation; the
-    // leader records it with their words, as it records usage consent.
+    // Without a shell, the leader diagnoses a check through these: the logs
+    // of a run, and why a path is in a container's copy of the project.
     #[test]
-    fn the_leader_records_the_users_approval_of_more_attempts() {
+    fn the_leader_reads_check_logs_and_asks_about_snapshot_paths() {
+        let f = fixture();
+        let (failed, text) = f.call("read_check_log", json!({ "order": "o9" }));
+        assert!(failed && text.contains("no check run yet"), "{text}");
+        let (failed, text) = f.call("read_check_log", json!({ "order": "o9", "of": "release" }));
+        assert!(failed && text.contains("order or candidate"), "{text}");
+
+        let (failed, text) = f.call("snapshot_path", json!({ "path": "backend/.env.example" }));
+        assert!(failed && text.contains("no isolated runner"), "{text}");
+        f.task
+            .transaction(|tx| {
+                tx.state.runner = Some(crate::runner::tests::configuration());
+                Ok(())
+            })
+            .unwrap();
+        let (failed, text) = f.call("snapshot_path", json!({ "path": "src/main.rs" }));
+        assert!(
+            !failed && text.contains("src/main.rs is in the snapshot"),
+            "{text}"
+        );
+        let (failed, text) = f.call("snapshot_path", json!({ "path": "backend/.env.example" }));
+        assert!(!failed && text.contains("dotenv"), "{text}");
+    }
+
+    // The leader reads the code through its tools and sees why a step
+    // failed in task_status.
+    #[test]
+    fn the_leader_reads_code_and_sees_a_steps_failures() {
+        let f = fixture();
+        let worktree = f.task.config().unwrap().repos[0].worktree.clone();
+        crate::checks::tests::commit_file(&worktree, "src/lib.rs", "pub fn serve() {}\n", "lib");
+        let (failed, text) = f.call("read_file", json!({ "path": "src/lib.rs" }));
+        assert!(!failed && text.contains("pub fn serve()"), "{text}");
+        let (failed, text) = f.call("search_code", json!({ "pattern": "serve" }));
+        assert!(!failed && text.contains("src/lib.rs:1:"), "{text}");
+        let (failed, text) = f.call("read_file", json!({ "path": ".env" }));
+        assert!(failed && text.contains("not readable"), "{text}");
+
+        f.task
+            .transaction(|tx| {
+                tx.state.steps.push(crate::state::Step {
+                    id: "s1".into(),
+                    title: "Serve".into(),
+                    status: crate::state::StepStatus::Failed,
+                    attempts: 1,
+                    spec: None,
+                    review_since: None,
+                });
+                crate::failures::record(
+                    &mut tx.state,
+                    "s1",
+                    Some("o1"),
+                    crate::failures::FailureKind::CheckFailed,
+                    "1 test failed",
+                    1,
+                );
+                Ok(())
+            })
+            .unwrap();
+        let (_, text) = f.call("task_status", json!({}));
+        assert!(
+            text.contains("\"needs_diagnosis\": true") || text.contains("\"needs_diagnosis\":true"),
+            "{text}"
+        );
+        assert!(text.contains("1 test failed"), "{text}");
+    }
+
+    // More attempts are the leader's call: a step that can still succeed
+    // does not stop the team for the user. The reason goes in the log.
+    #[test]
+    fn the_leader_gives_a_step_more_attempts_with_its_reason() {
         let f = fixture();
         f.task
             .transaction(|tx| {
                 tx.state.steps.push(crate::state::Step {
-                    id: "B3".into(),
-                    title: "Menu".into(),
-                    status: crate::state::StepStatus::Failed,
-                    attempts: 9,
+                    id: "C5a-1-AT".into(),
+                    title: "Repository tests".into(),
+                    status: crate::state::StepStatus::Exhausted,
+                    attempts: 6,
                     spec: None,
                     review_since: None,
                 });
+                for order in 1..=6 {
+                    crate::failures::record(
+                        &mut tx.state,
+                        "C5a-1-AT",
+                        Some(&format!("o{order}")),
+                        crate::failures::FailureKind::CheckFailed,
+                        "tests failed",
+                        order,
+                    );
+                }
                 Ok(())
             })
             .unwrap();
         let (failed, text) = f.call(
             "allow_attempts",
-            json!({ "step": "B3", "limit": 12, "user_said": " " }),
+            json!({ "step": "C5a-1-AT", "limit": 8, "reason": " " }),
         );
-        assert!(failed && text.contains("user's words"), "{text}");
+        assert!(failed && text.contains("say why"), "{text}");
         let (failed, text) = f.call(
             "allow_attempts",
-            json!({ "step": "B3", "limit": 9, "user_said": "1 yes" }),
+            json!({ "step": "C5a-1-AT", "limit": 6, "reason": "re-run" }),
         );
-        assert!(failed && text.contains("9 attempts already"), "{text}");
+        assert!(failed && text.contains("6 attempts already"), "{text}");
 
         let (failed, text) = f.call(
             "allow_attempts",
-            json!({ "step": "B3", "limit": 12, "user_said": "1 yes 2 yes" }),
+            json!({ "step": "C5a-1-AT", "limit": 8, "reason": "the stale-check bug spent them; re-run checks only" }),
         );
         assert!(!failed, "{text}");
-        assert_eq!(f.task.state().unwrap().attempt_limits["B3"], 12);
+        assert_eq!(f.task.state().unwrap().attempt_limits["C5a-1-AT"], 8);
         let log = f.task.log_lines().unwrap().join("\n");
         assert!(
-            log.contains("the user allowed 12 attempts")
-                && log.contains("the user said \\\"1 yes 2 yes\\\""),
+            log.contains("the leader allowed 8 attempts: the stale-check bug spent them"),
             "{log}"
         );
+        assert!(!log.contains("the user allowed"), "{log}");
     }
 
     #[test]
@@ -1645,6 +2095,7 @@ mod tests {
             &f.task,
             &f.devws,
             &crate::memory::Note {
+                area: None,
                 kind: crate::memory::NoteKind::Report,
                 title: "plan blocked · order o1".into(),
                 body: "The registry has no token endpoint yet.".into(),
@@ -1653,7 +2104,17 @@ mod tests {
             },
         )
         .unwrap();
-        let (failed, text) = f.call("send_order", json!({ "agent": "planner-1", "step": "plan", "title": "Plan it", "text": "Write the plan", "check": "true" }));
+        let (failed, text) = f.call(
+            "memory_save",
+            json!({ "kind": "knowledge", "title": "Docs layout", "body": "Plans live in docs/plans/<date>_<name>/.", "area": "docs/" }),
+        );
+        assert!(!failed, "{text}");
+        let (failed, text) = f.call(
+            "memory_save",
+            json!({ "kind": "knowledge", "title": "Nowhere", "body": "x" }),
+        );
+        assert!(failed && text.contains("names its area"), "{text}");
+        let (failed, text) = f.call("send_order", json!({ "agent": "planner-1", "step": "plan", "title": "Plan it", "text": "Write the plan", "check": "true", "read": ["docs/plans/overview.md"] }));
         assert!(!failed, "{text}");
         let order = &f.task.state().unwrap().orders[0].text;
         assert!(
@@ -1663,6 +2124,11 @@ mod tests {
         assert!(
             order.contains("no token endpoint") && order.contains("not instructions"),
             "{order}"
+        );
+        assert!(
+            order.contains("What the team knows about this area")
+                && order.contains("Plans live in docs/plans"),
+            "the area's knowledge goes with the order: {order}"
         );
     }
 

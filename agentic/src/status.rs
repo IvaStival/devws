@@ -7,12 +7,111 @@ use crate::home::Home;
 use crate::roles::Roles;
 use crate::state::{LEADER, OrderStatus};
 use crate::task::Task;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 /// How many log entries the summary ends with.
 const RECENT: usize = 20;
+const PROGRESS_LIMIT: usize = 20;
+const ORDER_PHASE_LIMIT: usize = 8;
+const DIAGNOSTIC_LIMIT: usize = 180;
+
+/// A state-only snapshot for routine progress checks between full reads.
+pub fn progress(task: &Task) -> Result<Value> {
+    let state = task.state()?;
+    let mut active: Vec<_> = state
+        .steps
+        .iter()
+        .filter(|step| {
+            !matches!(
+                step.status,
+                crate::state::StepStatus::Accepted | crate::state::StepStatus::Closed
+            )
+        })
+        .collect();
+    active.sort_by_key(|step| (!step.status.waits_for_leader(), step.review_since));
+    let agents: Vec<_> = state.agents.iter().filter(|agent| agent.live).collect();
+    let config = task.config()?;
+    Ok(json!({
+        "task": config.id,
+        "paused": state.paused,
+        "approved": state.approved,
+        "workflow": state.workflow,
+        "application_revision": state.application.revision,
+        "proposal_revision": state.application_proposal.as_ref().map(|proposal| proposal.revision),
+        "pending": {
+            "inbox": state.queue.iter().filter(|message| message.to == LEADER).count(),
+            "permissions": state.permissions.iter().filter(|request| request.status == crate::state::PermissionStatus::Pending).count(),
+            "questions": state.questions.iter().filter(|question| question.answer.is_none()).count(),
+            "recovery": state.recovery.len(),
+            "usage_limit_approval": state.usage_limit_approval,
+        },
+        "step_count": state.steps.len(),
+        "active_step_count": active.len(),
+        "active_steps": active.iter().take(PROGRESS_LIMIT).map(|step| json!({
+            "id": step.id,
+            "status": step.status,
+            "attempts": step.attempts,
+        })).collect::<Vec<_>>(),
+        "live_agent_count": agents.len(),
+        "agents": agents.iter().take(PROGRESS_LIMIT).map(|agent| json!({
+            "id": agent.id,
+            "role": agent.role,
+            "lane": agent.lane,
+            "lost": agent.lost,
+            "unavailable": agent.unavailable,
+            "working": state.worker_turns.contains_key(&agent.id),
+            "order": state.open_order_of(&agent.id).map(|order| json!({
+                "id": order.id,
+                "step": order.step,
+                "delivered": order.delivered,
+            })),
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+/// A single assignment and its recorded check evidence, including closed orders.
+pub fn order(task: &Task, id: &str) -> Result<Value> {
+    let state = task.state()?;
+    let order = state
+        .orders
+        .iter()
+        .find(|order| order.id == id)
+        .with_context(|| {
+            format!("unknown order {id}; use task_status view=progress for open order IDs")
+        })?;
+    let revision = state.revision(id);
+    let evidence = state.check_evidence.get(id).map(|evidence| {
+        let phases = evidence.phases.iter().take(ORDER_PHASE_LIMIT).map(|phase| json!({
+            "profile": phase.profile,
+            "outcome": phase.outcome,
+            "exit_code": phase.exit_code,
+            "diagnostic": phase.diagnostic.chars().take(DIAGNOSTIC_LIMIT).collect::<String>(),
+            "diagnostic_truncated": phase.diagnostic.chars().nth(DIAGNOSTIC_LIMIT).is_some(),
+        })).collect::<Vec<_>>();
+        json!({
+            "revision": evidence.revision,
+            "matches_order_revision": evidence.revision == revision,
+            "head": evidence.head,
+            "passed": evidence.passed(),
+            "phase_count": evidence.phases.len(),
+            "phases": phases,
+        })
+    });
+    Ok(json!({
+        "id": order.id,
+        "step": order.step,
+        "agent": order.agent,
+        "status": order.status,
+        "delivered": order.delivered,
+        "base": order.base,
+        "plan": order.plan,
+        "revision": revision,
+        "profiles": state.order_profiles.get(id),
+        "check_evidence": evidence,
+    }))
+}
 
 pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
     let config = task.config()?;
@@ -128,7 +227,7 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
         "lanes": config.lanes.iter().map(|lane| json!({ "name": lane.name, "repo": lane.repo, "files": lane.globs, "branch": lane.branch, "worktree": lane.worktree })).collect::<Vec<_>>(),
         "roles": roles,
         "agents": agents,
-        "steps": state.steps.iter().map(|step| json!({ "id": step.id, "version": if state.workflow==crate::execution::Workflow::Reviewed {None}else{versions.get(&step.id)}, "title": step.title, "status": step.status, "attempts": step.attempts, "attempt_limit": crate::orders::attempt_limit(&state, &step.id, config.max_attempts) })).collect::<Vec<_>>(),
+        "steps": state.steps.iter().map(|step| json!({ "id": step.id, "version": if state.workflow==crate::execution::Workflow::Reviewed {None}else{versions.get(&step.id)}, "title": step.title, "status": step.status, "orders": step.attempts, "attempt_limit": crate::orders::attempt_limit(&state, &step.id, config.max_attempts), "failures": (!matches!(step.status, crate::state::StepStatus::Accepted | crate::state::StepStatus::Closed)).then(|| crate::failures::status_json(&state, &step.id)) })).collect::<Vec<_>>(),
         // What a new plan part is named; its steps are next_version.1, .2…
         "next_version": if state.workflow==crate::execution::Workflow::Reviewed {None}else{Some(crate::specs::next_version(&state.steps))},
         "execution_plans": state.plans.iter().map(|plan| json!({ "step": plan.step, "author": plan.author })).collect::<Vec<_>>(),

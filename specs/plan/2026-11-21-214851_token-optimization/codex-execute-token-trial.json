@@ -1,0 +1,54 @@
+{
+  "model": "gpt-6.1-sol",
+  "effort": "medium",
+  "expected": {
+    "success": false,
+    "test": "tests.test_api.TestNotes.test_total",
+    "assertion": "expected 42, got 41"
+  },
+  "arms": {
+    "full": {
+      "payload_bytes": 66771,
+      "wire_bytes": 67915,
+      "usage": {
+        "input_tokens": 32364,
+        "cached_input_tokens": 12288,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 30,
+        "reasoning_output_tokens": 0
+      },
+      "score": 3,
+      "matched": true,
+      "provider_exit": 0,
+      "observed": {
+        "success": false,
+        "test": "tests.test_api.TestNotes.test_total",
+        "assertion": "expected 42, got 41"
+      },
+      "estimated_api_equivalent_usd": 0.0416808
+    },
+    "compact": {
+      "payload_bytes": 1587,
+      "wire_bytes": 1735,
+      "usage": {
+        "input_tokens": 16021,
+        "cached_input_tokens": 14592,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 30,
+        "reasoning_output_tokens": 0
+      },
+      "score": 3,
+      "matched": true,
+      "provider_exit": 0,
+      "observed": {
+        "success": false,
+        "test": "tests.test_api.TestNotes.test_total",
+        "assertion": "expected 42, got 41"
+      },
+      "estimated_api_equivalent_usd": 0.0046172
+    }
+  },
+  "input_reduction_percent": 50.5,
+  "pricing_basis": "same frozen short-context rates as codex-baseline.json",
+  "scope": "one paired interpretation of the same deterministic noisy container failure; no result_read call in the model prompt"
+}

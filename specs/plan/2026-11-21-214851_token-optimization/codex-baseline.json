@@ -1,0 +1,175 @@
+{
+  "by_agent": {
+    "api-integration-1": {
+      "cache_read": 5549568,
+      "cache_write": 0,
+      "max_request_input": 120134,
+      "output": 15813,
+      "priced_responses": 76,
+      "responses": 76,
+      "standard_short_context_api_equivalent_usd": 0.07556118,
+      "threads": 1,
+      "turns": 9,
+      "uncached_input": 121590
+    },
+    "code-reviewer-1": {
+      "cache_read": 2119936,
+      "cache_write": 0,
+      "max_request_input": 91922,
+      "output": 6024,
+      "priced_responses": 38,
+      "responses": 38,
+      "standard_short_context_api_equivalent_usd": 0.4612236000000001,
+      "threads": 1,
+      "turns": 5,
+      "uncached_input": 94495
+    },
+    "infra-1": {
+      "cache_read": 353408,
+      "cache_write": 0,
+      "max_request_input": 26213,
+      "output": 2461,
+      "priced_responses": 17,
+      "responses": 17,
+      "standard_short_context_api_equivalent_usd": 0.1288268,
+      "threads": 1,
+      "turns": 1,
+      "uncached_input": 34438
+    },
+    "infra-2": {
+      "cache_read": 485504,
+      "cache_write": 0,
+      "max_request_input": 43792,
+      "output": 5116,
+      "priced_responses": 17,
+      "responses": 17,
+      "standard_short_context_api_equivalent_usd": 0.2550044,
+      "threads": 1,
+      "turns": 2,
+      "uncached_input": 77647
+    },
+    "leader": {
+      "cache_read": 19852160,
+      "cache_write": 0,
+      "max_request_input": 173017,
+      "output": 39312,
+      "priced_responses": 202,
+      "responses": 202,
+      "standard_short_context_api_equivalent_usd": 2.76292,
+      "threads": 3,
+      "turns": 6,
+      "uncached_input": 192292
+    },
+    "planner-1": {
+      "cache_read": 1554816,
+      "cache_write": 0,
+      "max_request_input": 56453,
+      "output": 14919,
+      "priced_responses": 51,
+      "responses": 51,
+      "standard_short_context_api_equivalent_usd": 0.4124396000000001,
+      "threads": 1,
+      "turns": 2,
+      "uncached_input": 53884
+    },
+    "planner-2": {
+      "cache_read": 856320,
+      "cache_write": 0,
+      "max_request_input": 57449,
+      "output": 9370,
+      "priced_responses": 25,
+      "responses": 25,
+      "standard_short_context_api_equivalent_usd": 0.3111239999999999,
+      "threads": 1,
+      "turns": 2,
+      "uncached_input": 65896
+    },
+    "planner-3": {
+      "cache_read": 393344,
+      "cache_write": 0,
+      "max_request_input": 44013,
+      "output": 3424,
+      "priced_responses": 14,
+      "responses": 14,
+      "standard_short_context_api_equivalent_usd": 0.15587040000000002,
+      "threads": 1,
+      "turns": 2,
+      "uncached_input": 41148
+    }
+  },
+  "by_model": {
+    "gpt-6-luna": {
+      "cache_read": 5549568,
+      "cache_write": 0,
+      "max_request_input": 120134,
+      "output": 15813,
+      "priced_responses": 76,
+      "responses": 76,
+      "standard_short_context_api_equivalent_usd": 0.07556118,
+      "uncached_input": 121590
+    },
+    "gpt-6.1-sol": {
+      "cache_read": 22656640,
+      "cache_write": 0,
+      "max_request_input": 173017,
+      "output": 67025,
+      "priced_responses": 292,
+      "responses": 292,
+      "standard_short_context_api_equivalent_usd": 3.6423539999999988,
+      "uncached_input": 353220
+    },
+    "gpt-6.2-sol": {
+      "cache_read": 2958848,
+      "cache_write": 0,
+      "max_request_input": 91922,
+      "output": 13601,
+      "priced_responses": 72,
+      "responses": 72,
+      "standard_short_context_api_equivalent_usd": 0.8450548,
+      "uncached_input": 206580
+    }
+  },
+  "limitations": [
+    "One MCP run with manual recovery and approvals. No paired transport or compact-output run.",
+    "API-equivalent pricing of observed model responses. Subscription quota and actual billing are not included.",
+    "Legacy worker stream totals were cumulative on resume; only the transcript response totals are used for pricing."
+  ],
+  "milestones_ready": [
+    "notes-release-v1"
+  ],
+  "price_basis": "standard short-context API equivalent per response, excluding any unknown model, cache TTL, or long-context rate",
+  "pricing_snapshot_date": "2026-11-22",
+  "pricing_source": "https://developers.openai.com/api/docs/pricing",
+  "provider": "codex",
+  "rates_per_million_input_cache_read_output": {
+    "gpt-6-luna": [
+      0.1,
+      0.01,
+      0.5
+    ],
+    "gpt-6.1-sol": [
+      2,
+      0.1,
+      10
+    ],
+    "gpt-6.2-sol": [
+      2,
+      0.1,
+      10
+    ]
+  },
+  "task": "bench-reviewed-20261121-220726",
+  "totals": {
+    "cache_read": 31165056,
+    "cache_write": 0,
+    "output": 96439,
+    "priced_responses": 440,
+    "responses": 440,
+    "standard_short_context_api_equivalent_usd": 4.56296998,
+    "threads": 10,
+    "turns": 29,
+    "uncached_input": 681390
+  },
+  "usage_source": "deduplicated token_usage_record",
+  "worker_stream_turns_reconciled": 23
+}

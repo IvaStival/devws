@@ -119,7 +119,7 @@ impl<'a> Dispatcher<'a> {
         Ok(())
     }
 
-    /// A reviewed leader reads its messages only through `leader_inbox`, so
+    /// A reviewed leader fetches its own inbox, so
     /// nothing would start its next turn: when it is not busy and a message
     /// arrived since the last nudge, a fixed line wakes it. No message text
     /// is typed in.
@@ -171,7 +171,9 @@ impl<'a> Dispatcher<'a> {
         self.task.transaction(|tx| {
             for index in 0..tx.state.steps.len() {
                 let step = &tx.state.steps[index];
-                let (id, attempts) = (step.id.clone(), step.attempts);
+                let id = step.id.clone();
+                // Only failures of the work use attempts (failures.rs).
+                let attempts = crate::failures::work_failures(&tx.state, &id);
                 let ended_badly = matches!(
                     step.status,
                     StepStatus::Blocked | StepStatus::Failed | StepStatus::Rejected
@@ -179,6 +181,10 @@ impl<'a> Dispatcher<'a> {
                 let spent = attempts
                     >= crate::orders::attempt_limit(&tx.state, &id, max_attempts);
                 if !(ended_badly && spent) {
+                    // A wait for a step that is no longer spent ends.
+                    if matches!(tx.state.step_retries.get(&id), Some(StepRetry::Waiting { .. })) {
+                        tx.state.step_retries.remove(&id);
+                    }
                     continue;
                 }
                 match tx.state.step_retries.get(&id).copied() {
@@ -201,7 +207,7 @@ impl<'a> Dispatcher<'a> {
                     Some(StepRetry::Granted) => {
                         tx.state.steps[index].set_status(StepStatus::Exhausted, now);
                         tx.state.say(LEADER, format!(
-                            "Step {id} failed after {attempts} attempts and a retry: escalate it to the user."
+                            "Step {id} failed after {attempts} attempts and a retry. When the next attempt can succeed (the cause is understood, or was devAgentics or the environment), give it more with allow_attempts and say why; when it keeps failing the same way, change the approach or close it."
                         ));
                         tx.log(Kind::Review, None, Some(&id), "failed: attempts and retry used");
                     }
@@ -1086,6 +1092,9 @@ mod tests {
                     spec: None,
                     review_since: None,
                 });
+                for order in 0..limit {
+                    work_failed(&mut tx.state, order);
+                }
                 Ok(())
             })
             .unwrap();
@@ -1168,6 +1177,18 @@ mod tests {
         assert_eq!(leader_heard(&f, "unknown-since"), 1);
     }
 
+    /// One more failure of s9's work, on an order of its own.
+    fn work_failed(state: &mut crate::state::State, order: u32) {
+        crate::failures::record(
+            state,
+            "s9",
+            Some(&format!("o-s9-{order}")),
+            crate::failures::FailureKind::CheckFailed,
+            "tests failed",
+            u64::from(order),
+        );
+    }
+
     fn leader_heard(f: &Fixture, text: &str) -> usize {
         f.task
             .state()
@@ -1216,6 +1237,7 @@ mod tests {
                 let step = tx.state.step_mut("s9").unwrap();
                 step.attempts = limit + 1;
                 step.status = StepStatus::Blocked;
+                work_failed(&mut tx.state, limit);
                 Ok(())
             })
             .unwrap();
@@ -1241,6 +1263,41 @@ mod tests {
         spent_step(&f, StepStatus::Accepted);
         f.dispatcher().retry_spent_steps(1_000).unwrap();
         assert!(f.task.state().unwrap().step_retries.is_empty());
+    }
+
+    // Failures that were not the work's (the environment) use no attempts:
+    // the step is not spent, and no retry wait starts.
+    #[test]
+    fn a_step_that_failed_only_for_the_environment_is_not_spent() {
+        use crate::state::StepStatus;
+        let f = fixture();
+        let limit = f.task.config().unwrap().max_attempts;
+        f.task
+            .transaction(|tx| {
+                tx.state.steps.push(crate::state::Step {
+                    id: "s9".into(),
+                    title: "Tests".into(),
+                    status: StepStatus::Blocked,
+                    attempts: limit + 3,
+                    spec: None,
+                    review_since: None,
+                });
+                for order in 0..limit + 3 {
+                    crate::failures::record(
+                        &mut tx.state,
+                        "s9",
+                        Some(&format!("o-env-{order}")),
+                        crate::failures::FailureKind::CheckEnvironment,
+                        "docker was down",
+                        u64::from(order),
+                    );
+                }
+                Ok(())
+            })
+            .unwrap();
+        f.dispatcher().retry_spent_steps(1_000).unwrap();
+        assert!(f.task.state().unwrap().step_retries.is_empty());
+        assert_eq!(leader_heard(&f, "retries it once"), 0);
     }
 
     #[test]

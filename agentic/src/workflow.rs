@@ -1,6 +1,6 @@
 //! Project-local planning API shared by CLI and leader MCP tools.
 use crate::{
-    execution::{self, Application, Workflow},
+    execution::{self, Workflow},
     performance, reviews,
     task::Task,
 };
@@ -118,11 +118,11 @@ pub fn status(task: &Task) -> Result<Value> {
             )
         })
         .collect();
-    // Who approves the pending proposal: the leader for a revision that only
-    // adds checks, the user for the rest.
+    // Who approves the pending proposal: the user for a change to what the
+    // work is for or what judges it, the leader for the rest.
     let proposal_approval = state.application_proposal.as_ref().map(|proposal| {
         let why = execution::user_approval_needed(&state.application, proposal);
-        json!({"needs_user": why.is_some(), "why": why.unwrap_or_else(|| "it only adds checks: confirm nothing, approve it yourself and tell the user in your next summary".into())})
+        json!({"needs_user": why.is_some(), "why": why.unwrap_or_else(|| "it changes only how steps are carried out, adds steps or adds checks: confirm nothing, approve it yourself and tell the user in one line of your next summary what changed and why".into())})
     });
     Ok(
         json!({"workflow":state.workflow,"proposal_approval":proposal_approval,"candidate_checks":candidate_checks,"application":state.application,"proposal":state.application_proposal,"interview_frontier":execution::question_frontier(state.application_proposal.as_ref().unwrap_or(&state.application)),"ready_work":items,"reviews":state.reviews,"performance":performance::update(task)?,"capacity":{"limit":config.max_agents,"writers":state.live_agents(true),"read_only":state.live_agents(false)},"runner":{"configured":state.runner.is_some(),"available":state.runner.is_some(),"adapter":if state.codex_team {"claude_mcp_only or opencode_mcp_only or codex_sandbox: the user put the whole team on Codex (task codex-team); Codex workers write only their snapshot, without network"} else {"claude_mcp_only or opencode_mcp_only"},"worker_programs":if state.codex_team {vec!["claude","opencode","codex"]} else {vec!["claude","opencode"]},"reviewer_adapter":if state.codex_reviewers || state.codex_team {"codex_read_only_sandbox: cannot write; its shell can read host files"} else {"claude_mcp_only or opencode_mcp_only"},"network":"none","live_project_mounts":false,"configuration":state.runner}}),
@@ -240,6 +240,7 @@ pub fn call(task: &Task, action: &str, input: &Value) -> Result<Value> {
             Some(name) => section(task, name, input),
             None => compact(task),
         },
+        "proposal_example" => execution::proposal_example(),
         "runner_images" => crate::runner::images(),
         "project_overview" => crate::runner::overview(task),
         "preflight_retry" => {
@@ -368,17 +369,7 @@ pub fn call(task: &Task, action: &str, input: &Value) -> Result<Value> {
             Ok(json!({"recorded":id}))
         }
         "propose" => {
-            let application: Application = serde_json::from_value(
-                input
-                    .get("application")
-                    .context("application required")?
-                    .clone(),
-            )?;
-            let affected = execution::store(
-                task,
-                application,
-                input["reason"].as_str().context("reason required")?,
-            )?;
+            let affected = execution::store_input(task, input)?;
             Ok(
                 json!({"affected":affected,"next":"Planner interview/confirmation, then explicit baseline approval"}),
             )
@@ -405,11 +396,16 @@ pub fn call(task: &Task, action: &str, input: &Value) -> Result<Value> {
             )?;
             Ok(json!({"recorded":action}))
         }
-        "review_request" => Ok(serde_json::to_value(reviews::request(
-            task,
-            input["order"].as_str().context("order required")?,
-            input["reviewer"].as_str().context("reviewer required")?,
-        )?)?),
+        "review_request" => {
+            let order = input["order"].as_str().context("order required")?;
+            let review = reviews::request(
+                task,
+                order,
+                input["reviewer"].as_str().context("reviewer required")?,
+            )
+            .map_err(|error| crate::failures::note_stale(task, None, Some(order), error))?;
+            Ok(serde_json::to_value(review)?)
+        }
         "validate_milestone" => Ok(serde_json::to_value(crate::milestones::validate(
             task,
             input["milestone"].as_str().context("milestone required")?,
@@ -503,7 +499,7 @@ fn roster(state: &crate::state::State) -> Vec<String> {
         .collect()
 }
 
-fn leader_inbox(task: &Task) -> Result<Value> {
+pub(crate) fn leader_inbox(task: &Task) -> Result<Value> {
     let state = task.state()?;
     let team = roster(&state);
     let messages: Vec<_> = state
@@ -793,10 +789,14 @@ mod tests {
         );
         crate::execution::confirm(&task, 2, true).expect("no confirmation round for checks");
         assert!(
+            task.state().unwrap().application.approved(),
+            "a revision the leader approved lets orders go out"
+        );
+        assert!(
             task.log_lines()
                 .unwrap()
                 .iter()
-                .any(|line| line.contains("the leader approved check-only revision 2"))
+                .any(|line| line.contains("the leader approved revision 2"))
         );
 
         let mut plan_change = task.state().unwrap().application;
@@ -898,6 +898,99 @@ mod tests {
         assert_eq!(state.steps[1].status, crate::state::StepStatus::Accepted);
         assert_eq!(state.application.milestones["M02"].version, "1.2.0");
     }
+    // A revision resets only what it changed: the work that depends on it
+    // keeps its status and the leader is asked to check it; a removed item
+    // closes.
+    #[test]
+    fn a_revision_resets_only_the_items_it_changed() {
+        use crate::state::StepStatus;
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        let mut proposal = baseline();
+        for (id, dependencies) in [("S01-B02", vec!["S01-B01"]), ("S01-B03", vec![])] {
+            let mut item = proposal.items["S01-B01"].clone();
+            item.dependencies = dependencies.into_iter().map(str::to_string).collect();
+            proposal.items.insert(id.into(), item);
+            for milestone in proposal.milestones.values_mut() {
+                milestone.required.push(id.into());
+            }
+        }
+        crate::execution::store(&task, proposal, "three items").unwrap();
+        crate::execution::confirm(&task, 1, false).unwrap();
+        crate::execution::confirm(&task, 1, true).unwrap();
+        task.transaction(|tx| {
+            for (id, status) in [
+                ("S01-B01", StepStatus::Reported),
+                ("S01-B02", StepStatus::Accepted),
+                ("S01-B03", StepStatus::Failed),
+            ] {
+                tx.state.steps.push(crate::state::Step {
+                    id: id.into(),
+                    title: id.into(),
+                    status,
+                    attempts: 1,
+                    spec: None,
+                    review_since: None,
+                });
+            }
+            Ok(())
+        })
+        .unwrap();
+        let mut changed = task.state().unwrap().application;
+        changed.revision = 2;
+        changed
+            .items
+            .get_mut("S01-B01")
+            .unwrap()
+            .behavior
+            .push("New requirement".into());
+        changed.items.remove("S01-B03");
+        for milestone in changed.milestones.values_mut() {
+            milestone.required.retain(|item| item != "S01-B03");
+        }
+        crate::execution::store(&task, changed, "one change, one removal").unwrap();
+        crate::execution::confirm(&task, 2, false).unwrap();
+        crate::execution::confirm(&task, 2, true).unwrap();
+
+        let state = task.state().unwrap();
+        let status = |id: &str| {
+            state
+                .steps
+                .iter()
+                .find(|step| step.id == id)
+                .unwrap()
+                .status
+        };
+        assert_eq!(status("S01-B01"), StepStatus::Rejected);
+        assert_eq!(
+            status("S01-B02"),
+            StepStatus::Accepted,
+            "its dependent keeps its status"
+        );
+        assert_eq!(
+            status("S01-B03"),
+            StepStatus::Closed,
+            "a removed item closes"
+        );
+        assert_eq!(
+            state.step_failures["S01-B01"][0].kind,
+            crate::failures::FailureKind::RevisionReset
+        );
+        assert_eq!(crate::failures::work_failures(&state, "S01-B01"), 0);
+        let told = state
+            .queue
+            .iter()
+            .find(|message| {
+                message.to == crate::state::LEADER && message.text.contains("Revision 2")
+            })
+            .expect("the leader hears what the revision reset");
+        assert!(
+            told.text.contains("S01-B01") && told.text.contains("S01-B02"),
+            "{}",
+            told.text
+        );
+    }
+
     #[test]
     fn coordinator_inbox_acknowledgement_cannot_consume_worker_messages() {
         let directory = tempfile::TempDir::new().unwrap();

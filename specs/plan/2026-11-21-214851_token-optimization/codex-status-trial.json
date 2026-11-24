@@ -1,0 +1,57 @@
+{
+  "model": "gpt-6.1-sol",
+  "effort": "medium",
+  "expected": {
+    "paused": true,
+    "active_steps": {},
+    "live_agents_with_open_orders": [],
+    "pending_permissions": 0,
+    "total_steps": 10
+  },
+  "arms": {
+    "full": {
+      "payload_bytes": 25836,
+      "usage": {
+        "input_tokens": 21157,
+        "cached_input_tokens": 12288,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 31,
+        "reasoning_output_tokens": 0
+      },
+      "score": 5,
+      "matched": true,
+      "provider_exit": 0,
+      "observed": {
+        "paused": true,
+        "active_steps": {},
+        "live_agents_with_open_orders": [],
+        "pending_permissions": 0,
+        "total_steps": 10
+      },
+      "estimated_api_equivalent_usd": 0.0192768
+    },
+    "progress": {
+      "payload_bytes": 696,
+      "usage": {
+        "input_tokens": 15819,
+        "cached_input_tokens": 12288,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 31,
+        "reasoning_output_tokens": 0
+      },
+      "score": 5,
+      "matched": true,
+      "provider_exit": 0,
+      "observed": {
+        "paused": true,
+        "active_steps": {},
+        "live_agents_with_open_orders": [],
+        "pending_permissions": 0,
+        "total_steps": 10
+      },
+      "estimated_api_equivalent_usd": 0.0086008
+    }
+  },
+  "pricing_basis": "same standard short-context API-rate snapshot as codex-baseline.json",
+  "scope": "one paired read-only interpretation of a saved paused benchmark snapshot"
+}

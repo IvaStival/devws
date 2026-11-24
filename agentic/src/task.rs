@@ -189,12 +189,16 @@ impl Task {
 
     pub fn state(&self) -> Result<State> {
         // Status polling must not rewrite the entire task or contend as a writer.
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(self.dir.join("state.lock"))?;
+        let lock_path = self.dir.join("state.lock");
+        let lock = match File::open(&lock_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)?,
+            existing => existing?,
+        };
         fs2::FileExt::lock_shared(&lock)?;
         match fs::read_to_string(self.dir.join("state.json")) {
             Ok(text) => serde_json::from_str(&text).context("reading task state"),

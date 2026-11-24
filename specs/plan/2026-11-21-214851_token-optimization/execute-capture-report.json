@@ -1,0 +1,9 @@
+{
+  "full_response_bytes": 69824,
+  "compact_response_bytes": 2844,
+  "exit_code": 7,
+  "captured_bytes": {
+    "stdout": 110011,
+    "stderr": 4058
+  }
+}

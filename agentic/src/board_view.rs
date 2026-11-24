@@ -883,15 +883,6 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
         );
     }
     needs_you.extend(board.permissions.iter().map(permission_entry));
-    for step in board
-        .steps
-        .iter()
-        .filter(|step| step.status == StepStatus::Exhausted)
-    {
-        let mut entry = step_entry(board, step);
-        entry.id = format!("failed:{}", step.id);
-        needs_you.push(entry);
-    }
     let agents = board
         .roles
         .iter()
@@ -1641,11 +1632,6 @@ fn attention(board: &Board, problem: Option<&str>) -> usize {
     usize::from(board.leader_question.is_some())
         + board.questions.len()
         + board.permissions.len()
-        + board
-            .steps
-            .iter()
-            .filter(|step| step.status == StepStatus::Exhausted)
-            .count()
         + board
             .roles
             .iter()

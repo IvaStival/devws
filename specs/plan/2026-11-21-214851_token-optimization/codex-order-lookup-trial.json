@@ -1,0 +1,43 @@
+{
+  "model": "gpt-6.1-sol",
+  "effort": "medium",
+  "active_state": "scratch reconstruction of historical order o48",
+  "expected_routine": {
+    "paused": false,
+    "active_steps": {
+      "notes-api": "ordered"
+    },
+    "live_agents_with_open_orders": [
+      "api-integration-1"
+    ],
+    "pending_permissions": 0,
+    "total_steps": 10
+  },
+  "expected_plan": "execution-approved-v1",
+  "cases": {
+    "diagnostic": {
+      "order": {
+        "payload_bytes": 524,
+        "usage": {
+          "input_tokens": 15799,
+          "cached_input_tokens": 14592,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 17,
+          "reasoning_output_tokens": 0
+        },
+        "matched": true,
+        "provider_exit": 0,
+        "observed": {
+          "needs_full": false,
+          "plan": "execution-approved-v1"
+        },
+        "estimated_api_equivalent_usd": 0.004043199999999999
+      }
+    }
+  },
+  "previous_successful_path": {
+    "method": "progress then resumed full status",
+    "input_tokens": 39384
+  },
+  "input_reduction_percent": 59.88
+}

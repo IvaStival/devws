@@ -14,6 +14,11 @@ use std::{
 const FILE_LIMIT: u64 = 16 * 1024 * 1024;
 const TREE_LIMIT: u64 = 256 * 1024 * 1024;
 const OUTPUT_LIMIT: usize = 64 * 1024;
+const RESULT_LIMIT: usize = 2 * 1024 * 1024;
+const RESULT_PAGE: usize = 8 * 1024;
+const RESULTS_PER_SESSION: usize = 32;
+const PREVIEW_LIMIT: usize = 1_200;
+const DIAGNOSTIC_LINE_LIMIT: usize = 180;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Configuration {
@@ -172,37 +177,119 @@ pub struct Output {
     pub stdout: String,
     pub stderr: String,
     pub timed_out: bool,
+    #[serde(skip)]
+    exit_code: Option<i32>,
 }
-fn protected(path: &str, config: &Configuration) -> Result<bool> {
+/// A committed dotenv template (`.env.example`…) holds no secrets: it is
+/// source when the runner configuration names that exact path, never through
+/// a glob. Every other `.env` file stays out.
+fn named_dotenv_template(path: &str, source_paths: &[String]) -> bool {
+    const TEMPLATES: [&str; 4] = [".env.example", ".env.sample", ".env.dist", ".env.template"];
+    let name = path.rsplit('/').next().unwrap_or(path);
+    TEMPLATES.contains(&name) && source_paths.iter().any(|source| source == path)
+}
+
+/// Why a path is kept out of every snapshot (secrets, data, dependencies,
+/// the user's protected paths); None when nothing keeps it out.
+fn exclusion(path: &str, config: &Configuration) -> Result<Option<String>> {
+    excluded_by(path, &config.source_paths, &config.protected_paths)
+}
+
+/// The built-in rules, with the source paths that may name a dotenv template
+/// and the user's protected paths.
+fn excluded_by(
+    path: &str,
+    source_paths: &[String],
+    protected_paths: &[String],
+) -> Result<Option<String>> {
+    const FOLDERS: [&str; 15] = [
+        ".git",
+        ".ssh",
+        ".aws",
+        ".codex",
+        ".claude",
+        ".env",
+        "node_modules",
+        "vendor",
+        "storage",
+        "pgdata",
+        "mysql",
+        "mongodb",
+        ".devagentics",
+        ".devws",
+        ".agents",
+    ];
+    const EXTENSIONS: [&str; 8] = [
+        ".sqlite", ".sqlite3", ".db", ".pem", ".key", ".p12", ".sock", ".dump",
+    ];
     let lower = path.to_ascii_lowercase();
-    let sensitive = lower.split('/').any(|part| {
-        part == ".git"
-            || part == ".ssh"
-            || part == ".aws"
-            || part == ".codex"
-            || part == ".claude"
-            || part == ".env"
-            || part.starts_with(".env.")
-            || part == "node_modules"
-            || part == "vendor"
-            || part == "storage"
-            || part == "pgdata"
-            || part == "mysql"
-            || part == "mongodb"
-            || part == ".devagentics"
-            || part == ".devws"
-            || part == ".agents"
-    });
-    Ok(sensitive
-        || [
-            ".sqlite", ".sqlite3", ".db", ".pem", ".key", ".p12", ".sock", ".dump",
-        ]
+    if let Some(part) = lower.split('/').find(|part| FOLDERS.contains(part)) {
+        return Ok(Some(format!(
+            "it is under or named {part}, which never enters a snapshot (secrets, data or dependencies)"
+        )));
+    }
+    if lower.split('/').any(|part| part.starts_with(".env."))
+        && !named_dotenv_template(path, source_paths)
+    {
+        return Ok(Some(
+            "it is a dotenv file, which never enters a snapshot; a template (.env.example, .env.sample, .env.dist, .env.template) does when you name it exactly in source_paths"
+                .into(),
+        ));
+    }
+    if let Some(extension) = EXTENSIONS
         .iter()
-        .any(|extension| lower.ends_with(extension))
-        || checks::glob_set(&config.protected_paths)?.is_match(path))
+        .find(|extension| lower.ends_with(*extension))
+    {
+        return Ok(Some(format!(
+            "its {extension} extension marks data or a key, which never enters a snapshot"
+        )));
+    }
+    if checks::glob_set(protected_paths)?.is_match(path) {
+        return Ok(Some("it matches the runner's protected_paths".into()));
+    }
+    Ok(None)
+}
+
+/// Why the leader may not read `path`, or None when it may: never what a
+/// snapshot always leaves out (secrets, data, the protected paths), even
+/// with no runner; with one, only its source and markdown docs.
+pub(crate) fn leader_unreadable(
+    path: &str,
+    config: Option<&Configuration>,
+) -> Result<Option<String>> {
+    relative(Path::new(path))?;
+    let Some(config) = config else {
+        return excluded_by(path, &[], &[]);
+    };
+    if let Some(why) = exclusion(path, config)? {
+        return Ok(Some(why));
+    }
+    if path.ends_with(".md") || checks::glob_set(&config.source_paths)?.is_match(path) {
+        return Ok(None);
+    }
+    Ok(Some(
+        "no source_paths entry of the runner matches it".into(),
+    ))
+}
+
+fn protected(path: &str, config: &Configuration) -> Result<bool> {
+    Ok(exclusion(path, config)?.is_some())
 }
 pub(crate) fn source_path(path: &str, config: &Configuration) -> Result<bool> {
     Ok(!protected(path, config)? && checks::glob_set(&config.source_paths)?.is_match(path))
+}
+
+/// Whether `path` is in a container's copy of the project, and the rule that
+/// decides it: what the leader, which cannot read this policy, is told.
+pub(crate) fn snapshot_decision(path: &str, config: &Configuration) -> Result<String> {
+    if let Some(why) = exclusion(path, config)? {
+        return Ok(format!("{path} is left out: {why}."));
+    }
+    Ok(if checks::glob_set(&config.source_paths)?.is_match(path) {
+        format!("{path} is in the snapshot: it matches the runner's source_paths.")
+    } else {
+        format!("{path} is left out: no source_paths entry matches it.")
+    })
 }
 fn relative(path: &Path) -> Result<String> {
     ensure!(
@@ -944,17 +1031,38 @@ pub fn checkpoint(task: &Task, agent: &str, summary: &str) -> Result<Vec<String>
 /// A container's output within `OUTPUT_LIMIT`: its start (what ran, with
 /// which setup) and its end (a test runner's failures and summary), the
 /// middle left out and marked.
-fn drain(mut stream: impl Read) -> String {
+fn drain(mut stream: impl Read, mut capture: Option<fs::File>) -> (String, Option<bool>) {
     const HEAD: usize = OUTPUT_LIMIT / 8;
     let mut head = Vec::new();
     let mut tail = std::collections::VecDeque::new();
     let mut left_out = 0usize;
     let mut buffer = [0u8; 4096];
-    while let Ok(size) = stream.read(&mut buffer) {
+    let mut captured = 0;
+    let mut truncated = capture.as_ref().map(|_| false);
+    loop {
+        let size = match stream.read(&mut buffer) {
+            Ok(size) => size,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                truncated = None;
+                break;
+            }
+        };
         if size == 0 {
             break;
         }
         let mut chunk = &buffer[..size];
+        if let Some(file) = &mut capture {
+            let kept = size.min(RESULT_LIMIT - captured);
+            if file.write_all(&chunk[..kept]).is_err() {
+                // Keep draining so an artifact failure cannot change the command.
+                capture = None;
+                truncated = None;
+            } else {
+                captured += kept;
+                truncated = Some(truncated == Some(true) || kept < size);
+            }
+        }
         let into_head = chunk.len().min(HEAD.saturating_sub(head.len()));
         head.extend_from_slice(&chunk[..into_head]);
         chunk = &chunk[into_head..];
@@ -968,7 +1076,7 @@ fn drain(mut stream: impl Read) -> String {
         text.push_str(&format!("\n[… {left_out} bytes left out …]\n"));
     }
     text.push_str(&String::from_utf8_lossy(tail.make_contiguous()));
-    text
+    (text, truncated)
 }
 fn docker_arguments(
     config: &Configuration,
@@ -1050,6 +1158,17 @@ pub(crate) fn run_container_artifacts(
     command: &str,
     artifacts: Option<&Path>,
 ) -> Result<Output> {
+    Ok(run_container_capture(config, source, readonly, command, artifacts, None)?.0)
+}
+
+fn run_container_capture(
+    config: &Configuration,
+    source: &Path,
+    readonly: bool,
+    command: &str,
+    artifacts: Option<&Path>,
+    capture: Option<(fs::File, fs::File)>,
+) -> Result<(Output, Option<[bool; 2]>)> {
     ensure!(command.len() <= 64 * 1024, "command too large");
     let name = format!("devagentics-{}", &token()?[..20]);
     let mut arguments = docker_arguments(config, source, readonly, &name, command)?;
@@ -1079,8 +1198,10 @@ pub(crate) fn run_container_artifacts(
         .spawn()?;
     let stdout = child.stdout.take().context("container stdout")?;
     let stderr = child.stderr.take().context("container stderr")?;
-    let stdout = std::thread::spawn(move || drain(stdout));
-    let stderr = std::thread::spawn(move || drain(stderr));
+    let (stdout_file, stderr_file) =
+        capture.map_or((None, None), |(out, err)| (Some(out), Some(err)));
+    let stdout = std::thread::spawn(move || drain(stdout, stdout_file));
+    let stderr = std::thread::spawn(move || drain(stderr, stderr_file));
     let started = Instant::now();
     let mut timed_out = false;
     let status = loop {
@@ -1099,18 +1220,35 @@ pub(crate) fn run_container_artifacts(
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    Ok(Output {
-        success: status.success() && !timed_out,
-        stdout: stdout
-            .join()
-            .map_err(|_| anyhow::anyhow!("container output reader failed"))?,
-        stderr: stderr
-            .join()
-            .map_err(|_| anyhow::anyhow!("container error reader failed"))?,
-        timed_out,
-    })
+    let (stdout, stdout_truncated) = stdout
+        .join()
+        .map_err(|_| anyhow::anyhow!("container output reader failed"))?;
+    let (stderr, stderr_truncated) = stderr
+        .join()
+        .map_err(|_| anyhow::anyhow!("container error reader failed"))?;
+    Ok((
+        Output {
+            success: status.success() && !timed_out,
+            stdout,
+            stderr,
+            timed_out,
+            exit_code: status.code(),
+        },
+        stdout_truncated
+            .zip(stderr_truncated)
+            .map(|(out, err)| [out, err]),
+    ))
 }
 pub fn execute(task: &Task, agent: &str, command: &str) -> Result<Output> {
+    Ok(execute_capture(task, agent, command, None)?.0)
+}
+
+fn execute_capture(
+    task: &Task,
+    agent: &str,
+    command: &str,
+    capture: Option<(fs::File, fs::File)>,
+) -> Result<(Output, Option<[bool; 2]>)> {
     let state = task.state()?;
     ensure!(!state.paused, "task is paused");
     let workspace = state
@@ -1122,7 +1260,229 @@ pub fn execute(task: &Task, agent: &str, command: &str) -> Result<Output> {
         .as_ref()
         .context("runner missing")?
         .for_lane(container_lane(&state, agent).as_deref());
-    run_container(&config, &workspace.snapshot, workspace.readonly, command)
+    run_container_capture(
+        &config,
+        &workspace.snapshot,
+        workspace.readonly,
+        command,
+        None,
+        capture,
+    )
+}
+
+fn result_directory(task: &Task, agent: &str) -> Result<PathBuf> {
+    let state = task.state()?;
+    let generation = state
+        .runner_identities
+        .get(agent)
+        .and_then(|path| path.file_name())
+        .context("worker session identity missing")?;
+    Ok(task
+        .dir()
+        .join("workers")
+        .join(agent)
+        .join("results")
+        .join(generation))
+}
+
+fn preview(text: &str) -> String {
+    if text.chars().count() <= PREVIEW_LIMIT {
+        return text.to_owned();
+    }
+    let head: String = text.chars().take(PREVIEW_LIMIT / 4).collect();
+    let tail: String = text
+        .chars()
+        .rev()
+        .take(PREVIEW_LIMIT * 3 / 4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{head}\n[… output omitted …]\n{tail}")
+}
+
+fn failure_diagnostics(output: &str, shown: &str) -> Vec<String> {
+    let is_diagnostic = |line: &str| {
+        let lowered = line.to_ascii_lowercase();
+        [
+            "error:",
+            "fatal:",
+            "fatal error:",
+            "fail:",
+            "fail ",
+            "failed:",
+            "failed ",
+            "traceback ",
+            "assertionerror:",
+        ]
+        .iter()
+        .any(|prefix| lowered.starts_with(prefix))
+            || lowered.contains(": error:")
+            || (lowered.starts_with("thread '") && lowered.contains("panicked at"))
+    };
+    let mut matches = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| is_diagnostic(line) && !shown.contains(line));
+    let first: Vec<_> = matches.by_ref().take(2).collect();
+    let last: Vec<_> = matches.rev().take(2).collect();
+    let mut selected = Vec::new();
+    for line in first.into_iter().chain(last.into_iter().rev()) {
+        let snippet: String = line.chars().take(DIAGNOSTIC_LINE_LIMIT).collect();
+        if !selected.contains(&snippet) {
+            selected.push(snippet);
+        }
+    }
+    selected
+}
+
+fn captured_diagnostics(path: &Path, retained: &str, shown: &str) -> Vec<String> {
+    match fs::read(path) {
+        Ok(bytes) => failure_diagnostics(&String::from_utf8_lossy(&bytes), shown),
+        Err(error) => {
+            eprintln!("devagentics execution diagnostic capture: {error}");
+            failure_diagnostics(retained, shown)
+        }
+    }
+}
+
+pub fn execute_compact(task: &Task, agent: &str, command: &str) -> Result<serde_json::Value> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+
+    let root = result_directory(task, agent)?;
+    let id = token()?;
+    let staging = root.join(format!("{id}-pending"));
+    let reserved = {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&root)?;
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(root.join("capture.lock"))?;
+        fs2::FileExt::lock_exclusive(&lock)?;
+        // Count unfinished captures too, so interrupted or concurrent commands
+        // cannot push this worker session past its allocated disk budget.
+        let count = fs::read_dir(&root)?.try_fold(0usize, |count, entry| {
+            Ok::<_, std::io::Error>(count + usize::from(entry?.file_type()?.is_dir()))
+        })?;
+        if count < RESULTS_PER_SESSION {
+            fs::DirBuilder::new().mode(0o700).create(&staging)?;
+        }
+        count < RESULTS_PER_SESSION
+    };
+    if !reserved {
+        let mut value = serde_json::to_value(execute(task, agent, command)?)?;
+        value["result_id"] = serde_json::Value::Null;
+        value["capture_notice"] =
+            "result limit reached; returning the full-mode bounded output".into();
+        return Ok(value);
+    }
+    let open = |name| {
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(staging.join(name))
+    };
+    let run = (|| {
+        let files = (open("stdout")?, open("stderr")?);
+        execute_capture(task, agent, command, Some(files))
+    })();
+    let publish = |limits: [bool; 2]| -> Result<()> {
+        fs::write(staging.join("metadata.json"), serde_json::to_vec(&limits)?)?;
+        fs::rename(&staging, root.join(&id))?;
+        Ok(())
+    };
+    let (result, limits) = match run {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+    };
+    let stdout = preview(&result.stdout);
+    let stderr = preview(&result.stderr);
+    let diagnostics = (!result.success).then(|| {
+        let find = |stream, retained, shown| {
+            if limits.is_some() {
+                captured_diagnostics(&staging.join(stream), retained, shown)
+            } else {
+                failure_diagnostics(retained, shown)
+            }
+        };
+        serde_json::json!({
+            "stdout": find("stdout", &result.stdout, &stdout),
+            "stderr": find("stderr", &result.stderr, &stderr),
+        })
+    });
+    let result_id = limits.and_then(|limits| match publish(limits) {
+        Ok(()) => Some(id.as_str()),
+        Err(error) => {
+            eprintln!("devagentics execution artifact: {error:#}");
+            None
+        }
+    });
+    if result_id.is_none() {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    Ok(serde_json::json!({
+        "success": result.success, "timed_out": result.timed_out, "exit_code": result.exit_code,
+        "stdout": stdout, "stderr": stderr, "failure_diagnostics": diagnostics,
+        "result_id": result_id,
+        "capture_truncated": result_id.as_ref().and(limits).map(|[stdout, stderr]| serde_json::json!({"stdout":stdout, "stderr":stderr})),
+    }))
+}
+
+pub fn read_result(
+    task: &Task,
+    agent: &str,
+    id: &str,
+    stream: &str,
+    offset: u64,
+) -> Result<serde_json::Value> {
+    use std::io::{Seek, SeekFrom};
+
+    ensure!(
+        id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "invalid result ID"
+    );
+    let index = match stream {
+        "stdout" => 0,
+        "stderr" => 1,
+        _ => bail!("result stream must be stdout or stderr"),
+    };
+    let directory = result_directory(task, agent)?.join(id);
+    let metadata = fs::read(directory.join("metadata.json"))
+        .context("result is unavailable in this worker session")?;
+    let limits: [bool; 2] = serde_json::from_slice(&metadata)?;
+    let mut file = fs::File::open(directory.join(stream))?;
+    let size = file.metadata()?.len();
+    ensure!(
+        offset <= size,
+        "offset is past the end of the captured output"
+    );
+    file.seek(SeekFrom::Start(offset))?;
+    let mut bytes = Vec::new();
+    file.take(RESULT_PAGE as u64).read_to_end(&mut bytes)?;
+    if offset + (bytes.len() as u64) < size
+        && let Err(error) = std::str::from_utf8(&bytes)
+        && error.error_len().is_none()
+    {
+        bytes.truncate(error.valid_up_to());
+    }
+    let next = offset + bytes.len() as u64;
+    Ok(serde_json::json!({
+        "result_id": id, "stream": stream, "offset": offset,
+        "text": String::from_utf8_lossy(&bytes),
+        "next_offset": (next < size).then_some(next),
+        "captured_bytes": size,
+        "truncated": limits[index],
+    }))
 }
 
 /// The lane whose image `agent`'s containers use: its own, or for a reviewer
@@ -1146,7 +1506,7 @@ pub fn lane_of_order(state: &crate::state::State, order: &str) -> Option<String>
 }
 
 /// Git plumbing must not execute repository hooks, filters or fsmonitor programs.
-fn safe_git_output(root: &Path, args: &[&str]) -> Result<std::process::Output> {
+pub(crate) fn safe_git_output(root: &Path, args: &[&str]) -> Result<std::process::Output> {
     let configured = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -1375,6 +1735,81 @@ pub fn overview(task: &Task) -> Result<serde_json::Value> {
 pub mod tests {
     use super::*;
 
+    #[test]
+    fn compact_failure_surfaces_buried_diagnostics_and_skips_visible_duplicates() {
+        let output = format!(
+            "error: already visible\n{}\nFAIL: test_counts\nTraceback (most recent call last):\nAssertionError: 41 != 42\nFAILED (failures=1)\n{}\n",
+            "setup noise\n".repeat(400),
+            "cleanup noise\n".repeat(400),
+        );
+        let shown = preview(&output);
+        assert!(!shown.contains("41 != 42"));
+        assert_eq!(
+            failure_diagnostics(&output, &shown),
+            [
+                "FAIL: test_counts",
+                "Traceback (most recent call last):",
+                "AssertionError: 41 != 42",
+                "FAILED (failures=1)"
+            ],
+        );
+    }
+
+    #[test]
+    fn capture_keeps_output_beyond_the_preview_up_to_its_disk_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("capture");
+        let mut output = vec![b'a'; RESULT_LIMIT];
+        output[OUTPUT_LIMIT] = b'b';
+        output.extend_from_slice(b"final error");
+        let (bounded, truncated) = drain(output.as_slice(), Some(fs::File::create(&path).unwrap()));
+        assert_eq!(truncated, Some(true));
+        let saved = fs::read(path).unwrap();
+        assert_eq!(saved.len(), RESULT_LIMIT);
+        assert_eq!(saved[OUTPUT_LIMIT], b'b');
+        assert!(preview(&bounded).ends_with("final error"));
+    }
+
+    #[test]
+    fn captured_results_are_paged_and_bound_to_the_worker_generation() {
+        let directory = tempfile::tempdir().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        task.transaction(|tx| {
+            tx.state
+                .runner_identities
+                .insert("a".into(), "identity-a".into());
+            tx.state
+                .runner_identities
+                .insert("b".into(), "identity-b".into());
+            Ok(())
+        })
+        .unwrap();
+        let id = "a".repeat(64);
+        let result = result_directory(&task, "a").unwrap().join(&id);
+        fs::create_dir_all(&result).unwrap();
+        fs::write(result.join("metadata.json"), "[false,true]").unwrap();
+        fs::write(
+            result.join("stdout"),
+            format!("{}€second", "a".repeat(RESULT_PAGE - 1)),
+        )
+        .unwrap();
+        let first = read_result(&task, "a", &id, "stdout", 0).unwrap();
+        assert_eq!(first["next_offset"], RESULT_PAGE - 1);
+        let second = read_result(&task, "a", &id, "stdout", (RESULT_PAGE - 1) as u64).unwrap();
+        assert_eq!(second["text"], "€second");
+        assert!(second["next_offset"].is_null());
+        assert!(read_result(&task, "b", &id, "stdout", 0).is_err());
+        assert!(read_result(&task, "a", "../metadata.json", "stdout", 0).is_err());
+        task.transaction(|tx| {
+            tx.state
+                .runner_identities
+                .insert("a".into(), "identity-new".into());
+            Ok(())
+        })
+        .unwrap();
+        assert!(read_result(&task, "a", &id, "stdout", 0).is_err());
+    }
+
     // A test runner prints its failures and summary last: a long suite's
     // output keeps its end, not only its first 64 KiB.
     #[test]
@@ -1386,7 +1821,7 @@ pub mod tests {
         text.push_str(
             " FAIL  Tests\\Feature\\SystemFlowRepositoryTest\nTests: 18 failed, 900 passed\n",
         );
-        let kept = drain(text.as_bytes());
+        let (kept, _) = drain(text.as_bytes(), None);
         assert!(
             kept.starts_with("back-check: vendor matches"),
             "{}",
@@ -1398,7 +1833,7 @@ pub mod tests {
         );
         assert!(kept.contains("bytes left out"), "the cut is not marked");
         assert!(kept.len() <= OUTPUT_LIMIT + 100, "{}", kept.len());
-        assert_eq!(drain("short\n".as_bytes()), "short\n");
+        assert_eq!(drain("short\n".as_bytes(), None).0, "short\n");
     }
 
     #[test]
@@ -1677,6 +2112,97 @@ pub mod tests {
         assert_eq!(changed_lanes(None, &added), None, "a first configuration");
     }
 
+    // A committed template (.env.example) that a protected test reads must
+    // be in the snapshot when the runner configuration names it; a real
+    // .env never is, whatever the globs say.
+    // The leader cannot read the snapshot policy: it asks why a path is in
+    // or out of a container's copy of the project.
+    #[test]
+    fn a_snapshot_decision_names_the_rule_that_made_it() {
+        let mut config = configuration();
+        config.source_paths = vec!["src/**".into(), "backend/**".into()];
+        let decision = |path: &str| snapshot_decision(path, &config).unwrap();
+        assert!(
+            decision("src/a.rs").starts_with("src/a.rs is in"),
+            "{}",
+            decision("src/a.rs")
+        );
+        assert!(
+            decision("backend/.env.example").contains("dotenv"),
+            "{}",
+            decision("backend/.env.example")
+        );
+        assert!(
+            decision("backend/.env.example").contains("name it exactly in source_paths"),
+            "a template says how to let it in"
+        );
+        assert!(decision("backend/vendor/x.php").contains("vendor"));
+        assert!(decision("backend/db.sqlite").contains(".sqlite"));
+        assert!(decision("data/a").contains("protected_paths"));
+        assert!(decision("README.md").contains("no source_paths"));
+    }
+
+    // The leader reads source and docs, never secrets or data, with or
+    // without a runner.
+    #[test]
+    fn the_leader_reads_source_and_docs_but_never_secrets() {
+        let mut config = configuration();
+        config.source_paths = vec!["src/**".into()];
+        let unreadable =
+            |path: &str, config: Option<&Configuration>| leader_unreadable(path, config).unwrap();
+        assert_eq!(unreadable("src/a.rs", Some(&config)), None);
+        assert_eq!(unreadable("docs/guide.md", Some(&config)), None, "docs");
+        assert!(
+            unreadable("README.txt", Some(&config))
+                .unwrap()
+                .contains("source_paths")
+        );
+        assert!(
+            unreadable("data/a", Some(&config))
+                .unwrap()
+                .contains("protected_paths")
+        );
+        assert!(unreadable("src/.env", Some(&config)).is_some());
+        assert!(
+            unreadable("keys/server.pem", None)
+                .unwrap()
+                .contains(".pem")
+        );
+        assert!(
+            unreadable("backend/.env.local", None)
+                .unwrap()
+                .contains("dotenv")
+        );
+        assert_eq!(unreadable("backend/app/Models/System.php", None), None);
+        assert!(leader_unreadable("../other/a.rs", None).is_err());
+        assert!(leader_unreadable("/etc/passwd", None).is_err());
+    }
+
+    #[test]
+    fn a_dotenv_template_is_source_only_when_named_exactly() {
+        let mut config = configuration();
+        config.source_paths = vec![
+            "backend/**".into(),
+            "backend/.env.example".into(),
+            "backend/.env".into(),
+            "backend/.env.production".into(),
+        ];
+        assert!(source_path("backend/.env.example", &config).unwrap());
+        for path in [
+            "backend/.env",
+            "backend/.env.production",
+            "backend/.env.sample",
+            "web/.env.example",
+        ] {
+            assert!(!source_path(path, &config).unwrap(), "{path}");
+        }
+        config.protected_paths = vec!["backend/.env.example".into()];
+        assert!(
+            !source_path("backend/.env.example", &config).unwrap(),
+            "the user's protected paths still win"
+        );
+    }
+
     #[test]
     fn policy_distinguishes_source_deletion_from_data_and_path_escapes() {
         let config = configuration();
@@ -1851,6 +2377,7 @@ mod docker_tests {
         let order = crate::orders::send_order(
             &task,
             OrderRequest {
+                diagnosis: None,
                 read: Vec::new(),
                 targets: Vec::new(),
                 agent: author.id.clone(),
@@ -2044,7 +2571,34 @@ mod docker_tests {
             !final_review.candidate_evidence.is_empty(),
             "the merge candidate passed its candidate check before review"
         );
+        task.transaction(|tx| {
+            let mut other = tx
+                .state
+                .orders
+                .iter()
+                .find(|item| item.id == order)
+                .unwrap()
+                .clone();
+            other.id = "o-unreviewed".into();
+            other.step = "unreviewed".into();
+            tx.state.steps.push(crate::state::Step {
+                id: other.step.clone(),
+                title: "Another report in the same lane".into(),
+                status: crate::state::StepStatus::Reported,
+                attempts: 1,
+                spec: None,
+                review_since: None,
+            });
+            tx.state.orders.push(other);
+            Ok(())
+        })
+        .unwrap();
         crate::orders::accept_step(&task, "S01-B01").unwrap();
+        let state = task.state().unwrap();
+        assert!(!state.integrations.contains_key("unreviewed"));
+        assert!(state.steps.iter().any(
+            |step| step.id == "unreviewed" && step.status == crate::state::StepStatus::Reported
+        ));
         let merged = checks::head(repo.path()).unwrap();
         task.transaction(|tx| {
             tx.state
