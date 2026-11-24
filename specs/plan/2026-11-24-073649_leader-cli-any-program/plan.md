@@ -156,3 +156,23 @@ The user kept the leader models as they are (strong models on Claude and Codex).
 
 1. **No inbox polling.** An empty inbox with no ready work now answers "nothing for you now: end your turn. devAgentics wakes you when a message arrives; do not read the inbox again or wait in a loop". The leader's role says the same. In the MCP-only run, 43 of the leader's 171 calls were inbox reads, with a median of 337 bytes. Each call rereads about 77,000 tokens of context.
 2. **Test-only items are light whatever their label.** An item that only writes tests counts if it is marked `writes_tests` or every path is a test path. It is light when it has at most 3 explicit globs, no data effects, nothing in another lane builds on it, and no strict work depends on it; otherwise it keeps its review. In the pair, the same test items were light under the label `change` and standard under `feature`, which meant 2 extra reviewer runs.
+
+### D. Retest after the fixes (24-11-2026)
+
+The same fixture and team, on `pstack-ccaedac`, with both leaders on Opus 5.5 at effort **medium** (the first pair used high). Data is in `/tmp/devws-notes-claude3.HM3rw7/comparison.json`.
+
+| | mcp (reads off) | cli (reads on) |
+|---|---|---|
+| Delivered (milestone ready, acceptance passes) | yes (12 tests) | yes (14 tests) |
+| Elapsed (leader start to milestone) | 18m13s | 21m07s |
+| Cost: leader / workers / total | $2.66 / $0.45 / **$3.11** | $3.26 / $0.36 / **$3.62** |
+| First pair's total (effort high, before the fixes) | $5.52 | $4.09 |
+| Leader messages / output tokens | 93 / 31.6k | 94 / 43.8k |
+| Reviews (asking changes) / light acceptances | 3 (1) / 2 | 3 (1) / 2 |
+| Leader calls per accepted step | 26.5 | 25.0 |
+| Inbox reads | 29 (MCP) | 15 (CLI, none refused) |
+
+- **The fixes worked in both runs.** Both leaders made the two test items light, and neither polled the inbox in a loop. Leader calls per accepted step fell from 42.5 and 28.5 to 26.5 and 25.0.
+- **Cost fell 44% (mcp) and 11% (cli)** against the first pair. That change mixes the two fixes with the switch from effort high to medium.
+- **CLI reads didn't save money for Claude.** The `cli` run made all 15 inbox reads by command, with none refused, but it still cost $0.51 more. On the same number of leader messages it wrote 12k more output tokens and reread 1.3M more cached tokens. For a Claude leader, a CLI read costs one model turn, just like an MCP call. The saving Codex showed comes from Codex's own costs, not from the read itself.
+- **Decision:** CLI reads stay opt-in and off by default for every program. The default leader stays Claude Opus 5.5 at medium.
