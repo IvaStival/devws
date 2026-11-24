@@ -8,8 +8,8 @@ o plano aprovado, as ordens, a execução isolada e a integração. O objetivo
 com os mesmos critérios de qualidade e segurança.
 
 ```text
-Líder Codex ── CLI de leitura ─┬── DevAgentics ── estado com lock
-             └── MCP ──────────┘        │
+Líder (Claude, Codex ou OpenCode) ── CLI de leitura ─┬── DevAgentics ── estado com lock
+                                   └── MCP ──────────┘        │
                                        │ ordens e evidências
 Worker CLI de provedor ── Worker MCP ──┴── Docker e Git
                                        │
@@ -27,7 +27,7 @@ manda um aviso no tmux. O Líder consulta a fila e confirma os IDs tratados.
 
 | Situação | Interface |
 | --- | --- |
-| Progresso e ordem específica do Líder Codex com piloto ativo | CLI de leitura |
+| Progresso e ordem específica do Líder com a CLI ativa | CLI de leitura |
 | Inbox sem confirmação pendente | CLI de leitura |
 | Confirmar IDs e buscar o próximo lote | MCP `application_workflow`, ação `leader_inbox` com `input.ack` |
 | Apenas confirmar IDs | MCP `application_workflow`, ação `inbox_ack` com `input.ids` |
@@ -40,8 +40,9 @@ anteriores. Workers usam o mesmo MCP em todos os modos do piloto.
 
 ## Como usar
 
-Em uma tarefa revisada já configurada para uma equipe Codex, habilite por
-tarefa e reabra o Líder para carregar as instruções de inicialização.
+Em uma tarefa revisada, com o Líder em Claude, Codex ou OpenCode (OpenCode
+só em tarefas revisadas), habilite por tarefa e reabra o Líder para
+carregar as instruções de inicialização.
 Execute as leituras a partir da raiz do worktree principal.
 
 ```bash
@@ -51,8 +52,19 @@ devagentics leader-read <task> order <order-id>
 devagentics leader-read <task> inbox
 ```
 
-As leituras retornam JSON, usam o lock compartilhado e operam sob o sandbox
-de leitura do Codex. O inbox contém mensagens do Líder, equipe e trabalho
+As leituras retornam JSON e usam o lock compartilhado. Cada programa
+restringe o shell do Líder a esse único comando:
+
+- **Codex:** o sandbox de leitura do Codex.
+- **Claude Code:** só a regra `Bash(<devagentics> leader-read <task>:*)`,
+  em `dontAsk`, que recusa qualquer outro comando sem perguntar.
+- **OpenCode:** configuração isolada, com regras de bash que permitem o
+  comando e recusam encadeamentos, pipes, substituições e redirecionamentos.
+
+Uma versão do programa que não foi verificada desse jeito inicia o Líder
+só com MCP, e o log da tarefa diz o motivo. Para Claude, valem só as versões
+em que `scripts/probe_claude_leader.sh` passou (2.1.331). Para OpenCode,
+vale a 1.19.6, verificada com `scripts/probe_opencode_leader.py`. O inbox contém mensagens do Líder, equipe e trabalho
 pronto. Uma leitura deixa os IDs pendentes. O fallback de leitura é MCP.
 `devagentics task leader-cli <task> off` desativa a CLI imediatamente.
 Reabra o Líder para recarregar o catálogo e as instruções padrão.
@@ -131,7 +143,7 @@ medem tráfego local, enquanto os tokens vêm do provedor.
 ## Escopo atual
 
 O híbrido permanece a opção de trabalho estudada. A CLI de leitura é
-opt-in por tarefa Codex. As visualizações compactas coexistem com as
+opt-in por tarefa, em qualquer programa de Líder verificado. As visualizações compactas coexistem com as
 completas. Seções nomeadas ficam disponíveis para títulos conhecidos.
 Migração de escrita para a CLI, descoberta mais restrita de ferramentas,
 cursores de inbox e mudanças na rotação de sessão são experimentos
