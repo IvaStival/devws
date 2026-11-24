@@ -89,6 +89,7 @@ opencode_usage_database() { printf '%s' "$1/opencode/opencode.db"; }
 # account only when registered.
 opencode_team_account() { return 1; }
 # It works in a team, but does not run it (devagentics opencode).
-opencode_can_lead() { return 1; }
+# Reviewed tasks only: devAgentics starts it isolated (--devagentics-leader).
+opencode_can_lead() { return 0; }
 opencode_menu_entry() { printf 'agent|opencode|◆ OpenCode||agent_screen opencode\n'; }
 opencode_screen() { "$(agent_module_dir opencode)/menu.sh"; }

@@ -1,7 +1,7 @@
 # Leader CLI reads on every leader program (Claude, Codex, OpenCode)
 
 - **Date** 24-11-2026 · **Branch** `feat/pstack-workflows` (worktree `~/Projects/devws-pstack`, already on top of Codex's latest work, snapshot `7a847e6`)
-- **Saved to** `specs/plan/2026-11-24-<hhmmss>_leader-cli-any-program/plan.md` once approved
+- **Status** A and B built and tested (24-11-2026). C, the Claude A/B and the OpenCode smoke run, is left for the user to start.
 - **Your choices:** the leader on any program, **including a new OpenCode leader**; CLI reads stay **opt-in per task** until a Claude run shows they save money too. Workers stay on MCP.
 
 ## Context
@@ -91,3 +91,20 @@ Claude leaders start with **no shell at all** (`worker_tools::leader_arguments`:
 - **OpenCode models are cheap and may lead worse.** It's only used when you pick it. The smoke run shows whether one can finish a task.
 - **The Codex session may edit the same files** (`start.rs`, `mcp.rs`, `main.rs`). The work is done in this worktree and rebased again, as before. Please tell me before Codex starts another change to leader-read.
 - **Installing waits for this work.** The same question about the open board windows applies then.
+
+## Results (24-11-2026)
+
+- **A, Claude and Codex.** Commit `44fd0ac`. The `codex_team` gate is gone from all four places. A live probe on Claude Code 2.1.331, with the leader's exact flags and `dontAsk`, ran the read command and refused all of these, without a prompt and without writing a file:
+  - `ls /`;
+  - `;`, `&&` and a newline;
+  - `|`, `>`, `2>` and `<`;
+  - `$(…)` and backticks;
+  - other `devagentics` commands.
+- **Fail closed** (Codex's review point). A Claude version other than 2.1.331 or a later 2.1 patch, an OpenCode version other than 1.19.6, or any other program starts the leader on MCP only. The task log says why: "leader reads stay on MCP: …".
+- **B, the OpenCode leader.** OpenCode now leads reviewed tasks only, and legacy tasks refuse it. It runs through `agent_runner.sh --devagentics-leader` and `devagentics opencode-leader`:
+  - isolated configuration, plus devws's state plugin;
+  - checked in the worktree it runs in, with a hostile `opencode.json` there (an ignored test on the real 1.19.6);
+  - the fixture-model probe `scripts/probe_opencode_leader.py`.
+
+  The probe found that **OpenCode allowed `leader-read … > file`**. Its bash rules split `;`, `&&`, `|` and `$(…)` into separate commands, but not redirects. The leader configuration now also refuses `*>*`, `*<*` and backticks, and the probe asserts that every form is refused and no file is written.
+- **Not done here.** `make check` fails `test_guide` (the guide lacks `DEVWS_PROC` and `DEVWS_SYS`) and `test_workspace_template` ("restore failed"). Both fail the same way on `main` and without these changes.

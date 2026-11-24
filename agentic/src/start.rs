@@ -147,6 +147,37 @@ pub fn confines_leader_reads(
     }
 }
 
+/// An OpenCode leader's pane: agent_runner.sh hands it to devagentics
+/// (`opencode-leader`), which starts OpenCode's TUI in its isolated
+/// configuration. `command` is passed on so the allowed read command is the
+/// text the prompt shows.
+fn opencode_leader_arguments(
+    command: &str,
+    task_id: &str,
+    first_message: &str,
+    model: Option<&str>,
+    leader_cli: bool,
+) -> Vec<String> {
+    let mut arguments: Vec<String> = [
+        "--devagentics-leader",
+        command,
+        "opencode-leader",
+        task_id,
+        "--command",
+        command,
+    ]
+    .map(str::to_string)
+    .into();
+    if let Some(model) = model {
+        arguments.extend(["--model".into(), model.into()]);
+    }
+    if leader_cli {
+        arguments.push("--leader-cli".into());
+    }
+    arguments.extend(["--".into(), first_message.into()]);
+    arguments
+}
+
 /// The one command a leader's shell may run when the user turned leader
 /// reads on: the binary, bare when it needs no quotes (so the text in the
 /// prompt is the text the permission rule allows), and the task.
@@ -236,6 +267,14 @@ pub fn write_leader_args(
             leader.effort.as_deref(),
             leader_cli,
         )
+    } else if reviewed && adapter == Some(crate::providers::ReviewedAdapter::Opencode) {
+        opencode_leader_arguments(
+            command,
+            &config.id,
+            &first_message,
+            leader.model.as_deref(),
+            leader_cli,
+        )
     } else if reviewed {
         anyhow::ensure!(
             adapter == Some(crate::providers::ReviewedAdapter::Claude),
@@ -249,6 +288,11 @@ pub fn write_leader_args(
             cli.as_deref(),
         )
     } else {
+        anyhow::ensure!(
+            kind.provider().can_lead(),
+            "{} leads reviewed tasks only: pick a Claude or Codex leader for this task",
+            kind.name()
+        );
         agent_args::arguments(&Launch {
             role: leader,
             kind,
@@ -676,6 +720,66 @@ mod tests {
 
         let again = start_task(&home, &devws, repo.path(), "d", None).unwrap();
         assert_eq!(again.leader_agent, "codex", "the pick stays with the task");
+    }
+
+    #[test]
+    fn an_opencode_leader_leads_a_reviewed_task_isolated_and_never_a_legacy_one() {
+        let home_dir = TempDir::new().unwrap();
+        let home = Home::at(home_dir.path().to_path_buf());
+        let repo = branch_repo("feat/x");
+        let devws = FakeDevws::new(home_dir.path())
+            .with_kind("claude", Program::Claude)
+            .with_kind("zen", Program::Opencode);
+        let legacy = start_task(&home, &devws, repo.path(), "d", Some("zen"));
+        assert!(
+            legacy
+                .unwrap_err()
+                .to_string()
+                .contains("opencode leads reviewed tasks only"),
+            "its devws agents may run any command"
+        );
+
+        let reviewed = branch_repo("feat/y");
+        let started = start_task_with_workflow(
+            &home,
+            &devws,
+            reviewed.path(),
+            "d",
+            Some("zen"),
+            crate::execution::Workflow::Reviewed,
+        )
+        .unwrap();
+        let task = Task::open(&home, "feat-y").unwrap();
+        task.transaction(|tx| {
+            tx.state.leader_cli = true;
+            Ok(())
+        })
+        .unwrap();
+        let read = |path: &Path| std::fs::read_to_string(path).unwrap();
+        let first: Vec<String> = read(&started.args_file)
+            .split('\0')
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            first[..6],
+            [
+                "--devagentics-leader",
+                "d",
+                "opencode-leader",
+                "feat-y",
+                "--command",
+                "d"
+            ]
+        );
+        assert!(
+            !first.contains(&"--leader-cli".to_string()),
+            "reads were off"
+        );
+
+        let again = start_task(&home, &devws, reviewed.path(), "d", None).unwrap();
+        let args = read(&again.args_file);
+        assert!(args.contains("\0--leader-cli\0--\0"), "{args}");
+        assert!(args.contains("`d leader-read feat-y progress`"));
     }
 
     #[test]

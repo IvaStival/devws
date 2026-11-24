@@ -140,6 +140,14 @@ if ! command -v "$program" >/dev/null 2>&1; then
   printf 'Agent program is unavailable: %s\n' "$program" >&2
   exit 127
 fi
+# A reviewed leader on a program whose devws agents may run anything
+# (opencode): devAgentics starts it in its own isolated configuration, with
+# the module's folder for the plugin that reports the pane's state.
+if [ "${extra_args[0]:-}" = --devagentics-leader ]; then
+  export DEVWS_AGENT_MODULE
+  DEVWS_AGENT_MODULE="$(agent_module_dir "$kind")"
+  exec "${extra_args[1]}" "${extra_args[@]:2}"
+fi
 agent_hook "$kind" launch "$resume" "$link_dir/agent_editor_prompt.md" ${extra_args[@]+"${extra_args[@]}"}
 
 provider_exit=$?

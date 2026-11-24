@@ -95,12 +95,17 @@ fn now_and_other(role: &Role, state: &State) -> Option<(Role, Role)> {
 }
 
 /// A team is run from a program that takes the leader's MCP tools (its
-/// provider's can_lead); opencode works on the floor and among the seniors.
+/// provider's can_lead), or that has a reviewed leader adapter: OpenCode
+/// leads reviewed tasks only, in its isolated configuration.
+fn leads_some_task(kind: crate::providers::Kind) -> bool {
+    kind.provider().can_lead() || kind.provider().reviewed_leader().is_some()
+}
+
 pub fn refuse_non_leader(agent: &str, kind: crate::providers::Kind) -> Result<()> {
-    if !kind.provider().can_lead() {
+    if !leads_some_task(kind) {
         let leaders: Vec<_> = crate::providers::Kind::ALL
             .into_iter()
-            .filter(|kind| kind.provider().can_lead())
+            .filter(|kind| leads_some_task(*kind))
             .map(crate::providers::Kind::name)
             .collect();
         bail!(
@@ -112,14 +117,29 @@ pub fn refuse_non_leader(agent: &str, kind: crate::providers::Kind) -> Result<()
     Ok(())
 }
 
+/// Whether `kind` may lead a task with this workflow.
+pub fn may_lead(
+    kind: crate::providers::Kind,
+    workflow: crate::execution::Workflow,
+    codex_team: bool,
+) -> bool {
+    match workflow {
+        crate::execution::Workflow::Reviewed => reviewed_leader_allowed(kind, codex_team),
+        crate::execution::Workflow::Legacy => kind.provider().can_lead(),
+    }
+}
+
 /// Whether a reviewed task's coordinator may run on `kind`: a program with
-/// the Claude leader adapter, or the Codex one when the user put the team on
-/// Codex (`devagentics task codex-team`).
+/// the Claude or OpenCode leader adapter (both hold it to the leader's
+/// tools), or the Codex one when the user put the team on Codex
+/// (`devagentics task codex-team`).
 pub fn reviewed_leader_allowed(kind: crate::providers::Kind, codex_team: bool) -> bool {
     match kind.provider().reviewed_leader() {
-        Some(crate::providers::ReviewedAdapter::Claude) => true,
+        Some(
+            crate::providers::ReviewedAdapter::Claude | crate::providers::ReviewedAdapter::Opencode,
+        ) => true,
         Some(crate::providers::ReviewedAdapter::Codex) => codex_team,
-        _ => false,
+        None => false,
     }
 }
 
@@ -251,10 +271,18 @@ pub fn request_switch(
     let Some((now, other)) = now_and_other(&role, &task.state()?) else {
         bail!("the leader's role has no [fallback]: there is no other program to move to");
     };
+    let state = task.state()?;
     anyhow::ensure!(
-        task.state()?.workflow != crate::execution::Workflow::Reviewed
-            || reviewed_leader_allowed(devws.agent_kind(&other.agent)?, task.state()?.codex_team),
-        "reviewed coordinator switching requires a supported MCP-only adapter; Codex is not enabled for this workflow"
+        match state.workflow {
+            crate::execution::Workflow::Reviewed =>
+                reviewed_leader_allowed(devws.agent_kind(&other.agent)?, state.codex_team),
+            // A program devws does not name is refused when it starts.
+            crate::execution::Workflow::Legacy => devws
+                .agent_kind(&other.agent)
+                .map_or(true, |kind| kind.provider().can_lead()),
+        },
+        "the leader cannot move to {}: that program does not lead this task",
+        other.agent
     );
     if !crate::accounts::is_enabled(&task.state()?, &other.agent) {
         bail!(
@@ -311,10 +339,16 @@ pub fn request_lead(
         })?;
         return Ok(format!("{agent} already leads this team."));
     }
+    let kind = devws.agent_kind(agent)?;
     anyhow::ensure!(
         state.workflow != crate::execution::Workflow::Reviewed
-            || reviewed_leader_allowed(devws.agent_kind(agent)?, state.codex_team),
+            || reviewed_leader_allowed(kind, state.codex_team),
         "a reviewed task's leader runs on an MCP-only adapter: {agent} is not allowed here (Codex needs `devagentics task codex-team <task> on`)"
+    );
+    anyhow::ensure!(
+        may_lead(kind, state.workflow, state.codex_team),
+        "{agent} runs {}, which does not lead a legacy task: it leads reviewed tasks only",
+        kind.name()
     );
     if !crate::accounts::is_enabled(&state, agent) {
         bail!("{agent} is turned off for this task: turn it on on the board first");
@@ -350,7 +384,7 @@ pub fn choices(task: &Task, devws: &dyn Devws) -> Result<Vec<String>> {
     let state = task.state()?;
     let mut lines = Vec::new();
     for (agent, kind) in devws.accounts()? {
-        if !kind.provider().can_lead() {
+        if !may_lead(kind, state.workflow, state.codex_team) {
             continue;
         }
         let stands = if state.leader_agent.as_deref() == Some(agent.as_str()) {
@@ -1224,7 +1258,10 @@ mod tests {
         let (home, devws, task, _repo) = team(&dir, 40, 14);
         let devws = devws.with_kind("opencode", Program::Opencode);
         let error = request_lead(&home, &task, &devws, "opencode", None).unwrap_err();
-        assert!(error.to_string().contains("does not lead"), "{error}");
+        assert!(
+            error.to_string().contains("does not lead a legacy task"),
+            "{error}"
+        );
         crate::accounts::set_enabled(&task, &devws, "codex", false).unwrap();
         let error = request_lead(&home, &task, &devws, "codex", None).unwrap_err();
         assert!(error.to_string().contains("turned off"), "{error}");
@@ -1455,14 +1492,23 @@ mod tests {
     }
 
     #[test]
-    fn an_opencode_agent_does_not_lead() {
+    fn an_opencode_agent_leads_reviewed_tasks_only() {
         let dir = TempDir::new().unwrap();
-        let home = Home::at(dir.path().join("home"));
-        let devws = FakeDevws::new(dir.path()).with_kind("opencode", Program::Opencode);
-        let message = led_by(&builtin_leader(&home), "opencode", &devws)
-            .unwrap_err()
-            .to_string();
-        assert!(message.contains("does not lead"), "{message}");
+        let (home, devws, task, _repo) = team(&dir, 40, 14);
+        let devws = devws.with_kind("opencode", Program::Opencode);
+        assert!(led_by(&builtin_leader(&home), "opencode", &devws).is_ok());
+        let legacy = request_lead(&home, &task, &devws, "opencode", None).unwrap_err();
+        assert!(
+            legacy.to_string().contains("leads reviewed tasks only"),
+            "{legacy}"
+        );
+        task.transaction(|tx| {
+            tx.state.workflow = crate::execution::Workflow::Reviewed;
+            Ok(())
+        })
+        .unwrap();
+        request_lead(&home, &task, &devws, "opencode", None).unwrap();
+        assert!(switch_pending(&task).unwrap());
     }
 
     #[test]

@@ -89,6 +89,20 @@ enum Command {
         #[arg(long)]
         model: Option<String>,
     },
+    /// A reviewed leader on OpenCode, started by devws's agent runner
+    #[command(hide = true)]
+    OpencodeLeader {
+        task: String,
+        /// The devagentics command its prompt and read rule name
+        #[arg(long)]
+        command: String,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        leader_cli: bool,
+        #[arg(last = true)]
+        message: String,
+    },
     /// Structured application planning and independent review controls
     Workflow {
         task: String,
@@ -560,6 +574,19 @@ fn run() -> Result<()> {
             agent,
             identity,
         } => worker_tools::mcp(&open(&task)?, &agent, &identity)?,
+        Command::OpencodeLeader {
+            task,
+            command,
+            model,
+            leader_cli,
+            message,
+        } => opencode_worker::run_leader(
+            &open(&task)?,
+            &command,
+            model.as_deref(),
+            leader_cli,
+            &message,
+        )?,
         Command::WorkerPanel {
             task,
             agent,

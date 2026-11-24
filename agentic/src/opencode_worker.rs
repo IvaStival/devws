@@ -30,6 +30,87 @@ pub fn configuration(
     })
 }
 
+/// A reviewed leader's configuration: its MCP tools and nothing else, but
+/// for `cli`, the one read command its bash may run (`<devagentics>
+/// leader-read <task>`), and devws's plugin, which reports its pane's state.
+pub fn leader_configuration(
+    executable: &str,
+    task: &str,
+    home: &Path,
+    cli: Option<&str>,
+    plugin: Option<&Path>,
+) -> Value {
+    let mut permission = json!({"*": "deny", "devagentics_*": "allow"});
+    if let Some(prefix) = cli {
+        // OpenCode splits `;`, `&&`, `|` and `$(…)` into commands of their
+        // own, but not a redirect: the later rules refuse `>`, `<` and
+        // backticks (scripts/probe_opencode_leader.py).
+        permission["bash"] = json!({
+            "*": "deny", format!("{prefix} *"): "allow",
+            "*>*": "deny", "*<*": "deny", "*`*": "deny"
+        });
+    }
+    let mut command = vec![executable.to_string(), "mcp".into(), task.into()];
+    if cli.is_some() {
+        command.push("--leader-cli-catalog".into());
+    }
+    let plugins: Vec<String> = plugin
+        .map(|path| format!("file://{}", path.display()))
+        .into_iter()
+        .collect();
+    json!({
+        "plugin": plugins, "instructions": [], "autoupdate": false,
+        "command": {}, "tools": {}, "skills": {"paths": [], "urls": []},
+        "lsp": false, "formatter": false,
+        "permission": permission,
+        "agent": {"devagentics-leader": {
+            "mode": "primary", "description": "devAgentics reviewed leader", "options": {},
+            "permission": permission
+        }},
+        "mcp": {"devagentics": {"type": "local", "enabled": true,
+            "environment": {"DEVAGENTICS_HOME": home, "HOME": std::env::var("HOME").unwrap_or_default()},
+            "command": command}}
+    })
+}
+
+/// Starts a reviewed leader on OpenCode's TUI, in the task's worktree (its
+/// read command runs only there), after checking that OpenCode resolved
+/// exactly this configuration. Returns only when it could not start.
+pub fn run_leader(
+    task: &crate::task::Task,
+    command: &str,
+    model: Option<&str>,
+    leader_cli: bool,
+    message: &str,
+) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let config = task.config()?;
+    let home = task
+        .dir()
+        .parent()
+        .and_then(Path::parent)
+        .context("task home missing")?;
+    let cli = leader_cli.then(|| crate::start::leader_read_command(command, &config.id));
+    // agent_runner.sh names the OpenCode module's folder, where its plugin is.
+    let plugin = std::env::var_os("DEVWS_AGENT_MODULE")
+        .map(|module| PathBuf::from(module).join("devws_plugin.js"));
+    let adapter = Adapter::prepare(
+        &task.dir().join("leader"),
+        leader_configuration(command, &config.id, home, cli.as_deref(), plugin.as_deref()),
+    )?
+    .with_named_plugins()
+    .in_folder(&config.repos[0].worktree);
+    adapter.verify()?;
+    let mut tui = adapter.command();
+    tui.env("DEVWS_OPENCODE_DB", adapter.database())
+        .args(["--agent", "devagentics-leader"]);
+    if let Some(model) = model {
+        tui.args(["--model", model]);
+    }
+    tui.args(["--prompt", message]);
+    Err(tui.exec()).context("starting the OpenCode leader")
+}
+
 pub fn arguments(prompt: &str, model: Option<&str>, session: Option<&str>) -> Vec<String> {
     let mut arguments: Vec<String> = [
         "run",
@@ -56,6 +137,11 @@ pub struct Adapter {
     directory: PathBuf,
     data: PathBuf,
     configuration: Value,
+    /// No plugin at all (a worker); a leader keeps the one devws plugin its
+    /// configuration names, for its pane's state.
+    pure: bool,
+    /// Where it runs and is checked: its own folder, or a leader's worktree.
+    folder: Option<PathBuf>,
 }
 
 impl Adapter {
@@ -74,7 +160,26 @@ impl Adapter {
             directory,
             data,
             configuration,
+            pure: true,
+            folder: None,
         })
+    }
+
+    /// Loads the plugins its configuration names and no others (default
+    /// plugins stay off).
+    pub fn with_named_plugins(self) -> Self {
+        Self {
+            pure: false,
+            ..self
+        }
+    }
+
+    /// Runs, and is verified, in `folder`: a project config there is ignored.
+    pub fn in_folder(self, folder: &Path) -> Self {
+        Self {
+            folder: Some(folder.to_path_buf()),
+            ..self
+        }
     }
 
     pub fn database(&self) -> PathBuf {
@@ -91,7 +196,7 @@ impl Adapter {
             }
         }
         command
-            .current_dir(&self.directory)
+            .current_dir(self.folder.as_ref().unwrap_or(&self.directory))
             .env("HOME", self.directory.join("home"))
             .env("OPENCODE_TEST_HOME", self.directory.join("home"))
             .env("XDG_CONFIG_HOME", self.directory.join("config"))
@@ -113,8 +218,10 @@ impl Adapter {
             .env("OPENCODE_DISABLE_CLAUDE_CODE_SKILLS", "true")
             .env("OPENCODE_DISABLE_EXTERNAL_SKILLS", "true")
             .env("OPENCODE_DISABLE_DEFAULT_PLUGINS", "true")
-            .env("OPENCODE_DISABLE_LSP_DOWNLOAD", "true")
-            .env("OPENCODE_PURE", "true");
+            .env("OPENCODE_DISABLE_LSP_DOWNLOAD", "true");
+        if self.pure {
+            command.env("OPENCODE_PURE", "true");
+        }
         command
     }
 
@@ -128,7 +235,12 @@ impl Adapter {
             version.status.success() && String::from_utf8_lossy(&version.stdout).trim() == "1.19.6",
             "OpenCode reviewed adapter requires verified version 1.19.6"
         );
-        let output = bounded_output(self.command().args(["debug", "config", "--pure"]))?;
+        let mut check = self.command();
+        check.args(["debug", "config"]);
+        if self.pure {
+            check.arg("--pure");
+        }
+        let output = bounded_output(&mut check)?;
         ensure!(
             output.status.success(),
             "OpenCode isolated configuration check failed"
@@ -192,6 +304,73 @@ pub fn failure_record(event: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_leader_may_use_its_tools_and_only_its_read_command() {
+        let home = Path::new("/h");
+        let on = leader_configuration(
+            "/bin/devagentics",
+            "feat-x",
+            home,
+            Some("/bin/devagentics leader-read feat-x"),
+            Some(Path::new("/m/devws_plugin.js")),
+        );
+        let expected = json!({
+            "*": "deny", "devagentics_*": "allow",
+            "bash": {
+                "*": "deny", "/bin/devagentics leader-read feat-x *": "allow",
+                "*>*": "deny", "*<*": "deny", "*`*": "deny"
+            }
+        });
+        assert_eq!(on["permission"], expected);
+        assert_eq!(on["agent"]["devagentics-leader"]["permission"], expected);
+        assert_eq!(
+            on["mcp"]["devagentics"]["command"],
+            json!(["/bin/devagentics", "mcp", "feat-x", "--leader-cli-catalog"])
+        );
+        assert_eq!(on["plugin"], json!(["file:///m/devws_plugin.js"]));
+        assert_eq!(on["mcp"].as_object().unwrap().len(), 1, "no other server");
+
+        let off = leader_configuration("/bin/devagentics", "feat-x", home, None, None);
+        assert_eq!(
+            off["permission"],
+            json!({"*": "deny", "devagentics_*": "allow"}),
+            "no shell at all"
+        );
+        assert_eq!(
+            off["mcp"]["devagentics"]["command"],
+            json!(["/bin/devagentics", "mcp", "feat-x"])
+        );
+        assert_eq!(off["plugin"], json!([]));
+    }
+
+    #[test]
+    #[ignore = "requires installed OpenCode 1.19.6; verifies the leader's resolved configuration"]
+    fn installed_opencode_resolves_the_leaders_configuration_and_no_project_tools() {
+        let directory = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            directory.path().join("opencode.json"),
+            r#"{"permission":"allow","mcp":{"hostile":{"type":"local","command":["/bin/false"]}}}"#,
+        )
+        .unwrap();
+        let plugin = directory.path().join("devws_plugin.js");
+        std::fs::write(&plugin, "export const DevwsPlugin = async () => ({});\n").unwrap();
+        let mut adapter = Adapter::prepare(
+            directory.path(),
+            leader_configuration(
+                "/bin/false",
+                "task",
+                directory.path(),
+                Some("/bin/false leader-read task"),
+                Some(&plugin),
+            ),
+        )
+        .unwrap()
+        .with_named_plugins()
+        .in_folder(directory.path());
+        adapter.data = directory.path().join("data");
+        adapter.verify().unwrap();
+    }
 
     #[test]
     #[ignore = "requires installed OpenCode 1.19.6; verifies actual resolved permissions"]

@@ -208,6 +208,13 @@ as MCP. Each program limits the Leader's shell to the one command:
   `Bash(<devagentics> leader-read <task>:*)`, under `dontAsk`. On
   2.1.331 a probe confirmed that `ls`, `;`, `&&`, `|`, `>`, `$(…)` and
   other devagentics commands are refused without a prompt.
+- **OpenCode** (reviewed tasks only) runs isolated, as its workers do,
+  in the task's worktree: only its MCP tools, devws's state plugin and,
+  when reads are on, bash rules that allow the read command and refuse
+  every other command, chain, pipe, substitution and redirect.
+  `scripts/probe_opencode_leader.py` checks these rules on the
+  installed OpenCode with a local fixture model. It starts only on the
+  verified 1.19.6, after OpenCode resolved exactly this configuration.
 - **Any other version or program** fails closed: the Leader starts with
   the whole MCP catalog, no shell and no CLI instructions, and the task
   log says why ("leader reads stay on MCP: …"). Claude is accepted from

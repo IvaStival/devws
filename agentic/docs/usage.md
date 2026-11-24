@@ -311,7 +311,7 @@ waiting for you takes it as your answer.
 | `devagentics board <task> [--once] [--view <view>]` | The team board (and the dispatcher): the workspace's team pane. `--once` prints it as text |
 | `devagentics watch <task> [--once]` | The dispatcher alone, with the log as plain lines |
 | `devagentics mcp <task>` | The leader's tools, as an MCP server on stdio |
-| `devagentics task leader-cli <task> on\|off` | Opt a reviewed task in or out of direct Leader status reads, on any leader program whose shell can be held to that one command (Codex; Claude Code 2.1.331+ in 2.1); otherwise the leader stays on MCP |
+| `devagentics task leader-cli <task> on\|off` | Opt a reviewed task in or out of direct Leader status reads, on any leader program whose shell can be held to that one command (Codex; Claude Code 2.1.331+ in 2.1; OpenCode 1.19.6); otherwise the leader stays on MCP |
 | `devagentics leader-read <task> progress` | Compact JSON progress from the opted-in task's primary worktree root |
 | `devagentics leader-read <task> order <id>` | Compact JSON order and check evidence from the same worktree root |
 | `devagentics leader-read <task> inbox` | Pending Leader messages, roster and ready work. Acknowledge handled IDs through MCP. |
@@ -474,8 +474,11 @@ devagentics opencode model floor opencode/<model>  # from `opencode models`
   and the seniors' switches are kept but ignored (`show` says `ignored`), and
   no agent runs on opencode, even one whose role names it. With both on, a
   group's agents try opencode first, on the group's model, and fall back to
-  their role's Claude or Codex program when opencode cannot start them. The
-  leader never runs on opencode. Saved in `~/.devagentics/opencode.toml`;
+  their role's Claude or Codex program when opencode cannot start them. These
+  switches do not move the leader: a reviewed task's leader runs on opencode
+  only when you pick an opencode account to lead it, and then in an isolated
+  configuration with only the leader's tools (legacy tasks refuse it). Saved
+  in `~/.devagentics/opencode.toml`;
   agents started from then on follow it.
 - **Account.** The screen registers the `opencode` devws agent (its folder is
   opencode's data folder's parent, `~/.local/share`) and runs `opencode auth

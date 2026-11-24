@@ -161,6 +161,31 @@ and a second line$RS") ;;
   esac
 }
 
+test_the_runner_hands_an_opencode_leader_to_devagentics() {
+  local file="$TEST_ROOT/leader-args" recorded
+  mkdir -p "$TEST_ROOT/zen"
+  printf 'DEVWS_AGENTS="claude codex zen"\nDEVWS_AGENT_zen="opencode %s"\n' "$TEST_ROOT/zen" > "$HOME/.tmuxinator/.env"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\0" "$@" > "%s/started/opencode.$$"\nexec sleep 600\n' "$TEST_ROOT" > "$TEST_ROOT/bin/opencode"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\0" "module=$DEVWS_AGENT_MODULE" "$@" > "%s/started/devagentics.$$"\nexec sleep 600\n' "$TEST_ROOT" > "$TEST_ROOT/bin/devagentics"
+  chmod +x "$TEST_ROOT/bin/opencode" "$TEST_ROOT/bin/devagentics"
+  printf '%s\0' --devagentics-leader "$TEST_ROOT/bin/devagentics" opencode-leader feat-x --command "$TEST_ROOT/bin/devagentics" --model zen/m --leader-cli -- 'lead the team' > "$file"
+
+  tmux new-session -d -s runner-opencode-leader -x 100 -y 30 -c "$TEST_ROOT/project" \
+    "$SCRIPTS/agent_runner.sh zen --args-file $file"
+  wait_until started_args devagentics >/dev/null || fail "the runner did not hand the leader to devagentics"
+  recorded="$(started_args devagentics)"
+  case "$recorded" in
+    "module="*"/agents/30-opencode${RS}opencode-leader${RS}feat-x${RS}--command${RS}$TEST_ROOT/bin/devagentics${RS}--model${RS}zen/m${RS}--leader-cli${RS}--${RS}lead the team$RS") ;;
+    *) fail "devagentics did not get the leader's arguments and the module: $recorded" ;;
+  esac
+  started_args opencode >/dev/null && fail "the runner started opencode with the user's devws agents"
+  [ "$(tmux show-options -pqv -t runner-opencode-leader @devws_model_configured)" = zen/m ] ||
+    fail "the leader's model was not recorded"
+  tmux kill-session -t runner-opencode-leader
+  rm "$TEST_ROOT/bin/opencode" "$TEST_ROOT/bin/devagentics"
+  printf 'DEVWS_AGENTS="claude codex"\n' > "$HOME/.tmuxinator/.env"
+}
+
 test_the_runner_refuses_an_unreadable_args_file() {
   local output
   output="$("$SCRIPTS/agent_runner.sh" claude --args-file "$TEST_ROOT/missing" 2>&1)" &&
@@ -740,6 +765,7 @@ if [ "${1:-}" = --sidebar ]; then
 fi
 
 test_the_runner_appends_the_args_file
+test_the_runner_hands_an_opencode_leader_to_devagentics
 test_the_runner_refuses_an_unreadable_args_file
 test_codex_trusts_the_task_folders_devws_made
 # The programs installed are only the test's stubs (claude, codex), and agy

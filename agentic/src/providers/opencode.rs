@@ -1,5 +1,6 @@
 //! opencode: a cheap model for the floor and seniors, switched on by the user
-//! (crate::opencode, opencode.toml). It does not lead.
+//! (crate::opencode, opencode.toml). It leads reviewed tasks only, in the
+//! isolated configuration of crate::opencode_worker.
 
 use super::{Provider, ReviewedAdapter};
 use crate::agent_args::{Launch, push_option};
@@ -79,6 +80,12 @@ impl Provider for Opencode {
     }
 
     fn reviewed_worker(&self) -> Option<ReviewedAdapter> {
+        Some(ReviewedAdapter::Opencode)
+    }
+
+    /// Never on its devws TUI agents, which may run any command: the leader
+    /// gets only its MCP tools and, when reads are on, its read command.
+    fn reviewed_leader(&self) -> Option<ReviewedAdapter> {
         Some(ReviewedAdapter::Opencode)
     }
 }
