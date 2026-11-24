@@ -72,18 +72,23 @@ for line in sys.stdin:
                       for denial in event.get("permission_denials", []))
 exact = [call for call, text in calls.items() if text == command]
 others = [text for text in calls.values() if text != command]
+# A refusal proves nothing when the same command also ran: a successful
+# result always wins, so a forbidden command that ran once fails the probe.
+ran = [call for call in exact if call in results and not results[call].get("is_error")]
 if others:
     print("other commands tried: %r" % others)
-elif refused:
-    print("refused")
-elif len(exact) == 1 and exact[0] in results and not results[exact[0]].get("is_error"):
-    content = results[exact[0]]["content"]
+elif len(ran) > 1:
+    print("ran %d times" % len(ran))
+elif ran:
+    content = results[ran[0]]["content"]
     text = content if isinstance(content, str) else "".join(part.get("text", "") for part in content)
     try:
         json.loads(text)
         print("ran")
     except ValueError:
         print("ran without its JSON: %r" % text[:200])
+elif refused:
+    print("refused")
 else:
     print("not run (calls: %d)" % len(exact))
 ' "$1"

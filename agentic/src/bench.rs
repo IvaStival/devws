@@ -155,11 +155,13 @@ fn leader_calls(telemetry: &crate::telemetry::Summary, transcript_reads: Option<
 /// is one plain invocation of that command for this task, the way the
 /// leader's rule allows it, and its result says it succeeded: Codex's
 /// `exit_code` 0, a Claude `tool_result` that is no error. Text that only
-/// mentions the command (a prompt, `printf`, a chain) is not a read.
-pub fn cli_reads_in_transcript(transcript: &str, task: &str) -> BTreeMap<String, u64> {
+/// mentions the command (a prompt, `printf`, a chain) is not a read. Calls
+/// are keyed by their id across all the transcripts, so a file given twice,
+/// or copied into another, counts once.
+pub fn cli_reads_in_transcripts(transcripts: &[String], task: &str) -> BTreeMap<String, u64> {
     let mut commands: BTreeMap<String, String> = BTreeMap::new();
     let mut succeeded = std::collections::BTreeSet::new();
-    for line in transcript.lines() {
+    for line in transcripts.iter().flat_map(|transcript| transcript.lines()) {
         let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
@@ -451,16 +453,17 @@ pub fn report(
     }
     report.payload_telemetry = crate::telemetry::summary(task)?;
     if !transcripts.is_empty() {
-        let mut reads = BTreeMap::new();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut texts = Vec::new();
         for path in transcripts {
-            let text = std::fs::read_to_string(path).map_err(|error| {
+            let read = |error: std::io::Error| {
                 anyhow::anyhow!("reading the transcript {}: {error}", path.display())
-            })?;
-            for (view, number) in cli_reads_in_transcript(&text, &config.id) {
-                *reads.entry(view).or_default() += number;
+            };
+            if seen.insert(path.canonicalize().map_err(read)?) {
+                texts.push(std::fs::read_to_string(path).map_err(read)?);
             }
         }
-        report.cli_reads_in_transcripts = Some(reads);
+        report.cli_reads_in_transcripts = Some(cli_reads_in_transcripts(&texts, &config.id));
     }
     let transcript_reads = report
         .cli_reads_in_transcripts
@@ -1162,10 +1165,16 @@ mod tests {
             .map(|event| event.to_string())
             .collect::<Vec<_>>()
             .join("\n");
+        let once = BTreeMap::from([("cli:order".into(), 1), ("cli:progress".into(), 1)]);
         assert_eq!(
-            cli_reads_in_transcript(&transcript, "feat-x"),
-            BTreeMap::from([("cli:order".into(), 1), ("cli:progress".into(), 1)]),
+            cli_reads_in_transcripts(std::slice::from_ref(&transcript), "feat-x"),
+            once,
             "printf, a failed read, a chain, another task, a call with no result and an echo are not reads"
+        );
+        assert_eq!(
+            cli_reads_in_transcripts(&[transcript.clone(), transcript], "feat-x"),
+            once,
+            "a transcript given twice counts its calls once"
         );
     }
 

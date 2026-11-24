@@ -119,3 +119,8 @@ Claude leaders start with **no shell at all** (`worker_tools::leader_arguments`:
 
 1. **The Claude probe could pass without a read.** It counted zero refusals, which also passes when Claude skips the call or the read fails. It now makes a disposable reviewed task (temporary home, stub devws and tmux). The read must run exactly once and print the task's JSON. Each other command must be refused as that exact command; if Claude runs anything else, the probe fails. It passed on 2.1.331. With the rule widened to all of Bash, it failed at `ls /`.
 2. **The transcript counter counted text that never ran**, such as `printf 'leader-read …'`. A call now counts only when it is one plain `<devagentics> leader-read <task> <view>` invocation and its result succeeded: Codex `exit_code` 0, or a Claude `tool_result` that isn't an error. A test covers `printf`, `echo`, a chain, a failed read, another task and a call with no result. Codex's real rollout still counts 33.
+
+### Third Codex review (24-11-2026)
+
+1. **A transcript given twice doubled the count.** Calls are now keyed by their id across all transcripts, and a file passed twice is read once.
+2. **In the Claude probe, a refusal could hide a successful run.** A successful result now always wins: a forbidden command that ran even once fails the probe. Checked on fake traces (ran and refused gives "ran"; only refused gives "refused"). The live probe still passes on 2.1.331.
