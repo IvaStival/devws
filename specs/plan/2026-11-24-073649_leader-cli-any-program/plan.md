@@ -124,3 +124,13 @@ Claude leaders start with **no shell at all** (`worker_tools::leader_arguments`:
 
 1. **A transcript given twice doubled the count.** Calls are now keyed by their id across all transcripts, and a file passed twice is read once.
 2. **In the Claude probe, a refusal could hide a successful run.** A successful result now always wins: a forbidden command that ran even once fails the probe. Checked on fake traces (ran and refused gives "ran"; only refused gives "refused"). The live probe still passes on 2.1.331.
+
+### OpenCode as the last-resort leader (24-11-2026, the user's decision)
+
+The user wants OpenCode to lead when Claude and Codex are both out of tokens, with a stronger model they pay credits for. Commit `9722594`:
+
+- **Settings:** `devagentics opencode switch leader on` and `devagentics opencode model leader <provider/model>`. The devws OpenCode menu has the same two rows.
+- **Moving to OpenCode:** in a reviewed task, when the leader's program and its fallback have both used 95% of a window, the leader moves to OpenCode on that model. It does this even when the fallback is only waiting out its 5-hour window. It needs credit known to be above zero (the menu's balance); with unknown or zero credit, it waits as before. A legacy task never moves.
+- **Moving back:** as soon as the role's own program, or else its fallback, has room in both windows, the leader moves back. The usual handoff and the log line ("the leader moved to opencode (model): claude has used … and codex …") apply.
+- **Tests:** the move there and back; no move with unknown or zero credit, with the switch off, or on a legacy task.
+- **Installed** from the main folder, after fast-forwarding it to the branch.
