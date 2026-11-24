@@ -199,9 +199,16 @@ pub fn cli_reads_in_transcripts(transcripts: &[String], task: &str) -> BTreeMap<
         for block in event["message"]["content"].as_array().into_iter().flatten() {
             let id = block["id"].as_str().or(block["tool_use_id"].as_str());
             match (block["type"].as_str(), id) {
-                (Some("tool_use"), Some(id)) if block["name"] == "Bash" => {
+                // Only what the leader wrote: Claude Code also logs each
+                // request it sent (`api-request-blob`), with a `cd …&&` of
+                // its own in front of the command.
+                (Some("tool_use"), Some(id))
+                    if block["name"] == "Bash" && event["type"] == "assistant" =>
+                {
                     if let Some(command) = block["input"]["command"].as_str() {
-                        commands.insert(id.to_string(), command.to_string());
+                        commands
+                            .entry(id.to_string())
+                            .or_insert_with(|| command.to_string());
                     }
                 }
                 (Some("tool_result"), Some(id)) if block["is_error"] != true => {
@@ -1150,6 +1157,8 @@ mod tests {
             "/bin/devagentics leader-read feat-x order o1",
             false,
         ));
+        events.push(serde_json::json!({"type":"api-request-blob","message":{"role":"assistant","content":[
+            {"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cd /w && /bin/devagentics leader-read feat-x order o1"}}]}}));
         events.extend(claude(
             "t2",
             "/bin/devagentics leader-read feat-x order o2",
