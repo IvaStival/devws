@@ -101,14 +101,22 @@ pub fn run_leader(
     .with_named_plugins()
     .in_folder(&config.repos[0].worktree);
     adapter.verify()?;
+    Err(leader_tui(&adapter, home, model, message).exec()).context("starting the OpenCode leader")
+}
+
+/// OpenCode's TUI for the leader. Its HOME is the isolated one, so the read
+/// command its bash runs is told the task home outright: without it,
+/// `leader-read` would look for the task under the isolated HOME.
+fn leader_tui(adapter: &Adapter, home: &Path, model: Option<&str>, message: &str) -> Command {
     let mut tui = adapter.command();
     tui.env("DEVWS_OPENCODE_DB", adapter.database())
+        .env("DEVAGENTICS_HOME", home)
         .args(["--agent", "devagentics-leader"]);
     if let Some(model) = model {
         tui.args(["--model", model]);
     }
     tui.args(["--prompt", message]);
-    Err(tui.exec()).context("starting the OpenCode leader")
+    tui
 }
 
 pub fn arguments(prompt: &str, model: Option<&str>, session: Option<&str>) -> Vec<String> {
@@ -342,6 +350,43 @@ mod tests {
             json!(["/bin/devagentics", "mcp", "feat-x"])
         );
         assert_eq!(off["plugin"], json!([]));
+    }
+
+    #[test]
+    fn the_leaders_shell_finds_the_task_home_though_its_home_is_isolated() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let adapter = Adapter::prepare(directory.path(), json!({}))
+            .unwrap()
+            .in_folder(directory.path());
+        let tui = leader_tui(
+            &adapter,
+            Path::new("/home/u/.devagentics"),
+            Some("zen/m"),
+            "lead",
+        );
+        let environment: std::collections::HashMap<_, _> = tui
+            .get_envs()
+            .filter_map(|(name, value)| {
+                Some((name.to_str()?.to_string(), value?.to_str()?.to_string()))
+            })
+            .collect();
+        assert_eq!(environment["DEVAGENTICS_HOME"], "/home/u/.devagentics");
+        assert!(environment["HOME"].ends_with("opencode-isolated/home"));
+        let arguments: Vec<_> = tui
+            .get_args()
+            .map(|argument| argument.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            arguments,
+            [
+                "--agent",
+                "devagentics-leader",
+                "--model",
+                "zen/m",
+                "--prompt",
+                "lead"
+            ]
+        );
     }
 
     #[test]

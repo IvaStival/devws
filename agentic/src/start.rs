@@ -89,11 +89,11 @@ pub fn opening(
     )
 }
 
-/// Claude Code's permission rules were checked on this version to run only
-/// the read command under `dontAsk` (24-11-2026): `ls`, `;`, `&&`, `|`, `>`,
-/// `$(…)` and other devagentics commands were refused. OpenCode's is the
-/// version its isolated configuration is verified on.
-const CLAUDE_VERIFIED: (u32, u32, u32) = (2, 1, 331);
+/// Claude Code versions whose permission rules were checked to run only the
+/// read command under `dontAsk` (24-11-2026, 2.1.331): `ls`, `;`, `&&`, a
+/// newline, `|`, `>`, `2>`, `<`, `$(…)`, backticks and other devagentics
+/// commands were refused. Add a version only after that probe passes on it.
+const CLAUDE_VERIFIED: &[&str] = &["2.1.331"];
 const OPENCODE_VERIFIED: &str = "1.19.6";
 
 /// A `--version` line that passes `confines_leader_reads`, for tests.
@@ -109,8 +109,8 @@ pub fn verified_version(kind: crate::providers::Kind) -> Option<&'static str> {
 
 /// Whether the leader's program is one whose shell is known to run only the
 /// read command; why not, when it is not. Codex runs it in its read-only
-/// sandbox. Claude: a later patch of the verified minor version keeps its
-/// rules, and a new minor version waits for the check to be run again.
+/// sandbox. Claude: only a version the probe ran on; an update waits for the
+/// probe to run again.
 pub fn confines_leader_reads(
     kind: crate::providers::Kind,
     version: Option<&str>,
@@ -120,20 +120,14 @@ pub fn confines_leader_reads(
     match kind {
         Kind::Codex => Ok(()),
         Kind::Claude => {
-            let number = version
-                .and_then(|line| line.split_whitespace().next())
-                .map(|number| {
-                    number
-                        .split('.')
-                        .map(|part| part.parse::<u32>().ok())
-                        .collect::<Option<Vec<_>>>()
-                });
-            let (major, minor, patch) = CLAUDE_VERIFIED;
-            match number.flatten().as_deref() {
-                Some([m, n, p]) if *m == major && *n == minor && *p >= patch => Ok(()),
-                _ => Err(format!(
-                    "claude {shown} is not a version its one-command rule was checked on ({major}.{minor}.{patch} or a later {major}.{minor} patch)"
-                )),
+            let number = version.and_then(|line| line.split_whitespace().next());
+            if number.is_some_and(|number| CLAUDE_VERIFIED.contains(&number)) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "claude {shown} is not a version its one-command rule was checked on ({})",
+                    CLAUDE_VERIFIED.join(", ")
+                ))
             }
         }
         Kind::Opencode if version.map(str::trim) == Some(OPENCODE_VERIFIED) => Ok(()),
@@ -529,10 +523,12 @@ mod tests {
     #[test]
     fn leader_reads_fail_closed_on_an_unchecked_program_version() {
         use crate::providers::Kind;
-        for line in ["2.1.331 (Claude Code)", "2.1.400 (Claude Code)"] {
-            assert_eq!(confines_leader_reads(Kind::Claude, Some(line)), Ok(()));
-        }
+        assert_eq!(
+            confines_leader_reads(Kind::Claude, Some("2.1.331 (Claude Code)")),
+            Ok(())
+        );
         for line in [
+            Some("2.1.332 (Claude Code)"),
             Some("2.1.330 (Claude Code)"),
             Some("2.2.0 (Claude Code)"),
             Some("garbage"),

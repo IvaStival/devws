@@ -243,6 +243,10 @@ enum BenchAction {
         /// As JSON, to collect runs
         #[arg(long)]
         json: bool,
+        /// A leader transcript (Codex rollout or Claude session JSONL) to
+        /// count its CLI reads in; repeat it for a leader that moved
+        #[arg(long = "leader-transcript")]
+        leader_transcripts: Vec<PathBuf>,
     },
     /// Two tasks' runs side by side (a legacy and a reviewed one)
     Compare { first: String, second: String },
@@ -1006,9 +1010,14 @@ fn run() -> Result<()> {
             );
         }
         Command::Bench {
-            action: BenchAction::Report { task, json },
+            action:
+                BenchAction::Report {
+                    task,
+                    json,
+                    leader_transcripts,
+                },
         } => {
-            let report = bench::report(&open(&task)?, &devws)?;
+            let report = bench::report(&open(&task)?, &devws, &leader_transcripts)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -1018,8 +1027,8 @@ fn run() -> Result<()> {
         Command::Bench {
             action: BenchAction::Compare { first, second },
         } => {
-            let first = bench::report(&open(&first)?, &devws)?;
-            let second = bench::report(&open(&second)?, &devws)?;
+            let first = bench::report(&open(&first)?, &devws, &[])?;
+            let second = bench::report(&open(&second)?, &devws, &[])?;
             print!("{}", bench::compare(&first, &second));
         }
         Command::History {

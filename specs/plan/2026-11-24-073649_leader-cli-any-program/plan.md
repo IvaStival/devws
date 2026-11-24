@@ -100,7 +100,7 @@ Claude leaders start with **no shell at all** (`worker_tools::leader_arguments`:
   - `|`, `>`, `2>` and `<`;
   - `$(…)` and backticks;
   - other `devagentics` commands.
-- **Fail closed** (Codex's review point). A Claude version other than 2.1.331 or a later 2.1 patch, an OpenCode version other than 1.19.6, or any other program starts the leader on MCP only. The task log says why: "leader reads stay on MCP: …".
+- **Fail closed** (Codex's review point). A Claude version the probe did not pass (only 2.1.331 so far), an OpenCode version other than 1.19.6, or any other program starts the leader on MCP only. The task log says why: "leader reads stay on MCP: …".
 - **B, the OpenCode leader.** OpenCode now leads reviewed tasks only, and legacy tasks refuse it. It runs through `agent_runner.sh --devagentics-leader` and `devagentics opencode-leader`:
   - isolated configuration, plus devws's state plugin;
   - checked in the worktree it runs in, with a hostile `opencode.json` there (an ignored test on the real 1.19.6);
@@ -108,3 +108,9 @@ Claude leaders start with **no shell at all** (`worker_tools::leader_arguments`:
 
   The probe found that **OpenCode allowed `leader-read … > file`**. Its bash rules split `;`, `&&`, `|` and `$(…)` into separate commands, but not redirects. The leader configuration now also refuses `*>*`, `*<*` and backticks, and the probe asserts that every form is refused and no file is written.
 - **Not done here.** `make check` fails `test_guide` (the guide lacks `DEVWS_PROC` and `DEVWS_SYS`) and `test_workspace_template` ("restore failed"). Both fail the same way on `main` and without these changes.
+
+### Codex review fixes (24-11-2026)
+
+1. **The OpenCode leader's reads found no task.** OpenCode runs with an isolated `HOME`, so `leader-read` looked under the wrong home. The TUI now gets `DEVAGENTICS_HOME`, and a unit test checks the command's environment. The configuration test couldn't catch this, because it doesn't run the read.
+2. **The Claude gate allowed untested patches.** It now takes only versions in `CLAUDE_VERIFIED` (2.1.331). `scripts/probe_claude_leader.sh` reruns the probe in one command; it passed on 2.1.331.
+3. **Codex reads could be missing from the ledger.** Its read-only sandbox can refuse the ledger write. `bench report --leader-transcript` now counts `leader-read` tool calls in Codex rollouts and Claude sessions, and `leader calls per accepted step` uses the larger count. On the named-section Notes replay's rollout, the count is 33 (28 inbox, 4 progress, 1 order).

@@ -64,6 +64,10 @@ pub struct Report {
     /// Leader calls (MCP tools and CLI reads) per accepted step, from telemetry: each call
     /// rereads the leader's whole context, so this drives the leader's cost.
     pub leader_calls_per_accepted_step: Option<f64>,
+    /// The leader's `leader-read` commands by view, counted in the
+    /// transcripts the report was given (`--leader-transcript`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cli_reads_in_transcripts: Option<BTreeMap<String, u64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload_telemetry: Option<crate::telemetry::Summary>,
 }
@@ -125,21 +129,65 @@ fn cost_per_integrated_success(integrated: bool, cost: &CostCoverage) -> Option<
     cost.observed_usd.filter(|_| integrated && complete)
 }
 
-/// Leader tool calls; discovery and handshakes are not moves.
-fn leader_calls(telemetry: &crate::telemetry::Summary) -> u64 {
-    telemetry
+/// Leader tool calls; discovery and handshakes are not moves. CLI reads are
+/// the larger of the ledger's count and the transcripts': a read-only
+/// sandbox (Codex) can refuse the ledger write while the read itself works.
+fn leader_calls(telemetry: &crate::telemetry::Summary, transcript_reads: Option<u64>) -> u64 {
+    let mut tools = 0;
+    let mut ledger_reads = 0;
+    for (operation, payloads) in telemetry
         .mcp
         .get(crate::state::LEADER)
         .into_iter()
         .flatten()
-        .filter(|(operation, _)| {
-            !matches!(
-                operation.as_str(),
-                "tools/list" | "initialize" | "ping" | "unknown_method" | "invalid_json"
-            )
-        })
-        .map(|(_, payloads)| payloads.calls as u64)
-        .sum()
+    {
+        match operation.as_str() {
+            "tools/list" | "initialize" | "ping" | "unknown_method" | "invalid_json" => {}
+            cli if cli.starts_with("cli:") => ledger_reads += payloads.calls as u64,
+            _ => tools += payloads.calls as u64,
+        }
+    }
+    tools + ledger_reads.max(transcript_reads.unwrap_or(0))
+}
+
+/// The `leader-read <task> <view>` commands a leader ran, by view, from its
+/// transcripts: Codex's tool calls (`custom_tool_call`, `function_call`) and
+/// Claude's Bash `tool_use`. Only the commands are read, never their output
+/// or the conversation.
+pub fn cli_reads_in_transcript(transcript: &str, task: &str) -> BTreeMap<String, u64> {
+    let marker = format!("leader-read {task} ");
+    let mut reads = BTreeMap::new();
+    for line in transcript.lines() {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let payload = &event["payload"];
+        let mut commands: Vec<&str> = Vec::new();
+        if matches!(
+            payload["type"].as_str(),
+            Some("custom_tool_call" | "function_call")
+        ) {
+            commands.extend(payload["input"].as_str());
+            commands.extend(payload["arguments"].as_str());
+        }
+        for block in event["message"]["content"].as_array().into_iter().flatten() {
+            if block["type"] == "tool_use" && block["name"] == "Bash" {
+                commands.extend(block["input"]["command"].as_str());
+            }
+        }
+        for command in commands {
+            for (index, _) in command.match_indices(&marker) {
+                let view: String = command[index + marker.len()..]
+                    .chars()
+                    .take_while(char::is_ascii_alphabetic)
+                    .collect();
+                if !view.is_empty() {
+                    *reads.entry(format!("cli:{view}")).or_default() += 1;
+                }
+            }
+        }
+    }
+    reads
 }
 
 fn escaped_defects(state: &State, log: &[Entry]) -> BTreeMap<String, u64> {
@@ -287,6 +335,7 @@ pub fn build(
         cost_per_integrated_success: None,
         usage_by_role: BTreeMap::new(),
         leader_calls_per_accepted_step: None,
+        cli_reads_in_transcripts: None,
         payload_telemetry: None,
     }
 }
@@ -296,7 +345,12 @@ fn count(log: &[Entry], matches: impl Fn(&Entry) -> bool) -> u64 {
 }
 
 /// The report of a task, with its team's usage when devws can tell it.
-pub fn report(task: &Task, devws: &dyn crate::devws::Devws) -> Result<Report> {
+/// `transcripts`: the leader's provider transcripts, read for its CLI reads.
+pub fn report(
+    task: &Task,
+    devws: &dyn crate::devws::Devws,
+    transcripts: &[std::path::PathBuf],
+) -> Result<Report> {
     let state = task.state()?;
     let log: Vec<Entry> = task
         .log_lines()?
@@ -338,11 +392,27 @@ pub fn report(task: &Task, devws: &dyn crate::devws::Devws) -> Result<Report> {
         *sum = sum.plus(*usage);
     }
     report.payload_telemetry = crate::telemetry::summary(task)?;
+    if !transcripts.is_empty() {
+        let mut reads = BTreeMap::new();
+        for path in transcripts {
+            let text = std::fs::read_to_string(path).map_err(|error| {
+                anyhow::anyhow!("reading the transcript {}: {error}", path.display())
+            })?;
+            for (view, number) in cli_reads_in_transcript(&text, &config.id) {
+                *reads.entry(view).or_default() += number;
+            }
+        }
+        report.cli_reads_in_transcripts = Some(reads);
+    }
+    let transcript_reads = report
+        .cli_reads_in_transcripts
+        .as_ref()
+        .map(|reads| reads.values().sum());
     report.leader_calls_per_accepted_step = report
         .payload_telemetry
         .as_ref()
         .filter(|_| report.accepted > 0)
-        .map(|telemetry| leader_calls(telemetry) as f64 / report.accepted as f64);
+        .map(|telemetry| leader_calls(telemetry, transcript_reads) as f64 / report.accepted as f64);
     Ok(report)
 }
 
@@ -458,6 +528,20 @@ fn lines(report: &Report) -> Vec<(String, String)> {
             )
         },
     ));
+    if let Some(reads) = &report.cli_reads_in_transcripts {
+        let ledger: u64 = report
+            .payload_telemetry
+            .iter()
+            .flat_map(|telemetry| telemetry.mcp.get(crate::state::LEADER))
+            .flatten()
+            .filter(|(operation, _)| operation.starts_with("cli:"))
+            .map(|(_, payloads)| payloads.calls as u64)
+            .sum();
+        lines.push((
+            "leader CLI reads (ledger / transcripts)".into(),
+            format!("{ledger} / {}", reads.values().sum::<u64>()),
+        ));
+    }
     lines.push((
         "leader calls per accepted step".into(),
         report
@@ -954,9 +1038,36 @@ mod tests {
             ..crate::telemetry::Summary::default()
         };
         assert_eq!(
-            leader_calls(&telemetry),
+            leader_calls(&telemetry, None),
             11,
             "CLI reads are leader calls too"
+        );
+        assert_eq!(
+            leader_calls(&telemetry, Some(8)),
+            14,
+            "the sandbox kept 3 reads out of the ledger"
+        );
+        assert_eq!(leader_calls(&telemetry, Some(2)), 11);
+    }
+
+    #[test]
+    fn cli_reads_are_counted_from_codex_and_claude_transcripts_only_for_the_task() {
+        let codex = serde_json::json!({"type":"response_item","payload":{"type":"custom_tool_call","name":"exec",
+            "input":"text(await tools.exec_command({cmd:\"'/bin/devagentics' leader-read feat-x progress\"}));"}});
+        let claude = serde_json::json!({"type":"assistant","message":{"content":[
+            {"type":"tool_use","name":"Bash","input":{"command":"/bin/devagentics leader-read feat-x order o1"}}]}});
+        let other_task = serde_json::json!({"type":"response_item","payload":{"type":"function_call",
+            "arguments":"{\"cmd\":\"devagentics leader-read feat-y inbox\"}"}});
+        let mentioned = serde_json::json!({"type":"response_item","payload":{"type":"message",
+            "content":[{"text":"use `devagentics leader-read feat-x progress`"}]}});
+        let transcript = [codex.clone(), claude, other_task, mentioned, codex]
+            .iter()
+            .map(|event| event.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            cli_reads_in_transcript(&transcript, "feat-x"),
+            BTreeMap::from([("cli:order".into(), 1), ("cli:progress".into(), 2)])
         );
     }
 

@@ -217,8 +217,10 @@ as MCP. Each program limits the Leader's shell to the one command:
   verified 1.19.6, after OpenCode resolved exactly this configuration.
 - **Any other version or program** fails closed: the Leader starts with
   the whole MCP catalog, no shell and no CLI instructions, and the task
-  log says why ("leader reads stay on MCP: …"). Claude is accepted from
-  2.1.331 up to the next minor version.
+  log says why ("leader reads stay on MCP: …"). Claude is accepted only
+  on versions the probe passed (2.1.331). After a Claude update, run
+  `scripts/probe_claude_leader.sh` and add the version it prints to
+  `CLAUDE_VERIFIED` in `agentic/src/start.rs`.
 
 The commands require the matching worktree and an opted-in reviewed task. Other
 Leader operations and the entire worker workflow continue through MCP.
@@ -231,7 +233,17 @@ To measure the pilot, use matched tasks with the switch on and off.
 Keep the compact response views, model, checks, and fixture constant.
 Compare provider usage through merge and milestone validation. Count
 direct CLI invocations and MCP fallbacks from the Leader's transcript.
-Telemetry counts each read as a Leader call named `cli:<view>`.
+Telemetry counts each read as a Leader call named `cli:<view>`, but
+Codex's read-only sandbox can refuse that ledger write while the read
+works. Pass the Leader's transcripts to the report, one flag for each
+program it ran on:
+
+```sh
+devagentics bench report <task> --leader-transcript ~/.codex/sessions/…/rollout-….jsonl
+```
+
+The report then shows `leader CLI reads (ledger / transcripts)` and
+counts the larger of the two in `leader calls per accepted step`.
 Both arms retain MCP. Record the narrower `task_status` schema in the
 CLI arm and the regular schema in the MCP arm.
 
