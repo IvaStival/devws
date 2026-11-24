@@ -315,6 +315,7 @@ waiting for you takes it as your answer.
 | `devagentics leader-read <task> progress` | Compact JSON progress from the opted-in task's primary worktree root |
 | `devagentics leader-read <task> order <id>` | Compact JSON order and check evidence from the same worktree root |
 | `devagentics leader-read <task> inbox` | Pending Leader messages, roster and ready work. Acknowledge handled IDs through MCP. |
+| `devagentics leader-read <task> guide <topic>` | A part of the leader's role its prompt leaves out (`accounts`, `reviewed`, `legacy`); the same text as `application_workflow action=guide` |
 
 The leader's tools: `task_status`, `approve_plan`, `spawn_agent`, `add_lane`, `add_repo`,
 `send_order`, `read_plan`, `answer_question`, `accept_step`, `reject_step`, `close_step`, `allow_attempts`, `read_check_log`, `snapshot_path`, `read_file`, `search_code`, `git_log`, `git_diff`, `stop_agent`, `set_check`, `read_log`,

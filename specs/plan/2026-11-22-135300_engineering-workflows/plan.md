@@ -715,6 +715,8 @@ It is the `attention` section of the workflow status, and the "Attention" sectio
 
 **Rebased onto the CLI work (23-11-2026).** The Codex session changed no source code after the first snapshot. It added the hybrid Notes comparison to the token plan: $4.13 with compact MCP against $3.20 with CLI reads, both arms integrated. The branch was replayed onto a second snapshot (`d1b2661`) with no conflicts.
 
+**Rebased again (24-11-2026).** The Codex session added code this time: `leader-read <task> inbox` (a read that leaves messages pending; the leader acknowledges through MCP) and a worker `plan_read view=section` that returns one named heading. Its replay on that build cost $2.87 per delivered Notes task against $3.20 before, but the workers made 12 full plan reads and no section reads, so the saving came from other differences between the runs. The branch was replayed onto a third snapshot (`7a847e6`). Two conflicts, both resolved keeping both sides: the budget check and Codex's comment in `watch.rs`, and `leader-read` in `main.rs`, which now has `inbox` and `guide`, records CLI telemetry for both, and keeps Codex's per-tool response limit. 555 unit, 11 flow and 7 Docker tests pass.
+
 **M1 result (23-11-2026).**
 - **Workers:** the role and standards go on the first turn of a session only. Later turns get a re-anchor: the agent id, the tool rules, "call status", and the message.
   - The full role goes again in three cases: after a new panel (a restart, an account switch, a failed turn); when the provider has no session to continue (no Codex thread or OpenCode session, or a new Claude session); and on every 10th turn.
@@ -744,6 +746,6 @@ It is the `attention` section of the workflow status, and the "Attention" sectio
 
 **M8 ready to run (23-11-2026).**
 - *Arms, revised:* M1 has no switch, so both arms carry it. Arm A is `devagentics task routing <task> off`, arm B is on. The pair still isolates routing.
-- *M1's reference:* the hybrid Notes run on the binary before M1 ($3.20 per completed task; token plan). M1 is judged on the same fixture by `prompt_bytes` per worker turn and by the leader's input tokens.
+- *M1's reference:* the named-section Notes replay on the binary before M1 ($2.87 per completed task, 24-11-2026; earlier hybrid run $3.20; token plan). M1 is judged on the same fixture by `prompt_bytes` per worker turn and by the leader's input tokens.
 - *Binary:* a pinned release build of this branch under `~/Projects/devws-bench/bin/pstack-<commit>/`, with its sha256. It is not installed over `~/.cargo/bin/devagentics`, because benchmark teams from earlier sessions still run on that binary, and an older binary drops the new state fields when it writes.
 - *Runs:* not started. They spend your accounts.
