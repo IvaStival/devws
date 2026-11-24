@@ -173,7 +173,7 @@ enum Command {
         #[arg(long, hide = true)]
         leader_cli_catalog: bool,
     },
-    /// Read-only CLI for an opted-in Codex leader, from the task worktree root
+    /// Read-only CLI for an opted-in leader, from the task worktree root
     LeaderRead {
         task: String,
         #[command(subcommand)]
@@ -305,7 +305,7 @@ enum TaskAction {
     /// stay in its snapshot and nothing has network, but its shell can read
     /// host files. Restart the leader to move it
     CodexTeam { task: String, switch: Switch },
-    /// Prefer direct CLI reads for a reviewed Codex leader
+    /// Prefer direct CLI reads for a reviewed leader on any program
     LeaderCli { task: String, switch: Switch },
     /// You route this task's items by risk (on, the default) or give every
     /// item the standard process (off): the benchmark's control arm, and the
@@ -729,10 +729,8 @@ fn run() -> Result<()> {
                 let enabled = matches!(switch, Switch::On);
                 open(&task)?.transaction(|tx| {
                     anyhow::ensure!(
-                        !enabled
-                            || tx.state.workflow == execution::Workflow::Reviewed
-                                && tx.state.codex_team,
-                        "leader CLI requires a reviewed Codex team"
+                        !enabled || tx.state.workflow == execution::Workflow::Reviewed,
+                        "leader CLI requires a reviewed task"
                     );
                     tx.state.leader_cli = enabled;
                     Ok(())
@@ -1115,9 +1113,7 @@ fn run() -> Result<()> {
             );
             let state = task.state()?;
             anyhow::ensure!(
-                state.workflow == execution::Workflow::Reviewed
-                    && state.codex_team
-                    && state.leader_cli,
+                state.workflow == execution::Workflow::Reviewed && state.leader_cli,
                 "CLI_DISABLED: use the Leader MCP tools"
             );
             let started = telemetry::start(&task);

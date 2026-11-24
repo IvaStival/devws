@@ -168,6 +168,8 @@ pub trait Devws: Send + Sync {
     /// The model each account's program starts with when none is named:
     /// account → model. None for an account devws does not know one for.
     fn default_models(&self) -> Result<BTreeMap<String, String>>;
+    /// What `<program> --version` prints; `None` when it does not run.
+    fn program_version(&self, kind: Kind) -> Result<Option<String>>;
     /// What the pane's agent has used; `None` while devws does not know its
     /// conversation yet, or when the pane is gone.
     fn usage(&self, pane: &str) -> Result<Option<Usage>>;
@@ -439,6 +441,22 @@ impl Devws for CommandDevws {
             .collect())
     }
 
+    /// `DEVAGENTICS_PROGRAM_<NAME>` names another binary (tests).
+    fn program_version(&self, kind: Kind) -> Result<Option<String>> {
+        let program = std::env::var(format!(
+            "DEVAGENTICS_PROGRAM_{}",
+            kind.name().to_ascii_uppercase()
+        ))
+        .unwrap_or_else(|_| kind.name().to_string());
+        Ok(Command::new(program)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string()))
+    }
+
     fn default_models(&self) -> Result<BTreeMap<String, String>> {
         Ok(self
             .devws(&["agent", "default-models"])?
@@ -506,6 +524,7 @@ pub mod fake {
         limits: HashMap<String, Limits>,
         credits: HashMap<String, Credit>,
         default_models: BTreeMap<String, String>,
+        versions: HashMap<Kind, Option<String>>,
         usages: HashMap<String, Usage>,
         roles: HashMap<(String, String), String>,
         options: HashMap<(String, String), String>,
@@ -639,6 +658,15 @@ pub mod fake {
                 .unwrap()
                 .states
                 .insert(pane.to_string(), state);
+        }
+
+        /// A program's `--version`; unset, the one leader reads were checked on.
+        pub fn set_version(&self, kind: Kind, version: Option<&str>) {
+            self.inner
+                .lock()
+                .unwrap()
+                .versions
+                .insert(kind, version.map(str::to_string));
         }
 
         pub fn set_limits(&self, agent: &str, limits: Limits) {
@@ -879,6 +907,15 @@ pub mod fake {
         fn models(&self, agent: &str) -> Result<Vec<String>> {
             drop(self.record(format!("models {agent}")));
             Ok(Vec::new())
+        }
+
+        fn program_version(&self, kind: Kind) -> Result<Option<String>> {
+            let inner = self.inner.lock().unwrap();
+            Ok(inner
+                .versions
+                .get(&kind)
+                .cloned()
+                .unwrap_or_else(|| crate::start::verified_version(kind).map(str::to_string)))
         }
 
         fn default_models(&self) -> Result<BTreeMap<String, String>> {

@@ -188,9 +188,9 @@ execution already ran, inspect its captured streams with `result_read`.
 Fetching the existing result avoids repeating a command that can change
 the worktree.
 
-## Direct CLI pilot for Codex
+## Direct CLI reads for the Leader
 
-For an existing reviewed Codex team, run
+For an existing reviewed task on any leader program, run
 `devagentics task leader-cli <task> on` and reopen its Leader. From the
 primary worktree root, the Leader can use these commands.
 
@@ -201,8 +201,19 @@ devagentics leader-read <task> inbox
 ```
 
 The commands return JSON using the same readers and result limit
-as MCP. Codex runs them under its existing read-only sandbox. The commands
-require the matching worktree and an opted-in reviewed Codex task. Other
+as MCP. Each program limits the Leader's shell to the one command:
+
+- **Codex** runs it under its existing read-only sandbox.
+- **Claude Code** gets its Bash tool with a single allowed rule,
+  `Bash(<devagentics> leader-read <task>:*)`, under `dontAsk`. On
+  2.1.331 a probe confirmed that `ls`, `;`, `&&`, `|`, `>`, `$(…)` and
+  other devagentics commands are refused without a prompt.
+- **Any other version or program** fails closed: the Leader starts with
+  the whole MCP catalog, no shell and no CLI instructions, and the task
+  log says why ("leader reads stay on MCP: …"). Claude is accepted from
+  2.1.331 up to the next minor version.
+
+The commands require the matching worktree and an opted-in reviewed task. Other
 Leader operations and the entire worker workflow continue through MCP.
 The pilot's MCP catalog advertises `task_status` for full status. Earlier
 MCP calls with explicit status views remain compatible.
@@ -212,7 +223,8 @@ immediately. Reopen the Leader to remove the CLI instructions.
 To measure the pilot, use matched tasks with the switch on and off.
 Keep the compact response views, model, checks, and fixture constant.
 Compare provider usage through merge and milestone validation. Count
-direct CLI invocations and MCP fallbacks from the Codex transcript.
+direct CLI invocations and MCP fallbacks from the Leader's transcript.
+Telemetry counts each read as a Leader call named `cli:<view>`.
 Both arms retain MCP. Record the narrower `task_status` schema in the
 CLI arm and the regular schema in the MCP arm.
 

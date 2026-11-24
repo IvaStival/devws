@@ -311,7 +311,7 @@ waiting for you takes it as your answer.
 | `devagentics board <task> [--once] [--view <view>]` | The team board (and the dispatcher): the workspace's team pane. `--once` prints it as text |
 | `devagentics watch <task> [--once]` | The dispatcher alone, with the log as plain lines |
 | `devagentics mcp <task>` | The leader's tools, as an MCP server on stdio |
-| `devagentics task leader-cli <task> on\|off` | Opt a reviewed Codex task in or out of direct Leader status reads |
+| `devagentics task leader-cli <task> on\|off` | Opt a reviewed task in or out of direct Leader status reads, on any leader program whose shell can be held to that one command (Codex; Claude Code 2.1.331+ in 2.1); otherwise the leader stays on MCP |
 | `devagentics leader-read <task> progress` | Compact JSON progress from the opted-in task's primary worktree root |
 | `devagentics leader-read <task> order <id>` | Compact JSON order and check evidence from the same worktree root |
 | `devagentics leader-read <task> inbox` | Pending Leader messages, roster and ready work. Acknowledge handled IDs through MCP. |

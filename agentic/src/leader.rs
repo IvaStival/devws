@@ -919,6 +919,58 @@ mod tests {
     }
 
     #[test]
+    fn leader_reads_stay_on_when_the_leader_moves_between_programs() {
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, _repo) = team(&dir, 40, 20);
+        task.transaction(|tx| {
+            tx.state.workflow = crate::execution::Workflow::Reviewed;
+            tx.state.codex_team = true;
+            tx.state.leader_cli = true;
+            Ok(())
+        })
+        .unwrap();
+        idle_leader(&devws, &task);
+        devws.set_limits("claude", limits(10, 96));
+        hand_over(&home, &task, &devws, "d")
+            .unwrap()
+            .expect("moved to codex");
+        let on_codex = args(&task);
+        assert!(
+            on_codex.contains("`d leader-read feat-x progress`"),
+            "{on_codex}"
+        );
+        assert!(on_codex.contains("--leader-cli-catalog"));
+
+        devws.set_state("%1", PaneState::Done);
+        devws.set_limits("codex", five_hour(95));
+        devws.set_limits("claude", five_hour(10));
+        hand_over(&home, &task, &devws, "d")
+            .unwrap()
+            .expect("moved back to claude");
+        let on_claude = args(&task);
+        assert!(on_claude.contains("mcp__devagentics,Bash(d leader-read feat-x:*)"));
+        assert!(on_claude.contains("`d leader-read feat-x progress`"));
+
+        devws.set_state("%1", PaneState::Done);
+        devws.set_version(Program::Claude, None);
+        devws.set_limits("claude", five_hour(95));
+        devws.set_limits("codex", five_hour(10));
+        hand_over(&home, &task, &devws, "d")
+            .unwrap()
+            .expect("moved to codex again");
+        devws.set_state("%1", PaneState::Done);
+        devws.set_limits("codex", five_hour(95));
+        devws.set_limits("claude", five_hour(10));
+        hand_over(&home, &task, &devws, "d")
+            .unwrap()
+            .expect("back on a claude it cannot check");
+        assert!(
+            !args(&task).contains("leader-read"),
+            "a claude that does not run stays on MCP"
+        );
+    }
+
+    #[test]
     fn a_leader_on_codex_moves_back_to_claude_when_codexs_5_hour_window_runs_out() {
         let dir = TempDir::new().unwrap();
         let (home, devws, task, _repo) = team(&dir, 96, 14);

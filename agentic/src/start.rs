@@ -89,6 +89,88 @@ pub fn opening(
     )
 }
 
+/// Claude Code's permission rules were checked on this version to run only
+/// the read command under `dontAsk` (24-11-2026): `ls`, `;`, `&&`, `|`, `>`,
+/// `$(…)` and other devagentics commands were refused. OpenCode's is the
+/// version its isolated configuration is verified on.
+const CLAUDE_VERIFIED: (u32, u32, u32) = (2, 1, 331);
+const OPENCODE_VERIFIED: &str = "1.19.6";
+
+/// A `--version` line that passes `confines_leader_reads`, for tests.
+#[cfg(test)]
+pub fn verified_version(kind: crate::providers::Kind) -> Option<&'static str> {
+    match kind {
+        crate::providers::Kind::Claude => Some("2.1.331 (Claude Code)"),
+        crate::providers::Kind::Codex => Some("codex-cli 0.171.0"),
+        crate::providers::Kind::Opencode => Some(OPENCODE_VERIFIED),
+        _ => None,
+    }
+}
+
+/// Whether the leader's program is one whose shell is known to run only the
+/// read command; why not, when it is not. Codex runs it in its read-only
+/// sandbox. Claude: a later patch of the verified minor version keeps its
+/// rules, and a new minor version waits for the check to be run again.
+pub fn confines_leader_reads(
+    kind: crate::providers::Kind,
+    version: Option<&str>,
+) -> std::result::Result<(), String> {
+    use crate::providers::Kind;
+    let shown = version.unwrap_or("none");
+    match kind {
+        Kind::Codex => Ok(()),
+        Kind::Claude => {
+            let number = version
+                .and_then(|line| line.split_whitespace().next())
+                .map(|number| {
+                    number
+                        .split('.')
+                        .map(|part| part.parse::<u32>().ok())
+                        .collect::<Option<Vec<_>>>()
+                });
+            let (major, minor, patch) = CLAUDE_VERIFIED;
+            match number.flatten().as_deref() {
+                Some([m, n, p]) if *m == major && *n == minor && *p >= patch => Ok(()),
+                _ => Err(format!(
+                    "claude {shown} is not a version its one-command rule was checked on ({major}.{minor}.{patch} or a later {major}.{minor} patch)"
+                )),
+            }
+        }
+        Kind::Opencode if version.map(str::trim) == Some(OPENCODE_VERIFIED) => Ok(()),
+        Kind::Opencode => Err(format!(
+            "opencode {shown} is not the verified {OPENCODE_VERIFIED}"
+        )),
+        other => Err(format!(
+            "{} leaders have no checked read command",
+            other.name()
+        )),
+    }
+}
+
+/// The one command a leader's shell may run when the user turned leader
+/// reads on: the binary, bare when it needs no quotes (so the text in the
+/// prompt is the text the permission rule allows), and the task.
+pub fn leader_read_command(binary: &str, task_id: &str) -> String {
+    let plain = !binary.is_empty()
+        && binary
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c));
+    let binary = if plain {
+        binary.to_string()
+    } else {
+        crate::check_profiles::shell_quote(binary)
+    };
+    format!("{binary} leader-read {task_id}")
+}
+
+/// What every leader program is told about its reads: the same text whichever
+/// program leads, so a handover keeps the habit.
+pub fn leader_cli_instructions(command: &str) -> String {
+    format!(
+        "\n\nFrom the task worktree root, use `{command} progress` for routine status, `{command} order ORDER_ID` for one order, and `{command} inbox` when you only need to read pending messages. For inbox handling, follow these instructions in place of the earlier inbox instruction. When acknowledging handled IDs and reading the next batch, use the single MCP application_workflow action=leader_inbox with input.ack. When you only need to acknowledge handled IDs, use action=inbox_ack with input.ids. Use MCP as a fallback if a CLI read fails and for other team operations."
+    )
+}
+
 /// The leader's start-up arguments, for the program its role says, with its
 /// tools (the MCP server): `leader.args` beside the task. `first` is what it
 /// does first.
@@ -102,42 +184,57 @@ pub fn write_leader_args(
     let config = task.config()?;
     let kind = devws.agent_kind(&leader.agent)?;
     crate::leader::refuse_non_leader(&leader.agent, kind)?;
+    let state = task.state()?;
+    let reviewed = state.workflow == crate::execution::Workflow::Reviewed;
+    let leader_cli = reviewed && state.leader_cli && {
+        let version = devws.program_version(kind)?;
+        match confines_leader_reads(kind, version.as_deref()) {
+            Ok(()) => true,
+            Err(why) => {
+                // Fail closed: the leader keeps the whole MCP catalog.
+                task.transaction(|tx| {
+                    tx.log(
+                        crate::log::Kind::Leader,
+                        None,
+                        None,
+                        &format!("leader reads stay on MCP: {why}"),
+                    );
+                    Ok(())
+                })?;
+                false
+            }
+        }
+    };
     let mcp = McpServer {
         command: command.to_string(),
         task_id: config.id.clone(),
         config_file: task.dir().join("mcp.json"),
+        leader_cli,
     };
     agent_args::write_mcp_config(&mcp)?;
-    let state = task.state()?;
     // Only the task's workflow goes in the prompt; other parts are read with guide.
     let leader = &Role {
         instructions: crate::roles::for_workflow(&leader.instructions, state.workflow),
         ..leader.clone()
     };
-    let first_message = opening(leader, &config, "the leader", &config.repos[0], first);
-    let reviewed = state.workflow == crate::execution::Workflow::Reviewed;
+    let mut first_message = opening(leader, &config, "the leader", &config.repos[0], first);
+    let cli = leader_cli.then(|| leader_read_command(command, &config.id));
+    if let Some(cli) = &cli {
+        first_message.push_str(&leader_cli_instructions(cli));
+    }
     // A reviewed coordinator runs on its program's leader adapter.
     let adapter = kind.provider().reviewed_leader();
     let arguments = if reviewed
         && adapter == Some(crate::providers::ReviewedAdapter::Codex)
         && state.codex_team
     {
-        let first_message = if state.leader_cli {
-            let binary = crate::check_profiles::shell_quote(command);
-            format!(
-                "{first_message}\n\nFrom the task worktree root, use `{binary} leader-read {id} progress` for routine status, `{binary} leader-read {id} order ORDER_ID` for one order, and `{binary} leader-read {id} inbox` when you only need to read pending messages. For inbox handling, follow these instructions in place of the earlier inbox instruction. When acknowledging handled IDs and reading the next batch, use the single MCP application_workflow action=leader_inbox with input.ack. When you only need to acknowledge handled IDs, use action=inbox_ack with input.ids. Use MCP as a fallback if a CLI read fails and for other team operations.",
-                id = config.id
-            )
-        } else {
-            first_message
-        };
         crate::worker_tools::codex_leader_arguments(
             command,
             &config.id,
             &first_message,
             leader.model.as_deref(),
             leader.effort.as_deref(),
-            state.leader_cli,
+            leader_cli,
         )
     } else if reviewed {
         anyhow::ensure!(
@@ -149,6 +246,7 @@ pub fn write_leader_args(
             &first_message,
             leader.model.as_deref(),
             leader.effort.as_deref(),
+            cli.as_deref(),
         )
     } else {
         agent_args::arguments(&Launch {
@@ -382,6 +480,44 @@ mod tests {
     fn a_session_is_named_as_devws_names_it() {
         assert_eq!(session_name(Path::new("/w/app-feat-x")), "dev-app-feat-x");
         assert_eq!(session_name(Path::new("/w/my.app")), "dev-my_app");
+    }
+
+    #[test]
+    fn leader_reads_fail_closed_on_an_unchecked_program_version() {
+        use crate::providers::Kind;
+        for line in ["2.1.331 (Claude Code)", "2.1.400 (Claude Code)"] {
+            assert_eq!(confines_leader_reads(Kind::Claude, Some(line)), Ok(()));
+        }
+        for line in [
+            Some("2.1.330 (Claude Code)"),
+            Some("2.2.0 (Claude Code)"),
+            Some("garbage"),
+            None,
+        ] {
+            assert!(
+                confines_leader_reads(Kind::Claude, line).is_err(),
+                "{line:?}"
+            );
+        }
+        assert_eq!(confines_leader_reads(Kind::Codex, None), Ok(()));
+        assert_eq!(
+            confines_leader_reads(Kind::Opencode, Some("1.19.6")),
+            Ok(())
+        );
+        assert!(confines_leader_reads(Kind::Opencode, Some("1.20.0")).is_err());
+        assert!(confines_leader_reads(Kind::Antigravity, Some("1")).is_err());
+    }
+
+    #[test]
+    fn the_leader_read_command_is_bare_unless_the_path_needs_quotes() {
+        assert_eq!(
+            leader_read_command("/home/u/.cargo/bin/devagentics", "feat-x"),
+            "/home/u/.cargo/bin/devagentics leader-read feat-x"
+        );
+        assert_eq!(
+            leader_read_command("/home/my user/devagentics", "feat-x"),
+            "'/home/my user/devagentics' leader-read feat-x"
+        );
     }
 
     #[test]

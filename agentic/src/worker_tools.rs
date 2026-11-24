@@ -517,16 +517,24 @@ pub fn codex_leader_arguments(
 }
 
 /// Reviewed coordinators use only the leader catalog; no unmediated host shell.
+/// `cli`, when the user turned leader reads on, is the one command its shell
+/// may run (`<devagentics> leader-read <task>`): Bash comes back for that
+/// prefix only, and `dontAsk` refuses every other command without a prompt.
 pub fn leader_arguments(
     config: &Path,
     prompt: &str,
     model: Option<&str>,
     effort: Option<&str>,
+    cli: Option<&str>,
 ) -> Vec<String> {
+    let allowed = match cli {
+        Some(prefix) => format!("mcp__devagentics,Bash({prefix}:*)"),
+        None => "mcp__devagentics".into(),
+    };
     let mut arguments = vec![
         "--restricted".into(),
         "--tools".into(),
-        "".into(),
+        if cli.is_some() { "Bash" } else { "" }.into(),
         "--strict-mcp-config".into(),
         "--mcp-config".into(),
         config.to_string_lossy().into_owned(),
@@ -537,7 +545,7 @@ pub fn leader_arguments(
         "--permission-mode".into(),
         "dontAsk".into(),
         "--allowedTools".into(),
-        "mcp__devagentics".into(),
+        allowed,
     ];
     if let Some(model) = model {
         arguments.extend(["--model".into(), model.into()]);

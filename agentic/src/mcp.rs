@@ -523,9 +523,7 @@ impl Server<'_> {
                 let mut catalog = tools();
                 if self.leader_cli_catalog
                     && self.task.state().is_ok_and(|state| {
-                        state.leader_cli
-                            && state.codex_team
-                            && state.workflow == crate::execution::Workflow::Reviewed
+                        state.leader_cli && state.workflow == crate::execution::Workflow::Reviewed
                     })
                 {
                     for entry in &mut catalog {

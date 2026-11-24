@@ -10,6 +10,9 @@ pub struct McpServer {
     pub task_id: String,
     /// For Claude and Antigravity, the JSON file that names the server.
     pub config_file: PathBuf,
+    /// The leader reads status with `leader-read`, so its catalog is the
+    /// narrower one.
+    pub leader_cli: bool,
 }
 
 /// A role's `approvals` that lets the agent work without asking you: Claude's
@@ -64,10 +67,20 @@ pub fn write_args_file(path: &Path, arguments: &[String]) -> Result<()> {
 
 /// The JSON file Claude (and devws's Antigravity plugin) reads to find the
 /// leader's MCP server.
+/// The leader server's arguments, the narrower catalog when it reads with
+/// `leader-read`.
+pub fn mcp_arguments(task_id: &str, leader_cli: bool) -> Vec<String> {
+    let mut arguments = vec!["mcp".to_string(), task_id.to_string()];
+    if leader_cli {
+        arguments.push("--leader-cli-catalog".into());
+    }
+    arguments
+}
+
 pub fn write_mcp_config(mcp: &McpServer) -> Result<()> {
     let config = serde_json::json!({
         "mcpServers": {
-            "devagentics": { "command": mcp.command, "args": ["mcp", mcp.task_id] }
+            "devagentics": { "command": mcp.command, "args": mcp_arguments(&mcp.task_id, mcp.leader_cli) }
         }
     });
     fs::write(&mcp.config_file, serde_json::to_string_pretty(&config)?)
@@ -113,6 +126,7 @@ mod tests {
             command: "/bin/devagentics".to_string(),
             task_id: "feat-login".to_string(),
             config_file: "/tasks/feat-login/mcp.json".into(),
+            leader_cli: false,
         }
     }
 
