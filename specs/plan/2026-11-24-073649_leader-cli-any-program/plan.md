@@ -134,3 +134,18 @@ The user wants OpenCode to lead when Claude and Codex are both out of tokens, wi
 - **Moving back:** as soon as the role's own program, or else its fallback, has room in both windows, the leader moves back. The usual handoff and the log line ("the leader moved to opencode (model): claude has used … and codex …") apply.
 - **Tests:** the move there and back; no move with unknown or zero credit, with the switch off, or on a legacy task.
 - **Installed** from the main folder, after fast-forwarding it to the branch.
+
+### C. First Claude-leader pair (24-11-2026)
+
+The Notes fixture with a Claude leader (Opus 5.5) and Codex workers. Everything is the same in both runs except CLI reads: off in `mcp`, on in `cli`. Data is in `/tmp/devws-notes-claude.wcFuqW/comparison.json`.
+
+| | mcp (reads off) | cli (reads on) |
+|---|---|---|
+| Delivered (milestone ready, acceptance passes) | yes (16 tests) | yes (17 tests) |
+| Elapsed | 41m43s | 32m04s |
+| Cost: leader / workers / total | $4.93 / $0.59 / **$5.52** | $3.75 / $0.34 / **$4.09** |
+| Reviews / light acceptances | 5 / 0 | 3 / 2 |
+| Leader calls per accepted step | 42.5 | 28.5 |
+| CLI reads | 0 | 3 (one polling loop refused) |
+
+The `cli` run cost 26% less, but the CLI reads aren't what saved it. The Claude leader made only 3 reads. Most of the gap is the planning choice: the `cli` leader marked its two test items as `change`, which made them light (no reviewer agent), while the `mcp` leader marked all four as `feature`. It also made fewer leader calls. One pair can't separate these effects. CLI reads stay opt-in for Claude. For them to matter, Claude would have to prefer them: its role text still steers it to the MCP `leader_inbox`, and it tried to poll the inbox in a shell loop. The leader alone costs more than a whole Codex team did ($2.87–$3.20).
