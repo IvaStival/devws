@@ -428,9 +428,10 @@ impl Team<'_> {
     /// The dispatcher restarts a worker its account refused before it did
     /// anything (worker_tools `hold_and_restart`): that worker alone, on its
     /// next account, without pausing the team. Never while the task is
-    /// paused: the user's resume brings it back then.
+    /// paused: the user's resume brings it back then. The caller holds the
+    /// control lock (the dispatcher's pass does): taking it again here would
+    /// wait forever, since a second lock on the file blocks its own process.
     pub fn restart_on_next_account(&self, agent_id: &str) -> Result<bool> {
-        let _control = self.task.control_lock()?;
         let state = self.task.state()?;
         if state.paused || !state.restart_on_next_account.contains(agent_id) {
             return Ok(false);
