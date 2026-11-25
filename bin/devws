@@ -281,11 +281,13 @@ devws-workspace() {
 
   "$HOME/.tmuxinator/start_server.sh" || return
 
-  # After a reboot or a crash there is no tmux server: rebuild the saved
-  # workspaces before adding the requested one. A no-op while a server is
-  # running, so a workspace that was deliberately closed is never resurrected.
+  # After a reboot or a crash no workspace is running: rebuild the saved ones
+  # before adding the requested one. A no-op while a workspace is running, so
+  # one that was deliberately closed is never resurrected. By session, not by
+  # server: start_server.sh has just started an empty one, and list-sessions
+  # succeeds on it.
   if [[ "${DEVWS_AUTO_RESTORE:-1}" != 0 ]] &&
-      ! tmux list-sessions >/dev/null 2>&1 &&
+      [[ -z "$(tmux list-sessions -F '#{session_name}' 2>/dev/null)" ]] &&
       [[ -s "$HOME/.devws-state/sessions.tsv" ]]; then
     "$HOME/.tmuxinator/restore_state.sh" >/dev/null
   fi

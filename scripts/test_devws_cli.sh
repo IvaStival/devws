@@ -219,7 +219,44 @@ EOF
   ln -s "$SCRIPTS_SRC/github_workspace.sh" "$start_screen"
 }
 
+# After a reboot, devws rebuilds the saved workspaces before opening the one
+# asked for. start_server.sh has started an empty server by then, so "no
+# workspace running" is a server with no session, not one that is missing.
+# On a tmux server of its own; the restore is a stub that records its run.
+test_open_after_a_reboot_restores_the_saved_workspaces() {
+  local socket="$SOCKET-restore" restore_bin="$TEST_ROOT/restore-bin" folder
+  local restore="$HOME/.tmuxinator/restore_state.sh" saved="$HOME/.devws-state/sessions.tsv"
+  mkdir -p "$restore_bin" "$HOME/.devws-state"
+  cat > "$restore_bin/tmux" <<EOF
+#!/usr/bin/env bash
+exec "$REAL_TMUX" -L "$socket" -f "$TEST_ROOT/tmux.conf" "\$@"
+EOF
+  chmod +x "$restore_bin/tmux"
+  rm "$restore"
+  printf '#!/usr/bin/env bash\ntouch "%s"\n' "$TEST_ROOT/restored" > "$restore"
+  chmod +x "$restore"
+  [ ! -e "$saved" ] || mv "$saved" "$saved.kept"
+  printf 'W\tdev-earlier\t%s\n' "$HOME" > "$saved"
+  folder="$(new_folder after-reboot)"
+
+  PATH="$restore_bin:$PATH" DEVWS_AUTO_RESTORE=1 "$DEVWS" open --no-attach "$folder" claude nvim </dev/null >/dev/null 2>&1 ||
+    fail "devws open after a reboot failed"
+  [ -e "$TEST_ROOT/restored" ] || fail "devws did not restore the saved workspaces after a reboot"
+
+  rm -f "$TEST_ROOT/restored"
+  PATH="$restore_bin:$PATH" DEVWS_AUTO_RESTORE=1 "$DEVWS" open --no-attach "$(new_folder second)" claude nvim </dev/null >/dev/null 2>&1 ||
+    fail "devws open with a workspace running failed"
+  [ ! -e "$TEST_ROOT/restored" ] || fail "devws restored the saved workspaces with one running"
+
+  "$REAL_TMUX" -L "$socket" kill-server 2>/dev/null || true
+  rm "$restore"
+  ln -s "$SCRIPTS_SRC/restore_state.sh" "$restore"
+  rm -f "$saved"
+  [ ! -e "$saved.kept" ] || mv "$saved.kept" "$saved"
+}
+
 test_devws_alone_joins_the_first_running_workspace
+test_open_after_a_reboot_restores_the_saved_workspaces
 test_open_starts_a_detached_workspace_for_a_task
 test_open_without_a_task_takes_the_defaults_and_is_remembered
 test_open_refuses_what_it_cannot_do
