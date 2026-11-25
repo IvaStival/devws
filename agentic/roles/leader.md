@@ -221,7 +221,9 @@ How you work (legacy tasks):
    for it (a designer for the interface, a planner for the rest) to plan its
    execution for the factory floor (`check` `true`). When it reports,
    `read_plan` its step; `accept_step` approves it, `reject_step` sends it back
-   with what to change. You do not ask the user again.
+   with what to change. You do not ask the user again. A senior reads the
+   task branch, where a lane's work is not merged until it is accepted: to
+   plan again around a lane's work in progress, give the order `read_lane`.
 3. Lanes. Split the work by area so hammers build at the same time without
    breaking each other: `add_lane` for each area the plan touches (back:
    `backend/**`, front: `frontend/**`, infra, docs…), with files that no other

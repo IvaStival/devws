@@ -602,6 +602,105 @@ pub fn replace_source(task: &Task, agent: &str, source: &Path, readonly: bool) -
     })
 }
 
+/// Drops a worker that will not run again: its source and identity leave the
+/// state, and its source snapshots (every generation) leave the disk. Each
+/// workspace holds a hash of every source file, and every state read parses
+/// them all, so a long task slowed down with each finished check and agent.
+/// Its `control/` folder stays: its turns say why it ended.
+pub fn forget(task: &Task, agent: &str) -> Result<()> {
+    task.transaction(|tx| {
+        tx.state.runner_workspaces.remove(agent);
+        tx.state.runner_identities.remove(agent);
+        Ok(())
+    })?;
+    if let Err(error) = remove_snapshots(&task.dir().join("workers").join(agent)) {
+        // The state no longer points at them: they only take disk space.
+        task.transaction(|tx| {
+            tx.log(
+                crate::log::Kind::Stop,
+                Some(agent),
+                None,
+                &format!("source snapshots not removed: {error:#}"),
+            );
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+/// Forgets every worker source no agent can use again: finished checks
+/// (`candidate-*`, `preflight-*`) and stopped agents. An agent that is live,
+/// lost, unavailable or waiting to restart on another account keeps its own,
+/// since resuming it binds its order to that source. Returns the forgotten.
+pub fn prune(task: &Task) -> Result<Vec<String>> {
+    let state = task.state()?;
+    let can_run = |id: &str| {
+        state.restart_on_next_account.contains(id)
+            || state
+                .agent(id)
+                .is_some_and(|agent| agent.live || agent.lost || agent.unavailable)
+    };
+    let forgotten: Vec<String> = state
+        .runner_workspaces
+        .keys()
+        .chain(state.runner_identities.keys())
+        .filter(|id| !can_run(id))
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    drop(state);
+    for agent in &forgotten {
+        forget(task, agent)?;
+    }
+    Ok(forgotten)
+}
+
+/// Prunes when a dispatcher starts, so a task from before pruning sheds what
+/// it collected; what it did, or why it could not, goes in the task's log.
+pub fn prune_at_start(task: &Task) -> Result<()> {
+    let text = match prune(task) {
+        Ok(forgotten) if forgotten.is_empty() => return Ok(()),
+        Ok(forgotten) => format!("forgot the sources of {} finished workers", forgotten.len()),
+        Err(error) => format!("pruning finished workers failed: {error:#}"),
+    };
+    task.transaction(|tx| {
+        tx.log(crate::log::Kind::Stop, None, None, &text);
+        Ok(())
+    })
+}
+
+fn remove_snapshots(directory: &Path) -> Result<()> {
+    fn writable(path: &Path) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = fs::symlink_metadata(path)?;
+        if metadata.is_dir() {
+            // A read-only snapshot's folders refuse their entries' removal.
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+            for entry in fs::read_dir(path)? {
+                writable(&entry?.path())?;
+            }
+        }
+        Ok(())
+    }
+    let entries = match fs::read_dir(directory) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        entries => entries?,
+    };
+    for entry in entries {
+        let path = entry?.path();
+        let is_snapshot = path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("source-"));
+        if !is_snapshot {
+            continue;
+        }
+        writable(&path).with_context(|| format!("opening {}", path.display()))?;
+        fs::remove_dir_all(&path).with_context(|| format!("removing {}", path.display()))?;
+    }
+    Ok(())
+}
+
 fn snapshot(
     task: &Task,
     agent: &str,
@@ -730,15 +829,11 @@ pub fn bind_order(task: &Task, agent: &str, order: &str) -> Result<()> {
         .context("worker has no isolated source")?;
     let source = worker.source.clone();
     let readonly = worker.readonly;
-    // A new source generation discards stale tool context without deleting old artifacts.
-    let identity = state
-        .runner_identities
-        .get(agent)
-        .cloned()
-        .context("worker identity missing")?;
-    prepare(task, agent, &source, readonly)?;
+    drop(state);
+    // A new source generation discards stale tool context without deleting
+    // old artifacts, and keeps the identity the worker's panel checks.
+    replace_source(task, agent, &source, readonly)?;
     task.transaction(|tx| {
-        tx.state.runner_identities.insert(agent.into(), identity);
         let revision = tx.state.revision(order);
         let workspace = tx
             .state
@@ -1725,42 +1820,47 @@ pub fn preflight(task: &Task, item_id: &str, source: &Path) -> Result<()> {
     prepare(task, &worker, source, false)?;
     let directory = task.dir().join("preflight-checks").join(&fingerprint);
     fs::create_dir_all(&directory)?;
-    let mut failure = None;
-    for (index, name) in item.profiles.iter().enumerate() {
-        let mut profile = definitions
-            .checks
-            .get(name)
-            .context("profile missing")?
-            .clone();
-        profile.command = "true".into();
-        profile.test_evidence = false;
-        let environment = definitions
-            .environments
-            .get(&profile.environment)
-            .context("environment missing")?;
-        let phase = crate::check_profiles::run_container_profile(
-            task,
-            crate::check_profiles::Container {
-                agent: &worker,
-                lane: Some(&item.lane),
-                targets: &[],
-            },
-            name,
-            &profile,
-            environment,
-            &directory,
-            index,
-        )?;
-        if phase.outcome != crate::check_profiles::Outcome::Passed {
-            failure = Some(format!(
-                "{}: {}; evidence {}",
+    let run = || -> Result<Option<String>> {
+        for (index, name) in item.profiles.iter().enumerate() {
+            let mut profile = definitions
+                .checks
+                .get(name)
+                .context("profile missing")?
+                .clone();
+            profile.command = "true".into();
+            profile.test_evidence = false;
+            let environment = definitions
+                .environments
+                .get(&profile.environment)
+                .context("environment missing")?;
+            let phase = crate::check_profiles::run_container_profile(
+                task,
+                crate::check_profiles::Container {
+                    agent: &worker,
+                    lane: Some(&item.lane),
+                    targets: &[],
+                },
                 name,
-                phase.diagnostic,
-                phase.log.display()
-            ));
-            break;
+                &profile,
+                environment,
+                &directory,
+                index,
+            )?;
+            if phase.outcome != crate::check_profiles::Outcome::Passed {
+                return Ok(Some(format!(
+                    "{}: {}; evidence {}",
+                    name,
+                    phase.diagnostic,
+                    phase.log.display()
+                )));
+            }
         }
-    }
+        Ok(None)
+    };
+    let failure = run();
+    // Its evidence is in `directory`; its source is never used again.
+    forget(task, &worker)?;
+    let failure = failure?;
     task.transaction(|tx| {
         tx.state.environment_preflight.insert(
             item_id.into(),
@@ -2142,6 +2242,156 @@ pub mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("src/deps"), "{error}");
+    }
+
+    /// A task with a runner, and the folder a worker's source snapshots are
+    /// written to.
+    fn with_runner(directory: &tempfile::TempDir) -> (Task, tempfile::TempDir) {
+        let (_home, _devws, task, repo) = crate::board::tests::started(directory);
+        task.transaction(|tx| {
+            tx.state.runner = Some(configuration());
+            Ok(())
+        })
+        .unwrap();
+        (task, repo)
+    }
+
+    fn snapshots(task: &Task, worker: &str) -> usize {
+        fs::read_dir(task.dir().join("workers").join(worker))
+            .map(|entries| {
+                entries
+                    .filter(|entry| {
+                        entry
+                            .as_ref()
+                            .unwrap()
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("source-")
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_forgotten_worker_leaves_no_source_in_the_state_or_on_disk() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (task, repo) = with_runner(&directory);
+        prepare(&task, "candidate-abc", repo.path(), false).unwrap();
+        prepare(&task, "candidate-abc", repo.path(), false).unwrap();
+        let control = task.dir().join("workers/candidate-abc/control");
+        fs::create_dir_all(&control).unwrap();
+        assert_eq!(snapshots(&task, "candidate-abc"), 2);
+
+        forget(&task, "candidate-abc").unwrap();
+
+        let state = task.state().unwrap();
+        assert!(!state.runner_workspaces.contains_key("candidate-abc"));
+        assert!(!state.runner_identities.contains_key("candidate-abc"));
+        assert_eq!(
+            snapshots(&task, "candidate-abc"),
+            0,
+            "every generation goes"
+        );
+        assert!(control.is_dir(), "its turns stay, for why it ended");
+        forget(&task, "candidate-abc").unwrap();
+    }
+
+    #[test]
+    fn pruning_keeps_the_sources_of_agents_that_can_still_run() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (task, repo) = with_runner(&directory);
+        let agent = |id: &str, live: bool, lost: bool, unavailable: bool| crate::state::Agent {
+            id: id.into(),
+            role: "executor".into(),
+            agent: "claude".into(),
+            repo: "app".into(),
+            session: String::new(),
+            pane: String::new(),
+            writes: true,
+            group: None,
+            lane: None,
+            live,
+            unavailable,
+            ready: true,
+            lost,
+            usage: None,
+        };
+        task.transaction(|tx| {
+            tx.state.agents = vec![
+                agent("hammer-1", true, false, false),
+                agent("hammer-2", false, true, false),
+                agent("hammer-3", false, false, true),
+                agent("hammer-4", false, false, false),
+                agent("hammer-5", false, false, false),
+                agent("hammer-6", false, false, false),
+            ];
+            tx.state.restart_on_next_account.insert("hammer-5".into());
+            Ok(())
+        })
+        .unwrap();
+        for worker in [
+            "hammer-1",
+            "hammer-2",
+            "hammer-3",
+            "hammer-4",
+            "hammer-5",
+            "hammer-6",
+            "candidate-abc",
+            "preflight-0123456789abcdef",
+        ] {
+            prepare(&task, worker, repo.path(), false).unwrap();
+        }
+
+        let forgotten = prune(&task).unwrap();
+
+        assert_eq!(
+            forgotten,
+            [
+                "candidate-abc",
+                "hammer-4",
+                "hammer-6",
+                "preflight-0123456789abcdef"
+            ]
+        );
+        let kept: Vec<_> = task
+            .state()
+            .unwrap()
+            .runner_workspaces
+            .into_keys()
+            .collect();
+        assert_eq!(kept, ["hammer-1", "hammer-2", "hammer-3", "hammer-5"]);
+        assert!(prune(&task).unwrap().is_empty(), "nothing left to prune");
+    }
+
+    #[test]
+    fn binding_an_order_keeps_the_worker_identity_its_panel_checks() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (task, repo) = with_runner(&directory);
+        let identity = prepare(&task, "hammer-1", repo.path(), false).unwrap();
+        let identities = || {
+            fs::read_dir(task.dir().join("workers/hammer-1"))
+                .unwrap()
+                .filter(|entry| {
+                    entry
+                        .as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("identity-")
+                })
+                .count()
+        };
+
+        bind_order(&task, "hammer-1", "o7").unwrap();
+
+        let state = task.state().unwrap();
+        assert_eq!(state.runner_identities["hammer-1"], identity);
+        assert_eq!(identities(), 1, "no second identity is issued");
+        assert_eq!(
+            state.runner_workspaces["hammer-1"].order.as_deref(),
+            Some("o7")
+        );
     }
 
     #[test]
@@ -2570,6 +2820,7 @@ mod docker_tests {
         let order = crate::orders::send_order(
             &task,
             OrderRequest {
+                read_lane: None,
                 diagnosis: None,
                 read: Vec::new(),
                 targets: Vec::new(),

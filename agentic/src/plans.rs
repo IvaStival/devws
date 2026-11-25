@@ -315,6 +315,7 @@ mod tests {
         send_order(
             task,
             OrderRequest {
+                read_lane: None,
                 diagnosis: None,
                 read: Vec::new(),
                 targets: Vec::new(),

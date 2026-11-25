@@ -75,6 +75,21 @@ Resume rechecks the candidates. Authentication, configuration and unknown
 startup errors require diagnosis; they do not cause repeated model retries.
 The leader's own two-program handover remains unchanged.
 
+## Finished workers are forgotten
+
+Each worker's source snapshot is recorded with a hash of every file, and
+every read of the task state parses them all. When a candidate check or
+preflight ends, or an agent is stopped, its record and its `source-*`
+snapshots are removed; its `control/` folder stays. Agents that are live,
+lost, unavailable or waiting to restart on another account keep theirs.
+
+A dispatcher prunes a task from before this when it starts, and says so in
+the log. To do it by hand:
+
+```bash
+devagentics task prune <task>
+```
+
 ## Report an exact order
 
 Copy the order ID from the latest delivered `ORDER` message:
