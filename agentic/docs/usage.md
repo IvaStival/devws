@@ -135,11 +135,17 @@ The board reads the team (states, usage, limits) in the background, so slow
 readings never hold up keys or the wheel; every pending wheel turn is applied
 before the board draws again.
 
-Use Tab / Shift-Tab to move between five views:
+Use Tab / Shift-Tab to move between six views:
 
 - **Overview** shows what needs you, the team and the work done.
 - **Agents** lists running and lost agents by group. `c` also shows the inactive
   role catalog. Each row distinguishes pane activity from its current order.
+- **Plan** explains the plan's codes: each part (`D`: its release and what it
+  delivers) with its progress, each item in plain words (`D4  Move reusable
+  evidence inspectors and add system side panel`) and its state, and under it
+  what serves it now (its plan step, the agent on it) and its tests (`D4-AT`,
+  written first). Enter shows what the item does, when it is done and what it
+  needs first. An agent's "now" line also names the item a helper step is for.
 - **Steps** shows unfinished work, each row marked (`✓` accepted, `⠋` ordered,
   `●` to review, `⚠` failed, blocked or sent back). `c` includes completed steps.
 - **Activity** shows events newest first; Enter reveals the complete event text.

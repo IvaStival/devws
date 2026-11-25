@@ -108,7 +108,8 @@ repos get their own worktrees the same way, as the leader opens them.
   newest first. Only the Done card scrolls, with its own scrollbar; the others
   stay put. Muted blue frames match the devws menu; green marks successful
   states. A pane too short for the cards shows them as one scrolling list.
-  Tab / Shift-Tab switches to **Agents**, **Steps**, **Activity**, and **Usage**.
+  Tab / Shift-Tab switches to **Agents**, **Plan** (what each code such as
+  D4 or D4-AT builds, in plain words), **Steps**, **Activity**, and **Usage**.
   Completed work stays in Steps (`c` includes it); inactive roles stay in the
   Agents catalog (`c` shows it). Use `j`/`k`, arrows, or the wheel to select a
   row; Enter opens full details in a dialog inside the info panel, as tall

@@ -1597,7 +1597,10 @@ mod tests {
         ui.key(KeyCode::Esc, &board, &entries, 5);
         assert!(!ui.nav.detail);
         ui.key(KeyCode::Tab, &board, &entries, 5);
+        assert_eq!(ui.nav.view, View::Plan);
+        ui.key(KeyCode::Tab, &board, &entries, 5);
         assert_eq!(ui.nav.view, View::Steps);
+        ui.key(KeyCode::BackTab, &board, &entries, 5);
         ui.key(KeyCode::BackTab, &board, &entries, 5);
         assert_eq!(ui.nav.view, View::Agents);
         assert_eq!(

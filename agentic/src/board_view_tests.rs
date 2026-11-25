@@ -16,6 +16,7 @@ pub(crate) fn board() -> Board {
         paused: false,
         permissions: vec![],
         steps: vec![],
+        plan: vec![],
         details: Default::default(),
         phase: "Approved".into(),
         summary: "Plan approved. 1 working.".into(),
@@ -1607,4 +1608,80 @@ fn a_needs_you_row_already_opened_or_answered_no_longer_calls() {
     let (told, color) = draw(Seen::Told);
     assert_eq!(color, SEEN.fg.unwrap());
     assert!(told.trim_end().ends_with("✉ told"), "{told:?}");
+}
+
+#[test]
+fn the_plan_view_says_what_each_code_builds_and_what_serves_it_now() {
+    use crate::board_plan::{Helper, PlanItem, PlanPart, PlanTests};
+    let mut board = board();
+    let item = |id: &str, title: &str, status| PlanItem {
+        id: id.into(),
+        title: title.into(),
+        status,
+        agent: None,
+        behavior: vec![format!("{title}, as the plan says")],
+        acceptance: vec!["Protected tests pass unchanged".into()],
+        dependencies: vec![],
+        tests: None,
+        helpers: vec![],
+    };
+    let mut d4 = item(
+        "D4",
+        "Move evidence inspectors, add system side panel",
+        None,
+    );
+    d4.dependencies = vec!["D3".into(), "D4-AT".into()];
+    d4.tests = Some(PlanTests {
+        id: "D4-AT".into(),
+        status: None,
+        agent: None,
+    });
+    d4.helpers = vec![Helper {
+        step: "D4-invariants-plan".into(),
+        title: "D4-AT and D4, the complete invariants".into(),
+        agent: Some("planner-20".into()),
+    }];
+    board.plan = vec![PlanPart {
+        id: "D".into(),
+        version: "1.134.0".into(),
+        title: "Ledger Live/History workspaces".into(),
+        items: vec![
+            item(
+                "D3",
+                "SystemFlowStage, node, legend",
+                Some(StepStatus::Accepted),
+            ),
+            d4,
+        ],
+    }];
+
+    let rows = entries(&board, View::Plan, false, &[], None);
+    let labels: Vec<_> = rows.iter().map(|row| row.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        [
+            "D  Ledger Live/History workspaces · 1.134.0  1/2",
+            "✓ D3  SystemFlowStage, node, legend",
+            "· D4  Move evidence inspectors, add system side panel",
+            "   now: D4-invariants-plan · planner-20",
+            "   tests first: D4-AT · waiting",
+        ]
+    );
+    assert_eq!(rows[1].tail, "accepted");
+    assert_eq!(rows[2].tail, "waiting");
+    let detail = &rows[2].detail;
+    for wanted in [
+        "D4 · Move evidence inspectors, add system side panel",
+        "Part D · Ledger Live/History workspaces · 1.134.0",
+        "What it does\n- Move evidence inspectors, add system side panel, as the plan says",
+        "Done when\n- Protected tests pass unchanged",
+        "Tests first: D4-AT (waiting)",
+        "Needs first: D3, D4-AT",
+        "- D4-invariants-plan (planner-20): D4-AT and D4, the complete invariants",
+    ] {
+        assert!(
+            detail.contains(wanted),
+            "{wanted:?} missing from:\n{detail}"
+        );
+    }
 }
