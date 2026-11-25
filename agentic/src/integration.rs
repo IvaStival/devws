@@ -353,6 +353,8 @@ pub fn check_candidate(
     let worker = format!("candidate-{short}");
     let started = crate::log::now();
     let phases = run_candidate_phases(task, &worker, lane, &checkout, &directory, definitions);
+    // Its evidence and logs are in `directory`; its source is never used again.
+    crate::runner::forget(task, &worker)?;
     // The snapshot holds its own copy; the checkout only had to outlive the runs.
     crate::runner::safe_git(
         worktree,

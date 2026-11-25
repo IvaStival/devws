@@ -314,6 +314,9 @@ enum TaskAction {
     Resume { task: String },
     /// Stop every agent (the worktrees stay)
     Cancel { task: String },
+    /// Forget the sources of finished checks and stopped agents: they slow
+    /// every state read. A dispatcher does it too when it starts
+    Prune { task: String },
     /// You let Codex run this task's read-only code reviewers (on) or not
     /// (off). In its read-only sandbox it cannot write, but its shell can
     /// read host files; writers always run on Claude.
@@ -698,6 +701,13 @@ fn run() -> Result<()> {
                 }
                 .cancel()?;
                 println!("Every agent is stopped; the worktrees stay.");
+            }
+            TaskAction::Prune { task } => {
+                let forgotten = runner::prune(&open(&task)?)?;
+                println!(
+                    "Forgot the sources of {} finished workers.",
+                    forgotten.len()
+                );
             }
             TaskAction::CodexReviewers { task, switch } => {
                 let enabled = matches!(switch, Switch::On);
