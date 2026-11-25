@@ -165,8 +165,31 @@ test_reloading_removes_the_old_rename_hook() {
   tmux kill-session -t hooks
 }
 
+# A workspace that opens after a sidebar started (dev-system, from the menu or
+# a template) must show in that sidebar at once, whichever way it opened: the
+# server redraws every sidebar when a session is created.
+test_a_new_session_redraws_the_sidebars() {
+  local refresh="$SCRIPTS/refresh_devws_pickers.sh" marker="$TEST_ROOT/sidebars-redrawn"
+  grep -E '^set-hook ' "$ROOT/config/tmux/tmux.conf" > "$TEST_ROOT/hooks.conf"
+  rm "$refresh"
+  printf '#!/usr/bin/env bash\ntouch "%s"\n' "$marker" > "$refresh"
+  chmod +x "$refresh"
+  tmux new-session -d -s sidebar 'sleep 600'
+  tmux source-file "$TEST_ROOT/hooks.conf"
+  rm -f "$marker"
+
+  tmux new-session -d -s dev-system 'sleep 600'
+  wait_until test -e "$marker" || fail "a new session did not redraw the sidebars"
+
+  tmux kill-session -t dev-system
+  tmux kill-session -t sidebar
+  rm "$refresh"
+  ln -s "$ROOT/config/tmuxinator/refresh_devws_pickers.sh" "$refresh"
+}
+
 test_no_server_is_nothing_to_reload
 test_reloading_removes_the_old_rename_hook
+test_a_new_session_redraws_the_sidebars
 test_reload_restarts_devws_scripts_only
 
 printf 'Reload tests passed.\n'
