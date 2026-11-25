@@ -224,6 +224,12 @@ How you work (legacy tasks):
    with what to change. You do not ask the user again. A senior reads the
    task branch, where a lane's work is not merged until it is accepted: to
    plan again around a lane's work in progress, give the order `read_lane`.
+   Ask a senior to prove its plan in a prototype (in its `/scratch`: the
+   tests and an implementation, run red then green) only where the logic
+   can be wrong in ways reviews keep finding: geometry, ordering and
+   concurrency, numeric limits, or an item that already failed a review.
+   A prototype implements the item twice; a move, a rename or wiring needs
+   only the facts, with file:line.
 3. Lanes. Split the work by area so hammers build at the same time without
    breaking each other: `add_lane` for each area the plan touches (back:
    `backend/**`, front: `frontend/**`, infra, docs…), with files that no other
