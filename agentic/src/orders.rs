@@ -44,6 +44,9 @@ pub struct OrderRequest {
     /// Why the step failed and what this order changes: required when it
     /// failed since its last order (failures.rs).
     pub diagnosis: Option<crate::failures::Diagnosis>,
+    /// For a read-only agent: the lane whose work this order reads, unmerged
+    /// work included, instead of the task branch.
+    pub read_lane: Option<String>,
 }
 
 /// The attempts a step gets: the task's, or what the user allowed it.
@@ -138,6 +141,56 @@ fn validate_paths(what: &str, paths: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Where a read-only agent's next snapshot is taken from: the named lane's
+/// worktree; or, after an order that read a lane, its repo's again (the task
+/// branch). None leaves its source alone, as a reviewer's review checkout.
+fn read_source(
+    task: &Task,
+    agent: &crate::state::Agent,
+    read_lane: Option<&str>,
+) -> Result<Option<std::path::PathBuf>> {
+    if let Some(name) = read_lane {
+        anyhow::ensure!(
+            !agent.writes,
+            "read_lane is for a read-only agent: {} writes in its own worktree",
+            agent.id
+        );
+        let lane = crate::lanes::get(task, name)?;
+        anyhow::ensure!(
+            lane.repo == agent.repo,
+            "read_lane {name} is in repo {}, not {}'s {}",
+            lane.repo,
+            agent.id,
+            agent.repo
+        );
+        return Ok(Some(lane.worktree.canonicalize()?));
+    }
+    if agent.writes {
+        return Ok(None);
+    }
+    let Some(current) = task
+        .state()?
+        .runner_workspaces
+        .get(&agent.id)
+        .map(|workspace| workspace.source.clone())
+    else {
+        return Ok(None);
+    };
+    let reads_a_lane = task.config()?.lanes.iter().any(|lane| {
+        lane.worktree
+            .canonicalize()
+            .is_ok_and(|path| path == current)
+    });
+    if !reads_a_lane {
+        return Ok(None);
+    }
+    Ok(Some(
+        crate::lanes::workplace(task, agent)?
+            .worktree
+            .canonicalize()?,
+    ))
+}
+
 pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
     validate_paths("read", &request.read)?;
     validate_paths("targets", &request.targets)?;
@@ -150,6 +203,7 @@ pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
         .cloned()
         .with_context(|| format!("there is no live agent {}", request.agent))?;
     let max_attempts = task.config()?.max_attempts;
+    let read_source = read_source(task, &agent, request.read_lane.as_deref())?;
     let reviewed = task.state()?.workflow == crate::execution::Workflow::Reviewed;
     let contract = if reviewed && agent.writes {
         let state = task.state()?;
@@ -239,6 +293,15 @@ pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
                 agent.id,
                 open.id
             );
+        }
+        // Its snapshot is taken from there when the order is delivered
+        // (runner::bind_order); with no order open, none is reading it.
+        if let Some(source) = &read_source {
+            let workspace = tx.state.runner_workspaces.get_mut(&agent.id);
+            match workspace {
+                Some(workspace) => workspace.source = source.clone(),
+                None => bail!("read_lane needs the reviewed runner: {} has no snapshot", agent.id),
+            }
         }
         match tx.state.steps.iter().find(|step| step.id == request.step) {
             Some(step) if step.status == StepStatus::Ordered => {
@@ -1223,7 +1286,66 @@ mod tests {
             check: None,
             plan: Some("p0".to_string()),
             spec: None,
+            read_lane: None,
         }
+    }
+
+    #[test]
+    fn a_read_only_agent_reads_a_lanes_unmerged_work_for_one_order() {
+        // A planner re-planning a lane's step read only the task branch, where
+        // the lane's work is not merged yet (system-observer, D2, 25 Nov).
+        let f = fixture(None);
+        let lane = crate::lanes::add(&f.task, "front", &["web/**".into()], None).unwrap();
+        f.task
+            .transaction(|tx| {
+                tx.state.runner = Some(crate::runner::tests::configuration());
+                let mut planner = tx.state.agents[0].clone();
+                planner.id = "planner-1".into();
+                planner.role = "planner".into();
+                planner.writes = false;
+                planner.group = Some(Group::Senior);
+                planner.pane = "%6".into();
+                tx.state.agents.push(planner);
+                Ok(())
+            })
+            .unwrap();
+        crate::runner::prepare(&f.task, "planner-1", f.repo.path(), true).unwrap();
+        let source = |task: &Task| {
+            task.state().unwrap().runner_workspaces["planner-1"]
+                .source
+                .clone()
+        };
+        let planning = |step: &str, read_lane: Option<&str>| OrderRequest {
+            agent: "planner-1".into(),
+            allowed: Vec::new(),
+            forbidden: Vec::new(),
+            plan: None,
+            read_lane: read_lane.map(str::to_string),
+            ..request(step)
+        };
+
+        send_order(&f.task, planning("p1", Some("front"))).unwrap();
+        assert_eq!(source(&f.task), lane.worktree.canonicalize().unwrap());
+
+        f.task
+            .transaction(|tx| {
+                tx.state.orders.last_mut().unwrap().status = OrderStatus::Closed;
+                Ok(())
+            })
+            .unwrap();
+        send_order(&f.task, planning("p2", None)).unwrap();
+        assert_eq!(
+            source(&f.task),
+            f.repo.path().canonicalize().unwrap(),
+            "the next order reads the task branch again"
+        );
+
+        let writer = OrderRequest {
+            read_lane: Some("front".into()),
+            ..request("s1")
+        };
+        let error = send_order(&f.task, writer).unwrap_err().to_string();
+        assert!(error.contains("read_lane"), "{error}");
     }
 
     #[test]
