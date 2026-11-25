@@ -536,10 +536,15 @@ check_missing_tools() {
   command -v devdb >/dev/null 2>&1 ||
     warn "devdb (database pane) is missing; run ./install.sh"
   check_system_monitor_tools
-  if ! command -v claude >/dev/null 2>&1 &&
-      ! command -v codex >/dev/null 2>&1; then
-    warn "Install Claude Code or Codex before starting a workspace"
-  fi
+  # Any program a module in config/tmuxinator/agents runs will do.
+  local kind installed=""
+  # shellcheck source=config/tmuxinator/agents.sh
+  . "$ROOT/config/tmuxinator/agents.sh"
+  while IFS= read -r kind; do
+    command -v "$(agent_program "$kind")" >/dev/null 2>&1 && installed=1
+  done < <(agent_kinds)
+  [ -n "$installed" ] ||
+    warn "Install an AI agent before starting a workspace: $(agent_kinds | paste -sd ',' - | sed 's/,/, /g')"
   return 0
 }
 

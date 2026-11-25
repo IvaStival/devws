@@ -135,18 +135,13 @@ agent_pane() {
     awk -F '|' '$2 == "agent" { print $1; exit }'
 }
 
-# /commit when the agent can see a commit skill (the project's or its
-# account's), else the request in words.
+# The program's own command when its module has one (commit_command: a
+# commit skill it can see), else the request in words.
 agent_message() {
-  local agent="$1" root="$2" kind home
-  kind="$(agent_kind "$agent")" || kind=claude
-  home="$(agent_home "$agent" 2>/dev/null)"
-  if [ "$kind" = claude ] &&
-      { [ -f "$root/.claude/skills/commit/SKILL.md" ] || [ -f "$home/skills/commit/SKILL.md" ]; }; then
-    printf '/commit'
-  else
-    printf '%s' "$agent_request"
-  fi
+  local agent="$1" root="$2" kind command=""
+  kind="$(agent_kind "$agent")" || kind="${DEVWS_DEFAULT_AGENT:-claude}"
+  command="$(agent_hook "$kind" commit_command "$agent" "$root")"
+  printf '%s' "${command:-$agent_request}"
 }
 
 commit() {

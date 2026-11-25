@@ -55,6 +55,18 @@ done
 
 # shellcheck source=/dev/null
 [ -r "$script_dir/.env" ] && . "$script_dir/.env"
+# shellcheck source=agents.sh
+. "$script_dir/agents.sh"
+
+# The agents that can lead: those whose program's module says it can run a
+# team (can_lead).
+leaders() {
+  local agent kind
+  while IFS= read -r agent; do
+    kind="$(agent_kind "$agent" 2>/dev/null)" || continue
+    ! agent_hook "$kind" can_lead || printf '%s\n' "$agent"
+  done < <(agent_names)
+}
 
 # <folder>: the registered agent the user picks to lead, the one leading now
 # offered first. Fails when the question is left (Esc).
@@ -63,7 +75,7 @@ choose_leader() {
   now="$("$agentic_command" task leader "$1")" || fail "$agentic_command task leader failed"
   {
     printf '%s\n' "$now"
-    for agent in ${DEVWS_AGENTS:-claude codex}; do
+    leaders | while IFS= read -r agent; do
       [ "$agent" = "$now" ] || printf '%s\n' "$agent"
     done
   } | "$script_dir/picker.sh" Leader 'The agent that leads the team'
@@ -103,7 +115,7 @@ case "${#places[@]}" in
 esac
 
 # One agent registered leaves nothing to choose.
-if [ -z "$leader" ] && [ -t 0 ] && [ "$(printf '%s\n' ${DEVWS_AGENTS:-claude codex} | wc -l)" -gt 1 ]; then
+if [ -z "$leader" ] && [ -t 0 ] && [ "$(leaders | wc -l)" -gt 1 ]; then
   leader="$(choose_leader "$folder")" || exit 0
   [ -n "$leader" ] || exit 0
 fi

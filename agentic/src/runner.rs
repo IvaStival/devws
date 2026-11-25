@@ -14,6 +14,11 @@ use std::{
 const FILE_LIMIT: u64 = 16 * 1024 * 1024;
 const TREE_LIMIT: u64 = 256 * 1024 * 1024;
 const OUTPUT_LIMIT: usize = 64 * 1024;
+const RESULT_LIMIT: usize = 2 * 1024 * 1024;
+const RESULT_PAGE: usize = 8 * 1024;
+const RESULTS_PER_SESSION: usize = 32;
+const PREVIEW_LIMIT: usize = 1_200;
+const DIAGNOSTIC_LINE_LIMIT: usize = 180;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Configuration {
@@ -32,8 +37,9 @@ pub struct Configuration {
     /// tracked-source snapshot lacks and a no-network run cannot fetch.
     #[serde(default)]
     pub image_mounts: Vec<ImageMount>,
-    /// Each container's memory in MiB (default 512) and CPUs (default 1).
-    /// Bounded: the runner shares the host with everything else on it.
+    /// Each container's memory in MiB (default and most: `MEMORY_LIMIT_MB`)
+    /// and CPUs (default 1). Bounded: the runner shares the host with
+    /// everything else on it.
     #[serde(default)]
     pub memory_mb: Option<u32>,
     #[serde(default)]
@@ -76,7 +82,10 @@ impl Configuration {
     }
 }
 
-const MEMORY_MB: std::ops::RangeInclusive<u32> = 128..=8192;
+/// No container gets more than 4 GB, swap included (images.rs builds with the
+/// same): a runaway test cannot take the host's memory.
+pub const MEMORY_LIMIT_MB: u32 = 4096;
+const MEMORY_MB: std::ops::RangeInclusive<u32> = 128..=MEMORY_LIMIT_MB;
 const CPUS: std::ops::RangeInclusive<u32> = 1..=4;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -168,37 +177,119 @@ pub struct Output {
     pub stdout: String,
     pub stderr: String,
     pub timed_out: bool,
+    #[serde(skip)]
+    exit_code: Option<i32>,
 }
-fn protected(path: &str, config: &Configuration) -> Result<bool> {
+/// A committed dotenv template (`.env.example`…) holds no secrets: it is
+/// source when the runner configuration names that exact path, never through
+/// a glob. Every other `.env` file stays out.
+fn named_dotenv_template(path: &str, source_paths: &[String]) -> bool {
+    const TEMPLATES: [&str; 4] = [".env.example", ".env.sample", ".env.dist", ".env.template"];
+    let name = path.rsplit('/').next().unwrap_or(path);
+    TEMPLATES.contains(&name) && source_paths.iter().any(|source| source == path)
+}
+
+/// Why a path is kept out of every snapshot (secrets, data, dependencies,
+/// the user's protected paths); None when nothing keeps it out.
+fn exclusion(path: &str, config: &Configuration) -> Result<Option<String>> {
+    excluded_by(path, &config.source_paths, &config.protected_paths)
+}
+
+/// The built-in rules, with the source paths that may name a dotenv template
+/// and the user's protected paths.
+fn excluded_by(
+    path: &str,
+    source_paths: &[String],
+    protected_paths: &[String],
+) -> Result<Option<String>> {
+    const FOLDERS: [&str; 15] = [
+        ".git",
+        ".ssh",
+        ".aws",
+        ".codex",
+        ".claude",
+        ".env",
+        "node_modules",
+        "vendor",
+        "storage",
+        "pgdata",
+        "mysql",
+        "mongodb",
+        ".devagentics",
+        ".devws",
+        ".agents",
+    ];
+    const EXTENSIONS: [&str; 8] = [
+        ".sqlite", ".sqlite3", ".db", ".pem", ".key", ".p12", ".sock", ".dump",
+    ];
     let lower = path.to_ascii_lowercase();
-    let sensitive = lower.split('/').any(|part| {
-        part == ".git"
-            || part == ".ssh"
-            || part == ".aws"
-            || part == ".codex"
-            || part == ".claude"
-            || part == ".env"
-            || part.starts_with(".env.")
-            || part == "node_modules"
-            || part == "vendor"
-            || part == "storage"
-            || part == "pgdata"
-            || part == "mysql"
-            || part == "mongodb"
-            || part == ".devagentics"
-            || part == ".devws"
-            || part == ".agents"
-    });
-    Ok(sensitive
-        || [
-            ".sqlite", ".sqlite3", ".db", ".pem", ".key", ".p12", ".sock", ".dump",
-        ]
+    if let Some(part) = lower.split('/').find(|part| FOLDERS.contains(part)) {
+        return Ok(Some(format!(
+            "it is under or named {part}, which never enters a snapshot (secrets, data or dependencies)"
+        )));
+    }
+    if lower.split('/').any(|part| part.starts_with(".env."))
+        && !named_dotenv_template(path, source_paths)
+    {
+        return Ok(Some(
+            "it is a dotenv file, which never enters a snapshot; a template (.env.example, .env.sample, .env.dist, .env.template) does when you name it exactly in source_paths"
+                .into(),
+        ));
+    }
+    if let Some(extension) = EXTENSIONS
         .iter()
-        .any(|extension| lower.ends_with(extension))
-        || checks::glob_set(&config.protected_paths)?.is_match(path))
+        .find(|extension| lower.ends_with(*extension))
+    {
+        return Ok(Some(format!(
+            "its {extension} extension marks data or a key, which never enters a snapshot"
+        )));
+    }
+    if checks::glob_set(protected_paths)?.is_match(path) {
+        return Ok(Some("it matches the runner's protected_paths".into()));
+    }
+    Ok(None)
+}
+
+/// Why the leader may not read `path`, or None when it may: never what a
+/// snapshot always leaves out (secrets, data, the protected paths), even
+/// with no runner; with one, only its source and markdown docs.
+pub(crate) fn leader_unreadable(
+    path: &str,
+    config: Option<&Configuration>,
+) -> Result<Option<String>> {
+    relative(Path::new(path))?;
+    let Some(config) = config else {
+        return excluded_by(path, &[], &[]);
+    };
+    if let Some(why) = exclusion(path, config)? {
+        return Ok(Some(why));
+    }
+    if path.ends_with(".md") || checks::glob_set(&config.source_paths)?.is_match(path) {
+        return Ok(None);
+    }
+    Ok(Some(
+        "no source_paths entry of the runner matches it".into(),
+    ))
+}
+
+fn protected(path: &str, config: &Configuration) -> Result<bool> {
+    Ok(exclusion(path, config)?.is_some())
 }
 pub(crate) fn source_path(path: &str, config: &Configuration) -> Result<bool> {
     Ok(!protected(path, config)? && checks::glob_set(&config.source_paths)?.is_match(path))
+}
+
+/// Whether `path` is in a container's copy of the project, and the rule that
+/// decides it: what the leader, which cannot read this policy, is told.
+pub(crate) fn snapshot_decision(path: &str, config: &Configuration) -> Result<String> {
+    if let Some(why) = exclusion(path, config)? {
+        return Ok(format!("{path} is left out: {why}."));
+    }
+    Ok(if checks::glob_set(&config.source_paths)?.is_match(path) {
+        format!("{path} is in the snapshot: it matches the runner's source_paths.")
+    } else {
+        format!("{path} is left out: no source_paths entry matches it.")
+    })
 }
 fn relative(path: &Path) -> Result<String> {
     ensure!(
@@ -291,7 +382,7 @@ pub fn validate_configuration(config: &Configuration) -> Result<()> {
         "runner timeout must be 1–900 seconds"
     );
     ensure!(
-        MEMORY_MB.contains(&config.memory_mb.unwrap_or(512)),
+        MEMORY_MB.contains(&config.memory_mb.unwrap_or(MEMORY_LIMIT_MB)),
         "runner memory must be {}–{} MiB",
         MEMORY_MB.start(),
         MEMORY_MB.end()
@@ -737,11 +828,8 @@ fn copy_and_commit(
                 let mode = fs::metadata(&destination)
                     .map(|metadata| metadata.permissions().mode() & 0o666)
                     .unwrap_or(0o644);
-                let executable = fs::metadata(regular(snapshot, path)?)?
-                    .permissions()
-                    .mode()
-                    & 0o111
-                    != 0;
+                let executable =
+                    fs::metadata(regular(snapshot, path)?)?.permissions().mode() & 0o111 != 0;
                 fs::write(&destination, content)?;
                 fs::set_permissions(
                     &destination,
@@ -840,7 +928,9 @@ pub fn checkpoint(task: &Task, agent: &str, summary: &str) -> Result<Vec<String>
     collect(&worker.snapshot, &worker.snapshot, &mut files, &mut 0)?;
     let build_output = ignored(
         &worker.source,
-        files.keys().filter(|path| !worker.original.contains_key(*path)),
+        files
+            .keys()
+            .filter(|path| !worker.original.contains_key(*path)),
     )?;
     let mut changed = Vec::new();
     for path in worker
@@ -938,17 +1028,55 @@ pub fn checkpoint(task: &Task, agent: &str, summary: &str) -> Result<Vec<String>
     })?;
     Ok(changed)
 }
-fn drain(mut stream: impl Read) -> String {
-    let mut collected = Vec::new();
+/// A container's output within `OUTPUT_LIMIT`: its start (what ran, with
+/// which setup) and its end (a test runner's failures and summary), the
+/// middle left out and marked.
+fn drain(mut stream: impl Read, mut capture: Option<fs::File>) -> (String, Option<bool>) {
+    const HEAD: usize = OUTPUT_LIMIT / 8;
+    let mut head = Vec::new();
+    let mut tail = std::collections::VecDeque::new();
+    let mut left_out = 0usize;
     let mut buffer = [0u8; 4096];
-    while let Ok(size) = stream.read(&mut buffer) {
+    let mut captured = 0;
+    let mut truncated = capture.as_ref().map(|_| false);
+    loop {
+        let size = match stream.read(&mut buffer) {
+            Ok(size) => size,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                truncated = None;
+                break;
+            }
+        };
         if size == 0 {
             break;
         }
-        let remaining = OUTPUT_LIMIT.saturating_sub(collected.len());
-        collected.extend_from_slice(&buffer[..size.min(remaining)]);
+        let mut chunk = &buffer[..size];
+        if let Some(file) = &mut capture {
+            let kept = size.min(RESULT_LIMIT - captured);
+            if file.write_all(&chunk[..kept]).is_err() {
+                // Keep draining so an artifact failure cannot change the command.
+                capture = None;
+                truncated = None;
+            } else {
+                captured += kept;
+                truncated = Some(truncated == Some(true) || kept < size);
+            }
+        }
+        let into_head = chunk.len().min(HEAD.saturating_sub(head.len()));
+        head.extend_from_slice(&chunk[..into_head]);
+        chunk = &chunk[into_head..];
+        tail.extend(chunk);
+        let over = tail.len().saturating_sub(OUTPUT_LIMIT - HEAD);
+        tail.drain(..over);
+        left_out += over;
     }
-    String::from_utf8_lossy(&collected).into_owned()
+    let mut text = String::from_utf8_lossy(&head).into_owned();
+    if left_out > 0 {
+        text.push_str(&format!("\n[… {left_out} bytes left out …]\n"));
+    }
+    text.push_str(&String::from_utf8_lossy(tail.make_contiguous()));
+    (text, truncated)
 }
 fn docker_arguments(
     config: &Configuration,
@@ -970,6 +1098,7 @@ fn docker_arguments(
     // gain any. A container uid of the user's own would map to one of their
     // subordinate ids instead, which cannot write the snapshot.
     let user = "0:0".to_string();
+    let memory_mb = config.memory_mb.unwrap_or(MEMORY_LIMIT_MB);
     let mut arguments: Vec<String> = vec![
         "run".into(),
         "--rm".into(),
@@ -981,7 +1110,9 @@ fn docker_arguments(
         "--cap-drop=ALL".into(),
         "--security-opt=no-new-privileges".into(),
         "--pids-limit=128".into(),
-        format!("--memory={}m", config.memory_mb.unwrap_or(512)),
+        format!("--memory={memory_mb}m"),
+        // Equal to the memory: no swap on top of it.
+        format!("--memory-swap={memory_mb}m"),
         format!("--cpus={}", config.cpus.unwrap_or(1)),
         "--user".into(),
         user,
@@ -1027,6 +1158,91 @@ pub(crate) fn run_container_artifacts(
     command: &str,
     artifacts: Option<&Path>,
 ) -> Result<Output> {
+    Ok(run_container_capture(config, source, readonly, command, artifacts, None)?.0)
+}
+
+/// The containers this host runs at once at `config`'s caps: as many as its
+/// CPUs and three quarters of its memory hold (the rest is the host's), at
+/// least one. Total memory, not free: the running containers' own use must
+/// not shrink the count below the slots they hold.
+pub fn host_slots(config: &Configuration) -> usize {
+    let cpus = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let by_cpu = cpus / config.cpus.unwrap_or(1).max(1) as usize;
+    let memory_mb = u64::from(config.memory_mb.unwrap_or(MEMORY_LIMIT_MB).max(1));
+    let by_memory = fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|text| usable_memory_mb(&text))
+        .map_or(usize::MAX, |usable| {
+            usize::try_from(usable / memory_mb).unwrap_or(usize::MAX)
+        });
+    by_cpu.min(by_memory).max(1)
+}
+
+/// Three quarters of `MemTotal` of /proc/meminfo, in MB.
+fn usable_memory_mb(meminfo: &str) -> Option<u64> {
+    meminfo
+        .lines()
+        .find_map(|line| line.strip_prefix("MemTotal:"))
+        .and_then(|rest| {
+            rest.trim()
+                .trim_end_matches("kB")
+                .trim()
+                .parse::<u64>()
+                .ok()
+        })
+        .map(|kilobytes| kilobytes / 1024 * 3 / 4)
+}
+
+/// A container slot of this host, held until it is dropped: a lock on one of
+/// a few files, which the system releases even when the holder dies.
+struct Slot {
+    _lock: fs::File,
+}
+
+/// A free slot of `slots` in `folder`, if any. Each slot is a file of its
+/// own: nothing shared to count, so no counter to go wrong.
+fn free_slot(folder: &Path, slots: usize) -> Result<Option<Slot>> {
+    fs::create_dir_all(folder)?;
+    for slot in 0..slots {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(folder.join(format!("slot-{slot}")))?;
+        match fs2::FileExt::try_lock_exclusive(&file) {
+            Ok(()) => return Ok(Some(Slot { _lock: file })),
+            Err(error) if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {}
+            Err(error) => {
+                return Err(anyhow::Error::from(error).context(format!(
+                    "cannot lock the container slot {}",
+                    folder.join(format!("slot-{slot}")).display()
+                )));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Waits for a container slot: on a busy host a check queues rather than
+/// starving the others into timeouts.
+fn take_slot(config: &Configuration) -> Result<Slot> {
+    let folder = crate::home::Home::from_env()?.root().join("runner-slots");
+    loop {
+        if let Some(slot) = free_slot(&folder, host_slots(config))? {
+            return Ok(slot);
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn run_container_capture(
+    config: &Configuration,
+    source: &Path,
+    readonly: bool,
+    command: &str,
+    artifacts: Option<&Path>,
+    capture: Option<(fs::File, fs::File)>,
+) -> Result<(Output, Option<[bool; 2]>)> {
     ensure!(command.len() <= 64 * 1024, "command too large");
     let name = format!("devagentics-{}", &token()?[..20]);
     let mut arguments = docker_arguments(config, source, readonly, &name, command)?;
@@ -1048,6 +1264,8 @@ pub(crate) fn run_container_artifacts(
         );
     }
     let endpoint = configured_endpoint(config)?;
+    // Held until the container is gone; its timeout starts once it runs.
+    let _slot = take_slot(config)?;
     let mut child = docker(&endpoint)
         .args(&arguments)
         .stdin(Stdio::null())
@@ -1056,8 +1274,10 @@ pub(crate) fn run_container_artifacts(
         .spawn()?;
     let stdout = child.stdout.take().context("container stdout")?;
     let stderr = child.stderr.take().context("container stderr")?;
-    let stdout = std::thread::spawn(move || drain(stdout));
-    let stderr = std::thread::spawn(move || drain(stderr));
+    let (stdout_file, stderr_file) =
+        capture.map_or((None, None), |(out, err)| (Some(out), Some(err)));
+    let stdout = std::thread::spawn(move || drain(stdout, stdout_file));
+    let stderr = std::thread::spawn(move || drain(stderr, stderr_file));
     let started = Instant::now();
     let mut timed_out = false;
     let status = loop {
@@ -1076,18 +1296,35 @@ pub(crate) fn run_container_artifacts(
         }
         std::thread::sleep(Duration::from_millis(20));
     };
-    Ok(Output {
-        success: status.success() && !timed_out,
-        stdout: stdout
-            .join()
-            .map_err(|_| anyhow::anyhow!("container output reader failed"))?,
-        stderr: stderr
-            .join()
-            .map_err(|_| anyhow::anyhow!("container error reader failed"))?,
-        timed_out,
-    })
+    let (stdout, stdout_truncated) = stdout
+        .join()
+        .map_err(|_| anyhow::anyhow!("container output reader failed"))?;
+    let (stderr, stderr_truncated) = stderr
+        .join()
+        .map_err(|_| anyhow::anyhow!("container error reader failed"))?;
+    Ok((
+        Output {
+            success: status.success() && !timed_out,
+            stdout,
+            stderr,
+            timed_out,
+            exit_code: status.code(),
+        },
+        stdout_truncated
+            .zip(stderr_truncated)
+            .map(|(out, err)| [out, err]),
+    ))
 }
 pub fn execute(task: &Task, agent: &str, command: &str) -> Result<Output> {
+    Ok(execute_capture(task, agent, command, None)?.0)
+}
+
+fn execute_capture(
+    task: &Task,
+    agent: &str,
+    command: &str,
+    capture: Option<(fs::File, fs::File)>,
+) -> Result<(Output, Option<[bool; 2]>)> {
     let state = task.state()?;
     ensure!(!state.paused, "task is paused");
     let workspace = state
@@ -1099,7 +1336,229 @@ pub fn execute(task: &Task, agent: &str, command: &str) -> Result<Output> {
         .as_ref()
         .context("runner missing")?
         .for_lane(container_lane(&state, agent).as_deref());
-    run_container(&config, &workspace.snapshot, workspace.readonly, command)
+    run_container_capture(
+        &config,
+        &workspace.snapshot,
+        workspace.readonly,
+        command,
+        None,
+        capture,
+    )
+}
+
+fn result_directory(task: &Task, agent: &str) -> Result<PathBuf> {
+    let state = task.state()?;
+    let generation = state
+        .runner_identities
+        .get(agent)
+        .and_then(|path| path.file_name())
+        .context("worker session identity missing")?;
+    Ok(task
+        .dir()
+        .join("workers")
+        .join(agent)
+        .join("results")
+        .join(generation))
+}
+
+fn preview(text: &str) -> String {
+    if text.chars().count() <= PREVIEW_LIMIT {
+        return text.to_owned();
+    }
+    let head: String = text.chars().take(PREVIEW_LIMIT / 4).collect();
+    let tail: String = text
+        .chars()
+        .rev()
+        .take(PREVIEW_LIMIT * 3 / 4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{head}\n[… output omitted …]\n{tail}")
+}
+
+fn failure_diagnostics(output: &str, shown: &str) -> Vec<String> {
+    let is_diagnostic = |line: &str| {
+        let lowered = line.to_ascii_lowercase();
+        [
+            "error:",
+            "fatal:",
+            "fatal error:",
+            "fail:",
+            "fail ",
+            "failed:",
+            "failed ",
+            "traceback ",
+            "assertionerror:",
+        ]
+        .iter()
+        .any(|prefix| lowered.starts_with(prefix))
+            || lowered.contains(": error:")
+            || (lowered.starts_with("thread '") && lowered.contains("panicked at"))
+    };
+    let mut matches = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| is_diagnostic(line) && !shown.contains(line));
+    let first: Vec<_> = matches.by_ref().take(2).collect();
+    let last: Vec<_> = matches.rev().take(2).collect();
+    let mut selected = Vec::new();
+    for line in first.into_iter().chain(last.into_iter().rev()) {
+        let snippet: String = line.chars().take(DIAGNOSTIC_LINE_LIMIT).collect();
+        if !selected.contains(&snippet) {
+            selected.push(snippet);
+        }
+    }
+    selected
+}
+
+fn captured_diagnostics(path: &Path, retained: &str, shown: &str) -> Vec<String> {
+    match fs::read(path) {
+        Ok(bytes) => failure_diagnostics(&String::from_utf8_lossy(&bytes), shown),
+        Err(error) => {
+            eprintln!("devagentics execution diagnostic capture: {error}");
+            failure_diagnostics(retained, shown)
+        }
+    }
+}
+
+pub fn execute_compact(task: &Task, agent: &str, command: &str) -> Result<serde_json::Value> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+
+    let root = result_directory(task, agent)?;
+    let id = token()?;
+    let staging = root.join(format!("{id}-pending"));
+    let reserved = {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&root)?;
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(root.join("capture.lock"))?;
+        fs2::FileExt::lock_exclusive(&lock)?;
+        // Count unfinished captures too, so interrupted or concurrent commands
+        // cannot push this worker session past its allocated disk budget.
+        let count = fs::read_dir(&root)?.try_fold(0usize, |count, entry| {
+            Ok::<_, std::io::Error>(count + usize::from(entry?.file_type()?.is_dir()))
+        })?;
+        if count < RESULTS_PER_SESSION {
+            fs::DirBuilder::new().mode(0o700).create(&staging)?;
+        }
+        count < RESULTS_PER_SESSION
+    };
+    if !reserved {
+        let mut value = serde_json::to_value(execute(task, agent, command)?)?;
+        value["result_id"] = serde_json::Value::Null;
+        value["capture_notice"] =
+            "result limit reached; returning the full-mode bounded output".into();
+        return Ok(value);
+    }
+    let open = |name| {
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(staging.join(name))
+    };
+    let run = (|| {
+        let files = (open("stdout")?, open("stderr")?);
+        execute_capture(task, agent, command, Some(files))
+    })();
+    let publish = |limits: [bool; 2]| -> Result<()> {
+        fs::write(staging.join("metadata.json"), serde_json::to_vec(&limits)?)?;
+        fs::rename(&staging, root.join(&id))?;
+        Ok(())
+    };
+    let (result, limits) = match run {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+    };
+    let stdout = preview(&result.stdout);
+    let stderr = preview(&result.stderr);
+    let diagnostics = (!result.success).then(|| {
+        let find = |stream, retained, shown| {
+            if limits.is_some() {
+                captured_diagnostics(&staging.join(stream), retained, shown)
+            } else {
+                failure_diagnostics(retained, shown)
+            }
+        };
+        serde_json::json!({
+            "stdout": find("stdout", &result.stdout, &stdout),
+            "stderr": find("stderr", &result.stderr, &stderr),
+        })
+    });
+    let result_id = limits.and_then(|limits| match publish(limits) {
+        Ok(()) => Some(id.as_str()),
+        Err(error) => {
+            eprintln!("devagentics execution artifact: {error:#}");
+            None
+        }
+    });
+    if result_id.is_none() {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    Ok(serde_json::json!({
+        "success": result.success, "timed_out": result.timed_out, "exit_code": result.exit_code,
+        "stdout": stdout, "stderr": stderr, "failure_diagnostics": diagnostics,
+        "result_id": result_id,
+        "capture_truncated": result_id.as_ref().and(limits).map(|[stdout, stderr]| serde_json::json!({"stdout":stdout, "stderr":stderr})),
+    }))
+}
+
+pub fn read_result(
+    task: &Task,
+    agent: &str,
+    id: &str,
+    stream: &str,
+    offset: u64,
+) -> Result<serde_json::Value> {
+    use std::io::{Seek, SeekFrom};
+
+    ensure!(
+        id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "invalid result ID"
+    );
+    let index = match stream {
+        "stdout" => 0,
+        "stderr" => 1,
+        _ => bail!("result stream must be stdout or stderr"),
+    };
+    let directory = result_directory(task, agent)?.join(id);
+    let metadata = fs::read(directory.join("metadata.json"))
+        .context("result is unavailable in this worker session")?;
+    let limits: [bool; 2] = serde_json::from_slice(&metadata)?;
+    let mut file = fs::File::open(directory.join(stream))?;
+    let size = file.metadata()?.len();
+    ensure!(
+        offset <= size,
+        "offset is past the end of the captured output"
+    );
+    file.seek(SeekFrom::Start(offset))?;
+    let mut bytes = Vec::new();
+    file.take(RESULT_PAGE as u64).read_to_end(&mut bytes)?;
+    if offset + (bytes.len() as u64) < size
+        && let Err(error) = std::str::from_utf8(&bytes)
+        && error.error_len().is_none()
+    {
+        bytes.truncate(error.valid_up_to());
+    }
+    let next = offset + bytes.len() as u64;
+    Ok(serde_json::json!({
+        "result_id": id, "stream": stream, "offset": offset,
+        "text": String::from_utf8_lossy(&bytes),
+        "next_offset": (next < size).then_some(next),
+        "captured_bytes": size,
+        "truncated": limits[index],
+    }))
 }
 
 /// The lane whose image `agent`'s containers use: its own, or for a reviewer
@@ -1123,7 +1582,7 @@ pub fn lane_of_order(state: &crate::state::State, order: &str) -> Option<String>
 }
 
 /// Git plumbing must not execute repository hooks, filters or fsmonitor programs.
-fn safe_git_output(root: &Path, args: &[&str]) -> Result<std::process::Output> {
+pub(crate) fn safe_git_output(root: &Path, args: &[&str]) -> Result<std::process::Output> {
     let configured = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -1188,7 +1647,11 @@ fn ignored<'a>(
             "controlled Git operation failed: {}",
             String::from_utf8_lossy(&result.stderr)
         );
-        found.extend(String::from_utf8(result.stdout)?.lines().map(str::to_string));
+        found.extend(
+            String::from_utf8(result.stdout)?
+                .lines()
+                .map(str::to_string),
+        );
     }
     Ok(found)
 }
@@ -1251,6 +1714,7 @@ pub fn preflight(task: &Task, item_id: &str, source: &Path) -> Result<()> {
             crate::check_profiles::Container {
                 agent: &worker,
                 lane: Some(&item.lane),
+                targets: &[],
             },
             name,
             &profile,
@@ -1309,6 +1773,12 @@ pub fn images() -> Result<serde_json::Value> {
             .collect::<std::result::Result<Vec<_>, _>>()?
     ))
 }
+/// The overview fits the leader's tools (80 KB) for a repo of any size: the
+/// first files and the start of each document; the leader reads more through
+/// a planner.
+const OVERVIEW_FILES: usize = 600;
+const OVERVIEW_DOCUMENT_BYTES: usize = 8 * 1024;
+
 pub fn overview(task: &Task) -> Result<serde_json::Value> {
     let mut repositories = Vec::new();
     for repo in task.config()?.repos {
@@ -1327,11 +1797,12 @@ pub fn overview(task: &Task) -> Result<serde_json::Value> {
                 let data = bytes(&source)?;
                 documents.insert(
                     path,
-                    String::from_utf8_lossy(&data[..data.len().min(64 * 1024)]).into_owned(),
+                    String::from_utf8_lossy(&data[..data.len().min(OVERVIEW_DOCUMENT_BYTES)])
+                        .into_owned(),
                 );
             }
         }
-        repositories.push(serde_json::json!({"name":repo.name,"tracked_files":files.lines().take(2000).collect::<Vec<_>>(),"project_context":documents}));
+        repositories.push(serde_json::json!({"name":repo.name,"tracked_files_total":files.lines().count(),"tracked_files":files.lines().take(OVERVIEW_FILES).collect::<Vec<_>>(),"project_context":documents}));
     }
     Ok(serde_json::json!(repositories))
 }
@@ -1339,6 +1810,147 @@ pub fn overview(task: &Task) -> Result<serde_json::Value> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn a_host_runs_as_many_containers_as_its_free_memory_and_cpus_hold() {
+        let meminfo = "MemTotal:       16777216 kB\nMemAvailable:    1048576 kB\n";
+        assert_eq!(
+            usable_memory_mb(meminfo),
+            Some(12_288),
+            "three quarters of the total, whatever is free while checks run"
+        );
+        assert_eq!(usable_memory_mb("MemAvailable: 1 kB\n"), None);
+        let huge = Configuration {
+            memory_mb: Some(MEMORY_LIMIT_MB),
+            cpus: Some(u32::MAX),
+            ..configuration()
+        };
+        assert_eq!(host_slots(&huge), 1, "never fewer than one");
+    }
+
+    #[test]
+    fn a_container_waits_for_a_free_slot_and_gets_it_when_one_is_released() {
+        let folder = tempfile::TempDir::new().unwrap();
+        let first = free_slot(folder.path(), 2).unwrap().unwrap();
+        let second = free_slot(folder.path(), 2).unwrap().unwrap();
+        assert!(
+            free_slot(folder.path(), 2).unwrap().is_none(),
+            "both slots busy"
+        );
+        drop(first);
+        // A process forked by another test while the file was open shares its
+        // lock until it execs, so the slot frees a moment later; take_slot
+        // polls for the same reason.
+        let freed = (0..100).any(|_| {
+            free_slot(folder.path(), 2).unwrap().is_some() || {
+                std::thread::sleep(Duration::from_millis(20));
+                false
+            }
+        });
+        assert!(freed, "a released slot is free");
+        drop(second);
+    }
+
+    #[test]
+    fn compact_failure_surfaces_buried_diagnostics_and_skips_visible_duplicates() {
+        let output = format!(
+            "error: already visible\n{}\nFAIL: test_counts\nTraceback (most recent call last):\nAssertionError: 41 != 42\nFAILED (failures=1)\n{}\n",
+            "setup noise\n".repeat(400),
+            "cleanup noise\n".repeat(400),
+        );
+        let shown = preview(&output);
+        assert!(!shown.contains("41 != 42"));
+        assert_eq!(
+            failure_diagnostics(&output, &shown),
+            [
+                "FAIL: test_counts",
+                "Traceback (most recent call last):",
+                "AssertionError: 41 != 42",
+                "FAILED (failures=1)"
+            ],
+        );
+    }
+
+    #[test]
+    fn capture_keeps_output_beyond_the_preview_up_to_its_disk_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("capture");
+        let mut output = vec![b'a'; RESULT_LIMIT];
+        output[OUTPUT_LIMIT] = b'b';
+        output.extend_from_slice(b"final error");
+        let (bounded, truncated) = drain(output.as_slice(), Some(fs::File::create(&path).unwrap()));
+        assert_eq!(truncated, Some(true));
+        let saved = fs::read(path).unwrap();
+        assert_eq!(saved.len(), RESULT_LIMIT);
+        assert_eq!(saved[OUTPUT_LIMIT], b'b');
+        assert!(preview(&bounded).ends_with("final error"));
+    }
+
+    #[test]
+    fn captured_results_are_paged_and_bound_to_the_worker_generation() {
+        let directory = tempfile::tempdir().unwrap();
+        let (_home, _devws, task, _repo) = crate::board::tests::started(&directory);
+        task.transaction(|tx| {
+            tx.state
+                .runner_identities
+                .insert("a".into(), "identity-a".into());
+            tx.state
+                .runner_identities
+                .insert("b".into(), "identity-b".into());
+            Ok(())
+        })
+        .unwrap();
+        let id = "a".repeat(64);
+        let result = result_directory(&task, "a").unwrap().join(&id);
+        fs::create_dir_all(&result).unwrap();
+        fs::write(result.join("metadata.json"), "[false,true]").unwrap();
+        fs::write(
+            result.join("stdout"),
+            format!("{}€second", "a".repeat(RESULT_PAGE - 1)),
+        )
+        .unwrap();
+        let first = read_result(&task, "a", &id, "stdout", 0).unwrap();
+        assert_eq!(first["next_offset"], RESULT_PAGE - 1);
+        let second = read_result(&task, "a", &id, "stdout", (RESULT_PAGE - 1) as u64).unwrap();
+        assert_eq!(second["text"], "€second");
+        assert!(second["next_offset"].is_null());
+        assert!(read_result(&task, "b", &id, "stdout", 0).is_err());
+        assert!(read_result(&task, "a", "../metadata.json", "stdout", 0).is_err());
+        task.transaction(|tx| {
+            tx.state
+                .runner_identities
+                .insert("a".into(), "identity-new".into());
+            Ok(())
+        })
+        .unwrap();
+        assert!(read_result(&task, "a", &id, "stdout", 0).is_err());
+    }
+
+    // A test runner prints its failures and summary last: a long suite's
+    // output keeps its end, not only its first 64 KiB.
+    #[test]
+    fn long_output_keeps_its_start_and_its_end() {
+        let mut text = String::from("back-check: vendor matches composer.lock\n");
+        while text.len() < 5 * OUTPUT_LIMIT {
+            text.push_str("  ✓ it passes a unit test                     0.01s\n");
+        }
+        text.push_str(
+            " FAIL  Tests\\Feature\\SystemFlowRepositoryTest\nTests: 18 failed, 900 passed\n",
+        );
+        let (kept, _) = drain(text.as_bytes(), None);
+        assert!(
+            kept.starts_with("back-check: vendor matches"),
+            "{}",
+            &kept[..80]
+        );
+        assert!(
+            kept.ends_with("Tests: 18 failed, 900 passed\n"),
+            "the end was cut"
+        );
+        assert!(kept.contains("bytes left out"), "the cut is not marked");
+        assert!(kept.len() <= OUTPUT_LIMIT + 100, "{}", kept.len());
+        assert_eq!(drain("short\n".as_bytes(), None).0, "short\n");
+    }
 
     #[test]
     fn the_runner_uses_the_pinned_daemon_or_the_users_rootless_one() {
@@ -1425,17 +2037,25 @@ pub mod tests {
         let root = tempfile::TempDir::new().unwrap();
         let defaults = docker_arguments(&configuration(), root.path(), false, "n", "true").unwrap();
         assert!(
-            defaults.contains(&"--memory=512m".into()) && defaults.contains(&"--cpus=1".into())
+            defaults.contains(&"--memory=4096m".into())
+                && defaults.contains(&"--memory-swap=4096m".into())
+                && defaults.contains(&"--cpus=1".into()),
+            "every container is held to 4 GB, swap included: {defaults:?}"
         );
-        let larger = Configuration {
+        let smaller = Configuration {
             memory_mb: Some(2048),
             cpus: Some(2),
             ..configuration()
         };
-        let args = docker_arguments(&larger, root.path(), false, "n", "true").unwrap();
-        assert!(args.contains(&"--memory=2048m".into()) && args.contains(&"--cpus=2".into()));
+        let args = docker_arguments(&smaller, root.path(), false, "n", "true").unwrap();
+        assert!(
+            args.contains(&"--memory=2048m".into())
+                && args.contains(&"--memory-swap=2048m".into())
+                && args.contains(&"--cpus=2".into())
+        );
         for (memory_mb, cpus) in [
             (Some(64), None),
+            (Some(4097), None),
             (Some(16_384), None),
             (None, Some(0)),
             (None, Some(8)),
@@ -1608,6 +2228,97 @@ pub mod tests {
         assert_eq!(changed_lanes(None, &added), None, "a first configuration");
     }
 
+    // A committed template (.env.example) that a protected test reads must
+    // be in the snapshot when the runner configuration names it; a real
+    // .env never is, whatever the globs say.
+    // The leader cannot read the snapshot policy: it asks why a path is in
+    // or out of a container's copy of the project.
+    #[test]
+    fn a_snapshot_decision_names_the_rule_that_made_it() {
+        let mut config = configuration();
+        config.source_paths = vec!["src/**".into(), "backend/**".into()];
+        let decision = |path: &str| snapshot_decision(path, &config).unwrap();
+        assert!(
+            decision("src/a.rs").starts_with("src/a.rs is in"),
+            "{}",
+            decision("src/a.rs")
+        );
+        assert!(
+            decision("backend/.env.example").contains("dotenv"),
+            "{}",
+            decision("backend/.env.example")
+        );
+        assert!(
+            decision("backend/.env.example").contains("name it exactly in source_paths"),
+            "a template says how to let it in"
+        );
+        assert!(decision("backend/vendor/x.php").contains("vendor"));
+        assert!(decision("backend/db.sqlite").contains(".sqlite"));
+        assert!(decision("data/a").contains("protected_paths"));
+        assert!(decision("README.md").contains("no source_paths"));
+    }
+
+    // The leader reads source and docs, never secrets or data, with or
+    // without a runner.
+    #[test]
+    fn the_leader_reads_source_and_docs_but_never_secrets() {
+        let mut config = configuration();
+        config.source_paths = vec!["src/**".into()];
+        let unreadable =
+            |path: &str, config: Option<&Configuration>| leader_unreadable(path, config).unwrap();
+        assert_eq!(unreadable("src/a.rs", Some(&config)), None);
+        assert_eq!(unreadable("docs/guide.md", Some(&config)), None, "docs");
+        assert!(
+            unreadable("README.txt", Some(&config))
+                .unwrap()
+                .contains("source_paths")
+        );
+        assert!(
+            unreadable("data/a", Some(&config))
+                .unwrap()
+                .contains("protected_paths")
+        );
+        assert!(unreadable("src/.env", Some(&config)).is_some());
+        assert!(
+            unreadable("keys/server.pem", None)
+                .unwrap()
+                .contains(".pem")
+        );
+        assert!(
+            unreadable("backend/.env.local", None)
+                .unwrap()
+                .contains("dotenv")
+        );
+        assert_eq!(unreadable("backend/app/Models/System.php", None), None);
+        assert!(leader_unreadable("../other/a.rs", None).is_err());
+        assert!(leader_unreadable("/etc/passwd", None).is_err());
+    }
+
+    #[test]
+    fn a_dotenv_template_is_source_only_when_named_exactly() {
+        let mut config = configuration();
+        config.source_paths = vec![
+            "backend/**".into(),
+            "backend/.env.example".into(),
+            "backend/.env".into(),
+            "backend/.env.production".into(),
+        ];
+        assert!(source_path("backend/.env.example", &config).unwrap());
+        for path in [
+            "backend/.env",
+            "backend/.env.production",
+            "backend/.env.sample",
+            "web/.env.example",
+        ] {
+            assert!(!source_path(path, &config).unwrap(), "{path}");
+        }
+        config.protected_paths = vec!["backend/.env.example".into()];
+        assert!(
+            !source_path("backend/.env.example", &config).unwrap(),
+            "the user's protected paths still win"
+        );
+    }
+
     #[test]
     fn policy_distinguishes_source_deletion_from_data_and_path_escapes() {
         let config = configuration();
@@ -1688,8 +2399,39 @@ mod docker_tests {
     #[test]
     #[ignore = "requires explicit local Docker image and isolated containers"]
     fn reviewed_source_checks_independent_review_merge_and_milestone() {
+        reviewed_source_lifecycle(false, false);
+    }
+
+    #[test]
+    #[ignore = "requires explicit local Docker image and isolated containers"]
+    fn a_light_item_merges_on_its_candidate_check_and_the_leaders_reason() {
+        reviewed_source_lifecycle(false, true);
+    }
+
+    #[test]
+    #[ignore = "requires explicit local Docker image and isolated containers"]
+    fn reviewed_opencode_workers_checkpoint_check_and_submit_independent_review() {
+        reviewed_source_lifecycle(true, false);
+    }
+
+    fn reviewed_source_lifecycle(opencode: bool, light: bool) {
         let root = tempfile::TempDir::new().unwrap();
         let (home, devws, task, repo) = crate::board::tests::started(&root);
+        let devws = devws.with_kind("opencode", crate::providers::Kind::Opencode);
+        if opencode {
+            let group = crate::opencode::GroupSettings {
+                enabled: true,
+                model: Some("fixture/fixture".into()),
+            };
+            crate::opencode::OpencodeSettings {
+                enabled: true,
+                floor: group.clone(),
+                senior: group,
+                ..Default::default()
+            }
+            .save(&home)
+            .unwrap();
+        }
         crate::checks::tests::run(repo.path(), &["config", "user.name", "Test Developer"]);
         crate::checks::tests::run(
             repo.path(),
@@ -1718,6 +2460,9 @@ mod docker_tests {
         definitions["checks"]["smoke"] =
             serde_json::json!({"command":"test -f src/new.rs","environment":"testing"});
         definitions["candidate"] = serde_json::json!(["smoke"]);
+        // The application starts and answers on loopback: --network=none keeps lo.
+        definitions["checks"]["app"] = serde_json::json!({"command":"(nc -l -p 8080 -s 127.0.0.1 -e echo up &); sleep 0.5; nc 127.0.0.1 8080 </dev/null | grep -qx up","environment":"testing"});
+        definitions["system"] = serde_json::json!(["app"]);
         let original = definitions["checks"]["unit"]["command"].as_str().unwrap();
         definitions["checks"]["unit"]["command"] = serde_json::json!(format!(
             "test \"$RUNNER_TEXT\" = \"value with 'quote\" && {original}"
@@ -1733,6 +2478,9 @@ mod docker_tests {
         item.repo = repo_name.clone();
         item.allowed = vec!["src/**".into()];
         item.profiles = vec!["unit".into()];
+        if light {
+            item.kind = crate::execution::WorkKind::Change;
+        }
         crate::execution::store(&task, application, "complete baseline").unwrap();
         crate::execution::confirm(&task, 1, false).unwrap();
         crate::execution::confirm(&task, 1, true).unwrap();
@@ -1750,9 +2498,16 @@ mod docker_tests {
             .spawn_agent_in("backend-data", None, Some("back"))
             .unwrap();
         let reviewer = team.spawn_agent_in("code-reviewer", None, None).unwrap();
+        if opencode {
+            assert_eq!(author.agent, "opencode");
+            assert_eq!(reviewer.agent, "opencode");
+        }
         let order = crate::orders::send_order(
             &task,
             OrderRequest {
+                diagnosis: None,
+                read: Vec::new(),
+                targets: Vec::new(),
                 agent: author.id.clone(),
                 step: "S01-B01".into(),
                 title: "Replace source".into(),
@@ -1794,14 +2549,32 @@ mod docker_tests {
         assert!(!workspace.snapshot.join(".git").exists());
         let result=execute(&task,&author.id,"set -eu; test ! -e /var/run/docker.sock; test ! -e /host; test \"$(wc -l < /proc/net/route)\" -eq 1; if touch /etc/runner-escape 2>/dev/null; then exit 1; fi; rm src/old.rs; printf 'new\\n' > src/new.rs").unwrap();
         assert!(result.success, "{} {}", result.stdout, result.stderr);
-        let changed = checkpoint(&task, &author.id, "Replace scoped source").unwrap();
-        assert_eq!(changed.len(), 2);
+        let changed = if opencode {
+            crate::worker_tools::call(
+                &task,
+                &author.id,
+                "checkpoint",
+                &serde_json::json!({"summary":"Replace scoped source"}),
+            )
+            .unwrap()["changed"]
+                .as_array()
+                .unwrap()
+                .len()
+        } else {
+            checkpoint(&task, &author.id, "Replace scoped source")
+                .unwrap()
+                .len()
+        };
+        assert_eq!(changed, 2);
         assert!(repo.path().join("src/old.rs").exists());
         assert!(!lane.worktree.join("src/old.rs").exists());
         assert_eq!(
             fs::read_to_string(lane.worktree.join("data/users.sqlite")).unwrap(),
             "protected fixture\n"
         );
+        if opencode {
+            crate::worker_tools::call(&task, &author.id, "check", &serde_json::json!({})).unwrap();
+        }
         let checked = crate::check_profiles::run(&task, &order, Some(&author.pane)).unwrap();
         assert!(checked.passed(), "{:?}", checked.phases);
         crate::orders::report(
@@ -1821,6 +2594,41 @@ mod docker_tests {
         let before = checks::head(repo.path()).unwrap();
         assert!(crate::orders::accept_step(&task, "S01-B01").is_err());
         assert_eq!(checks::head(repo.path()).unwrap(), before);
+        if light {
+            let error = crate::reviews::accept_light(&task, "S01-B01", "")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("accept_reason"), "{error}");
+            crate::reviews::accept_light(
+                &task,
+                "S01-B01",
+                "replaces old.rs with new.rs as ordered",
+            )
+            .unwrap();
+            let state = task.state().unwrap();
+            let review = state.reviews.last().unwrap();
+            assert_eq!(review.reviewer, crate::state::LEADER);
+            assert!(
+                !review.candidate_evidence.is_empty(),
+                "bound to the passing candidate check"
+            );
+            crate::orders::accept_step(&task, "S01-B01").unwrap();
+            assert!(
+                repo.path().join("src/new.rs").exists(),
+                "merged into the task branch"
+            );
+            assert!(!repo.path().join("src/old.rs").exists());
+            assert_eq!(
+                task.state().unwrap().steps[0].status,
+                crate::state::StepStatus::Accepted
+            );
+            assert_eq!(
+                task.state().unwrap().reviews.len(),
+                1,
+                "no independent review was requested"
+            );
+            return;
+        }
         let review = crate::reviews::request(&task, &order, &reviewer.id).unwrap();
         let resumed_source = crate::reviews::checkout(&task, &review);
         assert_eq!(
@@ -1858,15 +2666,26 @@ mod docker_tests {
             )
             .is_err()
         );
-        crate::reviews::submit(
-            &task,
-            &reviewer.pane,
-            &review.id,
-            crate::reviews::Verdict::Approved,
-            vec![],
-            "Contract, source and tests reviewed",
-        )
-        .unwrap();
+        if opencode {
+            crate::worker_tools::call(
+                &task,
+                &reviewer.id,
+                "review_diff",
+                &serde_json::json!({"review":review.id}),
+            )
+            .unwrap();
+            crate::worker_tools::call(&task, &reviewer.id, "review_submit", &serde_json::json!({"review":review.id,"verdict":"approved","findings":[],"summary":"Contract, source and tests reviewed"})).unwrap();
+        } else {
+            crate::reviews::submit(
+                &task,
+                &reviewer.pane,
+                &review.id,
+                crate::reviews::Verdict::Approved,
+                vec![],
+                "Contract, source and tests reviewed",
+            )
+            .unwrap();
+        }
         crate::checks::tests::commit_file(
             repo.path(),
             "src/parallel.rs",
@@ -1877,6 +2696,29 @@ mod docker_tests {
         assert!(crate::orders::accept_step(&task, "S01-B01").is_err());
         assert_eq!(checks::head(repo.path()).unwrap(), advanced);
         let refreshed = crate::reviews::request(&task, &order, &reviewer.id).unwrap();
+        let outside = crate::reviews::Finding {
+            file: "src/elsewhere.rs".into(),
+            line: 40,
+            severity: "high".into(),
+            blocking: true,
+            rationale: "an old bug the change never touched".into(),
+            category: Some(crate::reviews::Category::ImplementationDefect),
+            ..crate::reviews::Finding::default()
+        };
+        let error = crate::reviews::submit(
+            &task,
+            &reviewer.pane,
+            &refreshed.id,
+            crate::reviews::Verdict::ChangesRequested,
+            vec![outside],
+            "Old bug",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("every blocking finding is outside this change (src/elsewhere.rs:40)"),
+            "{error}"
+        );
         crate::reviews::submit(
             &task,
             &reviewer.pane,
@@ -1915,7 +2757,34 @@ mod docker_tests {
             !final_review.candidate_evidence.is_empty(),
             "the merge candidate passed its candidate check before review"
         );
+        task.transaction(|tx| {
+            let mut other = tx
+                .state
+                .orders
+                .iter()
+                .find(|item| item.id == order)
+                .unwrap()
+                .clone();
+            other.id = "o-unreviewed".into();
+            other.step = "unreviewed".into();
+            tx.state.steps.push(crate::state::Step {
+                id: other.step.clone(),
+                title: "Another report in the same lane".into(),
+                status: crate::state::StepStatus::Reported,
+                attempts: 1,
+                spec: None,
+                review_since: None,
+            });
+            tx.state.orders.push(other);
+            Ok(())
+        })
+        .unwrap();
         crate::orders::accept_step(&task, "S01-B01").unwrap();
+        let state = task.state().unwrap();
+        assert!(!state.integrations.contains_key("unreviewed"));
+        assert!(state.steps.iter().any(
+            |step| step.id == "unreviewed" && step.status == crate::state::StepStatus::Reported
+        ));
         let merged = checks::head(repo.path()).unwrap();
         task.transaction(|tx| {
             tx.state
@@ -1941,6 +2810,14 @@ mod docker_tests {
             "the history recorded during the review is kept beside the reviewed code"
         );
         let final_check = crate::milestones::validate(&task, "M01").unwrap();
+        assert!(
+            final_check
+                .phases
+                .iter()
+                .any(|phase| phase.profile == "app"),
+            "the milestone ran the system check: {:?}",
+            final_check.phases
+        );
         assert!(
             final_check
                 .phases
@@ -2041,7 +2918,9 @@ mod policy_regressions {
             std::collections::BTreeSet::from(["web/.next/types/cache-life.d.ts".to_string()])
         );
         assert!(
-            ignored(source.path(), paths[1..].iter()).unwrap().is_empty(),
+            ignored(source.path(), paths[1..].iter())
+                .unwrap()
+                .is_empty(),
             "nothing ignored is not an error"
         );
     }

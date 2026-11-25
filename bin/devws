@@ -243,8 +243,12 @@ devws-workspace() {
     source "$agent_config"
   fi
 
+  # The registered agents, then each installed program none of them runs
+  # (agents.sh's agent_names).
   local -a available_agents
-  available_agents=(${=DEVWS_AGENTS:-claude codex})
+  available_agents=(${(f)"$(bash -c '[ -r "$1" ] && . "$1"; . "$2"; agent_names' _ \
+    "$agent_config" "$HOME/.tmuxinator/agents.sh")"})
+  (( ${#available_agents} )) || available_agents=(${=DEVWS_AGENTS:-claude codex})
 
   if [[ -z "$agent" ]] && (( attach )) && [[ -t 0 && -t 1 && -x "$(command -v fzf)" ]]; then
     agent="$(printf '%s\n' "${available_agents[@]}" | fzf \

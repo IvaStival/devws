@@ -64,11 +64,10 @@ pub fn session_name(folder: &Path) -> String {
 }
 
 /// What the leader does first when the team starts.
-pub const LEADER_FIRST: &str =
-    "Call task_status, then tell the user in one line that you are ready for their goal, and wait.";
+pub const LEADER_FIRST: &str = "Call task_status. Learn the project first: application_workflow project_overview, then read_file its CLAUDE.md, AGENTS.md and README and the docs they point to, and memory_search the team's knowledge. Then tell the user in one line that you are ready for their goal, and wait.";
 /// What the leader does first when the task carries on from the history in
 /// its repo (history.rs).
-pub const LEADER_CONTINUES: &str = "This task continues from the team history in the repo (.devagentics/history): its accepted steps, approved plan and execution plans are loaded. Call task_status and read the plan, then tell the user in one line what is done and what comes next, and wait.";
+pub const LEADER_CONTINUES: &str = "This task continues from the team history in the repo (.devagentics/history): its accepted steps, approved plan and execution plans are loaded. Call task_status and read the plan. Learn the project first: application_workflow project_overview, then read_file its CLAUDE.md, AGENTS.md and README and the docs they point to, and memory_search the team's knowledge. Then tell the user in one line what is done and what comes next, and wait.";
 /// What any other agent does first.
 pub const AGENT_FIRST: &str = "Reply with exactly: ready — then wait for your first order.";
 
@@ -90,6 +89,113 @@ pub fn opening(
     )
 }
 
+/// Claude Code versions whose permission rules were checked to run only the
+/// read command under `dontAsk` (24-11-2026, 2.1.331): `ls`, `;`, `&&`, a
+/// newline, `|`, `>`, `2>`, `<`, `$(…)`, backticks and other devagentics
+/// commands were refused. Add a version only after that probe passes on it.
+const CLAUDE_VERIFIED: &[&str] = &["2.1.331"];
+const OPENCODE_VERIFIED: &str = "1.19.6";
+
+/// A `--version` line that passes `confines_leader_reads`, for tests.
+#[cfg(test)]
+pub fn verified_version(kind: crate::providers::Kind) -> Option<&'static str> {
+    match kind {
+        crate::providers::Kind::Claude => Some("2.1.331 (Claude Code)"),
+        crate::providers::Kind::Codex => Some("codex-cli 0.171.0"),
+        crate::providers::Kind::Opencode => Some(OPENCODE_VERIFIED),
+        _ => None,
+    }
+}
+
+/// Whether the leader's program is one whose shell is known to run only the
+/// read command; why not, when it is not. Codex runs it in its read-only
+/// sandbox. Claude: only a version the probe ran on; an update waits for the
+/// probe to run again.
+pub fn confines_leader_reads(
+    kind: crate::providers::Kind,
+    version: Option<&str>,
+) -> std::result::Result<(), String> {
+    use crate::providers::Kind;
+    let shown = version.unwrap_or("none");
+    match kind {
+        Kind::Codex => Ok(()),
+        Kind::Claude => {
+            let number = version.and_then(|line| line.split_whitespace().next());
+            if number.is_some_and(|number| CLAUDE_VERIFIED.contains(&number)) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "claude {shown} is not a version its one-command rule was checked on ({})",
+                    CLAUDE_VERIFIED.join(", ")
+                ))
+            }
+        }
+        Kind::Opencode if version.map(str::trim) == Some(OPENCODE_VERIFIED) => Ok(()),
+        Kind::Opencode => Err(format!(
+            "opencode {shown} is not the verified {OPENCODE_VERIFIED}"
+        )),
+        other => Err(format!(
+            "{} leaders have no checked read command",
+            other.name()
+        )),
+    }
+}
+
+/// An OpenCode leader's pane: agent_runner.sh hands it to devagentics
+/// (`opencode-leader`), which starts OpenCode's TUI in its isolated
+/// configuration. `command` is passed on so the allowed read command is the
+/// text the prompt shows.
+fn opencode_leader_arguments(
+    command: &str,
+    task_id: &str,
+    first_message: &str,
+    model: Option<&str>,
+    leader_cli: bool,
+) -> Vec<String> {
+    let mut arguments: Vec<String> = [
+        "--devagentics-leader",
+        command,
+        "opencode-leader",
+        task_id,
+        "--command",
+        command,
+    ]
+    .map(str::to_string)
+    .into();
+    if let Some(model) = model {
+        arguments.extend(["--model".into(), model.into()]);
+    }
+    if leader_cli {
+        arguments.push("--leader-cli".into());
+    }
+    arguments.extend(["--".into(), first_message.into()]);
+    arguments
+}
+
+/// The one command a leader's shell may run when the user turned leader
+/// reads on: the binary, bare when it needs no quotes (so the text in the
+/// prompt is the text the permission rule allows), and the task.
+pub fn leader_read_command(binary: &str, task_id: &str) -> String {
+    let plain = !binary.is_empty()
+        && binary
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c));
+    let binary = if plain {
+        binary.to_string()
+    } else {
+        crate::check_profiles::shell_quote(binary)
+    };
+    format!("{binary} leader-read {task_id}")
+}
+
+/// What every leader program is told about its reads: the same text whichever
+/// program leads, so a handover keeps the habit.
+pub fn leader_cli_instructions(command: &str) -> String {
+    format!(
+        "\n\nFrom the task worktree root, use `{command} progress` for routine status, `{command} order ORDER_ID` for one order, and `{command} inbox` when you only need to read pending messages. For inbox handling, follow these instructions in place of the earlier inbox instruction. When acknowledging handled IDs and reading the next batch, use the single MCP application_workflow action=leader_inbox with input.ack. When you only need to acknowledge handled IDs, use action=inbox_ack with input.ids. Use MCP as a fallback if a CLI read fails and for other team operations."
+    )
+}
+
 /// The leader's start-up arguments, for the program its role says, with its
 /// tools (the MCP server): `leader.args` beside the task. `first` is what it
 /// does first.
@@ -102,16 +208,49 @@ pub fn write_leader_args(
 ) -> Result<PathBuf> {
     let config = task.config()?;
     let kind = devws.agent_kind(&leader.agent)?;
+    crate::leader::refuse_non_leader(&leader.agent, kind)?;
+    let state = task.state()?;
+    let reviewed = state.workflow == crate::execution::Workflow::Reviewed;
+    let leader_cli = reviewed && state.leader_cli && {
+        let version = devws.program_version(kind)?;
+        match confines_leader_reads(kind, version.as_deref()) {
+            Ok(()) => true,
+            Err(why) => {
+                // Fail closed: the leader keeps the whole MCP catalog.
+                task.transaction(|tx| {
+                    tx.log(
+                        crate::log::Kind::Leader,
+                        None,
+                        None,
+                        &format!("leader reads stay on MCP: {why}"),
+                    );
+                    Ok(())
+                })?;
+                false
+            }
+        }
+    };
     let mcp = McpServer {
         command: command.to_string(),
         task_id: config.id.clone(),
         config_file: task.dir().join("mcp.json"),
+        leader_cli,
     };
     agent_args::write_mcp_config(&mcp)?;
-    let first_message = opening(leader, &config, "the leader", &config.repos[0], first);
-    let state = task.state()?;
-    let arguments = if state.workflow == crate::execution::Workflow::Reviewed
-        && kind == crate::agent_args::Kind::Codex
+    // Only the task's workflow goes in the prompt; other parts are read with guide.
+    let leader = &Role {
+        instructions: crate::roles::for_workflow(&leader.instructions, state.workflow),
+        ..leader.clone()
+    };
+    let mut first_message = opening(leader, &config, "the leader", &config.repos[0], first);
+    let cli = leader_cli.then(|| leader_read_command(command, &config.id));
+    if let Some(cli) = &cli {
+        first_message.push_str(&leader_cli_instructions(cli));
+    }
+    // A reviewed coordinator runs on its program's leader adapter.
+    let adapter = kind.provider().reviewed_leader();
+    let arguments = if reviewed
+        && adapter == Some(crate::providers::ReviewedAdapter::Codex)
         && state.codex_team
     {
         crate::worker_tools::codex_leader_arguments(
@@ -120,10 +259,19 @@ pub fn write_leader_args(
             &first_message,
             leader.model.as_deref(),
             leader.effort.as_deref(),
+            leader_cli,
         )
-    } else if state.workflow == crate::execution::Workflow::Reviewed {
+    } else if reviewed && adapter == Some(crate::providers::ReviewedAdapter::Opencode) {
+        opencode_leader_arguments(
+            command,
+            &config.id,
+            &first_message,
+            leader.model.as_deref(),
+            leader_cli,
+        )
+    } else if reviewed {
         anyhow::ensure!(
-            kind == crate::agent_args::Kind::Claude,
+            adapter == Some(crate::providers::ReviewedAdapter::Claude),
             "reviewed coordinator requires the verified Claude MCP-only adapter (or the user's `devagentics task codex-team <task> on`); unsafe provider switching is blocked"
         );
         crate::worker_tools::leader_arguments(
@@ -131,8 +279,14 @@ pub fn write_leader_args(
             &first_message,
             leader.model.as_deref(),
             leader.effort.as_deref(),
+            cli.as_deref(),
         )
     } else {
+        anyhow::ensure!(
+            kind.provider().can_lead(),
+            "{} leads reviewed tasks only: pick a Claude or Codex leader for this task",
+            kind.name()
+        );
         agent_args::arguments(&Launch {
             role: leader,
             kind,
@@ -248,6 +402,8 @@ pub fn start_task_with_workflow(
                     check_profiles: Default::default(),
                     repos: vec![repo.clone()],
                     lanes: Vec::new(),
+                    routing: Default::default(),
+                    budget: Default::default(),
                 };
                 let task = Task::create(home, &config)?;
                 task.transaction(|tx| {
@@ -286,11 +442,12 @@ pub fn start_task_with_workflow(
         (Some(agent), None) => leader::choose(&leader::led_by(role, agent, devws)?, devws)?,
         (None, _) => leader::choose(role, devws)?,
     };
+    let codex_team = task.state()?.codex_team;
     if task.state()?.workflow == crate::execution::Workflow::Reviewed
-        && !task.state()?.codex_team
+        && !codex_team
         && pick.is_none()
-        && devws.agent_kind(&leader.agent)? != crate::agent_args::Kind::Claude
-        && devws.agent_kind(&role.agent)? == crate::agent_args::Kind::Claude
+        && !leader::reviewed_leader_allowed(devws.agent_kind(&leader.agent)?, codex_team)
+        && leader::reviewed_leader_allowed(devws.agent_kind(&role.agent)?, codex_team)
     {
         leader = role.clone();
         why=Some("unsupported automatic coordinator fallback blocked; retained the supported MCP-only adapter".into());
@@ -298,13 +455,14 @@ pub fn start_task_with_workflow(
     // Carrying on: the steps it has came from the repo's history, or from
     // earlier in this home; either way the leader catches up first.
     let first = if task.state()?.workflow == crate::execution::Workflow::Reviewed {
-        "This task uses reviewed planning. Call application_workflow with action=status. Interview the user and prepare an application baseline; use stable scope/step IDs and milestone release versions. Confirm shared understanding, then record explicit approval for the exact baseline revision. Configure and verify a local source-only container image through the exact-call external permission flow before starting specialists. Use leader_inbox and inbox_ack instead of terminal capture/delivery. Do not bypass missing capabilities with direct shell, task-state edits or a legacy restart."
+        "This task uses reviewed planning. Call application_workflow with action=status. Learn the project first: application_workflow project_overview, then read_file its CLAUDE.md, AGENTS.md and README and the docs they point to, and memory_search the team's knowledge. Interview the user and prepare an application baseline; use stable scope/step IDs and milestone release versions. Confirm shared understanding, then record explicit approval for the exact baseline revision. Configure and verify a local source-only container image through the exact-call external permission flow before starting specialists. Read your inbox with application_workflow action=leader_inbox (an action of that tool, not a tool of its own), and acknowledge what you handled with input.ack [ids] on your next read, never by terminal capture. Do not bypass missing capabilities with direct shell, task-state edits or a legacy restart."
     } else if task.state()?.steps.is_empty() {
         LEADER_FIRST
     } else {
         LEADER_CONTINUES
     };
-    let args_file = write_leader_args(&task, devws, &leader, command, first)?;
+    let first = with_memory(&task, devws, first)?;
+    let args_file = write_leader_args(&task, devws, &leader, command, &first)?;
     task.transaction(|tx| {
         tx.state.leader_agent = Some(leader.agent.clone());
         tx.state.leader_pick = pick.clone();
@@ -321,12 +479,32 @@ pub fn start_task_with_workflow(
     })
 }
 
+/// A leader that carries a task on opens with where it stands and the last
+/// leaders' handoffs; a new task has neither.
+fn with_memory(task: &Task, devws: &dyn Devws, first: &str) -> Result<String> {
+    let mut text = first.to_string();
+    if !task.state()?.steps.is_empty() {
+        let digest = crate::notes::digest(task, "The team was opened again.")?;
+        text.push_str(&format!(
+            "\n\nWhere the task stands (devAgentics, from its state):\n{digest}"
+        ));
+    }
+    // A memory that fails costs the handoffs, never the start.
+    let handoffs =
+        crate::notes::newest(task, devws, crate::memory::NoteKind::Handoff, 2).unwrap_or_default();
+    let block = crate::notes::fenced("The last leaders' handoffs", &handoffs);
+    if !block.is_empty() {
+        text.push_str(&format!("\n\n{block}"));
+    }
+    Ok(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_args::Kind as Program;
     use crate::checks::tests::repo;
     use crate::devws::fake::FakeDevws;
+    use crate::providers::Kind as Program;
     use std::fs;
     use tempfile::TempDir;
 
@@ -340,6 +518,46 @@ mod tests {
     fn a_session_is_named_as_devws_names_it() {
         assert_eq!(session_name(Path::new("/w/app-feat-x")), "dev-app-feat-x");
         assert_eq!(session_name(Path::new("/w/my.app")), "dev-my_app");
+    }
+
+    #[test]
+    fn leader_reads_fail_closed_on_an_unchecked_program_version() {
+        use crate::providers::Kind;
+        assert_eq!(
+            confines_leader_reads(Kind::Claude, Some("2.1.331 (Claude Code)")),
+            Ok(())
+        );
+        for line in [
+            Some("2.1.332 (Claude Code)"),
+            Some("2.1.330 (Claude Code)"),
+            Some("2.2.0 (Claude Code)"),
+            Some("garbage"),
+            None,
+        ] {
+            assert!(
+                confines_leader_reads(Kind::Claude, line).is_err(),
+                "{line:?}"
+            );
+        }
+        assert_eq!(confines_leader_reads(Kind::Codex, None), Ok(()));
+        assert_eq!(
+            confines_leader_reads(Kind::Opencode, Some("1.19.6")),
+            Ok(())
+        );
+        assert!(confines_leader_reads(Kind::Opencode, Some("1.20.0")).is_err());
+        assert!(confines_leader_reads(Kind::Antigravity, Some("1")).is_err());
+    }
+
+    #[test]
+    fn the_leader_read_command_is_bare_unless_the_path_needs_quotes() {
+        assert_eq!(
+            leader_read_command("/home/u/.cargo/bin/devagentics", "feat-x"),
+            "/home/u/.cargo/bin/devagentics leader-read feat-x"
+        );
+        assert_eq!(
+            leader_read_command("/home/my user/devagentics", "feat-x"),
+            "'/home/my user/devagentics' leader-read feat-x"
+        );
     }
 
     #[test]
@@ -384,6 +602,59 @@ mod tests {
         assert_eq!(
             mcp["mcpServers"]["devagentics"]["args"],
             serde_json::json!(["mcp", "feat-login"])
+        );
+    }
+
+    #[test]
+    fn a_leader_that_carries_on_opens_with_the_digest_and_the_last_handoff() {
+        let home_dir = TempDir::new().unwrap();
+        let home = Home::at(home_dir.path().to_path_buf());
+        let devws = FakeDevws::new(home_dir.path())
+            .with_kind("claude", Program::Claude)
+            .with_memory();
+        let repo = branch_repo("feat/login");
+        let first = start_task(&home, &devws, repo.path(), "d", None).unwrap();
+        let opening = std::fs::read_to_string(&first.args_file).unwrap();
+        assert!(
+            !opening.contains("Where the task stands"),
+            "a new task has no digest"
+        );
+
+        let task = Task::open(&home, &first.id).unwrap();
+        task.transaction(|tx| {
+            tx.state.steps.push(crate::state::Step {
+                id: "A1".into(),
+                title: "Login form".into(),
+                status: crate::state::StepStatus::Accepted,
+                attempts: 1,
+                spec: None,
+                review_since: None,
+            });
+            Ok(())
+        })
+        .unwrap();
+        crate::notes::save(
+            &task,
+            &devws,
+            &crate::memory::Note {
+                area: None,
+                kind: crate::memory::NoteKind::Handoff,
+                title: "End of day".into(),
+                body: "A2 waits for the user's answer on SSO.".into(),
+                author: crate::state::LEADER.into(),
+                step: None,
+            },
+        )
+        .unwrap();
+        let again = start_task(&home, &devws, repo.path(), "d", None).unwrap();
+        let opening = std::fs::read_to_string(&again.args_file).unwrap();
+        assert!(
+            opening.contains("The team was opened again.\n\n## Accepted (1 of 1)\nA1"),
+            "{opening}"
+        );
+        assert!(
+            opening.contains("A2 waits for the user's answer on SSO."),
+            "{opening}"
         );
     }
 
@@ -445,6 +716,66 @@ mod tests {
 
         let again = start_task(&home, &devws, repo.path(), "d", None).unwrap();
         assert_eq!(again.leader_agent, "codex", "the pick stays with the task");
+    }
+
+    #[test]
+    fn an_opencode_leader_leads_a_reviewed_task_isolated_and_never_a_legacy_one() {
+        let home_dir = TempDir::new().unwrap();
+        let home = Home::at(home_dir.path().to_path_buf());
+        let repo = branch_repo("feat/x");
+        let devws = FakeDevws::new(home_dir.path())
+            .with_kind("claude", Program::Claude)
+            .with_kind("zen", Program::Opencode);
+        let legacy = start_task(&home, &devws, repo.path(), "d", Some("zen"));
+        assert!(
+            legacy
+                .unwrap_err()
+                .to_string()
+                .contains("opencode leads reviewed tasks only"),
+            "its devws agents may run any command"
+        );
+
+        let reviewed = branch_repo("feat/y");
+        let started = start_task_with_workflow(
+            &home,
+            &devws,
+            reviewed.path(),
+            "d",
+            Some("zen"),
+            crate::execution::Workflow::Reviewed,
+        )
+        .unwrap();
+        let task = Task::open(&home, "feat-y").unwrap();
+        task.transaction(|tx| {
+            tx.state.leader_cli = true;
+            Ok(())
+        })
+        .unwrap();
+        let read = |path: &Path| std::fs::read_to_string(path).unwrap();
+        let first: Vec<String> = read(&started.args_file)
+            .split('\0')
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            first[..6],
+            [
+                "--devagentics-leader",
+                "d",
+                "opencode-leader",
+                "feat-y",
+                "--command",
+                "d"
+            ]
+        );
+        assert!(
+            !first.contains(&"--leader-cli".to_string()),
+            "reads were off"
+        );
+
+        let again = start_task(&home, &devws, reviewed.path(), "d", None).unwrap();
+        let args = read(&again.args_file);
+        assert!(args.contains("\0--leader-cli\0--\0"), "{args}");
+        assert!(args.contains("`d leader-read feat-y progress`"));
     }
 
     #[test]

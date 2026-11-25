@@ -11,11 +11,11 @@
 # a command line, and is not printed. Exit 1 when the login or the answer is
 # missing; the caller then falls back on the status line's reading.
 #
-#   claude_limits.sh <agent>
+#   limits.sh <agent>
 
 set -u
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=agents.sh
 . "$script_dir/agents.sh"
 
@@ -47,7 +47,7 @@ credentials() {
 
 main() {
   local agent="${1:-}" token answer
-  [ "$#" -eq 1 ] || { echo "usage: claude_limits.sh <agent>" >&2; return 2; }
+  [ "$#" -eq 1 ] || { echo "usage: limits.sh <agent>" >&2; return 2; }
   [ "$(agent_kind "$agent" 2>/dev/null)" = claude ] || { echo "not a Claude agent: $agent" >&2; return 1; }
 
   token="$(credentials "$agent" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)"

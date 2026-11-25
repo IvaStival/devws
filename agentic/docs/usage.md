@@ -1,5 +1,8 @@
 # Using devAgentics
 
+[How devAgentics works](how-it-works.md) explains the pieces, a step from
+start to finish, and every tool the leader and the workers use.
+
 devAgentics runs a team of agents on one task. You talk to one of them, the
 **leader**; the leader opens the others (a planner, executors, any role you
 write), gives each one order at a time, checks the results, and opens linked
@@ -180,7 +183,41 @@ for this task. No new agent starts on an account that is off: a role falls
 through to its next program that is on, and the leader never moves to one.
 Agents already running keep running (a leader on an account you turned off
 says `leader still on it`). The last account that is on stays on. The leader
-hears every change and sees the switches in `task_status` (`accounts`).
+hears every change and sees the switches in `task_status` (`accounts`, with
+`enabled` for the global switch and `senior`/`floor` for each group's).
+
+These are the global switches. Under them, **SENIOR ACCOUNTS** and **FLOOR
+ACCOUNTS** have a switch per account for that group of this task: a senior or
+floor agent starts only on an account that is on both globally and for its
+group (a group switch that is on while the global one is off reads `held off
+globally`). Each group keeps at least one account on. The leader follows the
+global switches only.
+
+OpenCode is offered to the floor only. The `opencode` row under ACCOUNTS is
+OpenCode's global switch and the one under FLOOR ACCOUNTS its floor switch.
+Both switches are the home-wide settings of the devws menu's OpenCode screen
+(`opencode.toml`), so they hold for every task. The senior OpenCode switch
+stays in that menu, off by default.
+
+The accounts are the ones devws runs (`devws agent accounts`): those
+registered in `DEVWS_AGENTS`, then each installed program (Claude Code, Codex,
+Antigravity) that no registered name runs, by its bare name.
+
+Each row under SENIOR and FLOOR ACCOUNTS shows the model that group's agents
+start on that account with. A model marked `*` is a default, nothing picked
+for this task: each of the group's roles brings its own (the floor's rule
+applied), and a role that names none runs its program's own (`devws agent
+default-models`: the account's config, else Codex's first listed model,
+Claude's Opus, agy's Gemini 4 Carbon). OpenCode's default is the devws menu's
+model. **Enter** on it
+drops a picker down under the row: **Default**, the models devws knows for the
+program (for opencode and Antigravity, what `opencode models` or `agy models`
+lists with your logins, `devws agent models <account>`), and **Type a model…**
+to write any other. The pick
+holds for this task only and replaces the role's model for that group on that
+account; Default goes back. For opencode, Default is the devws menu's model.
+The leader hears every change, and `task_status` shows the picks (`accounts`:
+`senior_model`, `floor_model`). Agents already running keep their model.
 
 Details are laid out for reading: `Label: value` lines with the label in
 bold, JSON arguments over indented, tinted lines, inline numbered items and
@@ -220,10 +257,14 @@ waiting for you takes it as your answer.
   It moves from the one it runs on to the other, either way:
   - **on its own**, when the account it runs on has used 95% of its 5-hour
     window or of its week, unless the other's has too (then it stays);
-  - **when asked**: tell the leader (it calls `switch_leader`), pick
-    **⇄ Switch leader model** in the devws menu's agent tab, or run
+  - **when asked**: tell the leader (it calls `switch_leader`), or run
     `devagentics leader switch <task>`. Refused when the other account has
     run out.
+  - **to any account you pick**: **⇄ Change leader…** in the devws menu's
+    Team tab, or `devagentics leader use <task> <account>`
+    (`devagentics leader choices <task>` lists those that can lead). It
+    takes over once the leader's turn is over and leads from then on.
+    Refused for an account that is off, has run out, or cannot lead.
 
   At start the leader starts on its role's program, or on the other when
   that one has run out. While it runs, the board hands it over once it has
@@ -256,7 +297,9 @@ waiting for you takes it as your answer.
 | `devagentics task status <task>` | Where the team stands, as JSON |
 | `devagentics task pause\|resume\|cancel <task>` | Stop new deliveries and agents; start again the agents whose panels went; stop every agent |
 | `devagentics task list` | The tasks |
-| `devagentics leader switch <task> [--reason "<why>"]` | Move the leader to its other program once its turn is over (the devws menu's Switch leader model) |
+| `devagentics leader switch <task> [--reason "<why>"]` | Move the leader to its other program once its turn is over |
+| `devagentics leader use <task> <account> [--reason "<why>"]` | Move the leader to that account once its turn is over (the devws menu's Change leader) |
+| `devagentics leader choices <task>` | The accounts that can lead, and how each stands |
 | `devagentics role list [--repo <path>]` | The roles and where each comes from |
 | `devagentics role set <role> [--model M] [--effort E] [--approvals A] [--repo <path>]` | Changes those settings in the role's file; an empty value removes one |
 | `devagentics role choices <role> model\|effort\|approvals [--repo <path>]` | The values the role's program takes for a setting |
@@ -268,9 +311,14 @@ waiting for you takes it as your answer.
 | `devagentics board <task> [--once] [--view <view>]` | The team board (and the dispatcher): the workspace's team pane. `--once` prints it as text |
 | `devagentics watch <task> [--once]` | The dispatcher alone, with the log as plain lines |
 | `devagentics mcp <task>` | The leader's tools, as an MCP server on stdio |
+| `devagentics task leader-cli <task> on\|off` | Opt a reviewed task in or out of direct Leader status reads, on any leader program whose shell can be held to that one command (Codex; Claude Code 2.1.331, the versions `scripts/probe_claude_leader.sh` passed; OpenCode 1.19.6); otherwise the leader stays on MCP |
+| `devagentics leader-read <task> progress` | Compact JSON progress from the opted-in task's primary worktree root |
+| `devagentics leader-read <task> order <id>` | Compact JSON order and check evidence from the same worktree root |
+| `devagentics leader-read <task> inbox` | Pending Leader messages, roster and ready work. Acknowledge handled IDs through MCP. |
+| `devagentics leader-read <task> guide <topic>` | A part of the leader's role its prompt leaves out (`accounts`, `reviewed`, `legacy`); the same text as `application_workflow action=guide` |
 
 The leader's tools: `task_status`, `approve_plan`, `spawn_agent`, `add_lane`, `add_repo`,
-`send_order`, `read_plan`, `answer_question`, `accept_step`, `reject_step`, `stop_agent`, `set_check`, `read_log`,
+`send_order`, `read_plan`, `answer_question`, `accept_step`, `reject_step`, `close_step`, `allow_attempts`, `read_check_log`, `snapshot_path`, `read_file`, `search_code`, `git_log`, `git_diff`, `stop_agent`, `set_check`, `read_log`,
 `escalate`, `switch_leader`, `open_prs`.
 
 ## Roles
@@ -280,7 +328,7 @@ instructions.
 
 ```markdown
 +++
-agent = "codex"        # a DEVWS_AGENTS name: claude, codex, claude_work…
+agent = "codex"        # a DEVWS_AGENTS name: claude, codex, antigravity, claude_work…
 model = "gpt-5"        # optional
 effort = "high"        # optional
 writes = true          # whether it changes the repo it works in
@@ -335,7 +383,7 @@ values the role's program knows (Claude: effort `low` to `max`, approvals
 `default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`; Codex: effort
 `minimal` to `xhigh`, approvals `untrusted`, `on-request`, `never`, `auto`);
 any model name may be typed. Agents started from then on use it; running ones
-keep theirs. The leader is not changed this way: Switch leader model moves it.
+keep theirs. The leader is not changed this way: Change leader moves it.
 
 Codex asks "Trust this folder?" in a folder its settings do not trust, and a
 task's lanes are new folders. So when devws starts a Codex agent in a folder
@@ -362,7 +410,13 @@ leader sees the roles there are in `task_status` and uses only those.
 | `checks/<step>-<n>.log` | Each check's output |
 
 The state is exact and kept under a lock; ai-memory is for what the team
-learned, not for where it stands.
+learned, not for where it stands. With ai-memory installed, devAgentics keeps
+each report, each step decision and, when the leader moves, where the task
+stood and the outgoing leader's handoff, in the `devagentics-tasks` project
+(`tasks/<task>/`). A new leader opens with them, and an order carries what the
+agents before saved about its step. Agents add notes with `memory_save` and
+find them with `memory_search`. See them in ai-memory's web UI (the devws
+menu's Agent › Memory…).
 
 ## After a restart
 
@@ -381,27 +435,163 @@ in a new conversation.
 | `DEVAGENTICS_GH` | `gh` | The GitHub CLI |
 | `DEVAGENTICS_CHECK_TIMEOUT` | `900` | Seconds a check may run |
 
+## Antigravity agents
+
+An Antigravity account (`agy`, kind `antigravity` in devws) runs any role in a
+normal task, the leader too. Its arguments are `-i <first message>`,
+`--model`, `--effort` and `--mode`. `--mode` is the role's `approvals`
+(`accept-edits`, `auto` or `plan`), else `accept-edits` for a role that writes
+and agy's own asking for the rest. A role that writes also gets `--add-dir`
+for the folders it writes in outside its worktree.
+
+Its session's `--settings` let the `devagentics report|plan|ask|answer`
+commands run without asking, as Claude's `--allowedTools` does, and, for the
+leader, its tools (`mcp(devws_devagentics/*)`). agy reads MCP servers only
+from plugins in its config folder: devws's plugin
+(`~/.gemini/config/plugins/devws`, installed on every agy start) serves the
+leader's tools from the `--mcp-config` file devAgentics passes, which devws
+takes off agy's command line.
+
+The floor runs Gemini Flash (`gemini-3.8-flash-medium`, or the Flash the role
+names). With no fallback named, an agent falls back to Codex. A reviewed task
+refuses Antigravity: it has no locked-down worker adapter.
+
+## OpenCode workers
+
+Floor and senior agents can run on [opencode](https://opencode.ai) to save
+Claude and Codex usage, on a cheap model such as Zen's DeepSeek Flash. The
+devws menu's **◆ OpenCode** screen (Agent tab) does it all; the same is
+`devagentics opencode`:
+
+```bash
+devagentics opencode show                          # switches, models, account
+devagentics opencode switch global on              # mandatory: off, nothing runs on opencode
+devagentics opencode switch floor on               # and/or: senior
+devagentics opencode model floor opencode/<model>  # from `opencode models`
+devagentics opencode switch leader on              # a reviewed leader, when Claude and Codex run out
+devagentics opencode model leader opencode/<model> # a stronger one you pay for
+```
+
+- **Switches.** The global switch is mandatory: while it is off, the floor's
+  and the seniors' switches are kept but ignored (`show` says `ignored`), and
+  no agent runs on opencode, even one whose role names it. With both on, a
+  group's agents try opencode first, on the group's model, and fall back to
+  their role's Claude or Codex program when opencode cannot start them. These
+  switches do not move the leader. A reviewed task's leader runs on opencode
+  when you pick an opencode account to lead it, or as its last resort: with
+  `devagentics opencode switch leader on` and `devagentics opencode model
+  leader <provider/model>`, a leader whose program and fallback have both used
+  95% of a window moves to opencode on that model when the account has credit
+  left (the devws menu's balance; unknown or zero credit keeps it waiting), and
+  moves back to its own program, or else the fallback, once one has room. On
+  opencode it runs in an isolated configuration with only the leader's tools;
+  legacy tasks never use it. Saved
+  in `~/.devagentics/opencode.toml`;
+  agents started from then on follow it.
+- **Account.** The screen registers the `opencode` devws agent (its folder is
+  opencode's data folder's parent, `~/.local/share`) and runs `opencode auth
+  login`: pick OpenCode Zen and paste its key. devws keeps no key.
+- **Usage and credit.** What opencode agents used is in the board's USAGE
+  card, the header and `devws usage`, at what Zen billed. Zen has no balance
+  API: enter the balance on the screen (Set balance) and devws counts what was
+  spent since against it. An account with nothing left takes no new agents;
+  a credit or limit error from the provider makes the agent fall back too.
+- **What each may do.** Legacy floor agents run `devws-floor` (edits allowed),
+  seniors `devws-senior` (no edit tools). Reviewed workers use the managed
+  MCP-only adapter: reads, edits, commands, checkpoints and reports go through
+  authenticated worker tools. Read-only roles remain read-only.
+- **Reviewed teams.** OpenCode floor and senior workers use the existing
+  switches and models, whatever program the leader runs: a task put on Codex
+  tries Codex before Claude, but OpenCode switched on for a group stays first. The adapter
+  verifies its isolated configuration before becoming ready; unsupported
+  versions or inherited tool configuration cause startup fallback. Conversations
+  continue by exact session ID. After a turn claims work, a failure retains it
+  for explicit recovery instead of automatically replaying it.
+
+- **A refused worker moves on by itself.** When a worker's account refuses
+  it (no credit, a usage or rate limit) before the worker did anything, the
+  dispatcher restarts that worker on its next account with the same work, and
+  the account takes no new agents of the task for 30 minutes (`task_status`
+  accounts show `held`). A turn that already used a tool still waits for an
+  explicit recovery.
+
+- **Pick the account.** A new agent tries its role's programs, then every
+  other account that is on for its group. Ask the leader for a specific one
+  ("start a hammer on opencode"): `spawn_agent` with `account` starts it
+  there or fails with the reason, with no fallback.
+
+- **Verify a reply.** Ask the leader to call `probe_worker` with the ID of a
+  ready, idle managed OpenCode worker. The worker uses its selected model and
+  sends the result to the leader's inbox. The probe checks an exact reply
+  with worker tools disabled. It creates no order, execution item, or checks.
+  Reviewed work still goes through `send_order` with an accepted execution item.
+
 ## Known limits
 
-- Claude and Codex only; other programs (OpenCode, OpenRouter models) are not
-  there yet.
+- OpenCode supports floor and senior workers in legacy and reviewed tasks;
+  the leader remains on Claude or Codex. The reviewed adapter targets verified
+  OpenCode 1.19.6 on Linux and refuses other versions or platforms until verified.
+  OpenRouter models are not there yet.
+- An opencode account's credit left is an estimate from the balance you
+  entered.
 - A message for the leader is typed in when the leader is done or idle. If you
   are typing in its input at that moment it lands in your draft.
 - A planner or executor starts by answering "ready"; its first order waits for
   that answer.
 
+## Risk routing and budgets (reviewed tasks)
+
+Each baseline item has a `kind` (change, bugfix, feature, interface,
+investigation), and devAgentics computes how much process it gets from facts
+about the item. No agent judges it.
+
+- **light**: a change or bug fix in at most 3 file patterns that no other
+  lane builds on. The leader accepts it after a passing merge check, with a
+  written reason and no reviewer agent.
+- **strict**: anything touching auth, migrations, SQL, Docker, CI or
+  dependency files, changing stored data, sharing an interface with another
+  lane, or with 2 failures of its own work. It gets a test-first item and a
+  reviewer.
+- **standard**: everything else, which is today's review.
+
+The leader may raise an item's rigor, never lower it below the computed one.
+Lowering an approved item's rigor needs you.
+
+In `task.toml`:
+
+```toml
+routing = "off"        # every item at least standard: the full review, as before
+
+[budget]               # optional; nothing is limited without it
+max_tokens = 3000000   # what the team's models processed, as the panes report it (an estimate)
+max_hours = 4
+```
+
+At 80% of a limit the leader is told once. At the limit the task pauses,
+nothing is lost, and you are asked. To go on, raise the limit and run
+`devagentics task resume <task>`.
+
 ## Reliable execution
 
 See the [order, recovery and isolated-check guide](../../docs/user/devagentics-execution.md) for required report IDs, audited amendments, interrupt/resume, named check configuration and result formats.
 
-A step gets the task's `max_attempts` (5, in `task.toml`): orders, and reviews
-asking for changes. When they are used, devAgentics waits 15 minutes and gives
+A step gets the task's `max_attempts` (5, in `task.toml`) failures of its
+work: failed checks, reviews asking for changes, and failures the leader
+diagnosed as the work's. Re-checks after stale evidence, revision resets,
+stopped agents and the environment cost none, and every re-order after a
+failure carries the leader's diagnosis (see
+[How devAgentics works](how-it-works.md#failure-history-and-diagnosis)).
+Tasks started before this count from zero; a step that had already failed
+needs one diagnosis. When they are used, devAgentics waits 15 minutes and gives
 the step one more attempt on its own; if that fails too, the step shows a red
-✕ "failed" under NEEDS YOU and the leader escalates to you. `devagentics task
-attempts <task> <step> <limit>` allows that step more (and starts the retry
-over). In reviewed tasks,
-candidate checks test each merge candidate before its review, protected tests
-cannot be changed by the work they judge, and `devagentics task
+✕ "failed" and waits for the leader. The leader settles it without asking
+you: when the next attempt can succeed, it gives the step more with
+`allow_attempts` (its reason in the log and its next summary); otherwise it
+changes the approach or closes the step. You can still allow more yourself
+with `devagentics task attempts <task> <step> <limit>`. In reviewed tasks,
+candidate checks test each merge candidate before its review, system checks
+(`system` in a repo's check configuration) start the application and run its
+smoke or end-to-end tests at every milestone, protected tests cannot be changed by the work they judge, and `devagentics task
 codex-reviewers <task> on` lets Codex run the read-only reviewers.
 
 ## Measuring a team
@@ -418,7 +608,10 @@ When every worker account the task may use has reached the local 95% guard,
 or is switched off for the task, the leader asks for your
 explicit approval to continue above it for this task. It records the answer with
 `set_usage_limit_approval`, then calls `resume_task` after approval to restart
-existing blocked workers. Approval survives restarts until revoked and applies
+existing blocked workers. During resume, an unavailable worker with no pane
+or outstanding work can stay available for retry if a different worker is
+running. The leader's inbox explains why each worker was skipped.
+Approval survives restarts until revoked and applies
 only to this task. Tell the leader to revoke it to guard future launches again;
 running workers are left in place. Denial is not repeatedly prompted. Provider
 quota errors remain enforced. See the [usage-limit guide](../../docs/user/devagentics-execution.md#continue-above-the-worker-percentage-threshold).

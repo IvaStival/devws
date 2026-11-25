@@ -1,5 +1,5 @@
-use crate::agent_args::{AUTO, Kind};
 use crate::home::Home;
+use crate::providers::Kind;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -7,7 +7,69 @@ use std::path::{Path, PathBuf};
 
 /// Only the leader is built in: every other role is the user's own file.
 /// `roles/samples/` holds examples to copy.
-const BUILTIN: [(&str, &str); 1] = [("leader", include_str!("../roles/leader.md"))];
+const BUILTIN: [(&str, &str); 1] = [("leader", LEADER)];
+
+/// The built-in leader role.
+pub const LEADER: &str = include_str!("../roles/leader.md");
+
+/// The workflow part a role keeps in its prompt. Every other part, such as
+/// `accounts`, is left out and read on demand with `guide`.
+fn workflow_part(workflow: crate::execution::Workflow) -> &'static str {
+    match workflow {
+        crate::execution::Workflow::Reviewed => "reviewed",
+        crate::execution::Workflow::Legacy => "legacy",
+    }
+}
+
+fn part_start(line: &str) -> Option<&str> {
+    line.trim()
+        .strip_prefix("<!-- part:")
+        .and_then(|rest| rest.strip_suffix("-->"))
+        .map(str::trim)
+}
+
+fn is_part_end(line: &str) -> bool {
+    line.trim() == "<!-- /part -->"
+}
+
+/// A role's text as its prompt for a task on `workflow`: what is outside any
+/// part, plus that workflow's part. A role with no parts is unchanged.
+pub fn for_workflow(instructions: &str, workflow: crate::execution::Workflow) -> String {
+    let keep = workflow_part(workflow);
+    let mut current: Option<&str> = None;
+    let mut lines = Vec::new();
+    for line in instructions.lines() {
+        if let Some(name) = part_start(line) {
+            current = Some(name);
+        } else if is_part_end(line) {
+            current = None;
+        } else if current.is_none_or(|name| name == keep) {
+            lines.push(line);
+        }
+    }
+    lines.join("\n")
+}
+
+/// The names of a role's parts, in order.
+pub fn parts(instructions: &str) -> Vec<&str> {
+    instructions.lines().filter_map(part_start).collect()
+}
+
+/// One part of a role, without its markers.
+pub fn part(instructions: &str, name: &str) -> Option<String> {
+    let mut lines = instructions
+        .lines()
+        .skip_while(|line| part_start(line) != Some(name))
+        .skip(1)
+        .take_while(|line| !is_part_end(line));
+    let first = lines.next()?;
+    Some(
+        std::iter::once(first)
+            .chain(lines)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
 
 /// The sample roles, which the tests install into a home as the user's own.
 #[cfg(test)]
@@ -109,22 +171,17 @@ pub struct Fallback {
     pub sandbox: Option<String>,
 }
 
-/// The factory floor works on these and nothing else: a model the role names
-/// stays only when it is one of them (any Sonnet, any Luna).
-pub const FLOOR_CLAUDE_MODEL: &str = "sonnet";
-pub const FLOOR_CODEX_MODEL: &str = "gpt-6-luna";
-
 /// A floor agent's model on `kind`: the one named when it is of the floor's
-/// family, else the floor's.
-fn floor_model(kind: Kind, named: Option<&str>) -> String {
-    let (family, model) = match kind {
-        Kind::Claude => ("sonnet", FLOOR_CLAUDE_MODEL),
-        Kind::Codex => ("luna", FLOOR_CODEX_MODEL),
+/// family on that program (its provider's floor: any Sonnet, any Luna…), else
+/// the floor's; a program with no floor family keeps the one named.
+pub(crate) fn floor_model(kind: Kind, named: Option<&str>) -> Option<String> {
+    let Some((family, model)) = kind.provider().floor() else {
+        return named.map(str::to_string);
     };
-    match named {
+    Some(match named {
         Some(named) if named.contains(family) => named.to_string(),
         _ => model.to_string(),
-    }
+    })
 }
 
 impl Role {
@@ -170,22 +227,7 @@ impl Role {
             }
         }
         if self.fallback.is_none() && self.alternatives.is_empty() {
-            candidates.push(match kind {
-                Kind::Claude => Fallback {
-                    agent: "codex".into(),
-                    model: Some("gpt-6.1-sol".into()),
-                    effort: Some("medium".into()),
-                    approvals: Some("auto".into()),
-                    sandbox: None,
-                },
-                Kind::Codex => Fallback {
-                    agent: "claude".into(),
-                    model: None,
-                    effort: Some("high".into()),
-                    approvals: Some("auto".into()),
-                    sandbox: None,
-                },
-            });
+            candidates.push(kind.provider().default_fallback());
         }
         if self.group == Group::Floor {
             for (place, candidate) in candidates.iter_mut().enumerate() {
@@ -198,7 +240,7 @@ impl Role {
                     Kind::parse(&candidate.agent)
                 };
                 if let Some(candidate_kind) = candidate_kind {
-                    candidate.model = Some(floor_model(candidate_kind, candidate.model.as_deref()));
+                    candidate.model = floor_model(candidate_kind, candidate.model.as_deref());
                 }
             }
         }
@@ -367,21 +409,11 @@ impl Setting {
     /// The values the role's program takes; for a model, the known ones, as
     /// any other may be typed (new models come out faster than this list).
     pub fn choices(self, kind: Kind) -> &'static [&'static str] {
-        match (self, kind) {
-            (Setting::Model, Kind::Claude) => &[
-                "claude-opus-5-5",
-                "claude-sonnet-5-5",
-                "claude-haiku-5-5",
-                "claude-fable-5-1",
-            ],
-            (Setting::Model, Kind::Codex) => &["gpt-6.1-sol", "gpt-6-luna", "gpt-5.6-luna"],
-            (Setting::Effort, Kind::Claude) => &["low", "medium", "high", "xhigh", "max"],
-            (Setting::Effort, Kind::Codex) => &["minimal", "low", "medium", "high", "xhigh"],
-            // Claude's permission modes; Codex's -a, and devws's auto review.
-            (Setting::Approvals, Kind::Claude) => {
-                &["default", "acceptEdits", "plan", AUTO, "bypassPermissions"]
-            }
-            (Setting::Approvals, Kind::Codex) => &["untrusted", "on-request", "never", AUTO],
+        let provider = kind.provider();
+        match self {
+            Setting::Model => provider.models(),
+            Setting::Effort => provider.efforts(),
+            Setting::Approvals => provider.approval_modes(),
         }
     }
 }
@@ -534,6 +566,60 @@ pub fn provision_specialists(home: &Home) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_leader_prompt_carries_only_its_tasks_workflow() {
+        use crate::execution::Workflow;
+        let reviewed = for_workflow(LEADER, Workflow::Reviewed);
+        let legacy = for_workflow(LEADER, Workflow::Legacy);
+        assert!(
+            reviewed.contains("For reviewed tasks")
+                && !reviewed.contains("How you work (legacy tasks)")
+        );
+        assert!(
+            legacy.contains("How you work (legacy tasks)")
+                && !legacy.contains("For reviewed tasks")
+        );
+        for prompt in [&reviewed, &legacy] {
+            assert!(!prompt.contains("<!-- part"), "no markers reach the model");
+            assert!(
+                !prompt.contains("Account limits: the week"),
+                "accounts is read on demand"
+            );
+            assert!(
+                prompt.contains("topic=accounts"),
+                "but it says where to read it"
+            );
+            assert!(prompt.contains("## When to ask the user"));
+        }
+        assert!(
+            reviewed.len() + 6000 < LEADER.len(),
+            "{} of {}",
+            reviewed.len(),
+            LEADER.len()
+        );
+    }
+
+    #[test]
+    fn every_part_of_the_leader_can_be_read_alone() {
+        assert_eq!(parts(LEADER), ["reviewed", "legacy", "accounts"]);
+        for name in parts(LEADER) {
+            let text = part(LEADER, name).unwrap();
+            assert!(text.len() > 500 && !text.contains("<!-- "), "{name}");
+        }
+        assert!(
+            part(LEADER, "accounts")
+                .unwrap()
+                .contains("set_usage_limit_approval")
+        );
+        assert_eq!(part(LEADER, "nothing"), None);
+        assert_eq!(
+            for_workflow("Lead.\nNo parts.", crate::execution::Workflow::Legacy),
+            "Lead.\nNo parts."
+        );
+    }
+    use crate::agent_args::AUTO;
+    use crate::providers::{FLOOR_ANTIGRAVITY_MODEL, FLOOR_CLAUDE_MODEL, FLOOR_CODEX_MODEL};
     use tempfile::TempDir;
 
     fn home_with(files: &[(&str, &str)]) -> (TempDir, Home) {
@@ -661,6 +747,52 @@ mod tests {
     }
 
     #[test]
+    fn an_antigravity_floor_agent_runs_a_gemini_flash_then_falls_back_to_codex() {
+        let models = |text: &str| {
+            parse("hammer", text, Source::Home, "test")
+                .unwrap()
+                .worker_candidates(Kind::Antigravity)
+                .into_iter()
+                .map(|candidate| (candidate.agent, candidate.model.unwrap_or_default()))
+                .collect::<Vec<_>>()
+        };
+        let pair = |agent: &str, model: &str| (agent.to_string(), model.to_string());
+        let floor = "+++\nagent = \"antigravity\"\nwrites = true\ngroup = \"floor\"\n+++\nBuild.\n";
+        assert_eq!(
+            models(floor),
+            [
+                pair("antigravity", FLOOR_ANTIGRAVITY_MODEL),
+                pair("codex", FLOOR_CODEX_MODEL)
+            ]
+        );
+        let pro = floor.replace("group", "model = \"gemini-4-carbon-high\"\ngroup");
+        assert_eq!(
+            models(&pro)[0],
+            pair("antigravity", FLOOR_ANTIGRAVITY_MODEL)
+        );
+        let flash = floor.replace("group", "model = \"gemini-3.8-flash-high\"\ngroup");
+        assert_eq!(
+            models(&flash)[0],
+            pair("antigravity", "gemini-3.8-flash-high"),
+            "a Flash the role names stays"
+        );
+    }
+
+    #[test]
+    fn antigravity_settings_are_agy_s_models_efforts_and_modes() {
+        assert!(
+            Setting::Model
+                .choices(Kind::Antigravity)
+                .contains(&FLOOR_ANTIGRAVITY_MODEL)
+        );
+        assert_eq!(
+            Setting::Approvals.choices(Kind::Antigravity),
+            ["accept-edits", AUTO, "plan"]
+        );
+        assert!(Setting::Effort.choices(Kind::Antigravity).contains(&"max"));
+    }
+
+    #[test]
     fn the_floor_runs_only_on_claude_sonnet_and_codex_luna() {
         let models = |text: &str, kind| {
             parse("hammer", text, Source::Home, "test")
@@ -746,6 +878,14 @@ mod tests {
             "authorize_action",
             "accept_step",
             "reject_step",
+            "close_step",
+            "read_check_log",
+            "snapshot_path",
+            "read_file",
+            "search_code",
+            "git_log",
+            "git_diff",
+            "allow_attempts",
             "add_repo",
             "open_prs",
             "escalate",

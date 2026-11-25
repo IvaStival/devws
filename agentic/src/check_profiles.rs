@@ -24,6 +24,12 @@ pub struct RepositoryChecks {
     /// finds two lanes that pass alone and break together at that merge, not
     /// at the milestone.
     pub candidate: Vec<String>,
+    /// Profiles that prove the application works: each starts it and runs
+    /// smoke or end-to-end tests against it in one container (loopback only,
+    /// no network). Every milestone that covers this repo runs them, and
+    /// nothing earlier does. Left out when empty, like `lanes`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub system: Vec<String>,
     /// A lane's own commands for profile names: in that lane they replace the
     /// repo's (`test` runs `cd backend && …` in the back lane). Left out when
     /// empty, so a repo without them keeps its evidence signatures.
@@ -89,6 +95,73 @@ pub struct Phase {
     pub seconds: u64,
     pub diagnostic: String,
     pub log: PathBuf,
+}
+
+/// The lines of a failed check's log that say what failed (FAIL, errors,
+/// expected and received values), or its last lines when none do (a crash),
+/// without terminal colours: what the leader and reviewers, who cannot read
+/// the log, are told. Empty when the log cannot be read.
+pub fn failure_excerpt(log: &std::path::Path) -> String {
+    const LINES: usize = 12;
+    const MARKERS: [&str; 9] = [
+        "FAIL", "Error", "error:", "Failed", "failed", "✗", "⨯", "Expected", "Received",
+    ];
+    let Ok(text) = fs::read_to_string(log) else {
+        return String::new();
+    };
+    let lines: Vec<String> = text
+        .lines()
+        .map(without_colours)
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+    let failing: Vec<&String> = lines
+        .iter()
+        .filter(|line| !line.starts_with('✓') && MARKERS.iter().any(|marker| line.contains(marker)))
+        .take(LINES)
+        .collect();
+    let chosen: Vec<&String> = if failing.is_empty() {
+        lines[lines.len().saturating_sub(LINES)..].iter().collect()
+    } else {
+        failing
+    };
+    let excerpt = chosen
+        .iter()
+        .map(|line| line.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    excerpt.chars().take(1500).collect()
+}
+
+/// The last `lines` lines of a check's log, without terminal colours; empty
+/// when the log cannot be read.
+pub fn log_tail(log: &std::path::Path, lines: usize) -> String {
+    let Ok(text) = fs::read_to_string(log) else {
+        return String::new();
+    };
+    let all: Vec<&str> = text.lines().collect();
+    all[all.len().saturating_sub(lines)..]
+        .iter()
+        .map(|line| without_colours(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn without_colours(line: &str) -> String {
+    let mut plain = String::with_capacity(line.len());
+    let mut characters = line.chars();
+    while let Some(character) = characters.next() {
+        if character == '\x1b' {
+            for next in characters.by_ref() {
+                if next.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            plain.push(character);
+        }
+    }
+    plain
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -190,7 +263,22 @@ pub fn validate(config: &RepositoryChecks) -> Result<()> {
         bail!("select at most 32 candidate profiles");
     }
 
-    for name in config.selected.iter().chain(&config.candidate) {
+    let mut system = std::collections::BTreeSet::new();
+    for name in &config.system {
+        if !system.insert(name) {
+            bail!("duplicate system profile {name}");
+        }
+    }
+    if config.system.len() > 8 {
+        bail!("select at most 8 system profiles");
+    }
+
+    for name in config
+        .selected
+        .iter()
+        .chain(&config.candidate)
+        .chain(&config.system)
+    {
         let profile = config
             .checks
             .get(name)
@@ -201,7 +289,9 @@ pub fn validate(config: &RepositoryChecks) -> Result<()> {
         let environment = config
             .environments
             .get(&profile.environment)
-            .with_context(|| format!("unknown environment {}", profile.environment))?;
+            .with_context(|| {
+                format!("unknown environment {:?} for check {name}; declare it in this repository's environments", profile.environment)
+            })?;
         for key in environment.values.keys().chain(environment.sources.keys()) {
             if key.is_empty()
                 || key.len() > 128
@@ -261,13 +351,28 @@ pub fn configure(task: &Task, repo: &str, profiles: RepositoryChecks) -> Result<
 
 /// One check/report operation per order. OS locks release on process exit.
 pub fn operation(task: &Task, order: &str) -> Result<File> {
-    if !task
-        .state()?
-        .orders
-        .iter()
-        .any(|candidate| candidate.id == order)
-    {
-        bail!("unknown order {order}");
+    let state = task.state()?;
+    if !state.orders.iter().any(|candidate| candidate.id == order) {
+        // The right IDs, so the caller does not try others one by one.
+        let open: Vec<String> = state
+            .orders
+            .iter()
+            .filter(|candidate| candidate.status == crate::state::OrderStatus::Open)
+            .map(|candidate| {
+                format!(
+                    "{} ({}, step {})",
+                    candidate.id, candidate.agent, candidate.step
+                )
+            })
+            .collect();
+        bail!(
+            "unknown order {order}; the open orders are {}",
+            if open.is_empty() {
+                "none".to_string()
+            } else {
+                open.join(", ")
+            }
+        );
     }
     if !order
         .chars()
@@ -298,6 +403,25 @@ pub fn operation(task: &Task, order: &str) -> Result<File> {
 /// a moment; a real check or report holds it for seconds or minutes.
 const OPERATION_LOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// The checks an order runs: its repo's, as its agent's lane sees them, with
+/// the profiles the order selected; none when it selects none. A run, its
+/// staleness check and every later validation compare this same value.
+fn order_checks(
+    config: &crate::task::TaskConfig,
+    state: &crate::state::State,
+    order: &Order,
+    agent: &crate::state::Agent,
+) -> Option<RepositoryChecks> {
+    let mut selected = config
+        .check_profiles
+        .get(&agent.repo)
+        .map(|checks| checks.for_lane(agent.lane.as_deref()));
+    if let (Some(checks), Some(names)) = (&mut selected, state.order_profiles.get(&order.id)) {
+        checks.selected = names.clone();
+    }
+    selected.filter(|checks| !checks.selected.is_empty())
+}
+
 pub fn configuration(task: &Task, order: &Order) -> Result<Option<RepositoryChecks>> {
     let state = task.state()?;
     let agent = state.agent(&order.agent).context("order agent missing")?;
@@ -309,19 +433,15 @@ pub fn configuration(task: &Task, order: &Order) -> Result<Option<RepositoryChec
             "configured checks differ from approved baseline"
         );
     }
-    let mut selected = config
-        .check_profiles
-        .get(&agent.repo)
-        .map(|checks| checks.for_lane(agent.lane.as_deref()));
-    if let Some(names) = state.order_profiles.get(&order.id) {
-        if selected.is_none() && !names.is_empty() {
-            bail!("named profile configuration was removed");
-        }
-        if let Some(config) = &mut selected {
-            config.selected = names.clone();
-        }
+    if !config.check_profiles.contains_key(&agent.repo)
+        && state
+            .order_profiles
+            .get(&order.id)
+            .is_some_and(|names| !names.is_empty())
+    {
+        bail!("named profile configuration was removed");
     }
-    let selected = selected.filter(|config| !config.selected.is_empty());
+    let selected = order_checks(&config, &state, order, agent);
     if order.check.is_some() && selected.is_some() {
         bail!("legacy command and named check profiles cannot be mixed");
     }
@@ -399,7 +519,7 @@ pub fn execute(task: &Task, order: &Order, timeout: Duration) -> Result<Evidence
                     &order.forbidden,
                 )? != work
             {
-                bail!("cached evidence is stale");
+                bail!(crate::failures::Stale("cached evidence is stale".into()));
             }
             Ok(())
         })?;
@@ -439,6 +559,7 @@ pub fn execute(task: &Task, order: &Order, timeout: Duration) -> Result<Evidence
                         crate::check_profiles::Container {
                             agent: &agent.id,
                             lane: agent.lane.as_deref(),
+                            targets: &order.targets,
                         },
                         name,
                         &config.checks[name],
@@ -491,18 +612,9 @@ pub fn execute(task: &Task, order: &Order, timeout: Duration) -> Result<Evidence
     let _control = task.control_lock()?;
     task.transaction(|tx| {
         orders::validate_snapshot(&tx.state, order, evidence.revision)?;
-        let current_config = task.config()?;
-        let mut current_profiles = current_config.check_profiles.get(&agent.repo).cloned();
-        if let Some(profiles) = &mut current_profiles
-            && let Some(names) = tx.state.order_profiles.get(&order.id)
-        {
-            profiles.selected = names.clone();
-        }
+        let current_profiles = order_checks(&task.config()?, &tx.state, order, agent);
         if checks::head(&repo.worktree)? != evidence.head
-            || current_profiles
-                .filter(|profiles| !profiles.selected.is_empty())
-                .as_ref()
-                != config.as_ref()
+            || current_profiles.as_ref() != config.as_ref()
             || checks::inspect(
                 &repo.worktree,
                 &order.base,
@@ -510,7 +622,9 @@ pub fn execute(task: &Task, order: &Order, timeout: Duration) -> Result<Evidence
                 &order.forbidden,
             )? != work
         {
-            bail!("check inputs changed; evidence is stale");
+            bail!(crate::failures::Stale(
+                "check inputs changed; evidence is stale".into()
+            ));
         }
         tx.state
             .timing
@@ -539,16 +653,12 @@ pub fn validate_configuration(
         );
     }
 
-    let mut selected = config.check_profiles.get(&agent.repo).cloned();
-    if let Some(config) = &mut selected
-        && let Some(names) = state.order_profiles.get(&order.id)
-    {
-        config.selected = names.clone();
-    }
-    let selected = selected.filter(|config| !config.selected.is_empty());
+    let selected = order_checks(&config, state, order, agent);
     let signature = signature(state, selected.as_ref(), order)?;
     if !same_configuration(state.workflow, &signature, &evidence.configuration)? {
-        bail!("check configuration changed; evidence is stale");
+        bail!(crate::failures::Stale(
+            "check configuration changed; evidence is stale".into()
+        ));
     }
     Ok(())
 }
@@ -569,8 +679,12 @@ fn same_configuration(
     }
     let parts = |signature: &str| -> Result<Vec<serde_json::Value>> {
         let mut parts: Vec<serde_json::Value> = serde_json::from_str(signature)?;
-        // (profiles, check, host environment, runner): leave the host out.
-        ensure!(parts.len() == 4, "unreadable check configuration signature");
+        // (profiles, check, host environment, runner, targets): leave the
+        // host out. Evidence from before targets has four parts: it differs.
+        ensure!(
+            (4..=5).contains(&parts.len()),
+            "unreadable check configuration signature"
+        );
         parts.remove(2);
         Ok(parts)
     };
@@ -587,20 +701,34 @@ fn signature(
     } else {
         None
     };
+    // A pass on the targets never stands in for one everywhere.
     Ok(serde_json::to_string(&(
         config,
         &order.check,
         baseline(),
         runner,
+        &order.targets,
     ))?)
 }
-fn shell_quote(value: &str) -> String {
+/// The script a check runs in its container: the environment, where its
+/// result goes, the order's targets (validated paths, orders.rs
+/// `validate_paths`; empty: everywhere), then the command.
+fn container_script(prefix: &str, targets: &[String], command: &str) -> String {
+    format!(
+        "{prefix}export DEVAGENTICS_RESULT=/artifacts/result.json\nexport DEVAGENTICS_TARGETS={}\n{command}\n",
+        shell_quote(&targets.join(" "))
+    )
+}
+
+pub(crate) fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
-/// Where a check runs: the runner workspace of `agent`, in `lane`'s image.
+/// Where a check runs: the runner workspace of `agent`, in `lane`'s image,
+/// on `targets` (an order's; none: everywhere).
 pub(crate) struct Container<'a> {
     pub agent: &'a str,
     pub lane: Option<&'a str>,
+    pub targets: &'a [String],
 }
 
 pub(crate) fn run_container_profile(
@@ -653,11 +781,7 @@ pub(crate) fn run_container_profile(
             crate::runner::result_bytes(&result_path)?;
             fs::remove_file(&result_path)?;
         }
-        let command = format!(
-            r#"{prefix}export DEVAGENTICS_RESULT=/artifacts/result.json
-{command}
-"#
-        );
+        let command = container_script(&prefix, container.targets, command);
         let state = task.state()?;
         let workspace = state
             .runner_workspaces
@@ -903,10 +1027,70 @@ fn run_profile(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_check_gets_its_orders_targets_and_its_evidence_says_them() {
+        let script = super::container_script(
+            "export A='1';\n",
+            &["web/src/FileMenu.test.tsx".into(), "web/src/menu".into()],
+            "npm test -- $DEVAGENTICS_TARGETS",
+        );
+        assert_eq!(
+            script,
+            "export A='1';\nexport DEVAGENTICS_RESULT=/artifacts/result.json\nexport DEVAGENTICS_TARGETS='web/src/FileMenu.test.tsx web/src/menu'\nnpm test -- $DEVAGENTICS_TARGETS\n"
+        );
+        assert!(
+            super::container_script("", &[], "true").contains("export DEVAGENTICS_TARGETS=''\n"),
+            "no targets: everywhere"
+        );
+        use crate::execution::Workflow;
+        let targeted = r#"[{"selected":["test"]},null,{},{"image":"node"},["web/src/a.test.tsx"]]"#;
+        let everywhere = r#"[{"selected":["test"]},null,{},{"image":"node"},[]]"#;
+        let before = r#"[{"selected":["test"]},null,{},{"image":"node"}]"#;
+        assert!(!super::same_configuration(Workflow::Reviewed, targeted, everywhere).unwrap());
+        assert!(
+            !super::same_configuration(Workflow::Reviewed, everywhere, before).unwrap(),
+            "older evidence runs again"
+        );
+    }
+
+    // The leader has no shell and reviewers' sandboxes hold only the
+    // worktree: a failed check's own lines are all they get of its log.
+    #[test]
+    fn a_failure_excerpt_keeps_the_failing_lines_without_colours() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let log = dir.path().join("phase-2.log");
+        std::fs::write(
+            &log,
+            "  \x1b[32m✓\x1b[39m it passes\n\n\x1b[41m FAIL \x1b[49m src/a.test.tsx > keeps the mutation\n\x1b[31mAssertionError\x1b[39m: expected undefined to be 'mutation remains'\n  ✓ another pass\n",
+        )
+        .unwrap();
+        let excerpt = super::failure_excerpt(&log);
+        assert!(
+            excerpt.contains("FAIL  src/a.test.tsx > keeps the mutation")
+                && excerpt.contains("AssertionError: expected undefined"),
+            "{excerpt}"
+        );
+        assert!(
+            !excerpt.contains('\x1b') && !excerpt.contains("it passes"),
+            "{excerpt}"
+        );
+
+        // Nothing says which test failed (a crash): its last lines.
+        std::fs::write(&log, "   PASS  Tests\\Unit\\A\nback-check: note: backend/.env.example is not in the snapshot\n").unwrap();
+        let excerpt = super::failure_excerpt(&log);
+        assert!(
+            excerpt.contains("Tests\\Unit\\A") && excerpt.contains(".env.example"),
+            "{excerpt}"
+        );
+        assert_eq!(super::failure_excerpt(&dir.path().join("missing.log")), "");
+    }
+
+    #[test]
     fn a_reviewed_check_does_not_go_stale_in_another_process() {
         use crate::execution::Workflow;
-        let worker = r#"[{"selected":["lint"]},null,{"PATH":"/codex/arg0-AAA:/usr/bin"},{"image":"node"}]"#;
-        let leader = r#"[{"selected":["lint"]},null,{"PATH":"/codex/arg0-BBB:/usr/bin"},{"image":"node"}]"#;
+        let worker =
+            r#"[{"selected":["lint"]},null,{"PATH":"/codex/arg0-AAA:/usr/bin"},{"image":"node"}]"#;
+        let leader =
+            r#"[{"selected":["lint"]},null,{"PATH":"/codex/arg0-BBB:/usr/bin"},{"image":"node"}]"#;
         assert!(same_configuration(Workflow::Reviewed, leader, worker).unwrap());
         let other_profiles = r#"[{"selected":["test"]},null,{"PATH":"/usr/bin"},{"image":"node"}]"#;
         assert!(!same_configuration(Workflow::Reviewed, other_profiles, worker).unwrap());
@@ -944,6 +1128,24 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn a_system_check_names_a_declared_profile_once() {
+        let mut checks = web_and_back();
+        checks.system = vec!["lint".into()];
+        validate(&checks).unwrap();
+        checks.system = vec!["e2e".into()];
+        let error = format!("{:#}", validate(&checks).unwrap_err());
+        assert!(error.contains("e2e"), "{error}");
+        checks.system = vec!["lint".into(), "lint".into()];
+        let error = format!("{:#}", validate(&checks).unwrap_err());
+        assert!(error.contains("duplicate system profile"), "{error}");
+        let empty = serde_json::to_value(web_and_back()).unwrap();
+        assert!(
+            empty.get("system").is_none(),
+            "old evidence signatures stay the same"
+        );
+    }
+
     fn web_and_back() -> RepositoryChecks {
         RepositoryChecks {
             environments: BTreeMap::from([("testing".into(), Environment::default())]),
@@ -953,6 +1155,7 @@ mod tests {
             ]),
             selected: vec!["lint".into(), "test".into()],
             candidate: vec!["lint".into()],
+            system: Vec::new(),
             lanes: BTreeMap::from([(
                 "back".into(),
                 BTreeMap::from([("test".into(), profile("cd backend && php artisan test"))]),
@@ -1180,11 +1383,15 @@ mod tests {
                 check_profiles: Default::default(),
                 repos: vec![],
                 lanes: vec![],
+                routing: Default::default(),
+                budget: Default::default(),
             },
         )
         .unwrap();
         task.transaction(|tx| {
             tx.state.orders.push(Order {
+                read: Vec::new(),
+                targets: Vec::new(),
                 id: "o1".into(),
                 step: "s1".into(),
                 agent: "a".into(),

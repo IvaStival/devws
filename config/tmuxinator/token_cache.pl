@@ -40,6 +40,11 @@ sub compact_record {
     my ($record) = @_;
     return undef unless ref $record eq 'HASH';
     my $type = $record->{type} || '';
+    # Antigravity's transcript: a step per response, its usage on the step.
+    if ($type eq 'PLANNER_RESPONSE') {
+        return undef unless defined $record->{output_tokens} || $record->{model};
+        return fields($record, qw(type created_at step_index model input_tokens output_tokens cache_read_tokens));
+    }
     my $result = fields($record, qw(type timestamp));
     if ($type eq 'assistant') {
         my $message = $record->{message};
@@ -113,7 +118,7 @@ sub records_for {
     my $before = fingerprint($path);
     return '' unless defined $before;
     # Bump the schema when the retained fields or parser semantics change.
-    my $entry = $cache_directory . '/' . sha256_hex("v3\0$path") . '.json';
+    my $entry = $cache_directory . '/' . sha256_hex("v4\0$path") . '.json';
     if ($can_cache && !-l $entry && open my $cached, '<:raw', $entry) {
         my $contents = do { local $/; <$cached> };
         close $cached;

@@ -1,0 +1,58 @@
+{
+  "model": "gpt-6.1-sol",
+  "effort": "medium",
+  "expected": {
+    "id": "o48",
+    "step": "notes-api",
+    "plan": "execution-approved-v1",
+    "allowed": [
+      "api/notes_api.py"
+    ]
+  },
+  "arms": {
+    "full": {
+      "payload_bytes": 20525,
+      "usage": {
+        "input_tokens": 20201,
+        "cached_input_tokens": 12288,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 31,
+        "reasoning_output_tokens": 0
+      },
+      "score": 4,
+      "matched": true,
+      "provider_exit": 0,
+      "observed": {
+        "id": "o48",
+        "step": "notes-api",
+        "plan": "execution-approved-v1",
+        "allowed": [
+          "api/notes_api.py"
+        ]
+      }
+    },
+    "brief": {
+      "payload_bytes": 785,
+      "usage": {
+        "input_tokens": 15835,
+        "cached_input_tokens": 12288,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 31,
+        "reasoning_output_tokens": 0
+      },
+      "score": 4,
+      "matched": true,
+      "provider_exit": 0,
+      "observed": {
+        "id": "o48",
+        "step": "notes-api",
+        "plan": "execution-approved-v1",
+        "allowed": [
+          "api/notes_api.py"
+        ]
+      }
+    }
+  },
+  "input_reduction_percent": 21.61,
+  "scope": "one paired interpretation of the same reconstructed active Worker order"
+}

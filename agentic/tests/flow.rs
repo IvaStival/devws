@@ -15,6 +15,247 @@ struct World {
     origin: TempDir,
 }
 
+#[test]
+fn opted_in_leader_cli_matches_mcp_and_stays_in_its_worktree() {
+    let world = World::new();
+    let repo = world.repo.path();
+    let start = || {
+        world.ok(None, &["task", "start", repo.to_str().unwrap()], "");
+    };
+    start();
+    let read = |folder: &Path, arguments: &[&str]| {
+        world
+            .command(None)
+            .current_dir(folder)
+            .args(arguments)
+            .output()
+            .unwrap()
+    };
+    let progress = ["leader-read", "feat-x", "progress"];
+    assert!(!read(repo, &progress).status.success());
+    world.ok(None, &["task", "codex-team", "feat-x", "on"], "");
+    world.ok(None, &["task", "leader-cli", "feat-x", "on"], "");
+    let args_file = world.ok(
+        None,
+        &["task", "start", repo.to_str().unwrap(), "--leader", "codex"],
+        "",
+    );
+    let args = fs::read_to_string(args_file.lines().nth(2).unwrap()).unwrap();
+    assert!(args.contains(" leader-read feat-x progress`"));
+    assert!(args.contains(" leader-read feat-x inbox`"));
+    assert!(args.contains("\0read-only\0"));
+    assert!(args.contains("--leader-cli-catalog"));
+    let catalog = |arguments: &[&str]| {
+        let response: Value = serde_json::from_str(&world.ok(
+            None,
+            arguments,
+            "{\"id\":1,\"method\":\"tools/list\"}\n",
+        ))
+        .unwrap();
+        response["result"]["tools"].as_array().unwrap().clone()
+    };
+    let full = catalog(&["mcp", "feat-x"]);
+    let pilot_args = ["mcp", "feat-x", "--leader-cli-catalog"];
+    let pilot = catalog(&pilot_args);
+    assert_eq!(pilot.len(), full.len());
+    for (narrow, regular) in pilot.iter().zip(&full) {
+        if regular["name"] == "task_status" {
+            assert_eq!(narrow["name"], "task_status");
+            assert_eq!(narrow["inputSchema"]["properties"], json!({}));
+            assert!(regular["inputSchema"]["properties"]["view"].is_object());
+        } else if regular["name"] == "application_workflow" {
+            assert!(
+                narrow["description"]
+                    .as_str()
+                    .unwrap()
+                    .contains("combined read")
+            );
+            assert!(
+                narrow["description"]
+                    .as_str()
+                    .unwrap()
+                    .contains("inbox_ack")
+            );
+            assert_eq!(narrow["inputSchema"], regular["inputSchema"]);
+        } else {
+            assert_eq!(narrow, regular);
+        }
+    }
+    assert!(serde_json::to_vec(&pilot).unwrap().len() < serde_json::to_vec(&full).unwrap().len());
+
+    let state_path = world.path("home/tasks/feat-x/state.json");
+    let mut state: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    state["orders"] = json!([{
+        "id": "o1", "step": "implementation", "agent": "executor-1",
+        "text": "Implement the change", "allowed": [], "forbidden": [],
+        "check": null, "base": "fixture-base", "status": "closed"
+    }]);
+    state["queue"] = json!([
+        {"id": 20, "to": "leader", "text": "Review is ready", "order": null},
+        {"id": 21, "to": "executor-1", "text": "Worker-only order", "order": null}
+    ]);
+    fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    let before = fs::read(&state_path).unwrap();
+    let order = ["leader-read", "feat-x", "order", "o1"];
+    for (arguments, input) in [
+        (progress.as_slice(), json!({"view": "progress"})),
+        (order.as_slice(), json!({"view": "order", "order": "o1"})),
+    ] {
+        let result = read(repo, arguments);
+        assert!(result.status.success(), "{:?}", result.stderr);
+        let mcp = world.leader("feat-x", &[("task_status", input)]);
+        assert!(!mcp[0].0, "{}", mcp[0].1);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&result.stdout).unwrap(),
+            serde_json::from_str::<Value>(&mcp[0].1).unwrap()
+        );
+    }
+    let guide = read(repo, &["leader-read", "feat-x", "guide", "accounts"]);
+    assert!(guide.status.success(), "{:?}", guide.stderr);
+    let mcp = world.leader(
+        "feat-x",
+        &[(
+            "application_workflow",
+            json!({"action": "guide", "input": {"topic": "accounts"}}),
+        )],
+    );
+    assert!(!mcp[0].0, "{}", mcp[0].1);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&guide.stdout).unwrap(),
+        serde_json::from_str::<Value>(&mcp[0].1).unwrap()
+    );
+    assert_eq!(before, fs::read(&state_path).unwrap());
+    let inbox = ["leader-read", "feat-x", "inbox"];
+    let result = read(repo, &inbox);
+    assert!(result.status.success(), "{:?}", result.stderr);
+    let direct: Value = serde_json::from_slice(&result.stdout).unwrap();
+    let mcp = world.leader(
+        "feat-x",
+        &[("application_workflow", json!({"action":"leader_inbox"}))],
+    );
+    assert!(!mcp[0].0, "{}", mcp[0].1);
+    assert_eq!(direct, serde_json::from_str::<Value>(&mcp[0].1).unwrap());
+    assert_eq!(direct["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(direct["messages"][0]["id"], 20);
+    assert_eq!(before, fs::read(&state_path).unwrap());
+    let acknowledgment = world.leader(
+        "feat-x",
+        &[(
+            "application_workflow",
+            json!({"action":"inbox_ack","input":{"ids":[20]}}),
+        )],
+    );
+    assert!(!acknowledgment[0].0, "{}", acknowledgment[0].1);
+    let after: Value = serde_json::from_slice(&read(repo, &inbox).stdout).unwrap();
+    assert_eq!(after["messages"], json!([]));
+    let state: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert_eq!(state["queue"].as_array().unwrap().len(), 1);
+    assert_eq!(state["queue"][0]["id"], 21);
+    assert!(!read(world.dir.path(), &progress).status.success());
+    assert!(
+        !read(repo, &["leader-read", "feat-x", "order", "missing"])
+            .status
+            .success()
+    );
+    assert!(
+        !read(repo, &["leader-read", "../feat-x", "progress"])
+            .status
+            .success()
+    );
+    world.ok(None, &["task", "leader-cli", "feat-x", "off"], "");
+    assert_eq!(catalog(&pilot_args), full);
+    let result = read(repo, &progress);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("CLI_DISABLED"));
+}
+
+#[test]
+fn a_claude_leader_with_leader_reads_on_may_run_only_its_read_command() {
+    let world = World::new();
+    let repo = world.repo.path();
+    let start = || {
+        let printed = world.ok(None, &["task", "start", repo.to_str().unwrap()], "");
+        fs::read_to_string(printed.lines().nth(2).unwrap()).unwrap()
+    };
+    let off = start();
+    assert!(
+        off.contains("\0--tools\0\0"),
+        "no shell while reads are off"
+    );
+    assert!(off.contains("\0--allowedTools\0mcp__devagentics\0"));
+    assert!(!off.contains("leader-read"));
+    world.ok(None, &["task", "leader-cli", "feat-x", "on"], "");
+    let on = start();
+    assert!(on.contains("\0--tools\0Bash\0"));
+    assert!(on.contains("\0--permission-mode\0dontAsk\0"));
+    let allowed = on
+        .split('\0')
+        .skip_while(|argument| *argument != "--allowedTools")
+        .nth(1)
+        .unwrap();
+    let rule = allowed.strip_prefix("mcp__devagentics,Bash(").unwrap();
+    let prefix = rule.strip_suffix(":*)").unwrap();
+    assert!(prefix.ends_with(" leader-read feat-x"), "{allowed}");
+    assert!(
+        on.contains(&format!("`{prefix} progress`")),
+        "the prompt's command is the one the rule allows"
+    );
+    let config: Value = serde_json::from_str(
+        &fs::read_to_string(world.path("home").join("tasks/feat-x/mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        config["mcpServers"]["devagentics"]["args"],
+        json!(["mcp", "feat-x", "--leader-cli-catalog"])
+    );
+    let progress = world
+        .command(None)
+        .current_dir(repo)
+        .args(["leader-read", "feat-x", "progress"])
+        .output()
+        .unwrap();
+    assert!(progress.status.success(), "{:?}", progress.stderr);
+}
+
+#[test]
+fn leader_reads_stay_on_mcp_when_claudes_version_was_not_checked() {
+    let world = World::new();
+    let repo = world.repo.path();
+    world.ok(None, &["task", "start", repo.to_str().unwrap()], "");
+    world.ok(None, &["task", "leader-cli", "feat-x", "on"], "");
+    fs::write(world.path("claude-version"), "2.2.0 (Claude Code)\n").unwrap();
+    let printed = world.ok(None, &["task", "start", repo.to_str().unwrap()], "");
+    let args = fs::read_to_string(printed.lines().nth(2).unwrap()).unwrap();
+    assert!(args.contains("\0--tools\0\0"), "no shell");
+    assert!(!args.contains("leader-read"));
+    let config = fs::read_to_string(world.path("home/tasks/feat-x/mcp.json")).unwrap();
+    assert!(
+        !config.contains("--leader-cli-catalog"),
+        "the whole catalog"
+    );
+    let log = fs::read_to_string(world.path("home/tasks/feat-x/log.jsonl")).unwrap();
+    assert!(
+        log.contains("leader reads stay on MCP: claude 2.2.0 (Claude Code) is not a version"),
+        "{log}"
+    );
+}
+
+#[test]
+fn the_user_turns_risk_routing_off_for_a_control_run_and_on_again() {
+    let world = World::new();
+    world.ok(
+        None,
+        &["task", "start", world.repo.path().to_str().unwrap()],
+        "",
+    );
+    let config = || fs::read_to_string(world.path("home/tasks/feat-x/task.toml")).unwrap();
+    assert!(!config().contains("routing = \"off\""));
+    world.ok(None, &["task", "routing", "feat-x", "off"], "");
+    assert!(config().contains("routing = \"off\""), "{}", config());
+    world.ok(None, &["task", "routing", "feat-x", "on"], "");
+    assert!(config().contains("routing = \"on\""), "{}", config());
+}
+
 fn git(dir: &Path, arguments: &[&str]) {
     let status = Command::new("git")
         .arg("-C")
@@ -66,6 +307,12 @@ case "$1 $2" in
 esac
 "#,
         );
+        // The leader programs' versions: the ones leader reads were checked
+        // on, unless a test writes `claude-version`.
+        script(
+            &bin.join("claude"),
+            "#!/bin/sh\ncat \"$DEVAGENTICS_TEST_DIR/claude-version\" 2>/dev/null || echo '2.1.331 (Claude Code)'\n",
+        );
         script(
             &bin.join("tmux"),
             "#!/bin/sh\ncase \"$1\" in list-panes) echo '%1 agent' ;; esac\n",
@@ -116,6 +363,7 @@ esac
             .env("DEVAGENTICS_DEVWS", self.path("bin/devws"))
             .env("DEVAGENTICS_TMUX", self.path("bin/tmux"))
             .env("DEVAGENTICS_GH", self.path("bin/gh"))
+            .env("DEVAGENTICS_PROGRAM_CLAUDE", self.path("bin/claude"))
             .env("DEVAGENTICS_TEST_DIR", self.dir.path())
             .env_remove("TMUX_PANE");
         if let Some(pane) = pane {

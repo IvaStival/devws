@@ -37,6 +37,46 @@ pub struct Dispatcher<'a> {
     grace: Duration,
     /// When each agent was first seen done with an open order.
     done_since: HashMap<String, Instant>,
+    /// The team's usage, read from its panes no more than once a minute.
+    usage: crate::board_usage::UsageReader,
+    budget_checked: Option<Instant>,
+}
+
+/// How often the budget is checked: usage changes in minutes, not seconds.
+const BUDGET_EVERY: Duration = Duration::from_secs(30);
+
+/// Where the team stands against its budget.
+#[derive(Debug, PartialEq)]
+enum Spend {
+    Within,
+    /// 80% or more of a limit: what to tell the leader.
+    Near(String),
+    /// A limit reached: why the task pauses.
+    Reached(String),
+}
+
+fn spend(budget: &crate::task::Budget, tokens: Option<u64>, hours: f64) -> Spend {
+    let mut near = None;
+    let mut measures = Vec::new();
+    if let (Some(limit), Some(tokens)) = (budget.max_tokens, tokens) {
+        measures.push((
+            tokens as f64,
+            limit as f64,
+            format!("{tokens} of {limit} tokens"),
+        ));
+    }
+    if let Some(limit) = budget.max_hours {
+        measures.push((hours, limit, format!("{hours:.1} of {limit} hours")));
+    }
+    for (used, limit, text) in measures {
+        if used >= limit {
+            return Spend::Reached(text);
+        }
+        if used >= 0.8 * limit {
+            near.get_or_insert(text);
+        }
+    }
+    near.map_or(Spend::Within, Spend::Near)
 }
 
 impl<'a> Dispatcher<'a> {
@@ -52,6 +92,8 @@ impl<'a> Dispatcher<'a> {
             devws,
             grace,
             done_since: HashMap::new(),
+            usage: crate::board_usage::UsageReader::new(Duration::from_secs(60)),
+            budget_checked: None,
         }
     }
 
@@ -108,8 +150,11 @@ impl<'a> Dispatcher<'a> {
         self.keep_the_leader_waiting()?;
         if !state.paused {
             self.retry_spent_steps(crate::log::now())?;
+            self.remind_left_reviews(crate::log::now())?;
+            self.keep_within_budget(crate::log::now())?;
         }
-        if !state.paused {
+        // The budget may have paused the task in this pass.
+        if !self.task.state()?.paused {
             match state.workflow {
                 crate::execution::Workflow::Legacy => self.tell_the_leader()?,
                 crate::execution::Workflow::Reviewed => self.nudge_the_leader()?,
@@ -118,7 +163,101 @@ impl<'a> Dispatcher<'a> {
         Ok(())
     }
 
-    /// A reviewed leader reads its messages only through `leader_inbox`, so
+    /// Tells the leader once at 80% of a limit, and pauses the task at the
+    /// limit for the user to decide. A log line names the limit it was for,
+    /// so a raised limit warns again.
+    fn keep_within_budget(&mut self, now: u64) -> Result<()> {
+        let budget = self.task.config()?.budget;
+        if budget.is_unlimited()
+            || self
+                .budget_checked
+                .is_some_and(|checked| checked.elapsed() < BUDGET_EVERY)
+        {
+            return Ok(());
+        }
+        self.budget_checked = Some(Instant::now());
+        let tokens = budget
+            .max_tokens
+            // Usage that cannot be read this time counts as unknown: a
+            // pane's hiccup must not stop the dispatcher's pass.
+            .and_then(|_| self.usage.of_team(self.task, self.devws).ok())
+            .map(|team| {
+                let usage = crate::board_usage::total(&team.by_role);
+                usage.input + usage.output + usage.cache
+            });
+        let log: Vec<crate::log::Entry> = self
+            .task
+            .log_lines()?
+            .iter()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect();
+        let started = log.iter().map(|entry| entry.at).min().unwrap_or(now);
+        let hours = now.saturating_sub(started) as f64 / 3600.0;
+        let limit = format!(
+            "(limit: {} tokens, {} hours)",
+            budget
+                .max_tokens
+                .map_or("no".into(), |tokens| tokens.to_string()),
+            budget
+                .max_hours
+                .map_or("no".into(), |hours| hours.to_string())
+        );
+        match spend(&budget, tokens, hours) {
+            Spend::Within => Ok(()),
+            Spend::Near(used) => {
+                let said = log.iter().any(|entry| {
+                    entry.kind == Kind::Budget
+                        && entry.text.starts_with("80%")
+                        && entry.text.ends_with(&limit)
+                });
+                if said {
+                    return Ok(());
+                }
+                self.task.transaction(|tx| {
+                    tx.state.say(
+                        LEADER,
+                        format!(
+                            "BUDGET: 80% used ({used}). Finish what is open, start nothing that is not needed, and tell the user what is left."
+                        ),
+                    );
+                    tx.log(Kind::Budget, None, None, &format!("80% used: {used} {limit}"));
+                    Ok(())
+                })
+            }
+            Spend::Reached(used) => {
+                let config = self.task.config()?;
+                self.task.transaction(|tx| {
+                    let accepted = tx
+                        .state
+                        .steps
+                        .iter()
+                        .filter(|step| step.status == StepStatus::Accepted)
+                        .count();
+                    tx.state.paused = true;
+                    tx.log(Kind::Budget, None, None, &format!("reached: {used} {limit}"));
+                    tx.log(Kind::Pause, None, None, "paused: the budget is reached");
+                    tx.log(
+                        Kind::Escalate,
+                        None,
+                        None,
+                        &format!(
+                            "The budget is reached ({used}); the task is paused and nothing is lost. {accepted} of {} steps are accepted (devagentics task status {}). To go on, raise [budget] in task.toml and resume (devagentics task resume {}); or stop.",
+                            tx.state.steps.len(),
+                            config.id,
+                            config.id
+                        ),
+                    );
+                    Ok(())
+                })?;
+                if let Some(pane) = self.devws.pane_with_role(&config.workspace, "agent")? {
+                    self.devws.mark(&pane, "waiting")?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// A reviewed leader fetches its own inbox, so
     /// nothing would start its next turn: when it is not busy and a message
     /// arrived since the last nudge, a fixed line wakes it. No message text
     /// is typed in.
@@ -150,7 +289,12 @@ impl<'a> Dispatcher<'a> {
             self.task.transaction(|tx| {
                 tx.state.recovery.remove(LEADER);
                 tx.state.leader_nudged = newest;
-                tx.log(Kind::Delivered, Some(LEADER), None, "nudged to read its inbox");
+                tx.log(
+                    Kind::Delivered,
+                    Some(LEADER),
+                    None,
+                    "nudged to read its inbox",
+                );
                 Ok(())
             })?;
         }
@@ -165,7 +309,9 @@ impl<'a> Dispatcher<'a> {
         self.task.transaction(|tx| {
             for index in 0..tx.state.steps.len() {
                 let step = &tx.state.steps[index];
-                let (id, attempts) = (step.id.clone(), step.attempts);
+                let id = step.id.clone();
+                // Only failures of the work use attempts (failures.rs).
+                let attempts = crate::failures::work_failures(&tx.state, &id);
                 let ended_badly = matches!(
                     step.status,
                     StepStatus::Blocked | StepStatus::Failed | StepStatus::Rejected
@@ -173,6 +319,10 @@ impl<'a> Dispatcher<'a> {
                 let spent = attempts
                     >= crate::orders::attempt_limit(&tx.state, &id, max_attempts);
                 if !(ended_badly && spent) {
+                    // A wait for a step that is no longer spent ends.
+                    if matches!(tx.state.step_retries.get(&id), Some(StepRetry::Waiting { .. })) {
+                        tx.state.step_retries.remove(&id);
+                    }
                     continue;
                 }
                 match tx.state.step_retries.get(&id).copied() {
@@ -195,13 +345,50 @@ impl<'a> Dispatcher<'a> {
                     Some(StepRetry::Granted) => {
                         tx.state.steps[index].set_status(StepStatus::Exhausted, now);
                         tx.state.say(LEADER, format!(
-                            "Step {id} failed after {attempts} attempts and a retry: escalate it to the user."
+                            "Step {id} failed after {attempts} attempts and a retry. When the next attempt can succeed (the cause is understood, or was devAgentics or the environment), give it more with allow_attempts and say why; when it keeps failing the same way, change the approach or close it."
                         ));
                         tx.log(Kind::Review, None, Some(&id), "failed: attempts and retry used");
                     }
                     Some(StepRetry::Waiting { .. }) => {}
                 }
             }
+            Ok(())
+        })
+    }
+
+    /// Steps that waited for the leader longer than `STALE_REVIEW_SECS` (or
+    /// since an unknown time) look like open problems on the board: the
+    /// leader hears them in one message, each once per wait, and settles
+    /// them.
+    pub(crate) fn remind_left_reviews(&self, now: u64) -> Result<()> {
+        self.task.transaction(|tx| {
+            let left: Vec<(String, u64)> = tx
+                .state
+                .steps
+                .iter()
+                .filter(|step| step.status.waits_for_leader())
+                .map(|step| (step.id.clone(), step.review_since.unwrap_or(0)))
+                .filter(|(_, since)| now.saturating_sub(*since) > crate::board::STALE_REVIEW_SECS)
+                .filter(|(id, since)| tx.state.reminded_reviews.get(id) != Some(since))
+                .collect();
+            if left.is_empty() {
+                return Ok(());
+            }
+            let ids: Vec<&str> = left.iter().map(|(id, _)| id.as_str()).collect();
+            tx.state.say(
+                LEADER,
+                format!(
+                    "These steps have been waiting for you for a while, and the user sees them as open problems: {}. Settle each now: accept_step what you keep, reject_step what must be done again, close_step a read-only step whose report you used or that nothing needs any more. A blocked step you cannot settle: say what it waits for.",
+                    ids.join(", ")
+                ),
+            );
+            tx.log(
+                Kind::Review,
+                Some(LEADER),
+                None,
+                &format!("reminded of steps left waiting: {}", ids.join(", ")),
+            );
+            tx.state.reminded_reviews.extend(left);
             Ok(())
         })
     }
@@ -318,8 +505,27 @@ impl<'a> Dispatcher<'a> {
         })
     }
 
-    /// The panel went: the leader is told once.
+    /// The panel went: a worker its account refused before it did anything
+    /// starts again on its next account; any other, the leader is told once.
     fn lose(&self, agent: &Agent) -> Result<()> {
+        if self
+            .task
+            .state()?
+            .restart_on_next_account
+            .contains(&agent.id)
+        {
+            let team = Team {
+                task: self.task,
+                home: self.home,
+                devws: self.devws,
+            };
+            if team.restart_on_next_account(&agent.id)? {
+                return Ok(());
+            }
+        }
+        let error = crate::worker_tools::last_error(self.task, &agent.id)
+            .map(|error| format!(" Its last turn failed: {error}"))
+            .unwrap_or_default();
         self.task.transaction(|tx| {
             let Some(lost) = tx
                 .state
@@ -341,11 +547,16 @@ impl<'a> Dispatcher<'a> {
             tx.state.say(
                 LEADER,
                 format!(
-                    "{}'s panel is gone.{order} `devagentics task resume` starts it again.",
+                    "{}'s panel is gone.{error}{order} `devagentics task resume` starts it again.",
                     agent.id
                 ),
             );
-            tx.log(Kind::Lost, Some(&agent.id), None, "its panel is gone");
+            tx.log(
+                Kind::Lost,
+                Some(&agent.id),
+                None,
+                &format!("its panel is gone.{error}"),
+            );
             Ok(())
         })
     }
@@ -443,8 +654,11 @@ pub fn lock(task: &Task) -> Result<WatchLock> {
 /// A log line for the pane: "14:03:22 order     backend-1 s2  Write src/…".
 /// Epoch seconds as local time, in `format`.
 fn local_time(seconds: i64, format: &str) -> Option<String> {
-    chrono::DateTime::from_timestamp(seconds, 0)
-        .map(|time| time.with_timezone(&chrono::Local).format(format).to_string())
+    chrono::DateTime::from_timestamp(seconds, 0).map(|time| {
+        time.with_timezone(&chrono::Local)
+            .format(format)
+            .to_string()
+    })
 }
 
 /// When a retry is due, for the leader: `14:05`.
@@ -481,9 +695,9 @@ pub fn format_line(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_args::Kind as Program;
     use crate::devws::fake::FakeDevws;
     use crate::home::Home;
+    use crate::providers::Kind as Program;
     use crate::start::start_task;
     use crate::team::Team;
     use tempfile::TempDir;
@@ -560,6 +774,108 @@ mod tests {
     }
 
     #[test]
+    fn spend_is_near_at_80_percent_and_reached_at_the_limit() {
+        let budget = crate::task::Budget {
+            max_tokens: Some(1_000),
+            max_hours: Some(2.0),
+        };
+        assert_eq!(spend(&budget, Some(100), 0.5), Spend::Within);
+        assert_eq!(
+            spend(&budget, Some(850), 0.5),
+            Spend::Near("850 of 1000 tokens".into())
+        );
+        assert_eq!(
+            spend(&budget, Some(100), 2.0),
+            Spend::Reached("2.0 of 2 hours".into())
+        );
+        assert_eq!(
+            spend(&budget, None, 0.5),
+            Spend::Within,
+            "unreadable usage never pauses the task"
+        );
+        assert_eq!(
+            spend(&crate::task::Budget::default(), Some(9), 9.0),
+            Spend::Within
+        );
+    }
+
+    fn started_hours_ago(f: &Fixture, hours: f64, budget: crate::task::Budget) {
+        let mut config = f.task.config().unwrap();
+        config.budget = budget;
+        f.task.write_config(&config).unwrap();
+        let at = crate::log::now() - (hours * 3600.0) as u64;
+        let mut log = std::fs::OpenOptions::new()
+            .append(true)
+            .open(f.task.dir().join("log.jsonl"))
+            .unwrap();
+        writeln!(
+            log,
+            "{}",
+            serde_json::json!({"at": at, "kind": "start", "text": "task started"})
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn near_the_budget_the_leader_is_told_once() {
+        let f = fixture();
+        started_hours_ago(
+            &f,
+            0.9,
+            crate::task::Budget {
+                max_hours: Some(1.0),
+                ..Default::default()
+            },
+        );
+        let mut dispatcher = f.dispatcher();
+        dispatcher.keep_within_budget(crate::log::now()).unwrap();
+        dispatcher.budget_checked = None;
+        dispatcher.keep_within_budget(crate::log::now()).unwrap();
+        let state = f.task.state().unwrap();
+        let told: Vec<_> = state
+            .queue
+            .iter()
+            .filter(|message| message.to == LEADER && message.text.starts_with("BUDGET: 80% used"))
+            .collect();
+        assert_eq!(told.len(), 1, "once per limit");
+        assert!(!state.paused);
+    }
+
+    #[test]
+    fn at_the_budget_the_task_pauses_and_the_user_decides() {
+        let f = fixture();
+        started_hours_ago(
+            &f,
+            2.0,
+            crate::task::Budget {
+                max_hours: Some(1.5),
+                ..Default::default()
+            },
+        );
+        f.dispatcher()
+            .keep_within_budget(crate::log::now())
+            .unwrap();
+        assert!(f.task.state().unwrap().paused, "paused, nothing dropped");
+        let log = f.task.log_lines().unwrap().join("\n");
+        assert!(
+            log.contains(
+                "The budget is reached (2.0 of 1.5 hours); the task is paused and nothing is lost"
+            ) && log.contains("raise [budget] in task.toml and resume"),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn without_a_budget_nothing_is_checked() {
+        let f = fixture();
+        started_hours_ago(&f, 100.0, crate::task::Budget::default());
+        f.dispatcher()
+            .keep_within_budget(crate::log::now())
+            .unwrap();
+        assert!(!f.task.state().unwrap().paused);
+    }
+
+    #[test]
     fn an_order_waits_for_the_agent_to_answer_its_first_message_then_goes_in_once() {
         let f = fixture();
         let agent = f.spawn("executor");
@@ -593,6 +909,8 @@ mod tests {
         f.task
             .transaction(|tx| {
                 tx.state.orders.push(crate::state::Order {
+                    read: Vec::new(),
+                    targets: Vec::new(),
                     id: "original".into(),
                     step: "s1".into(),
                     agent: agent.id.clone(),
@@ -808,6 +1126,8 @@ mod tests {
             .transaction(|tx| {
                 tx.state.agents[0].ready = true;
                 tx.state.orders.push(crate::state::Order {
+                    read: Vec::new(),
+                    targets: Vec::new(),
                     id: "o1".into(),
                     step: "s1".into(),
                     agent: agent.id.clone(),
@@ -897,7 +1217,10 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        f.queue(LEADER, "Planner planner-5 proposed an application baseline.");
+        f.queue(
+            LEADER,
+            "Planner planner-5 proposed an application baseline.",
+        );
         let mut dispatcher = f.dispatcher();
 
         f.devws.set_state("%1", PaneState::Working);
@@ -914,11 +1237,19 @@ mod tests {
         );
 
         dispatcher.tick().unwrap();
-        assert_eq!(f.sent_to("%1").len(), 1, "nudged again for the same message");
+        assert_eq!(
+            f.sent_to("%1").len(),
+            1,
+            "nudged again for the same message"
+        );
 
         f.devws.set_state("%1", PaneState::Done);
         dispatcher.tick().unwrap();
-        assert_eq!(f.sent_to("%1").len(), 1, "nudged again for the same message");
+        assert_eq!(
+            f.sent_to("%1").len(),
+            1,
+            "nudged again for the same message"
+        );
 
         f.queue(LEADER, "executor-1 reports step s1 done.");
         dispatcher.tick().unwrap();
@@ -933,7 +1264,11 @@ mod tests {
                 tx.state.workflow = crate::execution::Workflow::Reviewed;
                 tx.state.recovery.insert(
                     LEADER.into(),
-                    crate::state::Recovery { pane: "%98".into(), interrupted: false, error: None },
+                    crate::state::Recovery {
+                        pane: "%98".into(),
+                        interrupted: false,
+                        error: None,
+                    },
                 );
                 Ok(())
             })
@@ -943,7 +1278,10 @@ mod tests {
         f.devws.set_state("%1", PaneState::Waiting);
         f.dispatcher().tick().unwrap();
         assert_eq!(f.sent_to("%1"), [LEADER_NUDGE]);
-        assert!(f.task.state().unwrap().recovery.is_empty(), "the resumed leader is woken");
+        assert!(
+            f.task.state().unwrap().recovery.is_empty(),
+            "the resumed leader is woken"
+        );
     }
 
     #[test]
@@ -971,7 +1309,10 @@ mod tests {
         assert_eq!(f.devws.pane_state("%1").unwrap(), PaneState::Waiting);
         assert_eq!(wait(), crate::state::LeaderWait::Shown);
         dispatcher.tick().unwrap();
-        assert!(f.sent_to("%1").is_empty(), "nudged while waiting for the user");
+        assert!(
+            f.sent_to("%1").is_empty(),
+            "nudged while waiting for the user"
+        );
 
         // The user answered: the leader works again and the wait is over.
         f.devws.set_state("%1", PaneState::Working);
@@ -991,9 +1332,101 @@ mod tests {
                     spec: None,
                     review_since: None,
                 });
+                for order in 0..limit {
+                    work_failed(&mut tx.state, order);
+                }
                 Ok(())
             })
             .unwrap();
+    }
+
+    fn waiting_step(f: &Fixture, id: &str, since: Option<u64>) {
+        f.task
+            .transaction(|tx| {
+                tx.state.steps.push(crate::state::Step {
+                    id: id.into(),
+                    title: "Preflight".into(),
+                    status: crate::state::StepStatus::Reported,
+                    attempts: 1,
+                    spec: None,
+                    review_since: since,
+                });
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn a_review_the_leader_left_is_reminded_once_per_wait() {
+        let f = fixture();
+        let now = crate::log::now();
+        let left = Some(now - crate::board::STALE_REVIEW_SECS - 1);
+        waiting_step(&f, "old-plan", left);
+        waiting_step(&f, "fresh-plan", Some(now));
+        waiting_step(&f, "unknown-since", None);
+        // Busy, so its messages stay queued where the test counts them.
+        f.devws.set_state("%1", PaneState::Working);
+        let mut dispatcher = f.dispatcher();
+
+        f.task
+            .transaction(|tx| {
+                tx.state.paused = true;
+                Ok(())
+            })
+            .unwrap();
+        dispatcher.tick().unwrap();
+        assert_eq!(
+            leader_heard(&f, "waiting for you"),
+            0,
+            "reminded while paused"
+        );
+        f.task
+            .transaction(|tx| {
+                tx.state.paused = false;
+                Ok(())
+            })
+            .unwrap();
+
+        dispatcher.tick().unwrap();
+        assert_eq!(leader_heard(&f, "waiting for you"), 1);
+        assert_eq!(leader_heard(&f, "old-plan"), 1);
+        assert_eq!(leader_heard(&f, "unknown-since"), 1);
+        assert_eq!(
+            leader_heard(&f, "fresh-plan"),
+            0,
+            "a fresh review is not left"
+        );
+        assert_eq!(
+            leader_heard(&f, "close_step"),
+            1,
+            "it says how to settle them"
+        );
+
+        dispatcher.tick().unwrap();
+        assert_eq!(leader_heard(&f, "waiting for you"), 1, "reminded twice");
+
+        // Ordered again and reported again: a new wait, reminded again.
+        f.task
+            .transaction(|tx| {
+                tx.state.step_mut("old-plan").unwrap().review_since = Some(now - 7200);
+                Ok(())
+            })
+            .unwrap();
+        dispatcher.tick().unwrap();
+        assert_eq!(leader_heard(&f, "old-plan"), 2);
+        assert_eq!(leader_heard(&f, "unknown-since"), 1);
+    }
+
+    /// One more failure of s9's work, on an order of its own.
+    fn work_failed(state: &mut crate::state::State, order: u32) {
+        crate::failures::record(
+            state,
+            "s9",
+            Some(&format!("o-s9-{order}")),
+            crate::failures::FailureKind::CheckFailed,
+            "tests failed",
+            u64::from(order),
+        );
     }
 
     fn leader_heard(f: &Fixture, text: &str) -> usize {
@@ -1019,14 +1452,20 @@ mod tests {
         let state = f.task.state().unwrap();
         assert_eq!(
             state.step_retries.get("s9"),
-            Some(&StepRetry::Waiting { at: 1_000 + RETRY_AFTER_SECS })
+            Some(&StepRetry::Waiting {
+                at: 1_000 + RETRY_AFTER_SECS
+            })
         );
         assert_eq!(leader_heard(&f, "retries it once"), 1);
 
-        dispatcher.retry_spent_steps(1_000 + RETRY_AFTER_SECS - 1).unwrap();
+        dispatcher
+            .retry_spent_steps(1_000 + RETRY_AFTER_SECS - 1)
+            .unwrap();
         assert_eq!(f.task.state().unwrap().attempt_limits.get("s9"), None);
 
-        dispatcher.retry_spent_steps(1_000 + RETRY_AFTER_SECS).unwrap();
+        dispatcher
+            .retry_spent_steps(1_000 + RETRY_AFTER_SECS)
+            .unwrap();
         let state = f.task.state().unwrap();
         assert_eq!(state.attempt_limits.get("s9"), Some(&(limit + 1)));
         assert_eq!(state.step_retries.get("s9"), Some(&StepRetry::Granted));
@@ -1038,6 +1477,7 @@ mod tests {
                 let step = tx.state.step_mut("s9").unwrap();
                 step.attempts = limit + 1;
                 step.status = StepStatus::Blocked;
+                work_failed(&mut tx.state, limit);
                 Ok(())
             })
             .unwrap();
@@ -1045,7 +1485,12 @@ mod tests {
         dispatcher.retry_spent_steps(5_001).unwrap();
         let state = f.task.state().unwrap();
         assert_eq!(
-            state.steps.iter().find(|step| step.id == "s9").unwrap().status,
+            state
+                .steps
+                .iter()
+                .find(|step| step.id == "s9")
+                .unwrap()
+                .status,
             StepStatus::Exhausted
         );
         assert_eq!(leader_heard(&f, "failed after"), 1);
@@ -1058,6 +1503,41 @@ mod tests {
         spent_step(&f, StepStatus::Accepted);
         f.dispatcher().retry_spent_steps(1_000).unwrap();
         assert!(f.task.state().unwrap().step_retries.is_empty());
+    }
+
+    // Failures that were not the work's (the environment) use no attempts:
+    // the step is not spent, and no retry wait starts.
+    #[test]
+    fn a_step_that_failed_only_for_the_environment_is_not_spent() {
+        use crate::state::StepStatus;
+        let f = fixture();
+        let limit = f.task.config().unwrap().max_attempts;
+        f.task
+            .transaction(|tx| {
+                tx.state.steps.push(crate::state::Step {
+                    id: "s9".into(),
+                    title: "Tests".into(),
+                    status: StepStatus::Blocked,
+                    attempts: limit + 3,
+                    spec: None,
+                    review_since: None,
+                });
+                for order in 0..limit + 3 {
+                    crate::failures::record(
+                        &mut tx.state,
+                        "s9",
+                        Some(&format!("o-env-{order}")),
+                        crate::failures::FailureKind::CheckEnvironment,
+                        "docker was down",
+                        u64::from(order),
+                    );
+                }
+                Ok(())
+            })
+            .unwrap();
+        f.dispatcher().retry_spent_steps(1_000).unwrap();
+        assert!(f.task.state().unwrap().step_retries.is_empty());
+        assert_eq!(leader_heard(&f, "retries it once"), 0);
     }
 
     #[test]
@@ -1078,6 +1558,8 @@ mod tests {
         f.task
             .transaction(|tx| {
                 tx.state.orders.push(crate::state::Order {
+                    read: Vec::new(),
+                    targets: Vec::new(),
                     id: "o1".into(),
                     step: "s1".into(),
                     agent: agent.id.clone(),
@@ -1111,6 +1593,38 @@ mod tests {
         assert!(f.task.state().unwrap().agents[0].lost);
     }
 
+    // A worker whose program failed (a used-up account) closes its panel at
+    // once: the leader hears why, not only that the panel went.
+    #[test]
+    fn a_lost_panel_says_the_error_its_last_turn_ended_with() {
+        let f = fixture();
+        let agent = f.spawn("executor");
+        let control = f.task.dir().join("workers").join(&agent.id).join("control");
+        std::fs::create_dir_all(&control).unwrap();
+        std::fs::write(
+            control.join("turns.jsonl"),
+            concat!(
+                r#"{"type":"system","subtype":"init"}"#,
+                "\n",
+                r#"{"type":"result","is_error":true,"api_error":"usage_limit_reached","result":"You've hit your weekly limit · resets Nov 22, 2am"}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        f.devws.set_state(&agent.pane, PaneState::Gone);
+
+        f.dispatcher().tick().unwrap();
+        let sent = f.sent_to("%1");
+        assert!(
+            sent[0].contains("executor-1's panel is gone")
+                && sent[0].contains("You've hit your weekly limit"),
+            "{}",
+            sent[0]
+        );
+        let log = f.task.log_lines().unwrap().join("\n");
+        assert!(log.contains("You've hit your weekly limit"), "{log}");
+    }
+
     #[test]
     fn an_agent_that_ends_its_turn_without_reporting_is_told_to_the_leader_once() {
         let f = fixture();
@@ -1119,6 +1633,8 @@ mod tests {
             .transaction(|tx| {
                 tx.state.agents[0].ready = true;
                 tx.state.orders.push(crate::state::Order {
+                    read: Vec::new(),
+                    targets: Vec::new(),
                     id: "o1".into(),
                     step: "s1".into(),
                     agent: agent.id.clone(),
@@ -1165,6 +1681,8 @@ mod tests {
             .transaction(|tx| {
                 tx.state.agents[0].ready = true;
                 tx.state.orders.push(crate::state::Order {
+                    read: Vec::new(),
+                    targets: Vec::new(),
                     id: "o1".into(),
                     step: "s1".into(),
                     agent: agent.id.clone(),

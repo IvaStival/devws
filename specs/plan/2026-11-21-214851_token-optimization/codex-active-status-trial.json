@@ -1,0 +1,130 @@
+{
+  "model": "gpt-6.1-sol",
+  "effort": "medium",
+  "active_state": "scratch reconstruction of historical order o48",
+  "expected_routine": {
+    "paused": false,
+    "active_steps": {
+      "notes-api": "ordered"
+    },
+    "live_agents_with_open_orders": [
+      "api-integration-1"
+    ],
+    "pending_permissions": 0,
+    "total_steps": 10
+  },
+  "expected_plan": "execution-approved-v1",
+  "cases": {
+    "routine": {
+      "full": {
+        "payload_bytes": 27363,
+        "usage": {
+          "input_tokens": 22541,
+          "cached_input_tokens": 12288,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 41,
+          "reasoning_output_tokens": 0
+        },
+        "matched": true,
+        "provider_exit": 0,
+        "observed": {
+          "paused": false,
+          "active_steps": {
+            "notes-api": "ordered"
+          },
+          "live_agents_with_open_orders": [
+            "api-integration-1"
+          ],
+          "pending_permissions": 0,
+          "total_steps": 10
+        },
+        "estimated_api_equivalent_usd": 0.0221448
+      },
+      "progress": {
+        "payload_bytes": 791,
+        "usage": {
+          "input_tokens": 15850,
+          "cached_input_tokens": 12288,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 73,
+          "reasoning_output_tokens": 30
+        },
+        "matched": true,
+        "provider_exit": 0,
+        "observed": {
+          "paused": false,
+          "active_steps": {
+            "notes-api": "ordered"
+          },
+          "live_agents_with_open_orders": [
+            "api-integration-1"
+          ],
+          "pending_permissions": 0,
+          "total_steps": 10
+        },
+        "estimated_api_equivalent_usd": 0.0090828
+      }
+    },
+    "diagnostic": {
+      "full": {
+        "payload_bytes": 27363,
+        "usage": {
+          "input_tokens": 22548,
+          "cached_input_tokens": 12288,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 131,
+          "reasoning_output_tokens": 115
+        },
+        "matched": false,
+        "provider_exit": 0,
+        "observed": {
+          "needs_full": true,
+          "plan": null
+        },
+        "estimated_api_equivalent_usd": 0.0230588
+      },
+      "progress": {
+        "payload_bytes": 791,
+        "usage": {
+          "input_tokens": 15857,
+          "cached_input_tokens": 14592,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 35,
+          "reasoning_output_tokens": 19
+        },
+        "matched": true,
+        "provider_exit": 0,
+        "observed": {
+          "needs_full": true,
+          "plan": null
+        },
+        "estimated_api_equivalent_usd": 0.0043392
+      },
+      "fallback": {
+        "payload_bytes": 27363,
+        "usage": {
+          "input_tokens": 39384,
+          "cached_input_tokens": 30336,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 52,
+          "reasoning_output_tokens": 19
+        },
+        "matched": true,
+        "provider_exit": 0,
+        "observed": {
+          "needs_full": false,
+          "plan": "execution-approved-v1"
+        },
+        "usage_delta": {
+          "input_tokens": 23527,
+          "cached_input_tokens": 15744,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 17
+        },
+        "estimated_api_equivalent_usd": 0.0216496,
+        "usage_source": "cumulative across compact and resumed full-status turns"
+      }
+    }
+  },
+  "pricing_basis": "same standard short-context API-rate snapshot as codex-baseline.json; fallback usage is the cumulative total for the two-turn path"
+}

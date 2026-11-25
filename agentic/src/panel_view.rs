@@ -1,5 +1,5 @@
 //! What a managed worker's panel shows: the provider's machine output (Codex
-//! `exec --json`, Claude `stream-json`) turned into one event model, drawn
+//! `exec --json`, Claude `stream-json`, OpenCode `run --format json`) turned into one event model, drawn
 //! for a person: formatted messages, one line per tool call with its outcome,
 //! and a header and footer around each turn.
 use serde_json::Value;
@@ -190,6 +190,66 @@ impl ClaudeStream {
     }
 }
 
+/// OpenCode 1.19.6 `run --format json` emits completed message parts.
+/// A turn can contain several model steps; keep their cumulative usage so
+/// the panel's footer reports the whole turn rather than only its final step.
+#[derive(Default)]
+pub struct OpenCodeStream {
+    finished: std::collections::HashSet<String>,
+    usage: Usage,
+}
+
+impl OpenCodeStream {
+    pub fn events(&mut self, line: &str) -> Vec<Event> {
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            return vec![Event::Raw(line.to_string())];
+        };
+        let part = &event["part"];
+        if let Some(identity) = part["id"].as_str()
+            && !self.finished.insert(identity.to_string())
+        {
+            return Vec::new();
+        }
+        match event["type"].as_str() {
+            Some("text") => vec![Event::Message(text_of(&part["text"]))],
+            Some("tool_use") => {
+                let state = &part["state"];
+                let name = part["tool"].as_str().unwrap_or("tool");
+                let name = name.strip_prefix("devagentics_worker_").unwrap_or(name);
+                vec![Event::Tool {
+                    action: action_of(&Value::from(name), &state["input"]),
+                    detail: detail_of(&state["input"]["input"]),
+                    outcome: if state["status"] == "error" {
+                        Outcome::Failed(reason(state["error"].as_str(), &Value::Null))
+                    } else {
+                        Outcome::Done
+                    },
+                }]
+            }
+            Some("step_finish") => {
+                let tokens = &part["tokens"];
+                let cached = tokens["cache"]["read"].as_u64().unwrap_or(0);
+                self.usage.input += tokens["input"].as_u64().unwrap_or(0)
+                    + cached
+                    + tokens["cache"]["write"].as_u64().unwrap_or(0);
+                self.usage.cached += cached;
+                self.usage.output += tokens["output"].as_u64().unwrap_or(0)
+                    + tokens["reasoning"].as_u64().unwrap_or(0);
+                vec![Event::TurnDone(self.usage)]
+            }
+            Some("error") => vec![Event::Error(
+                event["error"]["data"]["message"]
+                    .as_str()
+                    .or(event["error"]["message"].as_str())
+                    .or(event["error"]["name"].as_str())
+                    .unwrap_or("OpenCode reported an error")
+                    .to_string(),
+            )],
+            _ => Vec::new(),
+        }
+    }
+}
+
 fn text_of(value: &Value) -> String {
     value.as_str().unwrap_or_default().trim_end().to_string()
 }
@@ -231,7 +291,12 @@ fn reason(message: Option<&str>, content: &Value) -> String {
     if text.trim().is_empty() {
         "no reason given".into()
     } else {
-        shorten(text.split_whitespace().collect::<Vec<_>>().join(" ").as_str())
+        shorten(
+            text.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .as_str(),
+        )
     }
 }
 
@@ -387,32 +452,106 @@ mod tests {
             }]
         );
         let shown = plain(&render(&codex_events(line)[0], 120).unwrap());
-        assert!(shown.contains("• checkpoint \"Add B1-1-AT tests\" ✕ checkpoint outside"), "{shown}");
+        assert!(
+            shown.contains("• checkpoint \"Add B1-1-AT tests\" ✕ checkpoint outside"),
+            "{shown}"
+        );
     }
 
     #[test]
     fn codex_messages_commands_and_usage_become_events() {
         assert_eq!(
-            codex_events(r#"{"type":"item.completed","item":{"type":"agent_message","text":"**Done**\n"}}"#),
+            codex_events(
+                r#"{"type":"item.completed","item":{"type":"agent_message","text":"**Done**\n"}}"#
+            ),
             [Event::Message("**Done**".into())]
         );
         assert_eq!(
-            codex_events(r#"{"type":"item.completed","item":{"type":"command_execution","command":"/bin/bash -lc 'ls web'","exit_code":2}}"#),
-            [Event::Command { line: "ls web".into(), exit: Some(2) }]
+            codex_events(
+                r#"{"type":"item.completed","item":{"type":"command_execution","command":"/bin/bash -lc 'ls web'","exit_code":2}}"#
+            ),
+            [Event::Command {
+                line: "ls web".into(),
+                exit: Some(2)
+            }]
         );
         assert_eq!(
-            codex_events(r#"{"type":"turn.completed","usage":{"input_tokens":1136501,"cached_input_tokens":1069568,"output_tokens":8329}}"#),
-            [Event::TurnDone(Usage { input: 1136501, cached: 1069568, output: 8329 })]
+            codex_events(
+                r#"{"type":"turn.completed","usage":{"input_tokens":1136501,"cached_input_tokens":1069568,"output_tokens":8329}}"#
+            ),
+            [Event::TurnDone(Usage {
+                input: 1136501,
+                cached: 1069568,
+                output: 8329
+            })]
         );
         assert!(codex_events(r#"{"type":"thread.started","thread_id":"t1"}"#).is_empty());
-        assert_eq!(codex_events("Reading additional input from stdin..."), [Event::Raw("Reading additional input from stdin...".into())]);
+        assert_eq!(
+            codex_events("Reading additional input from stdin..."),
+            [Event::Raw("Reading additional input from stdin...".into())]
+        );
+    }
+
+    #[test]
+    fn opencode_parts_show_messages_and_worker_tool_results() {
+        // Shapes emitted by OpenCode v1.19.6 cli/cmd/run.ts.
+        let mut stream = OpenCodeStream::default();
+        let text = r#"{"type":"text","sessionID":"ses_1","part":{"id":"p1","type":"text","text":"**Done**\n","time":{"end":10}}}"#;
+        assert_eq!(stream.events(text), [Event::Message("**Done**".into())]);
+        assert!(
+            stream.events(text).is_empty(),
+            "a repeated completed part is shown once"
+        );
+        assert_eq!(stream.events(r#"{"type":"tool_use","sessionID":"ses_1","part":{"id":"p2","tool":"devagentics_worker_worker","state":{"status":"completed","input":{"action":"execute","input":{"command":"cargo test"}},"output":"ok"}}}"#),
+            [Event::Tool { action: "execute".into(), detail: "cargo test".into(), outcome: Outcome::Done }]);
+        assert_eq!(stream.events(r#"{"type":"tool_use","sessionID":"ses_1","part":{"id":"p3","tool":"devagentics_worker_worker","state":{"status":"error","input":{"action":"checkpoint","input":{"summary":"Add test"}},"error":"task is paused"}}}"#),
+            [Event::Tool { action: "checkpoint".into(), detail: "Add test".into(), outcome: Outcome::Failed("task is paused".into()) }]);
+    }
+
+    #[test]
+    fn opencode_usage_accumulates_steps_without_counting_repeated_events() {
+        let mut stream = OpenCodeStream::default();
+        let step = r#"{"type":"step_finish","sessionID":"ses_1","part":{"id":"p1","tokens":{"input":10,"output":5,"reasoning":2,"cache":{"read":100,"write":20}}}}"#;
+        assert_eq!(
+            stream.events(step),
+            [Event::TurnDone(Usage {
+                input: 130,
+                cached: 100,
+                output: 7
+            })]
+        );
+        assert!(stream.events(step).is_empty());
+        assert_eq!(stream.events(r#"{"type":"step_finish","sessionID":"ses_1","part":{"id":"p2","tokens":{"input":3,"output":4,"reasoning":1,"cache":{"read":7,"write":0}}}}"#),
+            [Event::TurnDone(Usage {input:140,cached:107,output:12})]);
+    }
+
+    #[test]
+    fn opencode_errors_remain_visible_and_unknown_events_are_ignored() {
+        let mut stream = OpenCodeStream::default();
+        assert_eq!(stream.events(r#"{"type":"error","error":{"name":"APIError","data":{"message":"Insufficient balance"}}}"#), [Event::Error("Insufficient balance".into())]);
+        assert_eq!(
+            stream.events(r#"{"type":"error","error":{"name":"ProviderAuthError"}}"#),
+            [Event::Error("ProviderAuthError".into())]
+        );
+        assert!(
+            stream
+                .events(r#"{"type":"step_start","part":{"id":"start"}}"#)
+                .is_empty()
+        );
+        assert_eq!(
+            stream.events("provider warning"),
+            [Event::Raw("provider warning".into())]
+        );
     }
 
     #[test]
     fn a_claude_tool_call_is_shown_when_its_result_arrives() {
         let mut stream = ClaudeStream::default();
         let call = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Checking status."},{"type":"tool_use","id":"tu_1","name":"mcp__devagentics_worker__worker","input":{"action":"execute","input":{"command":"npm run typecheck"}}}]}}"#;
-        assert_eq!(stream.events(call), [Event::Message("Checking status.".into())]);
+        assert_eq!(
+            stream.events(call),
+            [Event::Message("Checking status.".into())]
+        );
         let result = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_1","is_error":true,"content":[{"type":"text","text":"task is paused"}]}]}}"#;
         assert_eq!(
             stream.events(result),
@@ -425,7 +564,11 @@ mod tests {
         let done = r#"{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":12,"cache_read_input_tokens":3000,"output_tokens":400}}"#;
         assert_eq!(
             stream.events(done),
-            [Event::TurnDone(Usage { input: 3012, cached: 3000, output: 400 })]
+            [Event::TurnDone(Usage {
+                input: 3012,
+                cached: 3000,
+                output: 400
+            })]
         );
     }
 
@@ -453,12 +596,29 @@ mod tests {
             order: Some("o52 (B1-1-AT)".into()),
         };
         assert_eq!(
-            plain(&header(&turn, "10:12", 80)).trim_end_matches('─').trim_end(),
+            plain(&header(&turn, "10:12", 80))
+                .trim_end_matches('─')
+                .trim_end(),
             "── planner-5 · codex · gpt-6.1-sol · medium · order o52 (B1-1-AT) · 10:12"
         );
-        let done = plain(&footer(134, Some(Usage { input: 1136501, cached: 1069568, output: 8329 }), None, 80));
-        assert!(done.starts_with("── done in 2m 14s · 1.1M in (1.1M cached) · 8.3k out"), "{done}");
+        let done = plain(&footer(
+            134,
+            Some(Usage {
+                input: 1136501,
+                cached: 1069568,
+                output: 8329,
+            }),
+            None,
+            80,
+        ));
+        assert!(
+            done.starts_with("── done in 2m 14s · 1.1M in (1.1M cached) · 8.3k out"),
+            "{done}"
+        );
         let failed = plain(&footer(5, None, Some("exit status 1"), 80));
-        assert!(failed.starts_with("── failed after 5s: exit status 1"), "{failed}");
+        assert!(
+            failed.starts_with("── failed after 5s: exit status 1"),
+            "{failed}"
+        );
     }
 }

@@ -9,13 +9,14 @@
 #                         starts the job; prints its id. Jobs holding the same
 #                         lock (a jungleforge app) run one after another
 #   job.sh note <text> [--error]   a message in the same place: 10 s, or until
-#                         its log is opened for an error
+#                         it is acknowledged for an error
 #   job.sh list           "<id> <state> <title>", newest first
 #   job.sh log [id]       pages the log, following it (the failed one first,
 #                         else the newest); a failure counts as seen after
 #   job.sh open [client] [id]   the log panel in the client's workspace, else
 #                         a large popup (a click on the header, C-b j, a
-#                         job's notification)
+#                         job's notification). A header click acknowledges
+#                         a failure and dismisses an error note directly.
 #   job.sh follow <id>    (the log panel) the log as it grows; q closes
 #   job.sh rows <width>   the header's jobs line (and two empty rows) while a
 #                         job is active (queued, running, done < 10 s ago,
@@ -328,7 +329,7 @@ active() {
   local id="$1" ended
   case "$(field "$id" state)" in
     queued | running) return 0 ;;
-    # A failure stays until its log is opened or the app runs well again.
+    # A failure stays until it is acknowledged or the app runs well again.
     failed) unseen_failure "$id"; return ;;
   esac
   ended="$(field "$id" ended_at)"
@@ -427,9 +428,15 @@ log() {
 # In the client's workspace, the log panel (job_panel.sh); anywhere else a
 # large popup.
 open() {
-  local client="${1:-}" id="${2:-}" session
+  local client="${1:-}" id="${2:-}" session from_header=""
+  [ -z "$client" ] || [ -n "$id" ] || from_header=1
   [ -n "$id" ] || id="$(relevant)"
   [ -n "$id" ] || { tmux display-message ${client:+-c "$client"} "No jobs yet"; return 0; }
+  if [ -n "$from_header" ] && [ "$(field "$id" state)" = failed ]; then
+    : > "$jobs_dir/$id/seen" || return 1
+    # A note's log only repeats its title.
+    [ "$(field "$id" kind)" != note ] || return 0
+  fi
   session="$(tmux display-message ${client:+-c "$client"} -p '#{session_name}' 2>/dev/null)"
   case "$session" in
     dev-*)

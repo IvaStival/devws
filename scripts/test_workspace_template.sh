@@ -35,7 +35,7 @@ chmod +x "$TEST_ROOT/bin/tmux"
 export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home"
 unset TMUX TMUX_PANE
 
-for script in blank.yml workspace_template.sh workspace_panes.sh restore_state.sh; do
+for script in blank.yml workspace_template.sh workspace_panes.sh restore_state.sh agents.sh agents start_server.sh; do
   ln -s "$SCRIPTS/$script" "$HOME/.tmuxinator/$script"
 done
 # The sidebar stands in for session_picker.sh: it only names itself.
@@ -120,7 +120,7 @@ test_a_template_workspace_is_restored_from_it() {
   mkdir -p "$HOME/.devws-state"
   printf '#devws-state\t1\nW\tdev-back\t%s\ttemplate\twatch\t1\tLAYOUT\t-\twatch\nP\tdev-back\t0\tpicker\t%s\n' \
     "$TEST_ROOT/other" "$TEST_ROOT/other" > "$HOME/.devws-state/sessions.tsv"
-  "$HOME/.tmuxinator/restore_state.sh" >/dev/null 2>&1 || fail "restore failed"
+  "$HOME/.tmuxinator/restore_state.sh" >"$TEST_ROOT/restore.out" 2>&1 || fail "restore failed: $(cat "$TEST_ROOT/restore.out")"
   tmux has-session -t "=dev-back" 2>/dev/null || fail "the workspace was not restored"
   [ "$(panes_of dev-back | wc -l | tr -d ' ')" = 3 ] || fail "not restored from its template"
 }

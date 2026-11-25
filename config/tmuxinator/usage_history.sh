@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The usage history (the devws menu's ◷ Usage history, `devws usage`): what
-# every conversation of every agent in DEVWS_AGENTS used, from their own logs
+# every conversation of every agent devws runs (agent_names) used, from their own logs
 # (header_tokens.sh), by workspace folder, by agent team and by account, for
 # today, the last 7 and 30 days and all time, at API prices.
 #
@@ -37,20 +37,23 @@ cache_dir="${TMPDIR:-/tmp}"
 cache_dir="${cache_dir%/}/devws-usage-$(id -u)"
 tab="$(printf '\t')"
 
-# Every log under <folder>, with its size and modification time (it changed
-# when they did): "<size>:<mtime><TAB><path>". One stat for them all. GNU
+# Every log under <folder> (named <name>, *.jsonl when not given), with its
+# size and modification time (it changed when they did):
+# "<size>:<mtime><TAB><path>". One stat for them all. GNU
 # stat (Linux) first: its -f is about the filesystem and would print that
 # before failing; BSD's (macOS) has no -c and prints nothing.
 fingerprints() {
-  find "$1" -name '*.jsonl' -exec stat -c "%s:%Y$tab%n" {} + 2>/dev/null ||
-    find "$1" -name '*.jsonl' -exec stat -f "%z:%m$tab%N" {} +
+  local name="${2:-*.jsonl}"
+  find "$1" -name "$name" -exec stat -c "%s:%Y$tab%n" {} + 2>/dev/null ||
+    find "$1" -name "$name" -exec stat -f "%z:%m$tab%N" {} +
 }
 
 # <log> <fingerprint> <entry>: the log's cache entry, its fingerprint, its
 # folder, then its responses (header_tokens.sh messages).
 read_log() {
   local log="$1" print="$2" entry="$3" folder
-  # Both programs name the folder a conversation ran in near its start.
+  # Claude Code and Codex name the folder a conversation ran in near its
+  # start; Antigravity's logs do not.
   folder="$(grep -m 1 -o '"cwd":"[^"]*"' "$log" | sed 's/^"cwd":"//; s/"$//')"
   {
     printf '%s\n%s\n' "$print" "${folder:--}"
@@ -61,16 +64,25 @@ read_log() {
 # Only a new or changed log starts a process: the others are checked with
 # the shell's own read, and every entry is printed by one awk.
 rows() {
-  local agent kind home root seen="" print log entry stored
+  local agent kind home root name seen="" print log entry stored
   mkdir -p "$cache_dir" && chmod 700 "$cache_dir"
-  for agent in ${DEVWS_AGENTS-claude codex}; do
+  # The list on fd 3: the loop's commands read their own stdin.
+  while IFS= read -r agent <&3; do
     kind="$(agent_kind "$agent")" || continue
     home="$(agent_home "$agent")" || continue
-    case "$kind" in
-      claude) root="$home/projects" ;;
-      codex) root="$home/sessions" ;;
-      *) continue ;;
-    esac
+    # A program that keeps its responses in one database reads them in one
+    # query (the module's usage_rows); the others name the folder and file
+    # its logs are (usage_logs).
+    if agent_defines "$kind" usage_rows; then
+      root="$(agent_hook "$kind" usage_database "$home")"
+      case "$seen" in *"$tab$root$tab"*) continue ;; esac
+      seen="$seen$tab$root$tab"
+      agent_hook "$kind" usage_rows "$home" |
+        awk -v account="$agent" -v OFS="$tab" -F "$tab" '{ print account, $0 }'
+      continue
+    fi
+    IFS="$tab" read -r root name <<< "$(agent_hook "$kind" usage_logs "$home")"
+    [ -n "$root" ] || continue
     # Two names for one folder are one account's logs, counted once.
     case "$seen" in *"$tab$root$tab"*) continue ;; esac
     seen="$seen$tab$root$tab"
@@ -83,13 +95,13 @@ rows() {
       [ -f "$entry" ] && IFS= read -r stored < "$entry"
       [ "$stored" = "$print" ] || read_log "$log" "$print" "$entry"
       [ -f "$entry" ] && entries+=("$entry")
-    done < <(fingerprints "$root")
+    done < <(fingerprints "$root" "$name")
     [ "${#entries[@]}" -gt 0 ] || continue
     awk -v account="$agent" -v OFS="$tab" '
       FNR == 1 { next }
       FNR == 2 { folder = $0; next }
       { print account, folder, $1, $2, $3, $4, $5, $6, $7 }' "${entries[@]}"
-  done
+  done 3< <(agent_names)
 }
 
 # The day <days> days before today, local: 2026-11-07.

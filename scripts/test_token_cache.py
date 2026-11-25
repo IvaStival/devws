@@ -20,6 +20,8 @@ class TokenCacheTests(unittest.TestCase):
         for filename in ["header_tokens.sh", "agents.sh", "agent_prices.tsv", "token_cache.pl"]:
             if (source / filename).exists():
                 shutil.copy(source / filename, self.scripts / filename)
+        # The programs' modules, which read their own logs.
+        shutil.copytree(source / "agents", self.scripts / "agents")
         self.now = int(datetime.datetime.now().timestamp())
         self.timestamp = datetime.datetime.fromtimestamp(self.now, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
         self.log = self.root / "home/.codex/sessions/one.jsonl"
@@ -27,7 +29,9 @@ class TokenCacheTests(unittest.TestCase):
         self.metrics = self.root / "metrics"
         self.environment = dict(os.environ, HOME=str(self.root / "home"), TMPDIR=str(self.root),
                                 DEVWS_TOKEN_CACHE_METRICS=str(self.metrics), DEVWS_AGENTS="codex",
-                                DEVWS_TOKENS_NOW=str(self.now))
+                                DEVWS_TOKENS_NOW=str(self.now),
+                                # Only the registered agents: not the programs installed here.
+                                DEVWS_OFFERED_PROGRAMS="")
         self.write([self.context(), self.tokens()])
 
     def context(self):

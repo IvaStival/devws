@@ -2,6 +2,7 @@
 use crate::{checks, execution::Workflow, log::Kind, state::StepStatus, task::Task};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -23,7 +24,7 @@ pub enum Category {
     IntegrationDefect,
     TestWeakening,
 }
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Finding {
     pub file: String,
@@ -35,6 +36,15 @@ pub struct Finding {
     /// Required for a blocking finding.
     #[serde(default)]
     pub category: Option<Category>,
+    /// Its line is outside what the change touched: a problem the base
+    /// already had, reported but never blocking.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pre_existing: bool,
+    /// The reviewer's word that the change causes it although its line is
+    /// outside the change (a caller of a renamed function, a config the
+    /// change forgot): such a finding still blocks.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub caused_by_change: bool,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,6 +74,10 @@ pub struct Review {
     pub requested_at: u64,
     #[serde(default)]
     pub submitted_at: Option<u64>,
+    /// Weakened tests devAgentics found in the change itself, before any
+    /// reviewer read it: an approval must resolve each one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub automatic: Vec<Finding>,
 }
 pub fn pending<'a>(state: &'a crate::state::State, reviewer: &str) -> Option<&'a Review> {
     state
@@ -91,7 +105,7 @@ pub fn check_results(state: &crate::state::State, review: &Review) -> serde_json
 }
 
 pub fn resumption(state: &crate::state::State, reviewer: &str) -> Option<String> {
-    pending(state, reviewer).map(|review| format!("Resume independent review {} for order {}. Call status and review_diff, inspect the immutable candidate through execute, then review_submit. Do not modify code.", review.id, review.order))
+    pending(state, reviewer).map(|review| format!("Resume independent review {} for order {}. Call status with input.view=brief and review_diff, inspect the immutable candidate through execute, then review_submit. Do not modify code.", review.id, review.order))
 }
 pub fn checkout(task: &Task, review: &Review) -> std::path::PathBuf {
     task.dir()
@@ -122,7 +136,7 @@ fn evidence(task: &Task, order: &str) -> Result<String> {
             && evidence.base == assignment.base
             && evidence.revision == state.revision(order)
             && evidence.head == checks::head(&workplace.worktree)?,
-        "check evidence is stale"
+        crate::failures::Stale("check evidence is stale".into())
     );
     let work = checks::inspect(
         &workplace.worktree,
@@ -187,38 +201,50 @@ fn check_candidate_first(
     }
     let lane = crate::lanes::get(task, &lane)?;
     let candidate = crate::integration::candidate(task, &lane)?;
-    let Some(evidence) =
-        crate::integration::check_candidate(task, &lane.repo, Some(&lane.name), &candidate)?
+    let Some(evidence) = crate::integration::check_candidate(
+        task,
+        &lane.repo,
+        Some(&lane.name),
+        &candidate,
+        !order.targets.is_empty(),
+    )?
     else {
         return Ok(None);
     };
     if evidence.passed() {
         return Ok(Some(evidence));
     }
-    let failed: Vec<String> = evidence
+    let failed = failed_phases(&evidence.phases);
+    let step = order.step.clone();
+    let message = integration_failure(&step, &evidence.phases, !order.targets.is_empty());
+    let environment_only = evidence
         .phases
         .iter()
         .filter(|phase| phase.outcome != crate::check_profiles::Outcome::Passed)
-        .map(|phase| {
-            format!(
-                "{} ({:?}): {}",
-                phase.profile, phase.outcome, phase.diagnostic
+        .all(|phase| {
+            matches!(
+                phase.outcome,
+                crate::check_profiles::Outcome::EnvironmentFailure
+                    | crate::check_profiles::Outcome::RunnerFailure
             )
-        })
-        .collect();
-    let step = order.step.clone();
+        });
     task.transaction(|tx| {
         if let Some(found) = tx.state.step_mut(&step) {
             found.set_status(StepStatus::Failed, crate::log::now());
         }
-        tx.state.say(
-            crate::state::LEADER,
-            format!(
-                "INTEGRATION FAILED {step}: its work merged with the task's branch fails the \
-                 candidate check: {}. Order a correction (an integration defect) or escalate.",
-                failed.join("; ")
-            ),
+        crate::failures::record(
+            &mut tx.state,
+            &step,
+            Some(&order.id),
+            if environment_only {
+                crate::failures::FailureKind::CheckEnvironment
+            } else {
+                crate::failures::FailureKind::IntegrationFailed
+            },
+            &failed.join("; "),
+            crate::log::now(),
         );
+        tx.state.say(crate::state::LEADER, message);
         tx.log(
             Kind::Check,
             None,
@@ -231,6 +257,50 @@ fn check_candidate_first(
         "the merge candidate of {step} fails its candidate check: {}",
         failed.join("; ")
     )
+}
+
+/// Each failed phase: its profile, outcome and diagnostic.
+fn failed_phases(phases: &[crate::check_profiles::Phase]) -> Vec<String> {
+    phases
+        .iter()
+        .filter(|phase| phase.outcome != crate::check_profiles::Outcome::Passed)
+        .map(|phase| {
+            format!(
+                "{} ({:?}): {}",
+                phase.profile, phase.outcome, phase.diagnostic
+            )
+        })
+        .collect()
+}
+
+/// What the leader is told when a merge candidate fails: which profiles, why
+/// they ran (every selected profile when the order's own checks ran only on
+/// its targets) and the failing lines of each log, which neither it nor a
+/// reviewer can open.
+fn integration_failure(step: &str, phases: &[crate::check_profiles::Phase], full: bool) -> String {
+    let mut message = format!(
+        "INTEGRATION FAILED {step}: its work merged with the task's branch fails the candidate check: {}.",
+        failed_phases(phases).join("; ")
+    );
+    if full {
+        message.push_str(
+            " Its order's checks ran only on its targets, so the candidate ran every selected profile on the whole repo: a failure may come from other work in the lane or the branch.",
+        );
+    }
+    for phase in phases
+        .iter()
+        .filter(|phase| phase.outcome != crate::check_profiles::Outcome::Passed)
+    {
+        let excerpt = crate::check_profiles::failure_excerpt(&phase.log);
+        if !excerpt.is_empty() {
+            message.push_str(&format!("\n{} log: {excerpt}", phase.profile));
+        }
+    }
+    message.push_str(
+        "\nOrder a correction (an integration defect), or escalate when the failure is not this step's. ",
+    );
+    message.push_str(&crate::failures::guidance(step, None));
+    message
 }
 
 pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
@@ -251,7 +321,7 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
     );
     crate::orders::ensure_attempt_left(
         &state,
-        changes_requested(&state, &order.step),
+        crate::failures::work_failures(&state, &order.step),
         &order.step,
         task.config()?.max_attempts,
     )?;
@@ -264,46 +334,8 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
         reviewer_agent.live && !reviewer_agent.writes && reviewer_agent.role == "code-reviewer",
         "assigned reviewer must be a live read-only code-reviewer"
     );
-    let author = state.agent(&order.agent).context("unknown author")?;
-    let workplace = crate::lanes::workplace(task, author)?;
-    let source = checks::head(&workplace.worktree)?;
-    let config = task.config()?;
-    let repo = config
-        .repos
-        .iter()
-        .find(|repo| repo.name == author.repo)
-        .context("unknown repo")?;
-    let target = checks::head(&repo.worktree)?;
-    let evidence = evidence(task, order_id)?;
-    let lane = crate::lanes::get(
-        task,
-        author
-            .lane
-            .as_deref()
-            .context("reviewed implementation requires an isolated lane")?,
-    )?;
-    let candidate = crate::integration::candidate(task, &lane)?;
-    let candidate_evidence = match &checked {
-        Some(evidence) => {
-            ensure!(
-                evidence.matches(&candidate),
-                "the branch moved during the candidate check: request the review again"
-            );
-            evidence.hash()?
-        }
-        None => String::new(),
-    };
-    crate::integration::require_candidate_evidence(
-        task,
-        &lane.repo,
-        &Review {
-            id: "the requested review".into(),
-            order: order.id.clone(),
-            candidate: candidate.clone(),
-            candidate_evidence: candidate_evidence.clone(),
-            ..Review::default()
-        },
-    )?;
+    let bound = bind(task, &state, order, checked.as_ref())?;
+    let repo = bound.repo.clone();
     if state.workflow == Workflow::Reviewed {
         ensure!(
             !state
@@ -331,7 +363,7 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
                 "add",
                 "--detach",
                 checkout.to_str().context("invalid review checkout path")?,
-                &candidate.commit,
+                &bound.review.candidate.commit,
             ],
         )?;
         crate::runner::prepare(task, reviewer, &checkout, true)?;
@@ -344,25 +376,20 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
         tx.state.next_id += 1;
         let review = Review {
             id: format!("r{}", tx.state.next_id),
-            order: order_id.into(),
-            author: order.agent.clone(),
             reviewer: reviewer.into(),
-            baseline_revision: state.application.revision,
-            order_revision: state.revision(order_id),
-            base: order.base.clone(),
-            source,
-            target,
-            evidence,
-            candidate,
-            candidate_evidence,
-            verdict: None,
-            findings: vec![],
-            summary: None,
             requested_at: crate::log::now(),
-            submitted_at: None,
+            ..bound.review
         };
         tx.state.reviews.push(review.clone());
-        tx.state.say(reviewer,format!("Independently review {} for order {} using review_diff, inspect surrounding source through execute, then review_submit. Source {}, target {}, integration tree {}. Do not modify code.",review.id,review.order,review.source,review.target,review.candidate.tree));
+        let automatic = if review.automatic.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " devAgentics already found weakened tests in {}: see automatic in review_diff; an approval must resolve each.",
+                review.automatic.iter().map(|finding| finding.file.as_str()).collect::<Vec<_>>().join(", ")
+            )
+        };
+        tx.state.say(reviewer,format!("Independently review {} for order {} using review_diff, inspect surrounding source through execute, then review_submit. Try to break each acceptance line; report a bug or a regression, not style. Say in your summary the one fact the change is safe because of, and how you know it (a run beats a line you point at, which beats your word). A line the change did not touch is the base's problem: name it in one line, never block on it, unless the change breaks it (a caller, a config it forgot): then set caused_by_change and say how.{automatic} Source {}, target {}, integration tree {}. Do not modify code.",review.id,review.order,review.source,review.target,review.candidate.tree));
         tx.log(
             Kind::Review,
             Some(reviewer),
@@ -372,6 +399,370 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
         Ok(review)
     })
 }
+/// What a review is bound to, taken once the candidate check passed: the
+/// author's source, the task's target, the order's evidence and the exact
+/// merge candidate. Shared by an independent review and a light acceptance.
+struct Bound {
+    repo: crate::task::Repo,
+    review: Review,
+}
+
+fn bind(
+    task: &Task,
+    state: &crate::state::State,
+    order: &crate::state::Order,
+    checked: Option<&crate::integration::CandidateEvidence>,
+) -> Result<Bound> {
+    let author = state.agent(&order.agent).context("unknown author")?;
+    let workplace = crate::lanes::workplace(task, author)?;
+    let source = checks::head(&workplace.worktree)?;
+    let config = task.config()?;
+    let repo = config
+        .repos
+        .iter()
+        .find(|repo| repo.name == author.repo)
+        .context("unknown repo")?
+        .clone();
+    let target = checks::head(&repo.worktree)?;
+    let lane = crate::lanes::get(
+        task,
+        author
+            .lane
+            .as_deref()
+            .context("reviewed implementation requires an isolated lane")?,
+    )?;
+    let candidate = crate::integration::candidate(task, &lane)?;
+    let candidate_evidence = match checked {
+        Some(evidence) => {
+            ensure!(
+                evidence.matches(&candidate),
+                "the branch moved during the candidate check: request the review again"
+            );
+            evidence.hash()?
+        }
+        None => String::new(),
+    };
+    let diff = change_diff(&workplace.worktree, &target, &source)?;
+    let review = Review {
+        automatic: weakened_tests(&diff),
+        id: "the requested review".into(),
+        order: order.id.clone(),
+        author: order.agent.clone(),
+        baseline_revision: state.application.revision,
+        order_revision: state.revision(&order.id),
+        base: order.base.clone(),
+        source,
+        target,
+        evidence: evidence(task, &order.id)?,
+        candidate,
+        candidate_evidence,
+        ..Review::default()
+    };
+    crate::integration::require_candidate_evidence(task, &lane.repo, &review)?;
+    Ok(Bound { repo, review })
+}
+
+/// A light item accepted on the leader's reading of its diff instead of an
+/// independent review. It needs the item to be light now and a passing
+/// candidate check; it is recorded as an approved review signed by the
+/// leader, so the merge and every staleness rule treat it like any other.
+pub fn accept_light(task: &Task, step: &str, reason: &str) -> Result<String> {
+    ensure!(
+        !reason.trim().is_empty(),
+        "a light item needs accept_reason: what you read in the diff and why it is right"
+    );
+    let order_id = {
+        let state = task.state()?;
+        ensure!(
+            state.workflow == Workflow::Reviewed,
+            "light acceptance is for reviewed tasks"
+        );
+        light(task, &state, step)?;
+        let order_id = state
+            .orders
+            .iter()
+            .rev()
+            .find(|order| order.step == step)
+            .map(|order| order.id.clone())
+            .context("the step has no order")?;
+        // Before the candidate check, which takes minutes.
+        no_open_review(&state, &order_id, step)?;
+        order_id
+    };
+    let checked = check_candidate_first(task, &order_id)?.context(
+        "a light item skips the review only after a passing candidate check, and this \
+         repo has none: request an independent review",
+    )?;
+    let _control = task.control_lock()?;
+    let state = task.state()?;
+    light(task, &state, step)?;
+    let order = state
+        .orders
+        .iter()
+        .find(|order| order.id == order_id)
+        .context("unknown order")?;
+    ensure!(
+        state
+            .steps
+            .iter()
+            .any(|found| found.id == step && found.status == StepStatus::Reported),
+        "implementation must report passing checks first"
+    );
+    no_open_review(&state, &order_id, step)?;
+    let bound = bind(task, &state, order, Some(&checked))?;
+    ensure!(
+        bound.review.automatic.is_empty(),
+        "the change weakens tests ({}): a light item cannot skip its review, request one",
+        bound
+            .review
+            .automatic
+            .iter()
+            .map(|finding| finding.file.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    task.transaction(|tx| {
+        tx.state.next_id += 1;
+        let now = crate::log::now();
+        let review = Review {
+            id: format!("r{}", tx.state.next_id),
+            reviewer: crate::state::LEADER.into(),
+            verdict: Some(Verdict::Approved),
+            summary: Some(reason.trim().into()),
+            requested_at: now,
+            submitted_at: Some(now),
+            ..bound.review
+        };
+        tx.log(
+            Kind::Review,
+            None,
+            Some(step),
+            &format!("light acceptance {}: {}", review.id, reason.trim()),
+        );
+        let id = review.id.clone();
+        tx.state.reviews.push(review);
+        Ok(id)
+    })
+}
+
+/// An independent review of the order that is pending or not approved: a
+/// light acceptance can neither overrule nor skip it.
+fn no_open_review(state: &crate::state::State, order_id: &str, step: &str) -> Result<()> {
+    if let Some(review) = state
+        .reviews
+        .iter()
+        .rev()
+        .find(|review| review.order == order_id && review.reviewer != crate::state::LEADER)
+    {
+        ensure!(
+            review.verdict == Some(Verdict::Approved),
+            "{step} has an independent review ({}) that is {}: a light acceptance cannot overrule \
+             or skip it",
+            review.id,
+            match review.verdict {
+                None => "still pending",
+                Some(Verdict::ChangesRequested) => "asking for changes",
+                _ => "blocked",
+            }
+        );
+    }
+    Ok(())
+}
+
+/// The step's item is light now: a rise in rigor since (a failure, a new
+/// sensitive path) takes the shortcut away.
+fn light(task: &Task, state: &crate::state::State, step: &str) -> Result<()> {
+    let routing = state
+        .application
+        .routing(step, crate::failures::work_failures(state, step))?
+        .under(task.config()?.routing);
+    ensure!(
+        routing.rigor == crate::execution::Rigor::Light,
+        "{step} is {:?}, not light: it needs an independent review{}",
+        routing.rigor,
+        if routing.why.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", routing.why.join("; "))
+        }
+    );
+    Ok(())
+}
+
+/// Lines that assert, in the languages the teams write tests in.
+const ASSERTIONS: &[&str] = &["assert", "expect(", ".should", "t.error", "t.fatal"];
+/// Ways to switch a test off, matched as written: `iter().skip(1)` in a
+/// test is not one.
+const SKIPS: &[&str] = &[
+    "@skip",
+    "unittest.skip",
+    "pytest.mark.skip",
+    "pytest.skip(",
+    "skipTest(",
+    "it.skip(",
+    "test.skip(",
+    "describe.skip(",
+    "xit(",
+    "xdescribe(",
+    "#[ignore",
+    "t.Skip(",
+];
+
+fn is_test_file(path: &str) -> bool {
+    path.split('/').any(|part| {
+        let part = part.to_ascii_lowercase();
+        part == "tests"
+            || part == "test"
+            || part == "spec"
+            || part == "__tests__"
+            || part.starts_with("test_")
+            || part.contains("_test.")
+            || part.contains(".test.")
+            || part.contains(".spec.")
+    })
+}
+
+/// What a change does to its test files, read from its unified diff: per
+/// file, more assertion lines removed than added, or a test switched off.
+/// Code finds it, so no reviewer spends tokens on it and none can miss it.
+pub fn weakened_tests(diff: &str) -> Vec<Finding> {
+    #[derive(Default)]
+    struct Count {
+        line: u64,
+        removed: u64,
+        added: u64,
+        skips: u64,
+    }
+    let mut files: BTreeMap<String, Count> = BTreeMap::new();
+    let mut file: Option<String> = None;
+    let mut line = 0;
+    let mut old_file: Option<String> = None;
+    for text in diff.lines() {
+        if let Some(path) = text.strip_prefix("--- a/") {
+            old_file = Some(path.to_string());
+            continue;
+        }
+        if let Some(path) = text.strip_prefix("+++ ") {
+            file = path
+                .strip_prefix("b/")
+                .map(str::to_string)
+                .or_else(|| old_file.clone());
+            continue;
+        }
+        if let Some(hunk) = text.strip_prefix("@@ ") {
+            line = hunk_start(hunk).map_or(1, |(start, _)| start.max(1));
+            continue;
+        }
+        let Some(path) = file.as_ref().filter(|path| is_test_file(path)) else {
+            continue;
+        };
+        let lowered = text.to_ascii_lowercase();
+        let asserts = ASSERTIONS.iter().any(|word| lowered.contains(word));
+        let count = files.entry(path.clone()).or_default();
+        if count.line == 0 {
+            count.line = line;
+        }
+        if text.starts_with('-') && asserts {
+            count.removed += 1;
+        } else if text.starts_with('+') {
+            count.added += u64::from(asserts);
+            count.skips += u64::from(SKIPS.iter().any(|skip| text.contains(skip)));
+        }
+    }
+    files
+        .into_iter()
+        .filter(|(_, count)| count.removed > count.added || count.skips > 0)
+        .map(|(file, count)| Finding {
+            file,
+            line: count.line.max(1),
+            severity: "high".into(),
+            blocking: true,
+            rationale: format!(
+                "found by devAgentics: {} assertion lines removed, {} added, {} tests switched off",
+                count.removed, count.added, count.skips
+            ),
+            category: Some(Category::TestWeakening),
+            ..Finding::default()
+        })
+        .collect()
+}
+
+/// The new-file start and length of a hunk header (`-a,b +c,d @@`).
+fn hunk_start(header: &str) -> Option<(u64, u64)> {
+    let new = header.split(' ').find(|part| part.starts_with('+'))?;
+    let mut numbers = new[1..].split(',');
+    let start = numbers.next()?.parse().ok()?;
+    let length = numbers
+        .next()
+        .map_or(Some(1), |length| length.parse().ok())?;
+    Some((start, length))
+}
+
+/// What the reviewed change did, as a zero-context diff from `target` to
+/// `source`: the input of the test scanner and the hunks findings are
+/// judged against.
+fn change_diff(worktree: &std::path::Path, target: &str, source: &str) -> Result<String> {
+    checks::git(
+        worktree,
+        &[
+            "diff",
+            "-U0",
+            "--no-ext-diff",
+            "--no-textconv",
+            // The scanners read a/ and b/ headers, whatever the user's
+            // diff.noprefix or diff.mnemonicPrefix says.
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            &format!("{target}...{source}"),
+        ],
+    )
+}
+
+/// A blocking finding far from every changed line is the base's problem,
+/// unless the reviewer says the change causes it there.
+fn mark_pre_existing(findings: &mut [Finding], changed: &BTreeMap<String, Vec<(u64, u64)>>) {
+    for finding in findings {
+        if finding.blocking && !finding.caused_by_change && !in_change(changed, finding) {
+            finding.blocking = false;
+            finding.pre_existing = true;
+        }
+    }
+}
+
+/// The lines a unified diff touches in each new file.
+fn touched(diff: &str) -> BTreeMap<String, Vec<(u64, u64)>> {
+    let mut touched: BTreeMap<String, Vec<(u64, u64)>> = BTreeMap::new();
+    let mut file = None;
+    let mut old_file: Option<String> = None;
+    for text in diff.lines() {
+        if let Some(path) = text.strip_prefix("--- a/") {
+            old_file = Some(path.to_string());
+        } else if let Some(path) = text.strip_prefix("+++ ") {
+            // A deleted file has no new side: its findings are about the old.
+            file = path
+                .strip_prefix("b/")
+                .map(str::to_string)
+                .or_else(|| old_file.clone());
+        } else if let (Some(path), Some(hunk)) = (&file, text.strip_prefix("@@ "))
+            && let Some(range) = hunk_start(hunk)
+        {
+            touched.entry(path.clone()).or_default().push(range);
+        }
+    }
+    touched
+}
+
+/// A finding is about the change when its line is within a few lines of a
+/// hunk of its file: a reviewer points at the line it means, or next to it.
+fn in_change(touched: &BTreeMap<String, Vec<(u64, u64)>>, finding: &Finding) -> bool {
+    const NEAR: u64 = 3;
+    touched.get(&finding.file).is_some_and(|ranges| {
+        ranges.iter().any(|(start, length)| {
+            finding.line + NEAR >= *start && finding.line <= start + length.max(&1) + NEAR
+        })
+    })
+}
+
 pub fn validate(task: &Task, review: &Review) -> Result<()> {
     let state = task.state()?;
     let order = state
@@ -383,11 +774,15 @@ pub fn validate(task: &Task, review: &Review) -> Result<()> {
         review.author == order.agent && review.author != review.reviewer,
         "invalid review identities"
     );
-    let reviewer = state.agent(&review.reviewer).context("unknown reviewer")?;
-    ensure!(
-        !reviewer.writes && reviewer.role == "code-reviewer",
-        "reviewer capability changed"
-    );
+    if review.reviewer == crate::state::LEADER {
+        light(task, &state, &order.step)?;
+    } else {
+        let reviewer = state.agent(&review.reviewer).context("unknown reviewer")?;
+        ensure!(
+            !reviewer.writes && reviewer.role == "code-reviewer",
+            "reviewer capability changed"
+        );
+    }
     ensure!(
         state.contract_bindings.get(&order.id) == state.application.items.get(&order.step)
             && state.revision(&order.id) == review.order_revision
@@ -419,7 +814,9 @@ pub fn validate(task: &Task, review: &Review) -> Result<()> {
         .context("unknown repo")?;
     ensure!(
         crate::history::only_history_since(&repo.worktree, &review.target)?,
-        "review target changed beyond the team's history: request a fresh review"
+        crate::failures::Stale(
+            "review target changed beyond the team's history: request a fresh review".into()
+        )
     );
     ensure!(
         review.candidate.source == review.source
@@ -441,7 +838,7 @@ pub fn validate(task: &Task, review: &Review) -> Result<()> {
     );
     ensure!(
         evidence(task, &order.id)? == review.evidence,
-        "review evidence changed"
+        crate::failures::Stale("review evidence changed".into())
     );
     crate::integration::require_candidate_evidence(task, &repo.name, review)?;
     Ok(())
@@ -487,6 +884,53 @@ pub fn submit(
              or test_weakening)"
         );
     }
+    validate(task, review)?;
+    let mut findings = findings;
+    let author = state.agent(&review.author).context("unknown author")?;
+    let workplace = crate::lanes::workplace(task, author)?;
+    let changed = touched(&change_diff(
+        &workplace.worktree,
+        &review.target,
+        &review.source,
+    )?);
+    mark_pre_existing(&mut findings, &changed);
+    ensure!(
+        verdict != Verdict::ChangesRequested
+            || !findings.iter().any(|finding| finding.pre_existing)
+            || findings.iter().any(|finding| finding.blocking)
+            || !review.automatic.is_empty(),
+        "every blocking finding is outside this change ({}): the base already had it. \
+         Approve and name it in your summary in one line, point at the changed line it is about, \
+         or set caused_by_change when the change breaks code it did not edit",
+        findings
+            .iter()
+            .filter(|finding| finding.pre_existing)
+            .map(|finding| format!("{}:{}", finding.file, finding.line))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    for automatic in &review.automatic {
+        let resolved = findings.iter().any(|finding| {
+            finding.file == automatic.file
+                && finding
+                    .resolution
+                    .as_ref()
+                    .is_some_and(|reason| !reason.trim().is_empty())
+        });
+        ensure!(
+            verdict != Verdict::Approved || resolved,
+            "devAgentics found weakened tests in {} ({}): request changes, or add a finding on \
+             that file whose resolution says why the change is right",
+            automatic.file,
+            automatic.rationale
+        );
+        if !findings
+            .iter()
+            .any(|finding| finding.file == automatic.file)
+        {
+            findings.push(automatic.clone());
+        }
+    }
     ensure!(
         verdict != Verdict::Approved
             || findings.iter().all(|finding| !finding.blocking
@@ -496,7 +940,6 @@ pub fn submit(
                     .is_some_and(|reason| !reason.trim().is_empty())),
         "blocking findings remain"
     );
-    validate(task, review)?;
     let step = state
         .orders
         .iter()
@@ -505,7 +948,15 @@ pub fn submit(
         .context("unknown review order")?;
     // The leader may have ended its turn waiting for this review: the inbox
     // message is what starts its next one.
-    let message = submitted_message(id, &agent.id, &step, &verdict, &findings, summary);
+    let mut message = submitted_message(id, &agent.id, &step, &verdict, &findings, summary);
+    if verdict == Verdict::Approved
+        && let Some(why) = second_opinion(&state, &step)?
+    {
+        message.push_str(&format!(
+            " Before accepting: {why}, so ask a second code-reviewer for a fresh review \
+             (review_request), on another program when one is available."
+        ));
+    }
     let reviewer = agent.id.clone();
     task.transaction(|tx| {
         tx.state.say(crate::state::LEADER, message);
@@ -516,11 +967,20 @@ pub fn submit(
             .find(|review| review.id == id)
             .context("review disappeared")?;
         let now = crate::log::now();
+        let failed = match verdict {
+            Verdict::ChangesRequested => Some(crate::failures::FailureKind::ChangesRequested),
+            Verdict::Blocked => Some(crate::failures::FailureKind::ReviewBlocked),
+            Verdict::Approved => None,
+        };
+        let reviewed = review.order.clone();
         review.verdict = Some(verdict);
         review.findings = findings;
         review.summary = Some(summary.into());
         review.submitted_at = Some(now);
         let requested = review.requested_at;
+        if let Some(kind) = failed {
+            crate::failures::record(&mut tx.state, &step, Some(&reviewed), kind, summary, now);
+        }
         if requested > 0 {
             tx.state
                 .timing
@@ -569,6 +1029,40 @@ fn submitted_message(
          ({blocking} blocking, {other} other findings).\n{summary}\nNext: {next}."
     )
 }
+/// Why an approved step deserves a second review, if it does: its rigor is
+/// critical, or its history shows one reviewer is not enough. Only then: a
+/// second reviewer on every step would double the review cost.
+fn second_opinion(state: &crate::state::State, step: &str) -> Result<Option<String>> {
+    // Asked once: when the step's latest order already has an independent
+    // approval, the one being submitted is the second.
+    if let Some(order) = state.orders.iter().rev().find(|order| order.step == step)
+        && state.reviews.iter().any(|review| {
+            review.order == order.id
+                && review.reviewer != crate::state::LEADER
+                && review.verdict == Some(Verdict::Approved)
+        })
+    {
+        return Ok(None);
+    }
+    let routing = state
+        .application
+        .routing(step, crate::failures::work_failures(state, step))?;
+    if routing.rigor == crate::execution::Rigor::Critical {
+        return Ok(Some("its rigor is critical".into()));
+    }
+    let rounds = changes_requested(state, step);
+    if rounds >= 2 {
+        return Ok(Some(format!("reviews asked for changes {rounds} times")));
+    }
+    let integration = state
+        .step_failures
+        .get(step)
+        .into_iter()
+        .flatten()
+        .any(|failure| failure.kind == crate::failures::FailureKind::IntegrationFailed);
+    Ok(integration.then(|| "its merge candidate failed integration".into()))
+}
+
 pub fn require_approval(task: &Task, step: &str) -> Result<()> {
     let state = task.state()?;
     if state.workflow == Workflow::Legacy {
@@ -598,6 +1092,48 @@ pub fn require_approval(task: &Task, step: &str) -> Result<()> {
 mod tests {
     use super::*;
 
+    // The leader cannot open the candidate's logs: the message carries why
+    // the whole suite ran and which tests failed.
+    #[test]
+    fn an_integration_failure_says_why_the_suite_ran_and_what_failed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let log = dir.path().join("phase-2.log");
+        std::fs::write(
+            &log,
+            "  ✓ fine\n FAIL  src/hooks/useSystemMutations.test.tsx > keeps the mutation\nAssertionError: expected undefined\n",
+        )
+        .unwrap();
+        let phase = |profile: &str, outcome| crate::check_profiles::Phase {
+            profile: profile.into(),
+            outcome,
+            exit_code: Some(1),
+            seconds: 1,
+            diagnostic: "Isolated test command failed".into(),
+            log: log.clone(),
+        };
+        let phases = [
+            phase("lint", crate::check_profiles::Outcome::Passed),
+            phase("test", crate::check_profiles::Outcome::TestFailure),
+        ];
+
+        let message = integration_failure("B3", &phases, true);
+        assert!(message.starts_with("INTEGRATION FAILED B3"), "{message}");
+        assert!(
+            message.contains("test (TestFailure)") && !message.contains("lint ("),
+            "{message}"
+        );
+        assert!(message.contains("ran only on its targets"), "{message}");
+        assert!(
+            message.contains("test log: FAIL  src/hooks/useSystemMutations.test.tsx")
+                && message.contains("AssertionError"),
+            "{message}"
+        );
+        assert!(
+            !integration_failure("B3", &phases, false).contains("targets"),
+            "an order checked everywhere ran the candidate's own profiles"
+        );
+    }
+
     #[test]
     fn a_submitted_review_tells_the_leader_what_comes_next() {
         let approved = submitted_message(
@@ -623,6 +1159,8 @@ mod tests {
             rationale: "no build evidence".into(),
             resolution: None,
             category: Some(Category::EnvironmentMismatch),
+            pre_existing: false,
+            caused_by_change: false,
         };
         let changes = submitted_message(
             "r312",
@@ -678,7 +1216,10 @@ mod tests {
         assert_eq!(results["order"]["passed"], true);
         assert_eq!(results["order"]["phases"][1]["profile"], "test");
         assert_eq!(results["order"]["phases"][1]["exit_code"], 0);
-        assert!(results["order"]["phases"][1].get("log").is_none(), "a path it cannot open");
+        assert!(
+            results["order"]["phases"][1].get("log").is_none(),
+            "a path it cannot open"
+        );
         assert!(results["candidate"].is_null(), "no candidate check yet");
     }
 
@@ -706,6 +1247,8 @@ mod tests {
                 review_since: None,
             });
             tx.state.orders.push(crate::state::Order {
+                read: Vec::new(),
+                targets: Vec::new(),
                 id: "o-review".into(),
                 step: "S01-B01".into(),
                 agent: author.id.clone(),
@@ -732,6 +1275,365 @@ mod tests {
         assert_eq!(task.state().unwrap().steps[0].status, StepStatus::Reported);
         assert!(request(&task, "o-review", &author.id).is_err());
     }
+    fn light_candidate(
+        kind: crate::execution::WorkKind,
+        allowed: &str,
+    ) -> (tempfile::TempDir, Task) {
+        let root = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, repo) = crate::board::tests::started(&root);
+        let head = checks::head(repo.path()).unwrap();
+        task.transaction(|tx| {
+            tx.state.workflow = Workflow::Reviewed;
+            let mut application = crate::execution::tests::baseline();
+            let item = application.items.get_mut("S01-B01").unwrap();
+            item.kind = kind;
+            item.allowed = vec![allowed.into()];
+            tx.state.application = application;
+            tx.state.steps.push(crate::state::Step {
+                id: "S01-B01".into(),
+                title: "Implementation".into(),
+                status: StepStatus::Reported,
+                attempts: 1,
+                spec: None,
+                review_since: None,
+            });
+            tx.state.orders.push(crate::state::Order {
+                read: Vec::new(),
+                targets: Vec::new(),
+                id: "o1".into(),
+                step: "S01-B01".into(),
+                agent: "executor-1".into(),
+                text: "work".into(),
+                allowed: vec![],
+                forbidden: vec![],
+                check: None,
+                base: head,
+                status: crate::state::OrderStatus::Closed,
+                delivered: true,
+                stalled: false,
+                plan: None,
+            });
+            Ok(())
+        })
+        .unwrap();
+        (root, task)
+    }
+
+    #[test]
+    fn a_light_acceptance_needs_a_reason_a_light_item_and_a_candidate_check() {
+        use crate::execution::WorkKind;
+        let (_root, task) = light_candidate(WorkKind::Change, "README.md");
+        let error = accept_light(&task, "S01-B01", "  ")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("accept_reason"), "{error}");
+
+        let error = accept_light(&task, "S01-B01", "one-line port fix, matches the server")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("only after a passing candidate check"),
+            "no candidate check ran: {error}"
+        );
+
+        let (_root, task) = light_candidate(WorkKind::Feature, "src/notes.py");
+        let error = accept_light(&task, "S01-B01", "looks right")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("S01-B01 is Standard, not light: it needs an independent review"),
+            "{error}"
+        );
+        let (_root, task) = light_candidate(WorkKind::Change, "api/auth/session.py");
+        let error = accept_light(&task, "S01-B01", "looks right")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("(sensitive path api/auth/session.py)"),
+            "{error}"
+        );
+        assert!(task.state().unwrap().reviews.is_empty(), "nothing recorded");
+    }
+
+    #[test]
+    fn a_leader_signed_review_goes_stale_once_the_item_is_no_longer_light() {
+        let (_root, task) = light_candidate(crate::execution::WorkKind::Change, "README.md");
+        task.transaction(|tx| {
+            for (at, order) in [(10, "o-first"), (20, "o-second")] {
+                crate::failures::record(
+                    &mut tx.state,
+                    "S01-B01",
+                    Some(order),
+                    crate::failures::FailureKind::CheckFailed,
+                    "tests fail",
+                    at,
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+        let review = Review {
+            id: "r1".into(),
+            order: "o1".into(),
+            author: "executor-1".into(),
+            reviewer: crate::state::LEADER.into(),
+            verdict: Some(Verdict::Approved),
+            ..Review::default()
+        };
+        let error = validate(&task, &review).unwrap_err().to_string();
+        assert!(
+            error.contains("is Strict, not light") && error.contains("2 work failures"),
+            "{error}"
+        );
+    }
+
+    const WEAKENING: &str = "diff --git a/tests/test_api.py b/tests/test_api.py
+--- a/tests/test_api.py
++++ b/tests/test_api.py
+@@ -30,2 +30,0 @@ def test_delete_missing(self):
+-        self.assertEqual(response.status, 404)
+-        self.assertEqual(body, {'error': 'not_found'})
+@@ -44,0 +43,1 @@ class TestNotes:
++    @unittest.skip('flaky')
+diff --git a/api/notes_api.py b/api/notes_api.py
+--- a/api/notes_api.py
++++ b/api/notes_api.py
+@@ -10,1 +10,1 @@
+-        assert note_id > 0
++        return 200
+diff --git a/web/list.test.ts b/web/list.test.ts
+--- a/web/list.test.ts
++++ b/web/list.test.ts
+@@ -5,1 +5,1 @@
+-  expect(items).toHaveLength(2)
++  expect(items).toHaveLength(3)
+";
+
+    #[test]
+    fn the_change_diff_has_a_and_b_prefixes_whatever_the_users_config() {
+        let repo = crate::checks::tests::repo();
+        crate::checks::tests::run(repo.path(), &["config", "diff.noprefix", "true"]);
+        let before = checks::head(repo.path()).unwrap();
+        crate::checks::tests::commit_file(
+            repo.path(),
+            "tests/test_x.py",
+            "def test_x():\n    pass\n",
+            "add",
+        );
+        let after = checks::head(repo.path()).unwrap();
+        let diff = change_diff(repo.path(), &before, &after).unwrap();
+        assert!(diff.contains("+++ b/tests/test_x.py"), "{diff}");
+        assert!(touched(&diff).contains_key("tests/test_x.py"));
+    }
+
+    #[test]
+    fn a_finding_on_a_deleted_file_is_about_the_change() {
+        let diff = "--- a/src/validators.py\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-def check():\n-    pass\n-\n";
+        let changed = touched(diff);
+        let finding = Finding {
+            file: "src/validators.py".into(),
+            line: 1,
+            ..Finding::default()
+        };
+        assert!(in_change(&changed, &finding));
+    }
+
+    #[test]
+    fn a_reviewer_can_block_on_a_line_the_change_breaks_but_did_not_edit() {
+        let changed = touched(WEAKENING);
+        let caller = Finding {
+            file: "src/cli.rs".into(),
+            line: 88,
+            blocking: true,
+            ..Finding::default()
+        };
+        let mut findings = vec![
+            caller.clone(),
+            Finding {
+                caused_by_change: true,
+                rationale: "calls parse(), which the change renamed".into(),
+                ..caller
+            },
+        ];
+        mark_pre_existing(&mut findings, &changed);
+        assert!(
+            findings[0].pre_existing && !findings[0].blocking,
+            "the base's problem"
+        );
+        assert!(
+            !findings[1].pre_existing && findings[1].blocking,
+            "the change breaks it"
+        );
+    }
+
+    #[test]
+    fn an_iterator_skip_in_a_test_is_not_a_switched_off_test() {
+        let diff = "--- a/tests/test_list.py\n+++ b/tests/test_list.py\n@@ -3,0 +3,1 @@\n+    rest = list(iter(items).skip(1))\n";
+        assert!(weakened_tests(diff).is_empty());
+        let skipped = "--- a/web/a.test.ts\n+++ b/web/a.test.ts\n@@ -3,0 +3,1 @@\n+it.skip('lists', () => {})\n";
+        assert_eq!(weakened_tests(skipped).len(), 1);
+    }
+
+    #[test]
+    fn a_light_acceptance_cannot_overrule_or_skip_an_independent_review() {
+        for verdict in [None, Some(Verdict::ChangesRequested)] {
+            let (_root, task) = light_candidate(crate::execution::WorkKind::Change, "README.md");
+            task.transaction(|tx| {
+                tx.state.reviews.push(Review {
+                    id: "r1".into(),
+                    order: "o1".into(),
+                    reviewer: "reviewer-1".into(),
+                    verdict: verdict.clone(),
+                    ..Review::default()
+                });
+                Ok(())
+            })
+            .unwrap();
+            let error = accept_light(&task, "S01-B01", "looks right")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("has an independent review (r1)")
+                    && error.contains("a light acceptance cannot overrule or skip it"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_second_review_is_asked_once() {
+        let (_root, task) = light_candidate(crate::execution::WorkKind::Feature, "src/notes.py");
+        let mut state = task.state().unwrap();
+        state.application.items.get_mut("S01-B01").unwrap().rigor =
+            Some(crate::execution::Rigor::Critical);
+        assert!(second_opinion(&state, "S01-B01").unwrap().is_some());
+        state.reviews.push(Review {
+            id: "r1".into(),
+            order: "o1".into(),
+            reviewer: "reviewer-1".into(),
+            verdict: Some(Verdict::Approved),
+            ..Review::default()
+        });
+        assert_eq!(
+            second_opinion(&state, "S01-B01").unwrap(),
+            None,
+            "the approval being submitted is the second"
+        );
+    }
+
+    #[test]
+    fn a_second_review_is_asked_only_on_a_signal() {
+        let (_root, task) = light_candidate(crate::execution::WorkKind::Feature, "src/notes.py");
+        let state = task.state().unwrap();
+        assert_eq!(
+            second_opinion(&state, "S01-B01").unwrap(),
+            None,
+            "a plain standard item"
+        );
+
+        let mut critical = state.clone();
+        critical.application.items.get_mut("S01-B01").unwrap().rigor =
+            Some(crate::execution::Rigor::Critical);
+        assert_eq!(
+            second_opinion(&critical, "S01-B01").unwrap().as_deref(),
+            Some("its rigor is critical")
+        );
+
+        let mut integration = state.clone();
+        crate::failures::record(
+            &mut integration,
+            "S01-B01",
+            Some("o1"),
+            crate::failures::FailureKind::IntegrationFailed,
+            "lanes break each other",
+            5,
+        );
+        assert_eq!(
+            second_opinion(&integration, "S01-B01").unwrap().as_deref(),
+            Some("its merge candidate failed integration")
+        );
+
+        let mut rounds = state;
+        for number in 0..2 {
+            rounds.reviews.push(Review {
+                id: format!("r{number}"),
+                order: "o1".into(),
+                verdict: Some(Verdict::ChangesRequested),
+                ..Review::default()
+            });
+        }
+        assert_eq!(
+            second_opinion(&rounds, "S01-B01").unwrap().as_deref(),
+            Some("reviews asked for changes 2 times")
+        );
+    }
+
+    #[test]
+    fn code_finds_removed_assertions_and_switched_off_tests() {
+        let found = weakened_tests(WEAKENING);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let finding = &found[0];
+        assert_eq!(
+            (finding.file.as_str(), finding.line),
+            ("tests/test_api.py", 30)
+        );
+        assert!(finding.blocking);
+        assert_eq!(finding.category, Some(Category::TestWeakening));
+        assert_eq!(
+            finding.rationale,
+            "found by devAgentics: 2 assertion lines removed, 0 added, 1 tests switched off"
+        );
+        assert!(
+            found
+                .iter()
+                .all(|finding| finding.file != "api/notes_api.py"),
+            "an assert in product code is not a test"
+        );
+        assert!(
+            found
+                .iter()
+                .all(|finding| finding.file != "web/list.test.ts"),
+            "a changed assertion is not a weaker one"
+        );
+        assert!(weakened_tests("").is_empty());
+    }
+
+    #[test]
+    fn a_deleted_test_file_counts_its_assertions() {
+        let diff = "--- a/tests/test_old.py
++++ /dev/null
+@@ -1,2 +0,0 @@
+-def test_old():
+-    assert old() == 1
+";
+        let found = weakened_tests(diff);
+        assert_eq!(found[0].file, "tests/test_old.py");
+    }
+
+    #[test]
+    fn a_finding_far_from_every_changed_line_is_the_bases() {
+        let changed = touched(WEAKENING);
+        let at = |file: &str, line| Finding {
+            file: file.into(),
+            line,
+            ..Finding::default()
+        };
+        assert!(in_change(&changed, &at("api/notes_api.py", 10)));
+        assert!(
+            in_change(&changed, &at("api/notes_api.py", 13)),
+            "near the hunk"
+        );
+        assert!(!in_change(&changed, &at("api/notes_api.py", 80)));
+        assert!(
+            !in_change(&changed, &at("api/other.py", 10)),
+            "a file the change left alone"
+        );
+        assert!(
+            in_change(&changed, &at("tests/test_api.py", 30)),
+            "a deletion's place"
+        );
+    }
+
     #[test]
     fn review_rounds_asking_for_changes_count_against_the_steps_attempts() {
         let root = tempfile::TempDir::new().unwrap();
@@ -748,6 +1650,8 @@ mod tests {
                 review_since: None,
             });
             tx.state.orders.push(crate::state::Order {
+                read: Vec::new(),
+                targets: Vec::new(),
                 id: "o1".into(),
                 step: "S01-B01".into(),
                 agent: "executor-1".into(),
@@ -773,9 +1677,20 @@ mod tests {
                 tx.state.reviews.push(Review {
                     id: format!("r{number}"),
                     order: "o1".into(),
-                    verdict: Some(verdict),
+                    verdict: Some(verdict.clone()),
                     ..Review::default()
                 });
+                // Each round of changes ended an order of its own.
+                if verdict == Verdict::ChangesRequested {
+                    crate::failures::record(
+                        &mut tx.state,
+                        "S01-B01",
+                        Some(&format!("o-round-{number}")),
+                        crate::failures::FailureKind::ChangesRequested,
+                        "changes requested",
+                        number as u64,
+                    );
+                }
             }
             Ok(())
         })
@@ -784,7 +1699,11 @@ mod tests {
         assert_eq!(changes_requested(&task.state().unwrap(), "other"), 0);
 
         // Three rounds of changes use up a limit of 3, whatever the default.
-        crate::orders::allow_attempts(&task, "S01-B01", 3).unwrap();
+        task.transaction(|tx| {
+            tx.state.attempt_limits.insert("S01-B01".into(), 3);
+            Ok(())
+        })
+        .unwrap();
         let error = request(&task, "o1", "reviewer-1").unwrap_err().to_string();
         assert!(error.contains("3 attempts"), "{error}");
 
@@ -846,6 +1765,8 @@ mod tests {
             rationale: "the assertion was removed".into(),
             resolution: None,
             category: None,
+            pre_existing: false,
+            caused_by_change: false,
         };
         let error = submit(
             &task,

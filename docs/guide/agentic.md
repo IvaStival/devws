@@ -63,8 +63,7 @@ repos get their own worktrees the same way, as the leader opens them.
   workspace opens. Its team has **seniors**, who plan and answer questions
   and never write the repo, and the **factory floor** (the hammers), who build
   only what a senior planned. The leader runs on Claude or Codex
-  Sol (medium) and moves to the other when you ask (tell it, or pick
-  **⇄ Switch leader model** in the menu's Team tab) or when its account runs
+  Sol (medium) and moves to the other when you ask (tell it) or when its account runs
   out. The week comes first: with 95% of its week used, it moves when the
   other account's week has room, even if that one's 5-hour window is full.
   With only its 5-hour window used up, it moves only when the other has room
@@ -76,11 +75,32 @@ repos get their own worktrees the same way, as the leader opens them.
   Starting, stopping and replacing this project's agents need no extra approval;
   actions outside the project, such as adding another repo or publishing PRs,
   still ask first.
+- **⇄ Change leader…** in the menu's Team tab lists every account that can
+  lead, which one leads now and which are off or run out; the one you pick
+  takes over once the leader's turn is over, and leads from then on.
 - **⚙ Team roles** in the menu's Agent tab changes a role's model, effort or
   approvals (the Floor on Sonnet, a Codex senior that never asks): pick the
   role, the setting, then a value its program takes, or Default. Agents
   started after that use it. Codex agents in the team's own lane folders start
   without asking whether to trust the folder.
+- **◆ OpenCode** (Agent tab › **◆ Programs…**) puts floor and senior agents on
+  [opencode](https://opencode.ai), to save Claude and Codex usage on a cheap
+  model (Zen's DeepSeek Flash). Its global switch is mandatory: off, nothing
+  runs on opencode and the floor's and seniors' switches are ignored. With
+  both on, that group's agents try opencode first, on the model you pick for
+  the group, and fall back to Claude or Codex. The screen also registers the
+  account and logs it in (`opencode auth login`), shows what it used, and
+  keeps the credit left: Zen has no balance API, so you enter the balance and
+  devws counts what was spent since. The leader never runs on opencode. Reviewed teams use its managed
+  MCP-only worker adapter, preserving their isolation and review gates. See
+  [OpenCode workers](../../agentic/docs/usage.md#opencode-workers).
+- **Antigravity** agents (`agent = "antigravity"` in a role, or an
+  Antigravity account picked as the leader) work in a team like Claude and
+  Codex ones. The leader's tools reach agy through devws's plugin
+  ([Agents](agents.md#antigravity)). The floor runs Gemini Flash
+  (`gemini-3.8-flash-medium` unless the role names another Flash), and each
+  falls back to Codex. Reviewed teams do not run them: they have no
+  locked-down worker adapter yet.
 - **The board** beside it opens on **Overview**, under a header with the
   progress bar and each account's limit bars. Each part is a card: what needs
   you, the CTO (the leader first), the seniors, the floor, the queue, the usage

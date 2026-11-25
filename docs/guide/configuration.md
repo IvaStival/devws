@@ -10,7 +10,7 @@ the agent lines for you.
 | Setting | Default | What it does |
 | ------- | ------- | ------------ |
 | `DEVWS_AGENTS` | `claude codex` | The agents devws offers, in the header's order. Each name is a program in a folder ([Agents](agents.md)) |
-| `DEVWS_AGENT_<name>` | — | `"<claude or codex> <folder>"` for an agent that is not plain `claude` or `codex`, e.g. `DEVWS_AGENT_work="claude ~/.claude-work"` |
+| `DEVWS_AGENT_<name>` | — | `"<claude, codex, opencode or antigravity> <folder>"` for an agent that is not plain `claude` or `codex`, e.g. `DEVWS_AGENT_work="claude ~/.claude-work"` |
 | `DEVWS_DEFAULT_AGENT` | the first agent | The agent when none is chosen |
 | `DEVWS_EDITORS` | `nvim vim code zed` | The editors devws offers |
 | `DEVWS_DEFAULT_EDITOR` | the first editor | The editor when none is chosen |

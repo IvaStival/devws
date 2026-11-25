@@ -53,7 +53,8 @@ ln -s "$SCRIPTS" "$TEST_ROOT/home/.tmuxinator"
 # The ticker's settings: fixed here, not the user's own .env.
 printf 'DEVWS_AGENTS="claude codex"\n' > "$TEST_ROOT/devws.env"
 export PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT/home" TMPDIR="$TEST_ROOT" LC_ALL=en_US.UTF-8 \
-  DEVWS_ENV_FILE="$TEST_ROOT/devws.env" DEVWS_AI_MEMORY=devws-no-ai-memory
+  DEVWS_ENV_FILE="$TEST_ROOT/devws.env" DEVWS_AI_MEMORY=devws-no-ai-memory \
+  DEVWS_OFFERED_PROGRAMS=""
 # Run from a devws agent pane, the account it runs in would leak in.
 unset TMUX CLAUDE_CONFIG_DIR CODEX_HOME DEVWS_AGENT
 SCRIPTS="$HOME/.tmuxinator"
@@ -317,7 +318,7 @@ test_claude_limits_come_from_its_status_line() {
   [ "$(tmux show-option -gqv @devws_limits_work | cut -d" " -f1-2)" = "80 50" ] || fail "the work account's limits are not recorded"
   [ "$(tmux show-option -gqv @devws_limits_claude | cut -d" " -f1-2)" = "37 12" ] || fail "another account overwrote Claude's limits"
   rm "$HOME/.claude-work/settings.json"
-  jq -e '.statusLine.command | contains("agent_statusline.sh")' "$SCRIPTS/agent_settings.json" >/dev/null ||
+  jq -e '.statusLine.command | contains("agent_statusline.sh")' "$SCRIPTS/agents/10-claude/settings.json" >/dev/null ||
     fail "devws does not start Claude Code with its status line"
 }
 
@@ -346,6 +347,60 @@ test_usage_bar_shows_what_was_used() {
   [ "$plain" = "[Opus] topic" ] || fail "the agent's branch is not shown: $plain"
 }
 
+# An installed program no listed name runs gets its row too, as on the board.
+test_an_installed_program_gets_a_row() {
+  local output
+  tmux new-session -d -s dev-agents -x 200 -y 50 'sleep 600'
+  mkdir -p "$HOME/.gemini/antigravity-cli"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$TEST_ROOT/bin/agy"
+  chmod +x "$TEST_ROOT/bin/agy"
+  tmux set-option -g @devws_limits_antigravity "3 40 1800000000"
+  output="$(DEVWS_OFFERED_PROGRAMS="antigravity" DEVWS_AGENTS="codex" "$SCRIPTS/header_agents.sh" | plain)"
+  [ "$output" = "$(printf '%s\n' \
+    '            5h               wk' \
+    'codex       ▓▓▓▓░░░░░░  37%  ░░░░░░░░░░   0%' \
+    'antigravity ░░░░░░░░░░   3%  ▓▓▓▓░░░░░░  40%')" ] || fail "no row for an installed program: $output"
+  rm "$TEST_ROOT/bin/agy"
+  tmux kill-server
+}
+
+# The header has three rows: a title, then two agents at a time; the wheel
+# over them (the devws-agents range) scrolls the others into view, and the
+# title says which show.
+test_more_than_two_agents_scroll() {
+  local output agents="claude codex work_a work_b"
+  tmux new-session -d -s dev-agents -x 200 -y 50 'sleep 600'
+  tmux set-option -g @devws_limits_claude "37 12 1800000000"
+  tmux set-option -g @devws_limits_work_a "5 6"
+  tmux set-option -g @devws_limits_work_b "70 90"
+  export DEVWS_AGENT_work_a="claude ~/.claude" DEVWS_AGENT_work_b="claude ~/.claude"
+  output="$(DEVWS_AGENTS="$agents" "$SCRIPTS/header_agents.sh" | plain)"
+  [ "$output" = "$(printf '%s\n' \
+    '       5h               wk               ↕ 1–2/4' \
+    'claude ▓▓▓▓░░░░░░  37%  ▓░░░░░░░░░  12%' \
+    'codex  ▓▓▓▓░░░░░░  37%  ░░░░░░░░░░   0%')" ] || fail "unexpected first page: $output"
+  shows "$("$SCRIPTS/header_agents.sh" | head -n 1)" '^#\[range=user|devws-agents\]' ||
+    fail "the rows are not the wheel's range"
+
+  # The wheel moves one agent at a time, kept within the list; the column is
+  # drawn again at once in the ticker's state folder.
+  # Run by tmux, it reads the registry from .env, as the ticker does.
+  local env_file="$TEST_ROOT/scroll.env"
+  printf 'DEVWS_AGENTS="%s"\nDEVWS_AGENT_work_a="claude ~/.claude"\nDEVWS_AGENT_work_b="claude ~/.claude"\n' "$agents" > "$env_file"
+  for _ in 1 2 3 4; do DEVWS_ENV_FILE="$env_file" "$SCRIPTS/header_agents.sh" --scroll down; done
+  [ "$(tmux show-option -gqv @devws_agents_offset)" = 2 ] || fail "scrolling went past the last agents"
+  output="$(plain < "$TEST_ROOT/devws-header-$(id -u)/agents")"
+  [ "$output" = "$(printf '%s\n' \
+    '       5h               wk               ↕ 3–4/4' \
+    'work_a ▓░░░░░░░░░   5%  ▓░░░░░░░░░   6%' \
+    'work_b ▓▓▓▓▓▓▓░░░  70%  ▓▓▓▓▓▓▓▓▓░  90%')" ] || fail "the scrolled column was not drawn: $output"
+  DEVWS_ENV_FILE="$env_file" "$SCRIPTS/header_agents.sh" --scroll up
+  [ "$(tmux show-option -gqv @devws_agents_offset)" = 1 ] || fail "scrolling up did not go back one"
+  ! "$SCRIPTS/header_agents.sh" --scroll sideways 2>/dev/null || fail "an unknown direction was accepted"
+  unset DEVWS_AGENT_work_a DEVWS_AGENT_work_b
+  tmux kill-server
+}
+
 # One column for every agent: a row each with its limits used and its month's
 # cost, then the month's total.
 test_one_column_for_the_agents() {
@@ -353,17 +408,19 @@ test_one_column_for_the_agents() {
   DEVWS_TOKENS_NOW="$NOW" DEVWS_AGENTS="claude codex" "$SCRIPTS/header_tokens.sh" costs > "$costs"
   output="$(DEVWS_AGENTS="claude codex" "$SCRIPTS/header_agents.sh" "$costs" | plain)"
   [ "$output" = "$(printf '%s\n' \
-    'claude 5h ▓▓▓▓░░░░░░  37% wk ▓░░░░░░░░░  12% $45+' \
-    'codex  5h ▓▓▓▓░░░░░░  37% wk ░░░░░░░░░░   0% $4.20' \
-    'month $49+ at API prices')" ] || fail "unexpected agent column: $output"
+    '       5h               wk               month $49+' \
+    'claude ▓▓▓▓░░░░░░  37%  ▓░░░░░░░░░  12%  $45+' \
+    'codex  ▓▓▓▓░░░░░░  37%  ░░░░░░░░░░   0%  $4.20')" ] || fail "unexpected agent column: $output"
 
   # Without costs worked out yet, only the limits.
   output="$(DEVWS_AGENTS="codex" "$SCRIPTS/header_agents.sh" | plain)"
-  [ "$output" = 'codex 5h ▓▓▓▓░░░░░░  37% wk ░░░░░░░░░░   0%' ] || fail "unexpected column without costs: $output"
+  [ "$output" = "$(printf '%s\n' '      5h               wk' 'codex ▓▓▓▓░░░░░░  37%  ░░░░░░░░░░   0%')" ] ||
+    fail "unexpected column without costs: $output"
 
   tmux set-option -gu @devws_limits_claude
   output="$(DEVWS_AGENTS="claude" "$SCRIPTS/header_agents.sh" | plain)"
-  [ "$output" = 'claude 5h ░░░░░░░░░░    — wk ░░░░░░░░░░    —' ] || fail "an unknown limit is not empty: $output"
+  [ "$output" = "$(printf '%s\n' '       5h               wk' 'claude ░░░░░░░░░░    —  ░░░░░░░░░░    —')" ] ||
+    fail "an unknown limit is not empty: $output"
 
   # A row for each listed account with its own limits, names aligned to the
   # longest; a name that is not registered has no row.
@@ -372,8 +429,9 @@ test_one_column_for_the_agents() {
   output="$(DEVWS_AGENTS="claude company_work ghost" DEVWS_AGENT_company_work="claude ~/.claude-work" \
     "$SCRIPTS/header_agents.sh" | plain)"
   [ "$output" = "$(printf '%s\n' \
-    'claude       5h ▓▓▓▓░░░░░░  37% wk ▓░░░░░░░░░  12%' \
-    'company_work 5h ▓▓▓▓▓▓▓▓░░  80% wk ▓▓▓▓▓░░░░░  50%')" ] || fail "unexpected rows per account: $output"
+    '             5h               wk' \
+    'claude       ▓▓▓▓░░░░░░  37%  ▓░░░░░░░░░  12%' \
+    'company_work ▓▓▓▓▓▓▓▓░░  80%  ▓▓▓▓▓░░░░░  50%')" ] || fail "unexpected rows per account: $output"
 
   # No agent to show (none listed, or their folders gone): no made-up rows, a
   # pointer to where agents are registered.
@@ -780,9 +838,9 @@ test_a_client_shows_the_header() {
   wait_until header_row_shows 3 'CPU ▓' || fail "the client shows no system: $(client_header)"
   wait_until header_row_shows 3 "^ *$(header_clock_row 1)  *│ *CPU" ||
     fail "the client shows no clock before the system: $(client_header)"
-  wait_until header_row_shows 3 '│ *claude 5h .*│ *\(↓\|offline\).*│ *+25°C  Sunny' ||
+  wait_until header_row_shows 3 '│ *5h  *wk  *month .*│ *\(↓\|offline\).*│ *+25°C  Sunny' ||
     fail "the client shows no agent columns or weather: $(client_header)"
-  wait_until header_row_shows 3 'claude 5h ▓▓▓▓░░░░░░  40% wk ▓░░░░░░░░░  10%' ||
+  wait_until header_row_shows 4 'claude ▓▓▓▓░░░░░░  40%  ▓░░░░░░░░░  10%' ||
     fail "the client shows no Claude limits: $(client_header)"
   # A job (job.sh) takes the network's and weather's place while it shows, and
   # tmux's own line sums the jobs up.
@@ -798,7 +856,7 @@ test_a_client_shows_the_header() {
   # tmux's own line, then a blank line before the groups.
   header_row_shows 1 'dev-work' || fail "tmux's own line moved: $(client_header)"
   [ -z "$(client_header | sed -n 2p | tr -d ' ')" ] || fail "no blank line under tmux's own line: $(client_header)"
-  wait_until header_row_shows 4 '│ *month \$.*│' || fail "the agent group's last row moved: $(client_header)"
+  wait_until header_row_shows 4 '│ *claude ▓.*│' || fail "the agent group's rows moved: $(client_header)"
   wait_until header_row_shows 1 'conv 351k · ctx 20%' ||
     fail "the client shows no conversation: $(client_header)"
   header_shows '█' || fail "the client shows no ghost: $(client_header)"
@@ -1004,6 +1062,8 @@ test_tokens_of_the_current_conversation
 test_claude_limits_come_from_its_status_line
 test_usage_bar_shows_what_was_used
 test_one_column_for_the_agents
+test_an_installed_program_gets_a_row
+test_more_than_two_agents_scroll
 test_system_usage
 test_system_usage_on_linux
 test_network

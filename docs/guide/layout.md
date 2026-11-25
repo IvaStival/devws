@@ -67,18 +67,21 @@ three rows under tmux's own line; a `▸` on that line brings them back.
 ```
  [project] 1:workspace                                  conv 1.9M · ctx 115k   19:25 Thu 15 Oct
 
- ▀█  ▀▀█ ▄ ▀▀█ ▀▀█  │  CPU ▓▓▓░░░  27%  │  claude 5h ▓▓▓▓░░ 42% wk ▓▓▓▓▓▓ 63% $552  │  ↓ 2.4 MB/s   │  +18°C  Light rain
-  █  █▀▀ ▄ ▀▀█ █▀▀  │  MEM ▓▓▓▓▓▓  80%  │  work   5h ░░░░░░  2% wk ░░░░░░  1% $36   │  Wi-Fi -60 dBm │  Curitiba
- ▀▀▀ ▀▀▀   ▀▀▀ ▀▀▀  │  DSK ▓▓▓▓▓▓  98%  │  month $588 at API prices  mem ●          │  ping 7 ms     │  humidity 94%
+ ▀█  ▀▀█ ▄ ▀▀█ ▀▀█  │  CPU ▓▓▓░░░  27%  │         5h          wk          month $588  ↕ 1–2/3  │  ↓ 2.4 MB/s   │  +18°C  Light rain
+  █  █▀▀ ▄ ▀▀█ █▀▀  │  MEM ▓▓▓▓▓▓  80%  │  claude  ▓▓▓▓░░  42%  ▓▓▓▓▓▓  63%  $552           │  Wi-Fi -60 dBm │  Curitiba
+ ▀▀▀ ▀▀▀   ▀▀▀ ▀▀▀  │  DSK ▓▓▓▓▓▓  98%  │  work    ░░░░░░   2%  ░░░░░░   1%  $36  ●        │  ping 7 ms     │  humidity 94%
 ```
 
 - **Clock** in block digits (left out when the others need its room).
 - **System:** CPU with its last minute, memory, disk, battery, load: green,
   yellow from 60%, red from 85%.
-- **Agents:** one row per agent in `DEVWS_AGENTS`: how much of its plan's
-  5-hour (`5h`) and weekly (`wk`) limits it used, and what this month's
-  tokens would cost at API prices (an indication: plans are not billed per
-  token), then the month's total. With ai-memory, `mem ●` ends the column:
+- **Agents:** a title row with the month's total, then a row per agent
+  (those in `DEVWS_AGENTS`, then any installed program none of them runs):
+  how much of its plan's 5-hour (`5h`) and weekly (`wk`) limits it used, and
+  what this month's tokens would cost at API prices (an indication: plans
+  are not billed per token; Antigravity's month shows in tokens). Two agents
+  show at a time: the mouse wheel over them scrolls the others into view,
+  and `↕ 1–2/3` says which show. With ai-memory, a `●` ends the column:
   green while its service answers, red when not.
 - **Network:** speed, Wi-Fi signal, local address, ping.
 - **Weather** from wttr.in (`DEVWS_WEATHER_LOCATION`).

@@ -19,6 +19,8 @@ class AgentModelTests(unittest.TestCase):
         for name in ["agent_model.sh", "agent_runner.sh", "agent_state.sh", "agent_statusline.sh",
                      "agent_usage_bar.sh", "header_tokens.sh", "agents.sh", "token_cache.pl", "agent_editor_prompt.md"]:
             shutil.copy(source / name, self.scripts / name)
+        # The programs' modules, which launch them and read their logs.
+        shutil.copytree(source / "agents", self.scripts / "agents")
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.state = self.root / "state.json"

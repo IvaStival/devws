@@ -52,7 +52,7 @@ cat > "$TEST_ROOT/curl-config"
 cat "$TEST_ROOT/usage.json" 2>/dev/null
 EOF
 chmod +x "$TEST_ROOT/bin/"*
-for script in "$SCRIPTS_SRC"/*.sh "$SCRIPTS_SRC"/*.pl "$SCRIPTS_SRC"/*.json "$SCRIPTS_SRC"/*.md "$SCRIPTS_SRC"/*.tsv; do
+for script in "$SCRIPTS_SRC"/*.sh "$SCRIPTS_SRC"/agents "$SCRIPTS_SRC"/*.pl "$SCRIPTS_SRC"/*.json "$SCRIPTS_SRC"/*.md "$SCRIPTS_SRC"/*.tsv; do
   ln -s "$script" "$TEST_ROOT/home/.tmuxinator/$(basename "$script")"
 done
 printf 'DEVWS_AGENTS="claude codex"\n' > "$TEST_ROOT/home/.tmuxinator/.env"
@@ -159,6 +159,31 @@ and a second line$RS") ;;
   case "$(started_args claude)" in
     *"--model"*) fail "a plain runner passed extra arguments" ;;
   esac
+}
+
+test_the_runner_hands_an_opencode_leader_to_devagentics() {
+  local file="$TEST_ROOT/leader-args" recorded
+  mkdir -p "$TEST_ROOT/zen"
+  printf 'DEVWS_AGENTS="claude codex zen"\nDEVWS_AGENT_zen="opencode %s"\n' "$TEST_ROOT/zen" > "$HOME/.tmuxinator/.env"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\0" "$@" > "%s/started/opencode.$$"\nexec sleep 600\n' "$TEST_ROOT" > "$TEST_ROOT/bin/opencode"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\0" "module=$DEVWS_AGENT_MODULE" "$@" > "%s/started/devagentics.$$"\nexec sleep 600\n' "$TEST_ROOT" > "$TEST_ROOT/bin/devagentics"
+  chmod +x "$TEST_ROOT/bin/opencode" "$TEST_ROOT/bin/devagentics"
+  printf '%s\0' --devagentics-leader "$TEST_ROOT/bin/devagentics" opencode-leader feat-x --command "$TEST_ROOT/bin/devagentics" --model zen/m --leader-cli -- 'lead the team' > "$file"
+
+  tmux new-session -d -s runner-opencode-leader -x 100 -y 30 -c "$TEST_ROOT/project" \
+    "$SCRIPTS/agent_runner.sh zen --args-file $file"
+  wait_until started_args devagentics >/dev/null || fail "the runner did not hand the leader to devagentics"
+  recorded="$(started_args devagentics)"
+  case "$recorded" in
+    "module="*"/agents/30-opencode${RS}opencode-leader${RS}feat-x${RS}--command${RS}$TEST_ROOT/bin/devagentics${RS}--model${RS}zen/m${RS}--leader-cli${RS}--${RS}lead the team$RS") ;;
+    *) fail "devagentics did not get the leader's arguments and the module: $recorded" ;;
+  esac
+  started_args opencode >/dev/null && fail "the runner started opencode with the user's devws agents"
+  [ "$(tmux show-options -pqv -t runner-opencode-leader @devws_model_configured)" = zen/m ] ||
+    fail "the leader's model was not recorded"
+  tmux kill-session -t runner-opencode-leader
+  rm "$TEST_ROOT/bin/opencode" "$TEST_ROOT/bin/devagentics"
+  printf 'DEVWS_AGENTS="claude codex"\n' > "$HOME/.tmuxinator/.env"
 }
 
 test_the_runner_refuses_an_unreadable_args_file() {
@@ -740,15 +765,134 @@ if [ "${1:-}" = --sidebar ]; then
 fi
 
 test_the_runner_appends_the_args_file
+test_the_runner_hands_an_opencode_leader_to_devagentics
 test_the_runner_refuses_an_unreadable_args_file
 test_codex_trusts_the_task_folders_devws_made
+# The programs installed are only the test's stubs (claude, codex), and agy
+# when a test adds one: the machine's own are not on this PATH.
+installed_only() {
+  PATH="$TEST_ROOT/bin:/usr/bin:/bin" "$@"
+}
+
 test_accounts_lists_every_registered_agent_and_its_kind() {
   printf 'DEVWS_AGENTS="claude codex work"\nDEVWS_AGENT_work="claude %s"\n' "$HOME/.claude-work" > "$HOME/.tmuxinator/.env"
-  [ "$("$SCRIPTS/agent_cli.sh" accounts)" = "$(printf 'claude claude\ncodex codex\nwork claude')" ] ||
-    fail "accounts did not list the registry: $("$SCRIPTS/agent_cli.sh" accounts)"
+  [ "$(installed_only "$SCRIPTS/agent_cli.sh" accounts)" = "$(printf 'claude claude\ncodex codex\nwork claude')" ] ||
+    fail "accounts did not list the registry: $(installed_only "$SCRIPTS/agent_cli.sh" accounts)"
   printf 'DEVWS_AGENTS="claude codex nobody"\n' > "$HOME/.tmuxinator/.env"
-  [ "$("$SCRIPTS/agent_cli.sh" accounts)" = "$(printf 'claude claude\ncodex codex')" ] ||
+  [ "$(installed_only "$SCRIPTS/agent_cli.sh" accounts)" = "$(printf 'claude claude\ncodex codex')" ] ||
     fail "accounts listed a name with no program"
+
+  # An installed program no listed name runs is offered by its bare name.
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$TEST_ROOT/bin/agy"
+  chmod +x "$TEST_ROOT/bin/agy"
+  printf 'DEVWS_AGENTS="work"\nDEVWS_AGENT_work="claude %s"\n' "$HOME/.claude-work" > "$HOME/.tmuxinator/.env"
+  [ "$(installed_only "$SCRIPTS/agent_cli.sh" accounts)" = "$(printf 'work claude\ncodex codex\nantigravity antigravity')" ] ||
+    fail "accounts did not offer the installed programs: $(installed_only "$SCRIPTS/agent_cli.sh" accounts)"
+  printf 'DEVWS_AGENTS="claude codex gemini"\nDEVWS_AGENT_gemini="antigravity ~/.gemini/antigravity-cli"\n' > "$HOME/.tmuxinator/.env"
+  [ "$(installed_only "$SCRIPTS/agent_cli.sh" accounts)" = "$(printf 'claude claude\ncodex codex\ngemini antigravity')" ] ||
+    fail "a program a listed name runs was offered again"
+
+  # An installed opencode is a workspace agent (the menu's list), but the
+  # team reaches it through its own switches, not as an account.
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$TEST_ROOT/bin/opencode"
+  chmod +x "$TEST_ROOT/bin/opencode"
+  [ "$(installed_only bash -c '. "$1"; . "$2"; agent_names' _ "$HOME/.tmuxinator/.env" "$SCRIPTS/agents.sh")" = \
+    "$(printf 'claude\ncodex\ngemini\nopencode')" ] || fail "an installed opencode was not offered to workspaces"
+  [ "$(installed_only "$SCRIPTS/agent_cli.sh" accounts)" = "$(printf 'claude claude\ncodex codex\ngemini antigravity')" ] ||
+    fail "an unregistered opencode was listed as a team account"
+  rm "$TEST_ROOT/bin/opencode" "$TEST_ROOT/bin/agy"
+  printf 'DEVWS_AGENTS="claude codex"\n' > "$HOME/.tmuxinator/.env"
+}
+
+# What each program starts with when no model is named: the account's own
+# config, else Codex's first listed model, Claude's Opus, agy's Carbon.
+test_default_models_are_each_account_s_program_s() {
+  local codex_home="$TEST_ROOT/codex-cx"
+  mkdir -p "$HOME/.claude-work" "$codex_home"
+  printf '{"model":"sonnet"}' > "$HOME/.claude-work/settings.json"
+  printf '{"models":[{"slug":"gpt-hidden","priority":1,"visibility":"hide"},{"slug":"gpt-second","priority":3,"visibility":"list"},{"slug":"gpt-first","priority":2,"visibility":"list"}]}' \
+    > "$codex_home/models_cache.json"
+  printf 'DEVWS_AGENTS="claude work cx"\nDEVWS_AGENT_work="claude %s"\nDEVWS_AGENT_cx="codex %s"\n' \
+    "$HOME/.claude-work" "$codex_home" > "$HOME/.tmuxinator/.env"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$TEST_ROOT/bin/agy"
+  chmod +x "$TEST_ROOT/bin/agy"
+  [ "$(installed_only "$SCRIPTS/agent_cli.sh" default-models)" = \
+    "$(printf 'claude opus\nwork sonnet\ncx gpt-first\nantigravity gemini-4-carbon-medium')" ] ||
+    fail "default models: $(installed_only "$SCRIPTS/agent_cli.sh" default-models)"
+  printf 'model = "gpt-pinned"\n' > "$codex_home/config.toml"
+  grep -qx 'cx gpt-pinned' <<<"$(installed_only "$SCRIPTS/agent_cli.sh" default-models)" ||
+    fail "the account's own Codex model was not its default: $(installed_only "$SCRIPTS/agent_cli.sh" default-models)"
+  rm -f "$TEST_ROOT/bin/agy" "$HOME/.claude-work/settings.json"
+  printf 'DEVWS_AGENTS="claude codex"\n' > "$HOME/.tmuxinator/.env"
+}
+
+test_models_are_the_ones_opencode_lists_on_the_accounts_data() {
+  mkdir -p "$TEST_ROOT/zen"
+  printf 'DEVWS_AGENTS="claude codex zen"\nDEVWS_AGENT_zen="opencode %s"\n' "$TEST_ROOT/zen" > "$HOME/.tmuxinator/.env"
+  printf '#!/usr/bin/env bash\n[ "$1" = models ] && printf "%%s\\n" "deepseek/deepseek-flash" "data $XDG_DATA_HOME"\n' > "$TEST_ROOT/bin/opencode"
+  chmod +x "$TEST_ROOT/bin/opencode"
+  [ "$("$SCRIPTS/agent_cli.sh" models zen)" = "$(printf 'deepseek/deepseek-flash\ndata %s' "$TEST_ROOT/zen")" ] ||
+    fail "models did not list the account's: $("$SCRIPTS/agent_cli.sh" models zen)"
+  [ "$(status_of "$SCRIPTS/agent_cli.sh" models codex)" = 1 ] || fail "models listed a codex account's"
+  [ "$(status_of "$SCRIPTS/agent_cli.sh" models)" = 2 ] || fail "models accepted no agent"
+  rm "$TEST_ROOT/bin/opencode"
+  printf 'DEVWS_AGENTS="claude codex"\n' > "$HOME/.tmuxinator/.env"
+}
+
+test_an_antigravity_account_lists_agy_s_model_ids() {
+  printf 'DEVWS_AGENTS="claude codex gemini"\nDEVWS_AGENT_gemini="antigravity ~/.gemini/antigravity-cli"\n' > "$HOME/.tmuxinator/.env"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    '[ "$1" = models ] && printf "Fetching available models...\ngemini-4-carbon-high\tGemini 4 Carbon (High)\ngemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\n"' \
+    > "$TEST_ROOT/bin/agy"
+  chmod +x "$TEST_ROOT/bin/agy"
+  [ "$("$SCRIPTS/agent_cli.sh" kind gemini)" = antigravity ] || fail "gemini does not run antigravity"
+  [ "$("$SCRIPTS/agent_cli.sh" models gemini)" = "$(printf 'gemini-4-carbon-high\ngemini-3.8-flash-medium')" ] ||
+    fail "models did not list agy's ids: $("$SCRIPTS/agent_cli.sh" models gemini)"
+  rm "$TEST_ROOT/bin/agy"
+  printf 'DEVWS_AGENTS="claude codex"\n' > "$HOME/.tmuxinator/.env"
+}
+
+# agy takes devAgentics' arguments, the status line for this session, and
+# its hooks and MCP server from devws's plugin, which the runner installs: the
+# leader's --mcp-config goes to the plugin's server, never to agy.
+test_antigravity_runs_with_the_devws_plugin_and_the_leader_s_server() {
+  local base settings plugin="$HOME/.gemini/config/plugins/devws"
+  base="$(create_workspace agy)"
+  printf 'DEVWS_AGENTS="claude codex gemini"\nDEVWS_AGENT_gemini="antigravity ~/.gemini/antigravity-cli"\n' > "$HOME/.tmuxinator/.env"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    "printf '%s\\0' \"\$@\" > \"$TEST_ROOT/started/agy.\$\$\"" \
+    "printf '%s\\n%s\\n' \"\$DEVWS_AGY_MCP_CONFIG\" \"\$DEVWS_AGY_PROMPT_FILE\" > \"$TEST_ROOT/agy-env\"" \
+    'exec sleep 600' > "$TEST_ROOT/bin/agy"
+  chmod +x "$TEST_ROOT/bin/agy"
+  printf '%s\0' -i Lead --model gemini-3.8-flash-medium \
+    --settings '{"permissions":{"allow":["mcp(devws_devagentics/*)"]}}' --mcp-config "$TEST_ROOT/mcp.json" > "$TEST_ROOT/agy-args"
+  rm -f "$TEST_ROOT"/started/agy.*
+
+  "$SCRIPTS/agent_cli.sh" run "$base" gemini --agent-args "$TEST_ROOT/agy-args" || fail "run did not start Antigravity"
+  wait_until started_args agy >/dev/null || fail "agy did not start"
+  case "$(started_args agy)" in
+    "--settings$RS"*"$RS-i${RS}Lead${RS}--model${RS}gemini-3.8-flash-medium$RS") ;;
+    *) fail "agy did not get its settings and devAgentics' arguments without --mcp-config: $(started_args agy)" ;;
+  esac
+  # One --settings: devAgentics' permissions with devws's status line.
+  settings="$(started_args agy | cut -d "$RS" -f 2)"
+  printf '%s' "$settings" |
+    jq -e '.permissions.allow == ["mcp(devws_devagentics/*)"] and (.statusLine.command | contains("agent_statusline.sh"))' >/dev/null ||
+    fail "the session's settings were not merged: $settings"
+  [ "$(sed -n 1p "$TEST_ROOT/agy-env")" = "$TEST_ROOT/mcp.json" ] ||
+    fail "the leader's MCP file did not go to the plugin's server: $(cat "$TEST_ROOT/agy-env")"
+  [ "$(sed -n 2p "$TEST_ROOT/agy-env")" = "$HOME/.tmuxinator/agent_editor_prompt.md" ] ||
+    fail "the editor prompt was not handed to the plugin: $(cat "$TEST_ROOT/agy-env")"
+  jq -e '.devws.SessionStart[0].command | contains("40-antigravity/hook.sh")' "$plugin/hooks.json" >/dev/null ||
+    fail "the devws plugin's hooks were not installed"
+  jq -e '.mcpServers.devagentics.command | endswith("40-antigravity/mcp.sh")' "$plugin/mcp_config.json" >/dev/null ||
+    fail "the devws plugin's MCP server was not installed"
+  [ "$(tmux show-options -pqv -t "$base" @devws_model_configured)" = gemini-3.8-flash-medium ] ||
+    fail "the configured model was not recorded"
+
+  printf 'DEVWS_AGENTS="other"\nDEVWS_AGENT_other="antigravity %s"\n' "$TEST_ROOT/elsewhere" > "$HOME/.tmuxinator/.env"
+  [ "$(status_of "$SCRIPTS/agent_runner.sh" other)" = 2 ] || fail "Antigravity ran an account in another folder"
+  rm "$TEST_ROOT/bin/agy"
   printf 'DEVWS_AGENTS="claude codex"\n' > "$HOME/.tmuxinator/.env"
 }
 
@@ -760,6 +904,10 @@ test_spawn_adds_an_agent_beside_a_pane_without_taking_the_focus
 test_run_replaces_the_agent_in_its_pane
 test_kind_names_the_program_an_agent_runs
 test_accounts_lists_every_registered_agent_and_its_kind
+test_default_models_are_each_account_s_program_s
+test_models_are_the_ones_opencode_lists_on_the_accounts_data
+test_an_antigravity_account_lists_agy_s_model_ids
+test_antigravity_runs_with_the_devws_plugin_and_the_leader_s_server
 test_limits_are_the_ones_the_header_shows
 test_an_old_claude_reading_blocks_nothing
 test_claude_limits_are_asked_of_anthropic

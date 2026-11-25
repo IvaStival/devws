@@ -1,0 +1,33 @@
+{
+  "model": "gpt-6.1-sol",
+  "effort": "medium",
+  "full_wire_bytes": 74821,
+  "compact_wire_bytes": 3186,
+  "responses": {
+    "compact_inline": {
+      "provider_exit": 0,
+      "usage": {
+        "input_tokens": 15415,
+        "cached_input_tokens": 12288,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 20,
+        "reasoning_output_tokens": 0
+      },
+      "observed": {
+        "needs_result": false,
+        "function": "active_count",
+        "replacement": "return total"
+      },
+      "repair_passed": true
+    }
+  },
+  "previous_input_tokens": {
+    "direct_full": 30793,
+    "compact_plus_retrieval": 34148
+  },
+  "input_reduction_percent": {
+    "direct_full": 49.94,
+    "compact_plus_retrieval": 54.86
+  },
+  "scope": "same two-test scratch repair fixture and prompt; new compact response includes bounded failure diagnostics"
+}

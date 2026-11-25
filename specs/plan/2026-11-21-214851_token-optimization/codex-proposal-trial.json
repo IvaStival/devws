@@ -1,0 +1,127 @@
+{
+  "model": "gpt-6.1-sol",
+  "effort": "medium",
+  "attempt_cap_per_arm": 4,
+  "fixture": "one rejected semantic proposal from the saved Notes benchmark",
+  "pricing_basis": "same short-context snapshot as codex-baseline.json",
+  "arms": {
+    "first": {
+      "attempts": [
+        {
+          "attempt": 1,
+          "feedback_bytes": 24,
+          "usage": {
+            "input_tokens": 17901,
+            "cached_input_tokens": 12288,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 2603,
+            "reasoning_output_tokens": 75
+          },
+          "outcome": "rejected"
+        },
+        {
+          "attempt": 2,
+          "feedback_bytes": 29,
+          "usage": {
+            "input_tokens": 17231,
+            "cached_input_tokens": 12288,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 3788,
+            "reasoning_output_tokens": 68
+          },
+          "outcome": "rejected"
+        },
+        {
+          "attempt": 3,
+          "feedback_bytes": 25,
+          "usage": {
+            "input_tokens": 18798,
+            "cached_input_tokens": 12288,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 3600,
+            "reasoning_output_tokens": 76
+          },
+          "outcome": "rejected"
+        },
+        {
+          "attempt": 4,
+          "feedback_bytes": 27,
+          "usage": {
+            "input_tokens": 19161,
+            "cached_input_tokens": 12288,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 4265,
+            "reasoning_output_tokens": 98
+          },
+          "outcome": "rejected"
+        }
+      ],
+      "validator_accepted": false,
+      "totals": {
+        "uncached_input": 23939,
+        "cache_read": 49152,
+        "output": 14256,
+        "estimated_api_equivalent_usd": 0.1953532
+      }
+    },
+    "batched": {
+      "attempts": [
+        {
+          "attempt": 1,
+          "feedback_bytes": 793,
+          "usage": {
+            "input_tokens": 18064,
+            "cached_input_tokens": 12288,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 4565,
+            "reasoning_output_tokens": 889
+          },
+          "outcome": "rejected"
+        },
+        {
+          "attempt": 2,
+          "feedback_bytes": 304,
+          "usage": {
+            "input_tokens": 18672,
+            "cached_input_tokens": 12288,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 3129,
+            "reasoning_output_tokens": 134
+          },
+          "outcome": "rejected"
+        },
+        {
+          "attempt": 3,
+          "feedback_bytes": 130,
+          "usage": {
+            "input_tokens": 18649,
+            "cached_input_tokens": 12288,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 3608,
+            "reasoning_output_tokens": 461
+          },
+          "outcome": "rejected"
+        },
+        {
+          "attempt": 4,
+          "feedback_bytes": 130,
+          "usage": {
+            "input_tokens": 18801,
+            "cached_input_tokens": 12288,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 3249,
+            "reasoning_output_tokens": 102
+          },
+          "outcome": "rejected"
+        }
+      ],
+      "validator_accepted": false,
+      "totals": {
+        "uncached_input": 25034,
+        "cache_read": 49152,
+        "output": 14551,
+        "estimated_api_equivalent_usd": 0.2004932
+      }
+    }
+  }
+}

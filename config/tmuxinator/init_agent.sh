@@ -17,34 +17,16 @@ if [ ! -r "$template_root/CLAUDE.md" ]; then
   exit 2
 fi
 
+# The program's module seeds the project (init_project): "created:<file>" or
+# "skipped:<why>".
+# shellcheck source=agents.sh
+. "$(cd "$(dirname "$0")" && pwd)/agents.sh"
 created=""
 skipped=""
-case "$agent" in
-  claude)
-    if [ -e "$project_root/CLAUDE.md" ]; then
-      skipped="CLAUDE.md already exists"
-    else
-      cp "$template_root/CLAUDE.md" "$project_root/CLAUDE.md"
-      created="CLAUDE.md"
-    fi
-    mkdir -p "$project_root/.claude/skills"
-    cp -Rn "$template_root/skills/." "$project_root/.claude/skills/"
-    ;;
-  codex)
-    if [ -e "$project_root/AGENTS.md" ]; then
-      skipped="AGENTS.md already exists"
-    else
-      sed 's/CLAUDE\.md/AGENTS.md/g; s/Claude Code/Codex/g' \
-        "$template_root/CLAUDE.md" > "$project_root/AGENTS.md"
-      created="AGENTS.md"
-    fi
-    mkdir -p "$project_root/.agents/skills"
-    cp -Rn "$template_root/skills/." "$project_root/.agents/skills/"
-    ;;
-  *)
-    printf 'Unsupported devws agent: %s\n' "$agent" >&2
-    exit 2
-    ;;
+outcome="$(agent_hook "$agent" init_project "$project_root" "$template_root")" || exit 2
+case "$outcome" in
+  created:*) created="${outcome#created:}" ;;
+  skipped:*) skipped="${outcome#skipped:}" ;;
 esac
 
 if [ -n "$created" ]; then

@@ -5,13 +5,15 @@ mod board;
 mod board_tui;
 mod board_usage;
 mod board_view;
-mod details_view;
-mod seen;
+mod check_logs;
 mod check_profiles;
 mod checks;
+mod code_access;
+mod details_view;
 mod devws;
 mod executable;
 mod execution;
+mod failures;
 mod graph;
 mod history;
 mod home;
@@ -21,23 +23,30 @@ mod lanes;
 mod leader;
 mod log;
 mod mcp;
+mod memory;
 mod milestones;
+mod notes;
+mod opencode;
+mod opencode_worker;
 mod orders;
 mod panel_view;
 mod performance;
 mod plans;
+mod providers;
 mod prs;
 mod questions;
 mod recovery;
 mod reviews;
 mod roles;
 mod runner;
+mod seen;
 mod specs;
 mod start;
 mod state;
 mod status;
 mod task;
 mod team;
+mod telemetry;
 mod watch;
 mod worker;
 mod worker_tools;
@@ -45,7 +54,7 @@ mod workflow;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use devws::CommandDevws;
+use devws::{CommandDevws, Devws};
 use home::Home;
 use std::io::Read;
 use std::path::PathBuf;
@@ -79,6 +88,20 @@ enum Command {
         identity: PathBuf,
         #[arg(long)]
         model: Option<String>,
+    },
+    /// A reviewed leader on OpenCode, started by devws's agent runner
+    #[command(hide = true)]
+    OpencodeLeader {
+        task: String,
+        /// The devagentics command its prompt and read rule name
+        #[arg(long)]
+        command: String,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        leader_cli: bool,
+        #[arg(last = true)]
+        message: String,
     },
     /// Structured application planning and independent review controls
     Workflow {
@@ -129,6 +152,11 @@ enum Command {
         #[command(subcommand)]
         action: RoleAction,
     },
+    /// Team agents on opencode: the switches and the models
+    Opencode {
+        #[command(subcommand)]
+        action: OpencodeAction,
+    },
     /// The leader's program
     Leader {
         #[command(subcommand)]
@@ -154,7 +182,17 @@ enum Command {
         summary: String,
     },
     /// The leader's tools, as an MCP server on standard input and output
-    Mcp { task: String },
+    Mcp {
+        task: String,
+        #[arg(long, hide = true)]
+        leader_cli_catalog: bool,
+    },
+    /// Read-only CLI for an opted-in leader, from the task worktree root
+    LeaderRead {
+        task: String,
+        #[command(subcommand)]
+        view: LeaderReadView,
+    },
     /// The team board and the dispatcher (the workspace's team pane)
     Board {
         task: String,
@@ -186,6 +224,18 @@ enum Switch {
 }
 
 #[derive(Subcommand)]
+enum LeaderReadView {
+    /// Read pending Leader messages without acknowledging them
+    Inbox,
+    /// Compact task progress
+    Progress,
+    /// A single order and its check evidence
+    Order { id: String },
+    /// A part of the leader's role its prompt leaves out (accounts, reviewed, legacy)
+    Guide { topic: String },
+}
+
+#[derive(Subcommand)]
 enum BenchAction {
     /// A task's run
     Report {
@@ -193,6 +243,10 @@ enum BenchAction {
         /// As JSON, to collect runs
         #[arg(long)]
         json: bool,
+        /// A leader transcript (Codex rollout or Claude session JSONL) to
+        /// count its CLI reads in; repeat it for a leader that moved
+        #[arg(long = "leader-transcript")]
+        leader_transcripts: Vec<PathBuf>,
     },
     /// Two tasks' runs side by side (a legacy and a reviewed one)
     Compare { first: String, second: String },
@@ -269,12 +323,19 @@ enum TaskAction {
     /// stay in its snapshot and nothing has network, but its shell can read
     /// host files. Restart the leader to move it
     CodexTeam { task: String, switch: Switch },
+    /// Prefer direct CLI reads for a reviewed leader on any program
+    LeaderCli { task: String, switch: Switch },
+    /// You route this task's items by risk (on, the default) or give every
+    /// item the standard process (off): the benchmark's control arm, and the
+    /// rollback if light items let defects through
+    Routing { task: String, switch: Switch },
     /// You turn the code graph (Graphify, code only and offline) on or off
     /// for this task's leader and workers: built per commit in the task
     /// folder, never in the project
     Graph { task: String, switch: Switch },
     /// You allow a step more attempts than the task's limit (orders and
-    /// reviews asking for changes): `limit` in all. The leader cannot.
+    /// reviews asking for changes): `limit` in all. The leader can do it too
+    /// (allow_attempts), with its reason in the log.
     Attempts {
         task: String,
         step: String,
@@ -318,6 +379,42 @@ enum RoleAction {
     },
 }
 
+#[derive(Subcommand)]
+enum OpencodeAction {
+    /// The switches, the groups' models and the account, tab-separated
+    Show,
+    /// Turn a switch on or off. `global` is mandatory: while it is off,
+    /// opencode runs no agent, whatever the groups' switches say
+    Switch { switch: SwitchArg, state: OnOff },
+    /// The model a group runs on opencode (`provider/model`, as `opencode
+    /// models` lists it); an empty one removes it
+    Model { group: GroupArg, model: String },
+    /// The devws agent that runs opencode (`DEVWS_AGENTS`)
+    Account { name: String },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum SwitchArg {
+    Global,
+    Floor,
+    Senior,
+    /// A reviewed task's leader, when Claude and Codex have both run out
+    Leader,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum GroupArg {
+    Floor,
+    Senior,
+    Leader,
+}
+
+#[derive(Clone, Copy, PartialEq, ValueEnum)]
+enum OnOff {
+    On,
+    Off,
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum SettingArg {
     Model,
@@ -345,6 +442,18 @@ enum LeaderAction {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Move the leader to an account you pick, any that can lead, once its
+    /// turn is over; it starts there from then on
+    Use {
+        task: String,
+        /// The devws account (`leader choices` lists them)
+        agent: String,
+        /// Why, for the log and the new leader
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// The accounts that can lead: name, program and how each stands, tab-separated
+    Choices { task: String },
 }
 
 #[derive(Subcommand)]
@@ -376,14 +485,14 @@ fn this_pane() -> Result<String> {
     std::env::var("TMUX_PANE").context("this is run by a team agent, in its pane (no TMUX_PANE)")
 }
 
-/// Claude or Codex: the program of the role's agent (`claude_work` is a
+/// Claude, Codex, opencode or Antigravity: the program of the role's agent (`claude_work` is a
 /// Claude account), which decides the values its settings take.
 fn role_kind(
     home: &Home,
     repo: Option<&std::path::Path>,
     name: &str,
     devws: &dyn devws::Devws,
-) -> Result<agent_args::Kind> {
+) -> Result<providers::Kind> {
     let roles = roles::Roles::load(home, repo)?;
     let role = roles
         .get(name)
@@ -463,6 +572,19 @@ fn run() -> Result<()> {
             agent,
             identity,
         } => worker_tools::mcp(&open(&task)?, &agent, &identity)?,
+        Command::OpencodeLeader {
+            task,
+            command,
+            model,
+            leader_cli,
+            message,
+        } => opencode_worker::run_leader(
+            &open(&task)?,
+            &command,
+            model.as_deref(),
+            leader_cli,
+            &message,
+        )?,
         Command::WorkerPanel {
             task,
             agent,
@@ -628,6 +750,44 @@ fn run() -> Result<()> {
                     }
                 );
             }
+            TaskAction::LeaderCli { task, switch } => {
+                let enabled = matches!(switch, Switch::On);
+                open(&task)?.transaction(|tx| {
+                    anyhow::ensure!(
+                        !enabled || tx.state.workflow == execution::Workflow::Reviewed,
+                        "leader CLI requires a reviewed task"
+                    );
+                    tx.state.leader_cli = enabled;
+                    Ok(())
+                })?;
+                println!(
+                    "Leader CLI {}. Reopen the leader to refresh its instructions.",
+                    if enabled { "enabled" } else { "disabled" }
+                );
+            }
+            TaskAction::Routing { task, switch } => {
+                let task = open(&task)?;
+                let mut config = task.config()?;
+                config.routing = match switch {
+                    Switch::On => execution::RoutingMode::On,
+                    Switch::Off => execution::RoutingMode::Off,
+                };
+                task.write_config(&config)?;
+                task.transaction(|tx| {
+                    let text = format!("the user turned risk routing {:?}", config.routing);
+                    tx.log(log::Kind::Review, None, None, &text.to_lowercase());
+                    Ok(())
+                })?;
+                println!(
+                    "{}",
+                    match config.routing {
+                        execution::RoutingMode::On =>
+                            "Risk routing is on: light items need no reviewer.",
+                        execution::RoutingMode::Off =>
+                            "Risk routing is off: every item gets the standard process.",
+                    }
+                );
+            }
             TaskAction::Graph { task, switch } => {
                 let enabled = matches!(switch, Switch::On);
                 if enabled {
@@ -720,12 +880,73 @@ fn run() -> Result<()> {
                 println!("{choice}");
             }
         }
+        Command::Opencode { action } => {
+            let mut settings = opencode::OpencodeSettings::load(&home)?;
+            match action {
+                OpencodeAction::Show => {
+                    println!("{}", settings.describe());
+                    return Ok(());
+                }
+                OpencodeAction::Switch { switch, state } => {
+                    let on = state == OnOff::On;
+                    match switch {
+                        SwitchArg::Global => settings.enabled = on,
+                        SwitchArg::Floor => settings.floor.enabled = on,
+                        SwitchArg::Senior => settings.senior.enabled = on,
+                        SwitchArg::Leader => settings.leader.enabled = on,
+                    }
+                }
+                OpencodeAction::Model { group, model } => {
+                    let model = model.trim();
+                    if !model.is_empty() && !model.contains('/') {
+                        bail!(
+                            "name the model as provider/model, as `opencode models` lists it: {model}"
+                        );
+                    }
+                    let settings = match group {
+                        GroupArg::Floor => settings.group_mut(roles::Group::Floor)?,
+                        GroupArg::Senior => settings.group_mut(roles::Group::Senior)?,
+                        GroupArg::Leader => &mut settings.leader,
+                    };
+                    settings.model = Some(model.to_string()).filter(|model| !model.is_empty());
+                }
+                OpencodeAction::Account { name } => {
+                    devws.agent_kind(&name).ok().filter(|kind| kind.provider().own_switches()).with_context(|| {
+                        format!("{name} is not a devws opencode agent: register it in the devws menu")
+                    })?;
+                    settings.account = name;
+                }
+            }
+            settings.save(&home)?;
+            println!(
+                "{}\nAgents started from now on follow it; running ones keep theirs.",
+                settings.describe()
+            );
+        }
         Command::Leader {
             action: LeaderAction::Switch { task, reason },
         } => println!(
             "{}",
             leader::request_switch(&home, &open(&task)?, &devws, reason.as_deref())?
         ),
+        Command::Leader {
+            action:
+                LeaderAction::Use {
+                    task,
+                    agent,
+                    reason,
+                },
+        } => println!(
+            "{}",
+            leader::request_lead(&home, &open(&task)?, &devws, &agent, reason.as_deref())?
+        ),
+        Command::Leader {
+            action: LeaderAction::Choices { task },
+        } => {
+            for line in leader::choices(&open(&task)?, &devws)? {
+                println!("{line}");
+            }
+        }
         Command::Plan {
             action: PlanAction::Write { task },
         } => {
@@ -788,9 +1009,14 @@ fn run() -> Result<()> {
             );
         }
         Command::Bench {
-            action: BenchAction::Report { task, json },
+            action:
+                BenchAction::Report {
+                    task,
+                    json,
+                    leader_transcripts,
+                },
         } => {
-            let report = bench::report(&open(&task)?, &devws)?;
+            let report = bench::report(&open(&task)?, &devws, &leader_transcripts)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -800,8 +1026,8 @@ fn run() -> Result<()> {
         Command::Bench {
             action: BenchAction::Compare { first, second },
         } => {
-            let first = bench::report(&open(&first)?, &devws)?;
-            let second = bench::report(&open(&second)?, &devws)?;
+            let first = bench::report(&open(&first)?, &devws, &[])?;
+            let second = bench::report(&open(&second)?, &devws, &[])?;
             print!("{}", bench::compare(&first, &second));
         }
         Command::History {
@@ -877,10 +1103,17 @@ fn run() -> Result<()> {
         } => {
             let pane = this_pane()?;
             let task = task_of_this_pane(&home)?;
-            let outcome = match outcome {
-                ReportOutcome::Done => orders::Outcome::Done,
-                ReportOutcome::Blocked => orders::Outcome::Blocked,
+            let (outcome, word) = match outcome {
+                ReportOutcome::Done => (orders::Outcome::Done, "done"),
+                ReportOutcome::Blocked => (orders::Outcome::Blocked, "blocked"),
             };
+            let state = task.state()?;
+            let reported = state.orders.iter().find(|each| each.id == order).cloned();
+            let author = state
+                .agents
+                .iter()
+                .find(|agent| agent.pane == pane)
+                .map(|agent| agent.id.clone());
             println!(
                 "{}",
                 orders::report(
@@ -892,14 +1125,64 @@ fn run() -> Result<()> {
                     orders::check_timeout()
                 )?
             );
+            // Every report is kept for the agents after it.
+            if let (Some(reported), Some(author)) = (reported, author) {
+                notes::record_report(&task, &devws, &author, &reported, word, &summary);
+            }
         }
-        Command::Mcp { task } => {
+        Command::LeaderRead { task, view } => {
+            anyhow::ensure!(
+                task::slug(&task) == task,
+                "INVALID_TASK: expected a task ID"
+            );
+            let task = open(&task)?;
+            let folder = std::env::current_dir()?.canonicalize()?;
+            anyhow::ensure!(
+                task.config()?
+                    .repos
+                    .first()
+                    .and_then(|repo| repo.worktree.canonicalize().ok())
+                    .as_ref()
+                    == Some(&folder),
+                "WRONG_WORKTREE: run from the task's primary worktree root"
+            );
+            let state = task.state()?;
+            anyhow::ensure!(
+                state.workflow == execution::Workflow::Reviewed && state.leader_cli,
+                "CLI_DISABLED: use the Leader MCP tools"
+            );
+            let started = telemetry::start(&task);
+            // The first name is the one telemetry counts; the second picks
+            // the same response limit the MCP tool has.
+            let (operation, limit, snapshot) = match view {
+                LeaderReadView::Progress => ("progress", "task_status", status::progress(&task)),
+                LeaderReadView::Order { id } => ("order", "task_status", status::order(&task, &id)),
+                LeaderReadView::Inbox => ("inbox", "leader_inbox", workflow::leader_inbox(&task)),
+                LeaderReadView::Guide { topic } => (
+                    "guide",
+                    "application_workflow",
+                    workflow::call(&task, "guide", &serde_json::json!({ "topic": topic })),
+                ),
+            };
+            let printed = snapshot
+                .and_then(|snapshot| mcp::fitting(limit, serde_json::to_string(&snapshot)?));
+            if let Some(started) = started {
+                let bytes = printed.as_ref().map_or(0, String::len);
+                telemetry::cli(&task, operation, bytes, printed.is_err(), started);
+            }
+            println!("{}", printed?);
+        }
+        Command::Mcp {
+            task,
+            leader_cli_catalog,
+        } => {
             let task = open(&task)?;
             mcp::Server {
                 task: &task,
                 home: &home,
                 devws: &devws,
                 gh: prs::gh_command(),
+                leader_cli_catalog,
             }
             .serve(std::io::stdin().lock(), std::io::stdout().lock())?;
         }

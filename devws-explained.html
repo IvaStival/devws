@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>devws & devAgentics: Complete Visual Architecture Guide</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card-bg: #161b22;
+      --card-border: #30363d;
+      --accent: #58a6ff;
+      --accent-green: #3fb950;
+      --accent-purple: #bc8cff;
+      --accent-amber: #d29922;
+      --accent-red: #f85149;
+      --text: #c9d1d9;
+      --text-muted: #8b949e;
+      --heading: #f0f6fc;
+      --code-bg: #0b0e14;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      --font-mono: "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      line-height: 1.6;
+      padding: 0;
+      margin: 0;
+    }
+
+    /* Layout */
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem 5rem 1.5rem;
+    }
+
+    header {
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 2rem;
+      margin-bottom: 2.5rem;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 0.25rem 0.6rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.75rem;
+    }
+    .badge-blue { background: rgba(88, 166, 255, 0.15); color: var(--accent); border: 1px solid rgba(88, 166, 255, 0.3); }
+    .badge-green { background: rgba(63, 185, 80, 0.15); color: var(--accent-green); border: 1px solid rgba(63, 185, 80, 0.3); }
+    .badge-purple { background: rgba(188, 140, 255, 0.15); color: var(--accent-purple); border: 1px solid rgba(188, 140, 255, 0.3); }
+    .badge-amber { background: rgba(210, 153, 34, 0.15); color: var(--accent-amber); border: 1px solid rgba(210, 153, 34, 0.3); }
+
+    h1 { font-size: 2.5rem; color: var(--heading); margin-bottom: 0.5rem; font-weight: 700; letter-spacing: -0.02em; }
+    h2 { font-size: 1.8rem; color: var(--heading); margin: 2.5rem 0 1rem 0; border-bottom: 1px solid var(--card-border); padding-bottom: 0.5rem; }
+    h3 { font-size: 1.25rem; color: var(--heading); margin: 1.5rem 0 0.75rem 0; font-weight: 600; }
+    p { margin-bottom: 1rem; color: var(--text); }
+    p.lead { font-size: 1.2rem; color: var(--text-muted); line-height: 1.5; }
+
+    /* Navigation TOC */
+    .toc {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 1.25rem 1.75rem;
+      margin: 2rem 0;
+    }
+    .toc-title { font-weight: 600; color: var(--heading); margin-bottom: 0.75rem; }
+    .toc ul { list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0.5rem; }
+    .toc a { color: var(--accent); text-decoration: none; font-size: 0.95rem; }
+    .toc a:hover { text-decoration: underline; }
+
+    /* Cards & Grids */
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.25rem; margin: 1.5rem 0; }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      transition: border-color 0.2s;
+    }
+    .card:hover { border-color: var(--accent); }
+    .card h4 { color: var(--heading); margin-bottom: 0.5rem; font-size: 1.1rem; display: flex; align-items: center; gap: 0.5rem; }
+    .card p { font-size: 0.92rem; color: var(--text-muted); margin-bottom: 0; }
+
+    /* Tables */
+    .table-container {
+      overflow-x: auto;
+      margin: 1.5rem 0;
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      background: var(--card-bg);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+      text-align: left;
+    }
+    th {
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--heading);
+      font-weight: 600;
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid var(--card-border);
+      white-space: nowrap;
+    }
+    td {
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid var(--card-border);
+      color: var(--text);
+      vertical-align: top;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255, 255, 255, 0.015); }
+
+    /* Code Blocks */
+    code {
+      font-family: var(--font-mono);
+      font-size: 0.85em;
+      background: rgba(110, 118, 129, 0.2);
+      padding: 0.2em 0.4em;
+      border-radius: 4px;
+      color: var(--heading);
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 1.25rem;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 0.88rem;
+      color: #e6edf3;
+      margin: 1rem 0;
+    }
+
+    /* Diagram containers */
+    .diagram-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin: 1.75rem 0;
+      text-align: center;
+    }
+    .diagram-caption {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-top: 1rem;
+      font-style: italic;
+    }
+    svg {
+      max-width: 100%;
+      height: auto;
+    }
+
+    /* Images */
+    .img-showcase {
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin: 1.5rem 0;
+      background: var(--card-bg);
+    }
+    .img-showcase img {
+      width: 100%;
+      display: block;
+    }
+    .img-caption {
+      padding: 0.75rem 1rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      border-top: 1px solid var(--card-border);
+      background: rgba(0, 0, 0, 0.2);
+    }
+
+    /* Callouts */
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: rgba(88, 166, 255, 0.08);
+      padding: 1rem 1.25rem;
+      border-radius: 0 8px 8px 0;
+      margin: 1.5rem 0;
+    }
+    .callout.green { border-color: var(--accent-green); background: rgba(63, 185, 80, 0.08); }
+    .callout.amber { border-color: var(--accent-amber); background: rgba(210, 153, 34, 0.08); }
+    .callout.red { border-color: var(--accent-red); background: rgba(248, 81, 73, 0.08); }
+    .callout-title { font-weight: 600; color: var(--heading); margin-bottom: 0.25rem; }
+
+    footer {
+      margin-top: 4rem;
+      padding-top: 2rem;
+      border-top: 1px solid var(--card-border);
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+
+  <header>
+    <span class="badge badge-blue">Architecture & Implementation Deep-Dive</span>
+    <h1>devws & devAgentics</h1>
+    <p class="lead">A complete, visual, and simple explanation of how the workspace manager and the autonomous multi-agent engineering team operate under the hood.</p>
+  </header>
+
+  <div class="toc">
+    <div class="toc-title">Table of Contents</div>
+    <ul>
+      <li><a href="#overview">1. The Big Picture: Office Analogy</a></li>
+      <li><a href="#architecture">2. Full System Architecture</a></li>
+      <li><a href="#core-pillars">3. The 4 Core Technical Pillars</a></li>
+      <li><a href="#security">4. The Security & Sandboxing Layer</a></li>
+      <li><a href="#queues">5. Queues & Order Dispatching</a></li>
+      <li><a href="#lifecycle">6. End-to-End Execution Lifecycle Table</a></li>
+      <li><a href="#state-files">7. Practical Anatomy of state.json</a></li>
+      <li><a href="#screen-tour">8. Real Workspace UI (tmux)</a></li>
+    </ul>
+  </div>
+
+  <!-- SECTION 1 -->
+  <section id="overview">
+    <h2>1. The Big Picture: The Software Company Analogy</h2>
+    <p>Think of <strong>devws</strong> as a two-layer system:</p>
+    <div class="grid">
+      <div class="card">
+        <h4>🖥️ Layer 1: devws (The Office & Desks)</h4>
+        <p>A smart terminal workspace tool built on top of <code>tmux</code> and Git worktrees. Every branch gets its own session containing an editor, a terminal, and an AI agent side-by-side that persists through reboots.</p>
+      </div>
+      <div class="card">
+        <h4>🤖 Layer 2: devAgentics (The Engineering Team)</h4>
+        <p>Turns your workspace into an autonomous software company. Instead of one AI doing everything, you get a Tech Lead, specialized coders, testers, and reviewers working safely in parallel.</p>
+      </div>
+    </div>
+
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>Office Analogy</th>
+            <th>Real Responsibility in devws</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>You (The User)</strong></td>
+            <td>Company Founder / VP</td>
+            <td>Defines high-level goals, approves the baseline plan (Gate 1), approves external spending/actions, and reviews final draft PRs (Gate 2).</td>
+          </tr>
+          <tr>
+            <td><strong>The Leader</strong></td>
+            <td>Tech Lead / CTO</td>
+            <td>Interviews you, sets up work contracts, assigns orders to workers, and reviews reports. <em>Has NO terminal and NO file-editing rights!</em></td>
+          </tr>
+          <tr>
+            <td><strong>Workers (Floor)</strong></td>
+            <td>Software Engineers</td>
+            <td>Backend, frontend, or doc engineers (Claude, Codex, OpenCode). They receive 1 order at a time, code in an isolated sandbox, and run tests.</td>
+          </tr>
+          <tr>
+            <td><strong>Code Reviewer</strong></td>
+            <td>Senior QA / Peer Reviewer</td>
+            <td>An independent senior agent that inspects merge candidate diffs before code is permitted into the task branch.</td>
+          </tr>
+          <tr>
+            <td><strong>Dispatcher</strong></td>
+            <td>The Office Manager</td>
+            <td>A background loop ticking every 1 second. Carries queued messages, checks for stuck agents, and alerts the Leader.</td>
+          </tr>
+          <tr>
+            <td><strong>The Runner</strong></td>
+            <td>Cleanroom Laboratory</td>
+            <td>Rootless Docker containers with <strong>no network access</strong> where code runs and tests execute safely.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- SECTION 2 -->
+  <section id="architecture">
+    <h2>2. Full System Architecture</h2>
+    <p>How the components interconnect over local JSON-RPC (MCP), standard POSIX file locks, and tmux terminal injection:</p>
+
+    <div class="diagram-card">
+      <svg viewBox="0 0 960 480" width="100%" height="480" xmlns="http://www.w3.org/2000/svg">
+        <!-- Background -->
+        <rect width="960" height="480" rx="8" fill="#0b0e14"/>
+
+        <!-- User -->
+        <rect x="30" y="200" width="120" height="80" rx="6" fill="#161b22" stroke="#58a6ff" stroke-width="2"/>
+        <text x="90" y="235" fill="#f0f6fc" font-size="14" font-weight="bold" text-anchor="middle">You (User)</text>
+        <text x="90" y="255" fill="#8b949e" font-size="11" text-anchor="middle">Plan & PR Gate</text>
+
+        <!-- Arrow User -> Leader -->
+        <path d="M 150 240 L 220 240" stroke="#58a6ff" stroke-width="2" marker-end="url(#arrow)"/>
+
+        <!-- Leader Pane -->
+        <rect x="220" y="180" width="160" height="120" rx="6" fill="#161b22" stroke="#bc8cff" stroke-width="2"/>
+        <text x="300" y="210" fill="#f0f6fc" font-size="14" font-weight="bold" text-anchor="middle">Leader Agent</text>
+        <text x="300" y="230" fill="#bc8cff" font-size="11" text-anchor="middle">(Claude / Codex)</text>
+        <text x="300" y="255" fill="#8b949e" font-size="10" text-anchor="middle">NO Shell • NO File Edits</text>
+        <text x="300" y="275" fill="#8b949e" font-size="10" text-anchor="middle">Only Leader MCP Tools</text>
+
+        <!-- Arrow Leader -> Task State -->
+        <path d="M 380 240 L 460 240" stroke="#bc8cff" stroke-width="2"/>
+
+        <!-- Central State (state.json) -->
+        <rect x="460" y="130" width="190" height="220" rx="6" fill="#1c2128" stroke="#3fb950" stroke-width="2"/>
+        <text x="555" y="160" fill="#3fb950" font-size="14" font-weight="bold" text-anchor="middle">~/.devagentics/tasks/</text>
+        <text x="555" y="185" fill="#f0f6fc" font-size="12" font-weight="bold" text-anchor="middle">state.json (Padlocked)</text>
+        <text x="555" y="210" fill="#8b949e" font-size="11" text-anchor="middle">• state.lock (Exclusive)</text>
+        <text x="555" y="230" fill="#8b949e" font-size="11" text-anchor="middle">• queue: [Messages]</text>
+        <text x="555" y="250" fill="#8b949e" font-size="11" text-anchor="middle">• steps & orders</text>
+        <text x="555" y="270" fill="#8b949e" font-size="11" text-anchor="middle">• check_evidence</text>
+        <text x="555" y="300" fill="#e6edf3" font-size="11" text-anchor="middle">log.jsonl (Audit stream)</text>
+        <text x="555" y="325" fill="#d29922" font-size="10" text-anchor="middle">Atomic Inode Rename</text>
+
+        <!-- Dispatcher -->
+        <rect x="460" y="30" width="190" height="60" rx="6" fill="#161b22" stroke="#d29922" stroke-width="2"/>
+        <text x="555" y="55" fill="#d29922" font-size="13" font-weight="bold" text-anchor="middle">Dispatcher (watch.rs)</text>
+        <text x="555" y="75" fill="#8b949e" font-size="10" text-anchor="middle">Ticks every 1s • Nudges Leader</text>
+
+        <!-- Dispatcher connects to state -->
+        <path d="M 555 90 L 555 130" stroke="#d29922" stroke-width="1.5" stroke-dasharray="4"/>
+        <!-- Dispatcher nudges leader -->
+        <path d="M 460 60 L 300 60 L 300 180" stroke="#d29922" stroke-width="1.5" stroke-dasharray="4"/>
+        <text x="350" y="50" fill="#d29922" font-size="10">"Check inbox" (tmux)</text>
+
+        <!-- Arrow State -> Workers -->
+        <path d="M 650 240 L 720 240" stroke="#3fb950" stroke-width="2"/>
+
+        <!-- Worker Panel (Supervisor) -->
+        <rect x="720" y="80" width="210" height="150" rx="6" fill="#161b22" stroke="#58a6ff" stroke-width="2"/>
+        <text x="825" y="105" fill="#58a6ff" font-size="13" font-weight="bold" text-anchor="middle">Worker Panel (Supervisor)</text>
+        <text x="825" y="125" fill="#8b949e" font-size="11" text-anchor="middle">Claims 1 Turn at a time</text>
+        <rect x="735" y="140" width="180" height="75" rx="4" fill="#0b0e14" stroke="#30363d"/>
+        <text x="825" y="165" fill="#f0f6fc" font-size="12" text-anchor="middle">Worker Subprocess</text>
+        <text x="825" y="185" fill="#bc8cff" font-size="10" text-anchor="middle">claude --resume / codex exec</text>
+        <text x="825" y="202" fill="#3fb950" font-size="10" text-anchor="middle">Tool: worker-mcp only</text>
+
+        <!-- Arrow Worker -> Runner Container -->
+        <path d="M 825 230 L 825 280" stroke="#f85149" stroke-width="2"/>
+
+        <!-- Rootless Docker Runner -->
+        <rect x="720" y="280" width="210" height="160" rx="6" fill="#161b22" stroke="#f85149" stroke-width="2"/>
+        <text x="825" y="305" fill="#f85149" font-size="13" font-weight="bold" text-anchor="middle">Docker Runner (Cleanroom)</text>
+        <text x="825" y="325" fill="#8b949e" font-size="11" text-anchor="middle">rootless docker.sock</text>
+        <text x="825" y="350" fill="#f0f6fc" font-size="10" text-anchor="middle">• Network: NONE (--network none)</text>
+        <text x="825" y="370" fill="#f0f6fc" font-size="10" text-anchor="middle">• Disposable Source Snapshot</text>
+        <text x="825" y="390" fill="#f0f6fc" font-size="10" text-anchor="middle">• Max 4 GB RAM • 1-4 CPU</text>
+        <text x="825" y="415" fill="#3fb950" font-size="10" text-anchor="middle">• Read-only node_modules mount</text>
+      </svg>
+      <div class="diagram-caption">Figure 1: High-level devws/devAgentics architecture: Communication, Dispatching, and Sandbox Execution.</div>
+    </div>
+  </section>
+
+  <!-- SECTION 3 -->
+  <section id="core-pillars">
+    <h2>3. The 4 Core Technical Pillars</h2>
+    
+    <div class="grid">
+      <div class="card">
+        <h4>1. Session Continuity</h4>
+        <p>Workers run non-interactive turns (<code>--print</code>, <code>exec</code>), but <strong>never start blank</strong>. Claude uses deterministic UUIDs with <code>--resume</code>; Codex captures <code>thread_id</code> and calls <code>exec resume</code>. Context is preserved across wake-ups.</p>
+      </div>
+      <div class="card">
+        <h4>2. Execution Isolation</h4>
+        <p>Workers never touch your real repository. They execute in temporary source snapshots inside <strong>air-gapped rootless Docker containers</strong> with <code>--network none</code> and memory caps (4 GB).</p>
+      </div>
+      <div class="card">
+        <h4>3. Transactional State</h4>
+        <p>Every read/write to <code>state.json</code> is protected by an exclusive file lock (<code>state.lock</code>). If a turn fails, it <strong>rolls back completely</strong>. Updates use atomic file renames—zero corruption.</p>
+      </div>
+      <div class="card">
+        <h4>4. Controlled Integration</h4>
+        <p>Work is siloed into Git <strong>Lanes</strong> (worktrees). Features cannot modify <strong>protected tests</strong>. Changes must pass full repo merge candidate checks and independent peer review before merging.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- SECTION 4 -->
+  <section id="security">
+    <h2>4. The Security & Sandboxing Layer</h2>
+    <p>How devws guarantees that untrusted, autonomous LLM code execution cannot compromise your host machine or leak proprietary secrets:</p>
+
+    <div class="diagram-card">
+      <svg viewBox="0 0 960 300" width="100%" height="300" xmlns="http://www.w3.org/2000/svg">
+        <rect width="960" height="300" rx="8" fill="#0b0e14"/>
+        
+        <!-- Zone 1: Host System -->
+        <rect x="20" y="20" width="280" height="260" rx="6" fill="#161b22" stroke="#3fb950" stroke-width="1.5"/>
+        <text x="160" y="50" fill="#3fb950" font-size="14" font-weight="bold" text-anchor="middle">YOUR HOST SYSTEM</text>
+        <text x="160" y="75" fill="#8b949e" font-size="11" text-anchor="middle">Protected & Off-Limits</text>
+        
+        <rect x="40" y="95" width="240" height="165" rx="4" fill="#0b0e14" stroke="#30363d"/>
+        <text x="55" y="120" fill="#f85149" font-size="11">❌ .env / secrets / tokens</text>
+        <text x="55" y="145" fill="#f85149" font-size="11">❌ .ssh / .aws / keys / certs</text>
+        <text x="55" y="170" fill="#f85149" font-size="11">❌ Live database volumes</text>
+        <text x="55" y="195" fill="#f85149" font-size="11">❌ Host network & ports</text>
+        <text x="55" y="220" fill="#f85149" font-size="11">❌ Symlinks outside repo</text>
+        <text x="55" y="245" fill="#3fb950" font-size="11">✔ Unaffected by agent bugs</text>
+
+        <!-- Filter Barrier -->
+        <rect x="330" y="60" width="140" height="180" rx="6" fill="#1c2128" stroke="#d29922" stroke-width="2"/>
+        <text x="400" y="90" fill="#d29922" font-size="13" font-weight="bold" text-anchor="middle">Sanitizer Filter</text>
+        <text x="400" y="115" fill="#8b949e" font-size="10" text-anchor="middle">runner.rs:excluded_by()</text>
+        <text x="400" y="145" fill="#f0f6fc" font-size="11" text-anchor="middle">15 Blacklisted Dirs</text>
+        <text x="400" y="170" fill="#f0f6fc" font-size="11" text-anchor="middle">8 Key Extensions</text>
+        <text x="400" y="195" fill="#f0f6fc" font-size="11" text-anchor="middle">No Symlinks (120000)</text>
+        <text x="400" y="220" fill="#58a6ff" font-size="10" text-anchor="middle">Only source_paths</text>
+
+        <!-- Arrow -->
+        <path d="M 470 150 L 510 150" stroke="#d29922" stroke-width="2"/>
+
+        <!-- Zone 2: Docker Sandbox -->
+        <rect x="510" y="20" width="430" height="260" rx="6" fill="#161b22" stroke="#f85149" stroke-width="1.5"/>
+        <text x="725" y="50" fill="#f85149" font-size="14" font-weight="bold" text-anchor="middle">AIR-GAPPED DOCKER CONTAINER</text>
+        <text x="725" y="75" fill="#8b949e" font-size="11" text-anchor="middle">Disposable Workspace Snapshot</text>
+
+        <rect x="530" y="95" width="390" height="165" rx="4" fill="#0b0e14" stroke="#30363d"/>
+        <text x="550" y="125" fill="#58a6ff" font-size="12">🔒 Zero Internet (--network none) - No data exfiltration</text>
+        <text x="550" y="155" fill="#58a6ff" font-size="12">🔒 Hard Resource Caps: Max 4 GB RAM, 1-4 Cores, Timeout</text>
+        <text x="550" y="185" fill="#58a6ff" font-size="12">🔒 Read-only Image Mounts: node_modules pre-installed</text>
+        <text x="550" y="215" fill="#58a6ff" font-size="12">🔒 Rootless Socket: Cannot escape to host root</text>
+        <text x="550" y="245" fill="#3fb950" font-size="12">🔒 Protected Tests: Worker edits to test files rejected</text>
+      </svg>
+      <div class="diagram-caption">Figure 2: The Security Boundary: Source sanitization and air-gapped container execution.</div>
+    </div>
+
+    <div class="callout amber">
+      <div class="callout-title">Two-Phase Single-Use Authorization Tokens</div>
+      When the Leader attempts an <code>External</code> or <code>Destructive</code> action (such as adding an external repo or pushing pull requests), devws pauses and generates a <code>PermissionRequest</code> with a unique hash. The user must explicitly approve via <code>authorize_action</code>. When consumed, the token is permanently invalidated—<strong>replay attacks are impossible</strong>.
+    </div>
+  </section>
+
+  <!-- SECTION 5 -->
+  <section id="queues">
+    <h2>5. Queues & Order Dispatching</h2>
+    <p>How the Leader decides what to assign, who gets the task, and how orders flow safely without race conditions:</p>
+
+    <div class="grid">
+      <div class="card">
+        <h4>1. Contract Dependency Graph</h4>
+        <p>Tasks in the baseline specify prerequisites (e.g., <code>dependencies = ["B1"]</code>). Step B2 is locked until B1 is accepted. The system rejects premature orders automatically.</p>
+      </div>
+      <div class="card">
+        <h4>2. The Strict 1-Order Rule</h4>
+        <p>An agent can only hold <strong>at most 1 active order</strong> at any time. Multi-tasking and priority confusion are eliminated. An agent must report done or blocked before taking more work.</p>
+      </div>
+      <div class="card">
+        <h4>3. Automatic Lane Sync</h4>
+        <p>Before an order is delivered to a worker's queue, devws automatically merges the latest accepted code from other lanes into that lane's Git worktree.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- SECTION 6 -->
+  <section id="lifecycle">
+    <h2>6. End-to-End Execution Lifecycle Table</h2>
+    <p>A complete phase-by-phase trace of a task (e.g. <code>feat-auth</code>) from team spawn to draft PR submission:</p>
+
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Phase</th>
+            <th>Actor</th>
+            <th>Action</th>
+            <th>What Changes in <code>state.json</code></th>
+            <th>Audit Entry in <code>log.jsonl</code></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>1. Init</strong></td>
+            <td>User</td>
+            <td><code>devagentics task start feat-auth</code></td>
+            <td>Creates empty state: <code>approved: false</code>, <code>steps: []</code>, <code>agents: []</code>.</td>
+            <td><code>{"kind":"start", "text":"Task created"}</code></td>
+          </tr>
+          <tr>
+            <td><strong>2. Plan (Gate 1)</strong></td>
+            <td>Leader & User</td>
+            <td>Interviews you; drafts contracts for S1 (API) and S2 (UI). You approve.</td>
+            <td><code>approved: true</code>. Baseline items added with contracts and dependencies.</td>
+            <td><code>{"kind":"approve", "text":"Baseline approved"}</code></td>
+          </tr>
+          <tr>
+            <td><strong>3. Spawn</strong></td>
+            <td>Leader</td>
+            <td><code>spawn_agent(role: "backend-data", lane: "backend")</code></td>
+            <td>Registers <code>backend-1</code> in <code>agents</code> with <code>ready: true</code> and pane ID.</td>
+            <td><code>{"kind":"spawn", "agent":"backend-1"}</code></td>
+          </tr>
+          <tr>
+            <td><strong>4. Order</strong></td>
+            <td>Leader</td>
+            <td><code>send_order(agent: "backend-1", step: "S1")</code></td>
+            <td><code>orders</code> gains <code>o1</code> (status: open). <code>steps[S1].status = "ordered"</code>. Message added to <code>queue</code>.</td>
+            <td><code>{"kind":"order", "agent":"backend-1", "step":"S1"}</code></td>
+          </tr>
+          <tr>
+            <td><strong>5. Claim</strong></td>
+            <td>Worker Supervisor</td>
+            <td><code>worker-panel</code> detects message for <code>backend-1</code> under lock.</td>
+            <td>Pops message from <code>queue</code>, moves to <code>worker_turns</code>, sets <code>o1.delivered = true</code>.</td>
+            <td><code>{"kind":"delivered", "agent":"backend-1"}</code></td>
+          </tr>
+          <tr>
+            <td><strong>6. Work</strong></td>
+            <td>Worker Agent</td>
+            <td>Edits code in Docker snapshot, commits with <code>worker checkpoint</code>.</td>
+            <td>Git worktree updated; checks verify only allowed files touched.</td>
+            <td><code>{"kind":"checkpoint", "agent":"backend-1"}</code></td>
+          </tr>
+          <tr>
+            <td><strong>7. Test</strong></td>
+            <td>Worker Agent</td>
+            <td>Calls <code>worker check</code> in offline container.</td>
+            <td>Generates test evidence saved to <code>check_evidence["o1"]</code>.</td>
+            <td><code>{"kind":"check", "agent":"backend-1"}</code></td>
+          </tr>
+          <tr>
+            <td><strong>8. Report</strong></td>
+            <td>Worker Agent</td>
+            <td>Calls <code>worker report(done)</code>.</td>
+            <td><code>orders[o1].status = "done"</code>, <code>steps[S1].status = "reported"</code>. Removed from <code>worker_turns</code>.</td>
+            <td><code>{"kind":"report", "agent":"backend-1", "step":"S1"}</code></td>
+          </tr>
+          <tr>
+            <td><strong>9. Wakeup</strong></td>
+            <td>Dispatcher</td>
+            <td>Detects news in inbox on 1s tick. Types in Leader tmux pane.</td>
+            <td>Sends keystrokes: <em>"Check your inbox and continue."</em> Leader wakes up.</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td><strong>10. Review</strong></td>
+            <td>Code Reviewer</td>
+            <td>Senior reviewer runs <code>review_diff</code> and <code>review_submit</code>.</td>
+            <td>Verifies merge candidate against full repo tests. Records approval.</td>
+            <td><code>{"kind":"review", "verdict":"approved"}</code></td>
+          </tr>
+          <tr>
+            <td><strong>11. Merge</strong></td>
+            <td>Leader</td>
+            <td>Calls <code>accept_step("S1")</code>.</td>
+            <td>Merges <code>backend</code> lane into task branch. <code>steps[S1].status = "accepted"</code>.</td>
+            <td><code>{"kind":"accept", "step":"S1"}</code></td>
+          </tr>
+          <tr>
+            <td><strong>12. Unlock</strong></td>
+            <td>System</td>
+            <td>Evaluates dependency graph.</td>
+            <td>Step S2 requires S1. Since S1 is accepted, S2 transitions from <strong>Blocked</strong> to <strong>Ready</strong>!</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td><strong>13. Finalize</strong></td>
+            <td>Leader & User</td>
+            <td>All steps accepted. Leader calls <code>open_prs()</code>.</td>
+            <td>Pushes branch and creates draft Pull Request on GitHub for final human sign-off (Gate 2).</td>
+            <td><code>{"kind":"pr", "text":"Draft PR created"}</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- SECTION 7 -->
+  <section id="state-files">
+    <h2>7. Practical Anatomy of state.json</h2>
+    <p>How the live ledger appears on disk during active execution:</p>
+
+    <pre><code>{
+  "approved": true,
+  "steps": [
+    { "id": "S1", "title": "Auth Token API", "status": "accepted", "attempts": 1 },
+    { "id": "S2", "title": "Password Reset Form", "status": "ordered", "attempts": 1 }
+  ],
+  "orders": [
+    {
+      "id": "o2",
+      "step": "S2",
+      "agent": "frontend-1",
+      "status": "open",
+      "delivered": true,
+      "allowed": ["web/src/components/Auth/**"]
+    }
+  ],
+  "queue": [],
+  "worker_turns": {
+    "frontend-1": {
+      "id": 104,
+      "order": "o2"
+    }
+  },
+  "check_evidence": {
+    "o1": { "commit": "7ef91a", "tests_passed": true, "profiles": ["unit-tests"] }
+  }
+}</code></pre>
+  </section>
+
+  <!-- SECTION 8 -->
+  <section id="screen-tour">
+    <h2>8. Real Workspace UI (tmux)</h2>
+    <p>In devws, all of this coordination takes place inside a unified terminal workspace with multi-line detail panels, live agent status lines, and branch states:</p>
+
+    <div class="img-showcase">
+      <img src="docs/images/application-panel.png" alt="devws workspace application panel">
+      <div class="img-caption">The devws terminal interface: Sidebar with active workspaces, branches, PR indicators, and live agent status panes.</div>
+    </div>
+  </section>
+
+  <footer>
+    devws & devAgentics Architecture Documentation • Built for clean, autonomous, and safe AI software engineering teams.
+  </footer>
+
+</div>
+
+</body>
+</html>

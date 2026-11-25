@@ -1,0 +1,471 @@
+{
+  "initial_git_tree": "5cfc642342a39df3549638db229d9c4a2e1f62e9",
+  "pinned_binary_sha256": "838af4d4c471b7c0e4327d74ed8f04dc4f57ef77a54ac40c59ebe5047a21a8d7",
+  "runner_image": "sha256:360886f612d19502c7c8e5ab760fc47c9317ed8e78630dbbe53f657157d56282",
+  "merged_commit": "d85bac295c97ba9d740685c9f102b37f3c3dec9d",
+  "ready_milestones": [
+    "notes-release"
+  ],
+  "tests_passed": 13,
+  "original_goal_contract_acceptance_unchanged": true,
+  "worker_turns": {
+    "codex.finished": 22,
+    "codex.failed": 0
+  },
+  "mcp_by_operation": {
+    "leader/task_status": {
+      "calls": 3,
+      "failures": 0,
+      "response_bytes": 66760
+    },
+    "leader/application_workflow": {
+      "calls": 31,
+      "failures": 9,
+      "response_bytes": 30630
+    },
+    "leader/application_workflow.status": {
+      "calls": 20,
+      "failures": 1,
+      "response_bytes": 77547
+    },
+    "leader/memory_search": {
+      "calls": 4,
+      "failures": 0,
+      "response_bytes": 5170
+    },
+    "leader/read_file": {
+      "calls": 12,
+      "failures": 3,
+      "response_bytes": 21489
+    },
+    "leader/application_workflow.proposal_example": {
+      "calls": 1,
+      "failures": false,
+      "response_bytes": 2272
+    },
+    "leader/spawn_agent": {
+      "calls": 5,
+      "failures": 0,
+      "response_bytes": 1039
+    },
+    "leader/send_order": {
+      "calls": 17,
+      "failures": 3,
+      "response_bytes": 4145
+    },
+    "leader/application_workflow.leader_inbox": {
+      "calls": 23,
+      "failures": 0,
+      "response_bytes": 11219
+    },
+    "worker/status.brief": {
+      "calls": 22,
+      "failures": 0,
+      "response_bytes": 16473
+    },
+    "worker/graph": {
+      "calls": 3,
+      "failures": 3,
+      "response_bytes": 585
+    },
+    "worker/status": {
+      "calls": 22,
+      "failures": 0,
+      "response_bytes": 293450
+    },
+    "worker/memory_search": {
+      "calls": 2,
+      "failures": 0,
+      "response_bytes": 2058
+    },
+    "leader/graph": {
+      "calls": 1,
+      "failures": true,
+      "response_bytes": 196
+    },
+    "leader/git_log": {
+      "calls": 1,
+      "failures": false,
+      "response_bytes": 170
+    },
+    "leader/memory_save": {
+      "calls": 16,
+      "failures": 0,
+      "response_bytes": 3312
+    },
+    "worker/execute.compact": {
+      "calls": 4,
+      "failures": 0,
+      "response_bytes": 3365
+    },
+    "worker/proposal_example": {
+      "calls": 1,
+      "failures": false,
+      "response_bytes": 3581
+    },
+    "worker/application_read": {
+      "calls": 4,
+      "failures": 1,
+      "response_bytes": 2990
+    },
+    "worker/result_read": {
+      "calls": 1,
+      "failures": false,
+      "response_bytes": 4350
+    },
+    "worker/execute": {
+      "calls": 30,
+      "failures": 0,
+      "response_bytes": 222458
+    },
+    "worker/image_try": {
+      "calls": 5,
+      "failures": 0,
+      "response_bytes": 3105
+    },
+    "worker/plan_write": {
+      "calls": 2,
+      "failures": 0,
+      "response_bytes": 447
+    },
+    "worker/memory_save": {
+      "calls": 11,
+      "failures": 0,
+      "response_bytes": 3013
+    },
+    "worker/checkpoint": {
+      "calls": 33,
+      "failures": 15,
+      "response_bytes": 4099
+    },
+    "worker/check": {
+      "calls": 13,
+      "failures": 3,
+      "response_bytes": 8406
+    },
+    "worker/report": {
+      "calls": 17,
+      "failures": 5,
+      "response_bytes": 2714
+    },
+    "leader/read_plan": {
+      "calls": 3,
+      "failures": 0,
+      "response_bytes": 31376
+    },
+    "leader/close_step": {
+      "calls": 4,
+      "failures": 1,
+      "response_bytes": 536
+    },
+    "leader/accept_step": {
+      "calls": 6,
+      "failures": 1,
+      "response_bytes": 634
+    },
+    "leader/escalate": {
+      "calls": 1,
+      "failures": false,
+      "response_bytes": 190
+    },
+    "leader/add_lane": {
+      "calls": 1,
+      "failures": false,
+      "response_bytes": 375
+    },
+    "leader/stop_agent": {
+      "calls": 5,
+      "failures": 0,
+      "response_bytes": 570
+    },
+    "leader/configure_checks": {
+      "calls": 1,
+      "failures": false,
+      "response_bytes": 116
+    },
+    "worker/plan_read": {
+      "calls": 12,
+      "failures": 0,
+      "response_bytes": 194832
+    },
+    "leader/git_diff": {
+      "calls": 22,
+      "failures": 0,
+      "response_bytes": 52637
+    },
+    "leader/read_check_log": {
+      "calls": 8,
+      "failures": 1,
+      "response_bytes": 2611
+    },
+    "leader/application_workflow.inbox_ack": {
+      "calls": 2,
+      "failures": 0,
+      "response_bytes": 227
+    },
+    "worker/review_diff": {
+      "calls": 10,
+      "failures": 1,
+      "response_bytes": 62747
+    },
+    "worker/ask": {
+      "calls": 1,
+      "failures": true,
+      "response_bytes": 156
+    },
+    "worker/review_submit": {
+      "calls": 13,
+      "failures": 5,
+      "response_bytes": 1823
+    },
+    "leader/snapshot_path": {
+      "calls": 1,
+      "failures": false,
+      "response_bytes": 198
+    },
+    "worker/answer": {
+      "calls": 1,
+      "failures": true,
+      "response_bytes": 108
+    },
+    "leader/run_check": {
+      "calls": 1,
+      "failures": true,
+      "response_bytes": 190
+    },
+    "leader/reject_step": {
+      "calls": 4,
+      "failures": 0,
+      "response_bytes": 528
+    },
+    "leader/read_log": {
+      "calls": 1,
+      "failures": false,
+      "response_bytes": 1468
+    }
+  },
+  "worker_plan_reads": {
+    "worker/plan_read": {
+      "calls": 12,
+      "failures": 0,
+      "response_bytes": 194832
+    },
+    "worker/plan_read.section": {
+      "calls": 0,
+      "response_bytes": 0,
+      "failures": 0
+    },
+    "worker/plan_read.outline": {
+      "calls": 0,
+      "response_bytes": 0,
+      "failures": 0
+    },
+    "worker/plan_read.excerpt": {
+      "calls": 0,
+      "response_bytes": 0,
+      "failures": 0
+    }
+  },
+  "previous_worker_plan_reads": {
+    "worker/plan_read": {
+      "calls": 15,
+      "failures": 1,
+      "response_bytes": 215186
+    },
+    "worker/plan_read.section": {
+      "calls": 0,
+      "response_bytes": 0,
+      "failures": 0
+    },
+    "worker/plan_read.outline": {
+      "calls": 1,
+      "failures": false,
+      "response_bytes": 774
+    },
+    "worker/plan_read.excerpt": {
+      "calls": 1,
+      "failures": false,
+      "response_bytes": 5350
+    }
+  },
+  "provider": {
+    "by_agent": {
+      "code-reviewer-1": {
+        "cache_read": 1574656,
+        "cache_write": 0,
+        "max_request_input": 66358,
+        "output": 4857,
+        "priced_responses": 36,
+        "responses": 36,
+        "standard_short_context_api_equivalent_usd": 0.32117559999999995,
+        "threads": 1,
+        "turns": 4,
+        "uncached_input": 57570
+      },
+      "code-reviewer-2": {
+        "cache_read": 1764864,
+        "cache_write": 0,
+        "max_request_input": 72519,
+        "output": 5360,
+        "priced_responses": 42,
+        "responses": 42,
+        "standard_short_context_api_equivalent_usd": 0.5524144000000001,
+        "threads": 1,
+        "turns": 6,
+        "uncached_input": 161164
+      },
+      "executor-1": {
+        "cache_read": 4034944,
+        "cache_write": 0,
+        "max_request_input": 168924,
+        "output": 13159,
+        "priced_responses": 49,
+        "responses": 49,
+        "standard_short_context_api_equivalent_usd": 0.06353653999999999,
+        "threads": 1,
+        "turns": 10,
+        "uncached_input": 166076
+      },
+      "infra-1": {
+        "cache_read": 272000,
+        "cache_write": 0,
+        "max_request_input": 25432,
+        "output": 2077,
+        "priced_responses": 13,
+        "responses": 13,
+        "standard_short_context_api_equivalent_usd": 0.09619200000000001,
+        "threads": 1,
+        "turns": 1,
+        "uncached_input": 24111
+      },
+      "leader": {
+        "cache_read": 10604416,
+        "cache_write": 0,
+        "max_request_input": 124470,
+        "output": 22386,
+        "priced_responses": 137,
+        "responses": 137,
+        "standard_short_context_api_equivalent_usd": 1.7209616,
+        "threads": 1,
+        "turns": 2,
+        "uncached_input": 218330
+      },
+      "planner-1": {
+        "cache_read": 289664,
+        "cache_write": 0,
+        "max_request_input": 26903,
+        "output": 4181,
+        "priced_responses": 14,
+        "responses": 14,
+        "standard_short_context_api_equivalent_usd": 0.11731839999999999,
+        "threads": 1,
+        "turns": 1,
+        "uncached_input": 23271
+      }
+    },
+    "by_model": {
+      "gpt-6-luna": {
+        "cache_read": 4034944,
+        "cache_write": 0,
+        "max_request_input": 168924,
+        "output": 13159,
+        "priced_responses": 49,
+        "responses": 49,
+        "standard_short_context_api_equivalent_usd": 0.06353653999999999,
+        "uncached_input": 166076
+      },
+      "gpt-6.1-sol": {
+        "cache_read": 10894080,
+        "cache_write": 0,
+        "max_request_input": 124470,
+        "output": 26567,
+        "priced_responses": 151,
+        "responses": 151,
+        "standard_short_context_api_equivalent_usd": 1.8382800000000001,
+        "uncached_input": 241601
+      },
+      "gpt-6.2-sol": {
+        "cache_read": 3611520,
+        "cache_write": 0,
+        "max_request_input": 72519,
+        "output": 12294,
+        "priced_responses": 91,
+        "responses": 91,
+        "standard_short_context_api_equivalent_usd": 0.9697819999999999,
+        "uncached_input": 242845
+      }
+    },
+    "price_basis": "standard short-context API equivalent per response, excluding any unknown model, cache TTL, or long-context rate",
+    "pricing_snapshot_date": "2026-11-22",
+    "pricing_source": "https://developers.openai.com/api/docs/pricing",
+    "provider": "codex",
+    "rates_per_million_input_cache_read_output": {
+      "gpt-6-luna": [
+        0.1,
+        0.01,
+        0.5
+      ],
+      "gpt-6.1-sol": [
+        2,
+        0.1,
+        10
+      ],
+      "gpt-6.2-sol": [
+        2,
+        0.1,
+        10
+      ]
+    },
+    "totals": {
+      "cache_read": 18540544,
+      "cache_write": 0,
+      "output": 52020,
+      "priced_responses": 291,
+      "responses": 291,
+      "standard_short_context_api_equivalent_usd": 2.8715985400000004,
+      "threads": 6,
+      "turns": 24,
+      "uncached_input": 650522
+    },
+    "transcript_minus_worker_stream": {
+      "code-reviewer-1": {
+        "cache_read": 0,
+        "output": 0,
+        "turns": 0,
+        "uncached_input": 0
+      },
+      "code-reviewer-2": {
+        "cache_read": 0,
+        "output": 0,
+        "turns": 0,
+        "uncached_input": 0
+      },
+      "executor-1": {
+        "cache_read": 0,
+        "output": 0,
+        "turns": 0,
+        "uncached_input": 0
+      },
+      "infra-1": {
+        "cache_read": 0,
+        "output": 0,
+        "turns": 0,
+        "uncached_input": 0
+      },
+      "planner-1": {
+        "cache_read": 0,
+        "output": 0,
+        "turns": 0,
+        "uncached_input": 0
+      }
+    },
+    "usage_source": "deduplicated token_usage_record"
+  },
+  "previous_hybrid_cost_usd": 3.1981705999999996,
+  "cost_reduction_percent_against_historical_hybrid": 10.21,
+  "limitations": [
+    "The comparator is an earlier hybrid delivery. Agent choices, authored tests, review and cache behavior varied.",
+    "The current build also offers direct Leader inbox reads. No use of the new named section view is required by the fixture.",
+    "Provider totals are observed transcript usage at the prior frozen API-equivalent rates."
+  ]
+}

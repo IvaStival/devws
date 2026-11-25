@@ -1,53 +1,26 @@
+use crate::providers::Kind;
 use crate::roles::Role;
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The program an agent runs. devws names agents (`claude_work`); this is what
-/// they run, which decides the flags they take.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Kind {
-    Claude,
-    Codex,
-}
-
-impl Kind {
-    pub fn parse(name: &str) -> Option<Self> {
-        match name {
-            "claude" => Some(Kind::Claude),
-            "codex" => Some(Kind::Codex),
-            _ => None,
-        }
-    }
-}
-
 /// The MCP server the leader's tools come from: `<command> mcp <task id>`.
 pub struct McpServer {
     pub command: String,
     pub task_id: String,
-    /// For Claude, the JSON file that names the server.
+    /// For Claude and Antigravity, the JSON file that names the server.
     pub config_file: PathBuf,
+    /// The leader reads status with `leader-read`, so its catalog is the
+    /// narrower one.
+    pub leader_cli: bool,
 }
 
 /// A role's `approvals` that lets the agent work without asking you: Claude's
 /// auto permission mode, Codex's automatic review.
 pub const AUTO: &str = "auto";
 
-/// Claude's permission mode for a role: its `approvals`, else auto for the
-/// leader (it runs the team and its risky calls already wait for your
-/// approval through its own tools), acceptEdits for a role that writes, and
-/// default for the rest.
-pub fn claude_permission_mode(role: &Role) -> &str {
-    role.approvals
-        .as_deref()
-        .unwrap_or(if role.name == "leader" {
-            AUTO
-        } else if role.writes {
-            "acceptEdits"
-        } else {
-            "default"
-        })
-}
+/// The `devagentics` commands every agent runs by itself, without asking.
+pub(crate) const OWN_COMMANDS: [&str; 5] = ["report", "plan write", "plan show", "ask", "answer"];
 
 pub struct Launch<'a> {
     pub role: &'a Role,
@@ -64,108 +37,16 @@ pub struct Launch<'a> {
 }
 
 /// The arguments for the agent's program, after devws's own (`devws agent
-/// spawn --agent-args`). The first message comes first: Claude's `--allowedTools`
-/// and `--mcp-config` take any number of values, and would swallow it after
-/// them. The user's own MCP servers (ai-memory) stay: no `--strict-mcp-config`.
+/// spawn --agent-args`): its provider's (crate::providers).
 pub fn arguments(context: &Launch) -> Vec<String> {
-    match context.kind {
-        Kind::Claude => claude(context),
-        Kind::Codex => codex(context),
-    }
+    context.kind.provider().arguments(context)
 }
 
-fn push_option(arguments: &mut Vec<String>, flag: &str, value: Option<&str>) {
+pub(crate) fn push_option(arguments: &mut Vec<String>, flag: &str, value: Option<&str>) {
     if let Some(value) = value {
         arguments.push(flag.to_string());
         arguments.push(value.to_string());
     }
-}
-
-fn claude(context: &Launch) -> Vec<String> {
-    let role = context.role;
-    let mut arguments = vec![context.first_message.to_string()];
-    push_option(&mut arguments, "--model", role.model.as_deref());
-    push_option(&mut arguments, "--effort", role.effort.as_deref());
-    push_option(
-        &mut arguments,
-        "--permission-mode",
-        Some(claude_permission_mode(role)),
-    );
-
-    // What every agent does by itself; the leader's tools too.
-    arguments.push("--allowedTools".to_string());
-    for command in ["report", "plan write", "plan show", "ask", "answer"] {
-        arguments.push(format!("Bash(devagentics {command}:*)"));
-    }
-    if context.mcp.is_some() {
-        arguments.push("mcp__devagentics".to_string());
-    }
-    if let Some(mcp) = context.mcp {
-        push_option(
-            &mut arguments,
-            "--mcp-config",
-            Some(&mcp.config_file.to_string_lossy()),
-        );
-    }
-    arguments
-}
-
-fn codex(context: &Launch) -> Vec<String> {
-    let role = context.role;
-    // A team's agents work in view all day: Codex's shimmering status line
-    // would have the terminal repaint many times a second.
-    let mut arguments = vec!["-c".to_string(), "tui.animations=false".to_string()];
-    push_option(&mut arguments, "-m", role.model.as_deref());
-    if let Some(effort) = &role.effort {
-        arguments.push("-c".to_string());
-        arguments.push(format!("model_reasoning_effort={}", toml_string(effort)));
-    }
-    // An agent's `devagentics` commands write the task's state, outside the
-    // repo, and only the workspace-write sandbox takes another writable
-    // folder. So a senior gets it too: that it leaves the repo alone is
-    // enforced by its orders (every file forbidden), not by the sandbox.
-    // `approvals = "auto"`: Codex's own reviewer answers its approval
-    // requests, in the workspace-write sandbox it picks itself (it takes
-    // neither -s nor -a).
-    let auto = role.approvals.as_deref() == Some(AUTO);
-    if auto {
-        arguments.push("--approve-for-me".to_string());
-    } else {
-        let sandbox =
-            role.sandbox
-                .as_deref()
-                .unwrap_or(if role.writes || !context.writable.is_empty() {
-                    "workspace-write"
-                } else {
-                    "read-only"
-                });
-        push_option(&mut arguments, "-s", Some(sandbox));
-    }
-    for dir in &context.writable {
-        push_option(&mut arguments, "--add-dir", Some(&dir.to_string_lossy()));
-    }
-    if !auto {
-        push_option(
-            &mut arguments,
-            "-a",
-            Some(role.approvals.as_deref().unwrap_or("on-request")),
-        );
-    }
-    if let Some(mcp) = context.mcp {
-        arguments.push("-c".to_string());
-        arguments.push(format!(
-            "mcp_servers.devagentics.command={}",
-            toml_string(&mcp.command)
-        ));
-        arguments.push("-c".to_string());
-        arguments.push(format!(
-            "mcp_servers.devagentics.args=[{}, {}]",
-            toml_string("mcp"),
-            toml_string(&mcp.task_id)
-        ));
-    }
-    arguments.push(context.first_message.to_string());
-    arguments
 }
 
 /// Codex's `-c` values are TOML: a string is quoted.
@@ -184,11 +65,22 @@ pub fn write_args_file(path: &Path, arguments: &[String]) -> Result<()> {
     fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))
 }
 
-/// The JSON file Claude reads to find the leader's MCP server.
+/// The JSON file Claude (and devws's Antigravity plugin) reads to find the
+/// leader's MCP server.
+/// The leader server's arguments, the narrower catalog when it reads with
+/// `leader-read`.
+pub fn mcp_arguments(task_id: &str, leader_cli: bool) -> Vec<String> {
+    let mut arguments = vec!["mcp".to_string(), task_id.to_string()];
+    if leader_cli {
+        arguments.push("--leader-cli-catalog".into());
+    }
+    arguments
+}
+
 pub fn write_mcp_config(mcp: &McpServer) -> Result<()> {
     let config = serde_json::json!({
         "mcpServers": {
-            "devagentics": { "command": mcp.command, "args": ["mcp", mcp.task_id] }
+            "devagentics": { "command": mcp.command, "args": mcp_arguments(&mcp.task_id, mcp.leader_cli) }
         }
     });
     fs::write(&mcp.config_file, serde_json::to_string_pretty(&config)?)
@@ -234,6 +126,7 @@ mod tests {
             command: "/bin/devagentics".to_string(),
             task_id: "feat-login".to_string(),
             config_file: "/tasks/feat-login/mcp.json".into(),
+            leader_cli: false,
         }
     }
 
@@ -526,9 +419,148 @@ mod tests {
     }
 
     #[test]
-    fn only_claude_and_codex_are_known() {
-        assert_eq!(Kind::parse("claude"), Some(Kind::Claude));
-        assert_eq!(Kind::parse("codex"), Some(Kind::Codex));
-        assert_eq!(Kind::parse("opencode"), None);
+    fn an_antigravity_floor_agent_starts_with_its_prompt_model_and_edits_accepted() {
+        let role = role(
+            "hammer",
+            "antigravity",
+            Some("gemini-3.8-flash-medium"),
+            Some("high"),
+            true,
+        );
+        let arguments = arguments(&Launch {
+            role: &role,
+            kind: Kind::Antigravity,
+            first_message: "Build\nit",
+            mcp: None,
+            writable: vec!["/home/u/.devagentics".into()],
+        });
+        assert_eq!(
+            arguments,
+            strings(&[
+                "-i",
+                "Build\nit",
+                "--model",
+                "gemini-3.8-flash-medium",
+                "--effort",
+                "high",
+                "--mode",
+                "accept-edits",
+                "--add-dir",
+                "/home/u/.devagentics",
+                "--settings",
+                &own_commands(&[]),
+            ])
+        );
+    }
+
+    /// The settings an Antigravity agent gets: its own commands, then `more`.
+    fn own_commands(more: &[&str]) -> String {
+        let mut allowed: Vec<String> = [
+            "devagentics report",
+            "devagentics plan write",
+            "devagentics plan show",
+            "devagentics ask",
+            "devagentics answer",
+        ]
+        .iter()
+        .map(|command| format!("command({command})"))
+        .collect();
+        allowed.extend(more.iter().map(|rule| rule.to_string()));
+        serde_json::json!({ "permissions": { "allow": allowed } }).to_string()
+    }
+
+    #[test]
+    fn an_antigravity_leader_names_its_server_and_leaves_its_mode_to_agy() {
+        let role = role("leader", "antigravity", None, None, false);
+        let server = mcp();
+        let arguments = arguments(&Launch {
+            role: &role,
+            kind: Kind::Antigravity,
+            first_message: "Lead",
+            mcp: Some(&server),
+            writable: Vec::new(),
+        });
+        // devws takes --mcp-config off the line for its plugin (agent_runner.sh).
+        assert_eq!(
+            arguments,
+            strings(&[
+                "-i",
+                "Lead",
+                "--settings",
+                &own_commands(&["mcp(devws_devagentics/*)"]),
+                "--mcp-config",
+                "/tasks/feat-login/mcp.json",
+            ])
+        );
+    }
+
+    #[test]
+    fn an_antigravity_role_s_approvals_are_its_mode() {
+        let mut role = role("reviewer", "antigravity", None, None, false);
+        role.approvals = Some("plan".into());
+        let arguments = arguments(&Launch {
+            role: &role,
+            kind: Kind::Antigravity,
+            first_message: "Review",
+            mcp: None,
+            writable: Vec::new(),
+        });
+        assert_eq!(
+            arguments,
+            strings(&[
+                "-i",
+                "Review",
+                "--mode",
+                "plan",
+                "--settings",
+                &own_commands(&[])
+            ])
+        );
+    }
+
+    #[test]
+    fn an_opencode_floor_agent_starts_with_its_prompt_model_and_writing_agent() {
+        let role = role(
+            "executor",
+            "opencode",
+            Some("opencode/deepseek-v4.1-flash"),
+            Some("high"),
+            true,
+        );
+        let arguments = arguments(&Launch {
+            role: &role,
+            kind: Kind::Opencode,
+            first_message: "Hello\nthere",
+            mcp: None,
+            writable: Vec::new(),
+        });
+        // opencode's TUI takes no effort flag: the role's effort is left out.
+        assert_eq!(
+            arguments,
+            strings(&[
+                "--prompt",
+                "Hello\nthere",
+                "--model",
+                "opencode/deepseek-v4.1-flash",
+                "--agent",
+                "devws-floor",
+            ])
+        );
+    }
+
+    #[test]
+    fn an_opencode_senior_runs_the_agent_that_cannot_edit() {
+        let role = role("reviewer", "opencode", None, None, false);
+        let arguments = arguments(&Launch {
+            role: &role,
+            kind: Kind::Opencode,
+            first_message: "Review",
+            mcp: None,
+            writable: Vec::new(),
+        });
+        assert_eq!(
+            arguments,
+            strings(&["--prompt", "Review", "--agent", "devws-senior"])
+        );
     }
 }

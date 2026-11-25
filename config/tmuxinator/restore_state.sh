@@ -14,6 +14,8 @@ config="$HOME/.tmuxinator/.env"
 tab="$(printf '\t')"
 
 [ -r "$config" ] && . "$config"
+# shellcheck source=agents.sh
+. "$HOME/.tmuxinator/agents.sh"
 [ -s "$state_file" ] || exit 0
 
 mkdir -p "$state_root" || exit 1
@@ -150,7 +152,7 @@ start_workspace() {
     return 0
   fi
 
-  agent="$(valid_choice "$pending_agent" "${DEVWS_AGENTS:-claude codex}" \
+  agent="$(valid_choice "$pending_agent" "$(agent_names | tr '\n' ' ')" \
     "${DEVWS_DEFAULT_AGENT:-claude}")"
   editor="$(valid_choice "$pending_editor" "${DEVWS_EDITORS:-nvim vim code zed}" \
     "${DEVWS_DEFAULT_EDITOR:-nvim}")"
@@ -197,7 +199,7 @@ flush_workspace() {
       command=""
       case "$role" in
         extra-agent)
-          agent="$(valid_choice "$agent" "${DEVWS_AGENTS:-claude codex}" "${DEVWS_DEFAULT_AGENT:-claude}")"
+          agent="$(valid_choice "$agent" "$(agent_names | tr '\n' ' ')" "${DEVWS_DEFAULT_AGENT:-claude}")"
           command="$(printf '%q %q --extra' "$HOME/.tmuxinator/agent_runner.sh" "$agent")"
           ;;
         extra-editor) command="nvim ." ;;

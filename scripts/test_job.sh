@@ -140,6 +140,19 @@ test_notes_show_for_ten_seconds_errors_until_seen() {
   [ -z "$(job rows 80)" ] || fail "the seen error note remains"
 }
 
+test_a_header_click_dismisses_one_error_note() {
+  local older newer
+  older="$(job note 'Sidebar failed' --error)"
+  newer="$(job note 'Deploy failed again' --error)"
+  job open /dev/pts/header-test
+  ! rows_show 'Deploy failed again' || fail "the clicked error note remains"
+  rows_show 'Sidebar failed' || fail "the other error was dismissed too"
+  [ "$(job summary)" = '✗ 1 failed' ] || fail "the summary still counts the dismissed note"
+  [ -f "$DEVWS_JOBS_DIR/$newer/log" ] || fail "dismissal removed the log"
+  job open /dev/pts/header-test
+  [ -f "$DEVWS_JOBS_DIR/$older/seen" ] || fail "the second click did not dismiss the remaining error"
+}
+
 # A Docker build's step count becomes a bar on the job's row.
 test_a_build_shows_its_progress() {
   local id
@@ -276,6 +289,7 @@ test_rows_show_the_jobs_line_only
 test_rows_are_cut_and_escaped_for_tmux
 test_a_success_leaves_after_ten_seconds_a_failure_when_seen
 test_notes_show_for_ten_seconds_errors_until_seen
+test_a_header_click_dismisses_one_error_note
 test_a_build_shows_its_progress
 test_jobs_notify_when_they_end
 test_a_failure_says_why

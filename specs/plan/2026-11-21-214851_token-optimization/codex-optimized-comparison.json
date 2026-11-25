@@ -1,0 +1,145 @@
+{
+  "baseline": {
+    "api_cost_leader_usd": 2.76292,
+    "original_command_passed": true,
+    "provider": {
+      "cache_read": 31165056,
+      "cache_write": 0,
+      "output": 96439,
+      "priced_responses": 440,
+      "responses": 440,
+      "standard_short_context_api_equivalent_usd": 4.56296998,
+      "threads": 10,
+      "turns": 29,
+      "uncached_input": 681390
+    },
+    "ready_milestones": [
+      "notes-release-v1"
+    ],
+    "task": "bench-reviewed-20261121-220726",
+    "tests_passed": 11,
+    "tools": {
+      "all_tools": {
+        "calls": 651,
+        "failed": 124,
+        "request_bytes": 1626524,
+        "response_bytes": 3295693
+      },
+      "execute": {
+        "calls": 47,
+        "failed": 0,
+        "request_bytes": 69102,
+        "response_bytes": 178124
+      },
+      "leader_status": {
+        "calls": 50,
+        "failed": 0,
+        "request_bytes": 50911,
+        "response_bytes": 1172925
+      },
+      "plan_reads": {
+        "calls": 23,
+        "failed": 4,
+        "request_bytes": 21308,
+        "response_bytes": 814418
+      },
+      "proposal": {
+        "calls": 37,
+        "failed": 34,
+        "request_bytes": 605705,
+        "response_bytes": 6512
+      },
+      "worker_status": {
+        "calls": 28,
+        "failed": 0,
+        "request_bytes": 24864,
+        "response_bytes": 375290
+      }
+    }
+  },
+  "limitations": [
+    "One successful run per configuration with different cache histories and workflow decisions.",
+    "Optimized run reused the baseline Docker image and had fewer startup retries. Both runs had operator intervention.",
+    "Same original fixture, but teams produced different focused tests and milestone item structures.",
+    "This is the measured cost difference for these runs, not causal attribution or proof of rollout savings."
+  ],
+  "model_prices": {
+    "gpt-6-luna": [
+      0.1,
+      0.01,
+      0.5
+    ],
+    "gpt-6.1-sol": [
+      2,
+      0.1,
+      10
+    ],
+    "gpt-6.2-sol": [
+      2,
+      0.1,
+      10
+    ]
+  },
+  "observed_api_equivalent_cost_reduction_percent": 32.66,
+  "optimized": {
+    "api_cost_leader_usd": 1.6649135999999998,
+    "binary_sha256": "638dbb0ce3483e8871903794006616ca05d17ad1fcf4ca344ceeec0096a7f460",
+    "original_command_passed": true,
+    "provider": {
+      "cache_read": 22367488,
+      "cache_write": 0,
+      "output": 69653,
+      "priced_responses": 349,
+      "responses": 349,
+      "standard_short_context_api_equivalent_usd": 3.0728514799999997,
+      "threads": 7,
+      "turns": 24,
+      "uncached_input": 542167
+    },
+    "ready_milestones": [
+      "notes-release"
+    ],
+    "task": "bench-reviewed-20261122-171555",
+    "tests_passed": 14,
+    "tools": {
+      "all_tools": {
+        "calls": 480,
+        "failed": 67,
+        "request_bytes": 786407,
+        "response_bytes": 1091711
+      },
+      "execute": {
+        "calls": 38,
+        "failed": 0,
+        "request_bytes": 56963,
+        "response_bytes": 176023
+      },
+      "leader_status": {
+        "calls": 17,
+        "failed": 0,
+        "request_bytes": 17610,
+        "response_bytes": 94003
+      },
+      "plan_reads": {
+        "calls": 20,
+        "failed": 0,
+        "request_bytes": 18476,
+        "response_bytes": 263885
+      },
+      "proposal": {
+        "calls": 3,
+        "failed": 2,
+        "request_bytes": 29582,
+        "response_bytes": 2501
+      },
+      "worker_status": {
+        "calls": 36,
+        "failed": 0,
+        "request_bytes": 32725,
+        "response_bytes": 110677
+      }
+    },
+    "worker_turns_reconciled": 22
+  },
+  "pricing_source": "https://developers.openai.com/api/docs/pricing"
+}

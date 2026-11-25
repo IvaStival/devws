@@ -177,10 +177,11 @@ pub fn catch_up(task: &Task, lane: &Lane) -> Result<()> {
     )
 }
 
-/// A reviewed lane takes no code it was not reviewed with: the task's branch
-/// only by fast-forward, or by a merge when all the branch added is the
-/// team's own history, which no lane writes (accepting a planning step
-/// commits it while a lane still holds its unmerged candidate).
+/// A reviewed lane takes no code git combined unreviewed: the task's branch
+/// by fast-forward, or by a merge when the files the branch changed since
+/// they parted (the team's history, other lanes' accepted work) are not
+/// files the lane changed. Each merged file is then one reviewed side, and
+/// the lane's own work is reviewed as its candidate.
 fn catch_up_reviewed(worktree: &Path, branch: &str, lane: &str) -> Result<()> {
     anyhow::ensure!(
         checks::inspect(worktree, "HEAD", &[], &[])?
@@ -191,18 +192,33 @@ fn catch_up_reviewed(worktree: &Path, branch: &str, lane: &str) -> Result<()> {
     if git(worktree, &["merge", "--ff-only", "--no-edit", branch]).is_ok() {
         return Ok(());
     }
-    let added = git(worktree, &["diff", "--name-only", &format!("HEAD...{branch}")])?;
-    let history = format!("{}/", crate::history::FOLDER);
-    if !added.lines().all(|path| path.starts_with(&history)) {
+    let changed = |range: String| -> Result<std::collections::BTreeSet<String>> {
+        Ok(git(worktree, &["diff", "--name-only", &range])?
+            .lines()
+            .map(str::to_string)
+            .collect())
+    };
+    let on_branch = changed(format!("HEAD...{branch}"))?;
+    let in_lane = changed(format!("{branch}...HEAD"))?;
+    let both: Vec<&str> = on_branch
+        .intersection(&in_lane)
+        .map(String::as_str)
+        .collect();
+    if !both.is_empty() {
         bail!(
-            "divergent lane requires a separately reviewed integration; no automatic conflict-resolution code was merged"
+            "divergent lane requires a separately reviewed integration: the task's branch and lane {lane} both changed {}; no automatic conflict-resolution code was merged",
+            both.join(", ")
         );
     }
-    merge(worktree, branch, &format!("catching lane {lane} up with the team's history"))
+    merge(
+        worktree,
+        branch,
+        &format!("catching lane {lane} up with the task's branch"),
+    )
 }
 
 /// An accepted step: the lane's work goes into the task's branch.
-pub fn merge_into_task(task: &Task, lane: &Lane) -> Result<()> {
+pub fn merge_into_task(task: &Task, lane: &Lane, step: &str) -> Result<()> {
     crate::workflow::block_unverified_runner(task)?;
     let config = task.config()?;
     let repo = config
@@ -217,14 +233,20 @@ pub fn merge_into_task(task: &Task, lane: &Lane) -> Result<()> {
             .iter()
             .rev()
             .find(|order| {
-                state
-                    .agent(&order.agent)
-                    .is_some_and(|agent| agent.lane.as_deref() == Some(&lane.name))
+                order.step == step
+                    && state
+                        .agent(&order.agent)
+                        .is_some_and(|agent| agent.lane.as_deref() == Some(&lane.name))
                     && state.steps.iter().any(|step| {
                         step.id == order.step && step.status == crate::state::StepStatus::Reported
                     })
             })
-            .context("no reported implementation for lane integration")?;
+            .with_context(|| {
+                format!(
+                    "no reported implementation for step {step} in lane {}",
+                    lane.name
+                )
+            })?;
         let review = state
             .reviews
             .iter()
@@ -303,8 +325,8 @@ mod tests {
         commit_file(&back.worktree, "backend/api.rs", "api\n", "api");
         commit_file(&front.worktree, "frontend/page.ts", "page\n", "page");
 
-        merge_into_task(&task, &back).unwrap();
-        merge_into_task(&task, &front).unwrap();
+        merge_into_task(&task, &back, "legacy-step").unwrap();
+        merge_into_task(&task, &front, "legacy-step").unwrap();
         assert!(repo.path().join("backend/api.rs").exists());
         assert!(repo.path().join("frontend/page.ts").exists());
 
@@ -374,6 +396,9 @@ mod tests {
             send_order(
                 &task,
                 OrderRequest {
+                    diagnosis: None,
+                    read: Vec::new(),
+                    targets: Vec::new(),
                     profiles: Vec::new(),
                     agent: agent.into(),
                     step: step.into(),
@@ -482,8 +507,9 @@ mod tests {
         );
     }
 
-    /// A reviewed lane holding its candidate takes the team's history the
-    /// task's branch got since, but never code it was not reviewed with.
+    /// A reviewed lane holding its candidate takes what the task's branch got
+    /// since (history, other lanes' accepted work), but never a file both
+    /// changed: git would combine them into code nobody reviewed.
     #[test]
     fn a_reviewed_lane_takes_only_the_teams_history_by_merge() {
         let dir = TempDir::new().unwrap();
@@ -498,15 +524,39 @@ mod tests {
             "record a planning step",
         );
         catch_up_reviewed(&front.worktree, &branch, "front").unwrap();
-        assert!(front.worktree.join(".devagentics/history/feat-x/history.json").exists());
-        assert!(front.worktree.join("frontend/page.ts").exists(), "the candidate stays");
+        assert!(
+            front
+                .worktree
+                .join(".devagentics/history/feat-x/history.json")
+                .exists()
+        );
+        assert!(
+            front.worktree.join("frontend/page.ts").exists(),
+            "the candidate stays"
+        );
 
-        commit_file(repo.path(), "backend/api.rs", "api\n", "unreviewed code");
+        // Another lane's accepted work, in files the lane did not change:
+        // each merged file is one reviewed side, nothing git combined.
+        commit_file(repo.path(), "backend/api.rs", "api\n", "accepted back step");
+        catch_up_reviewed(&front.worktree, &branch, "front").unwrap();
+        assert!(front.worktree.join("backend/api.rs").exists());
+        assert!(front.worktree.join("frontend/page.ts").exists());
+
+        // The branch changed a file the lane changed too: git would combine
+        // them into code nobody reviewed.
+        commit_file(&front.worktree, "frontend/menu.ts", "lane\n", "candidate 2");
+        commit_file(repo.path(), "frontend/menu.ts", "branch\n", "other work");
         let error = catch_up_reviewed(&front.worktree, &branch, "front")
             .unwrap_err()
             .to_string();
-        assert!(error.contains("separately reviewed integration"), "{error}");
-        assert!(!front.worktree.join("backend/api.rs").exists());
+        assert!(
+            error.contains("separately reviewed integration") && error.contains("frontend/menu.ts"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(front.worktree.join("frontend/menu.ts")).unwrap(),
+            "lane\n"
+        );
     }
 
     /// A merge that fails without a conflict (a repo locked by another git)
@@ -519,14 +569,16 @@ mod tests {
         commit_file(&back.worktree, "backend/api.rs", "api\n", "api");
         let lock = repo.path().join(".git/index.lock");
         std::fs::write(&lock, "").unwrap();
-        let error = merge_into_task(&task, &back).unwrap_err().to_string();
+        let error = merge_into_task(&task, &back, "legacy-step")
+            .unwrap_err()
+            .to_string();
         assert!(!error.contains("clash"), "{error}");
         assert!(
             error.contains("index.lock"),
             "git's error is shown: {error}"
         );
         std::fs::remove_file(&lock).unwrap();
-        merge_into_task(&task, &back).unwrap();
+        merge_into_task(&task, &back, "legacy-step").unwrap();
     }
 
     #[test]
@@ -537,8 +589,10 @@ mod tests {
         let front = add(&task, "front", &["shared/**".into()], None).unwrap();
         commit_file(&back.worktree, "shared/x", "back\n", "b");
         commit_file(&front.worktree, "shared/x", "front\n", "f");
-        merge_into_task(&task, &back).unwrap();
-        let error = merge_into_task(&task, &front).unwrap_err().to_string();
+        merge_into_task(&task, &back, "legacy-step").unwrap();
+        let error = merge_into_task(&task, &front, "legacy-step")
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("clash in shared/x"), "{error}");
         assert_eq!(
             std::fs::read_to_string(repo.path().join("shared/x")).unwrap(),
