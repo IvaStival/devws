@@ -2,6 +2,7 @@ mod accounts;
 mod agent_args;
 mod bench;
 mod board;
+mod board_plan;
 mod board_tui;
 mod board_usage;
 mod board_view;

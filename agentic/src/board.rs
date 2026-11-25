@@ -33,6 +33,8 @@ pub struct Board {
     /// The leader's external or destructive calls waiting for your approval.
     pub permissions: Vec<PermissionRow>,
     pub steps: Vec<StepRow>,
+    /// The plan's parts and their items in plain words: the PLAN view.
+    pub plan: Vec<crate::board_plan::PlanPart>,
     /// Full context keyed by stable row identity; presentation never truncates this.
     pub details: BTreeMap<String, String>,
     pub accounts: Vec<Account>,
@@ -328,11 +330,16 @@ impl Board {
         let state = task.state()?;
         let opencode = crate::opencode::OpencodeSettings::load(&crate::home::Home::from_env()?)?;
         let step_title = |id: &str| {
-            state
+            let row_title = state
                 .steps
                 .iter()
                 .find(|step| step.id == id)
-                .map_or_else(|| id.to_string(), |step| format!("{id} {}", step.title))
+                .map_or_else(|| id.to_string(), |step| format!("{id} {}", step.title));
+            // A helper or a test item names the item it works for.
+            match crate::board_plan::serves(&state, id) {
+                Some((item, item_title)) => format!("{row_title} · for {item}: {item_title}"),
+                None => row_title,
+            }
         };
 
         let mut rows: Vec<RoleRow> = roles
@@ -723,6 +730,7 @@ impl Board {
             permissions,
             progress: Progress::of(&state),
             steps: state.steps.iter().map(step_row).collect(),
+            plan: crate::board_plan::parts(&state),
             details,
             task: config.id,
             branch: config.branch,

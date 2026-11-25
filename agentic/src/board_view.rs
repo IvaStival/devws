@@ -31,15 +31,18 @@ pub enum View {
     #[default]
     Overview,
     Agents,
+    /// The plan's parts and items in plain words (board_plan.rs).
+    Plan,
     Steps,
     Activity,
     Usage,
 }
 
 impl View {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Overview,
         Self::Agents,
+        Self::Plan,
         Self::Steps,
         Self::Activity,
         Self::Usage,
@@ -49,6 +52,7 @@ impl View {
         match self {
             Self::Overview => "overview",
             Self::Agents => "agents",
+            Self::Plan => "plan",
             Self::Steps => "steps",
             Self::Activity => "activity",
             Self::Usage => "usage",
@@ -63,7 +67,8 @@ impl View {
 
     pub fn next(self, backwards: bool) -> Self {
         let index = Self::ALL.iter().position(|view| *view == self).unwrap_or(0);
-        Self::ALL[(index + if backwards { 4 } else { 1 }) % 5]
+        let count = Self::ALL.len();
+        Self::ALL[(index + if backwards { count - 1 } else { 1 }) % count]
     }
 }
 
@@ -355,6 +360,132 @@ fn step_mark(status: StepStatus) -> char {
         StepStatus::Exhausted => '✕',
         StepStatus::Closed => '–',
     }
+}
+
+/// A plan item's state in words: `accepted`, `waiting` before it starts,
+/// `ordered · hammer-36` while someone works on it.
+fn item_state(status: Option<StepStatus>, agent: Option<&str>) -> String {
+    let word = status.map_or("waiting", step_word);
+    match agent {
+        Some(agent) => format!("{word} · {agent}"),
+        None => word.to_string(),
+    }
+}
+
+/// The PLAN view: each part with its progress, each of its items in plain
+/// words, and under an item what serves it now: its plan, its tests.
+fn plan_entries(board: &Board) -> Vec<Entry> {
+    let mut entries = Vec::new();
+    // One column for the ids, as wide as the longest: `B1-2-HTTP`.
+    let width = board
+        .plan
+        .iter()
+        .flat_map(|part| part.items.iter())
+        .map(|item| item.id.chars().count())
+        .max()
+        .unwrap_or(0);
+    for part in &board.plan {
+        let (done, total) = part.progress();
+        if !entries.is_empty() {
+            entries.push(Entry::gap(&part.id));
+        }
+        entries.push(Entry::section(
+            &format!("{}  {} · {}", part.id, part.title, part.version),
+            None,
+        ));
+        entries
+            .last_mut()
+            .expect("just pushed")
+            .label
+            .push_str(&format!("  {done}/{total}"));
+        for item in &part.items {
+            entries.push(plan_item_entry(part, item, width));
+            for helper in &item.helpers {
+                let who = helper
+                    .agent
+                    .as_deref()
+                    .map_or_else(String::new, |agent| format!(" · {agent}"));
+                entries.push(Entry::note(
+                    &format!("{}:{}", item.id, helper.step),
+                    &format!("   now: {}{who}", helper.step),
+                ));
+            }
+            if let Some(tests) = &item.tests
+                && !item.is_done()
+            {
+                entries.push(Entry::note(
+                    &format!("{}:{}", item.id, tests.id),
+                    &format!(
+                        "   tests first: {} · {}",
+                        tests.id,
+                        item_state(tests.status, tests.agent.as_deref())
+                    ),
+                ));
+            }
+        }
+    }
+    entries
+}
+
+fn plan_item_entry(
+    part: &crate::board_plan::PlanPart,
+    item: &crate::board_plan::PlanItem,
+    width: usize,
+) -> Entry {
+    let mark = item.status.map_or('·', step_mark);
+    let list = |title: &str, lines: &[String]| {
+        if lines.is_empty() {
+            return String::new();
+        }
+        let lines: Vec<String> = lines.iter().map(|line| format!("- {line}")).collect();
+        format!("\n\n{title}\n{}", lines.join("\n"))
+    };
+    let tests = item.tests.as_ref().map_or_else(String::new, |tests| {
+        format!(
+            "\nTests first: {} ({}), written before the item and protected from it",
+            tests.id,
+            item_state(tests.status, tests.agent.as_deref())
+        )
+    });
+    let helpers: Vec<String> = item
+        .helpers
+        .iter()
+        .map(|helper| {
+            let who = helper
+                .agent
+                .as_deref()
+                .map_or_else(String::new, |agent| format!(" ({agent})"));
+            format!("- {}{who}: {}", helper.step, helper.title)
+        })
+        .collect();
+    let helpers = if helpers.is_empty() {
+        String::new()
+    } else {
+        format!("\n\nBeing done for it now\n{}", helpers.join("\n"))
+    };
+    let needs = if item.dependencies.is_empty() {
+        String::new()
+    } else {
+        format!("\nNeeds first: {}", item.dependencies.join(", "))
+    };
+    let detail = format!(
+        "{} · {}\nPart {} · {} · {}\nState: {}{tests}{needs}{}{}{helpers}",
+        item.id,
+        item.title,
+        part.id,
+        part.title,
+        part.version,
+        item_state(item.status, item.agent.as_deref()),
+        list("What it does", &item.behavior),
+        list("Done when", &item.acceptance),
+    );
+    Entry::text(format!("item:{}", item.id), String::new(), detail, false)
+        .toned(vec![
+            (format!("{mark} "), Tone::Mark),
+            (format!("{:<width$}  ", item.id), Tone::Muted),
+            (item.title.clone(), Tone::Plain),
+        ])
+        .with_tail(item_state(item.status, item.agent.as_deref()))
 }
 
 fn step_entry(board: &Board, step: &StepRow) -> Entry {
@@ -1099,6 +1230,9 @@ pub fn entries(
             }
         }
     }
+    if view == View::Plan {
+        entries.extend(plan_entries(board));
+    }
     if view == View::Steps {
         entries.extend(
             board
@@ -1748,6 +1882,7 @@ fn header(
             "Steps · c {} completed",
             if nav.expanded { "hide" } else { "show" }
         )),
+        View::Plan => Some("The plan by part · Enter: what an item does".into()),
         View::Activity => Some("Activity · newest first".into()),
         View::Usage => Some("Accounts and usage · cost at API prices".into()),
     };
