@@ -569,10 +569,49 @@ fn write_identity(path: &Path, value: &str) -> Result<()> {
     Ok(())
 }
 pub fn prepare(task: &Task, agent: &str, source: &Path, readonly: bool) -> Result<PathBuf> {
+    let nonce = token()?;
+    let workspace = snapshot(task, agent, source, readonly, &nonce)?;
+    let identity = task
+        .dir()
+        .join("workers")
+        .join(agent)
+        .join(format!("identity-{}", &nonce[..12]));
+    write_identity(&identity, &nonce)?;
+    task.transaction(|tx| {
+        tx.state.runner_workspaces.insert(agent.into(), workspace);
+        tx.state
+            .runner_identities
+            .insert(agent.into(), identity.clone());
+        Ok(())
+    })?;
+    Ok(identity)
+}
+
+/// Gives a running worker a new source and keeps its identity. Its panel and
+/// MCP server check that identity on every poll, so a new one, even for a
+/// moment, makes them exit as a foreign session.
+pub fn replace_source(task: &Task, agent: &str, source: &Path, readonly: bool) -> Result<()> {
+    ensure!(
+        task.state()?.runner_identities.contains_key(agent),
+        "worker identity missing"
+    );
+    let workspace = snapshot(task, agent, source, readonly, &token()?)?;
+    task.transaction(|tx| {
+        tx.state.runner_workspaces.insert(agent.into(), workspace);
+        Ok(())
+    })
+}
+
+fn snapshot(
+    task: &Task,
+    agent: &str,
+    source: &Path,
+    readonly: bool,
+    nonce: &str,
+) -> Result<Workspace> {
     let config = task.state()?.runner.context("runner not configured")?;
     let directory = task.dir().join("workers").join(agent);
     fs::create_dir_all(&directory)?;
-    let nonce = token()?;
     let snapshot = directory.join(format!("source-{}", &nonce[..12]));
     fs::create_dir(&snapshot)?;
     let output = Command::new("git")
@@ -650,7 +689,7 @@ pub fn prepare(task: &Task, agent: &str, source: &Path, readonly: bool) -> Resul
         }
         allow_snapshot(&snapshot)?;
     }
-    let workspace = Workspace {
+    Ok(Workspace {
         snapshot,
         source: source.canonicalize()?,
         base: checks::head(source)?,
@@ -660,17 +699,7 @@ pub fn prepare(task: &Task, agent: &str, source: &Path, readonly: bool) -> Resul
         order: None,
         revision: 0,
         baseline: task.state()?.application.revision,
-    };
-    let identity = directory.join(format!("identity-{}", &nonce[..12]));
-    write_identity(&identity, &nonce)?;
-    task.transaction(|tx| {
-        tx.state.runner_workspaces.insert(agent.into(), workspace);
-        tx.state
-            .runner_identities
-            .insert(agent.into(), identity.clone());
-        Ok(())
-    })?;
-    Ok(identity)
+    })
 }
 pub fn authenticate(task: &Task, agent: &str, identity: &Path) -> Result<()> {
     let state = task.state()?;
@@ -2113,6 +2142,42 @@ pub mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("src/deps"), "{error}");
+    }
+
+    #[test]
+    fn a_new_source_keeps_the_worker_identity_its_panel_checks() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (_home, _devws, task, repo) = crate::board::tests::started(&directory);
+        task.transaction(|tx| {
+            tx.state.runner = Some(configuration());
+            Ok(())
+        })
+        .unwrap();
+        let identity = prepare(&task, "reviewer-1", repo.path(), true).unwrap();
+        let first = task.state().unwrap().runner_workspaces["reviewer-1"]
+            .snapshot
+            .clone();
+        let identities = |task: &Task| {
+            fs::read_dir(task.dir().join("workers/reviewer-1"))
+                .unwrap()
+                .filter(|entry| {
+                    entry
+                        .as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("identity-")
+                })
+                .count()
+        };
+
+        replace_source(&task, "reviewer-1", repo.path(), true).unwrap();
+
+        let state = task.state().unwrap();
+        assert_eq!(state.runner_identities["reviewer-1"], identity);
+        assert_eq!(identities(&task), 1, "no second identity is issued");
+        assert_ne!(state.runner_workspaces["reviewer-1"].snapshot, first);
+        assert!(replace_source(&task, "stranger", repo.path(), true).is_err());
     }
 
     #[test]

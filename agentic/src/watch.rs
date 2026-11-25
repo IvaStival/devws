@@ -903,6 +903,44 @@ mod tests {
     }
 
     #[test]
+    fn a_pass_restarts_a_refused_worker_whose_panel_went_on_its_next_account() {
+        // The pass holds the control lock: the restart it calls must not take
+        // it again, or the dispatcher waits on itself and the team stops.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let f = fixture();
+            let worker = f.spawn("executor");
+            f.task
+                .transaction(|tx| {
+                    tx.state.account_holds.insert(
+                        "claude".into(),
+                        crate::state::AccountHold {
+                            until: crate::log::now() + 60,
+                            reason: "provider startup error: insufficient_quota".into(),
+                        },
+                    );
+                    tx.state.restart_on_next_account.insert(worker.id.clone());
+                    Ok(())
+                })
+                .unwrap();
+            f.devws.set_state(&worker.pane, PaneState::Gone);
+            f.dispatcher().tick().unwrap();
+            let state = f.task.state().unwrap();
+            let restarted = state.agent(&worker.id).unwrap().clone();
+            sender
+                .send((restarted, worker.pane, state.restart_on_next_account))
+                .unwrap();
+        });
+        let (restarted, former_pane, pending) = receiver
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the dispatcher pass finished instead of waiting on its own lock");
+        assert_eq!(restarted.agent, "codex", "the held account is skipped");
+        assert!(restarted.live && !restarted.lost);
+        assert_ne!(restarted.pane, former_pane);
+        assert!(pending.is_empty());
+    }
+
+    #[test]
     fn startup_quota_retries_on_codex_and_preserves_queued_work_once() {
         let f = fixture();
         let agent = f.spawn("executor");

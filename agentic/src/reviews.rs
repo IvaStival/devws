@@ -344,11 +344,10 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
                 .any(|review| review.reviewer == reviewer && review.verdict.is_none()),
             "reviewer already has an immutable pending assignment"
         );
-        let identity = state
-            .runner_identities
-            .get(reviewer)
-            .cloned()
-            .context("reviewer identity missing")?;
+        ensure!(
+            state.runner_identities.contains_key(reviewer),
+            "reviewer identity missing"
+        );
         ensure!(
             !state.worker_turns.contains_key(reviewer),
             "reviewer is busy with another immutable assignment"
@@ -366,11 +365,7 @@ pub fn request(task: &Task, order_id: &str, reviewer: &str) -> Result<Review> {
                 &bound.review.candidate.commit,
             ],
         )?;
-        crate::runner::prepare(task, reviewer, &checkout, true)?;
-        task.transaction(|tx| {
-            tx.state.runner_identities.insert(reviewer.into(), identity);
-            Ok(())
-        })?;
+        crate::runner::replace_source(task, reviewer, &checkout, true)?;
     }
     task.transaction(|tx| {
         tx.state.next_id += 1;
