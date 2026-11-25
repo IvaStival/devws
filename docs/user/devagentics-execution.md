@@ -79,8 +79,14 @@ The leader's own two-program handover remains unchanged.
 
 Each worker's source snapshot is recorded with a hash of every file, and
 every read of the task state parses them all. When a candidate check or
-preflight ends, or an agent is stopped, its record and its `source-*`
-snapshots are removed; its `control/` folder stays. Agents that are live,
+preflight ends, or an agent is stopped, its record, its `source-*`
+snapshots and its `scratch/` folder are removed; its `control/` folder stays.
+
+A read-only agent (a planner, a reviewer) has a writable `/scratch` in its
+container (`workers/<agent>/scratch/`), kept across the commands of one order
+and emptied for the next. Each command runs in a fresh container whose `/tmp`
+goes with it, so this is where it builds a prototype to prove a plan. Its
+source stays read-only and it still has no network. Agents that are live,
 lost, unavailable or waiting to restart on another account keep theirs.
 
 A dispatcher prunes a task from before this when it starts, and says so in

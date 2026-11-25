@@ -670,7 +670,27 @@ pub fn prune_at_start(task: &Task) -> Result<()> {
     })
 }
 
+/// Removes a worker's source snapshots (every generation) and its scratch
+/// folder; the rest of its folder stays.
 fn remove_snapshots(directory: &Path) -> Result<()> {
+    let entries = match fs::read_dir(directory) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        entries => entries?,
+    };
+    for entry in entries {
+        let path = entry?.path();
+        let removable = path.file_name().is_some_and(|name| {
+            let name = name.to_string_lossy();
+            name.starts_with("source-") || name == SCRATCH
+        });
+        if removable {
+            remove_tree(&path)?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_tree(path: &Path) -> Result<()> {
     fn writable(path: &Path) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         let metadata = fs::symlink_metadata(path)?;
@@ -683,21 +703,44 @@ fn remove_snapshots(directory: &Path) -> Result<()> {
         }
         Ok(())
     }
-    let entries = match fs::read_dir(directory) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        entries => entries?,
-    };
-    for entry in entries {
-        let path = entry?.path();
-        let is_snapshot = path
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy().starts_with("source-"));
-        if !is_snapshot {
-            continue;
-        }
-        writable(&path).with_context(|| format!("opening {}", path.display()))?;
-        fs::remove_dir_all(&path).with_context(|| format!("removing {}", path.display()))?;
+    writable(path).with_context(|| format!("opening {}", path.display()))?;
+    fs::remove_dir_all(path).with_context(|| format!("removing {}", path.display()))
+}
+
+const SCRATCH: &str = "scratch";
+
+/// A read-only worker's own writable folder, kept across its commands: each
+/// command runs in a fresh container whose /tmp goes with it, so a planner
+/// proving its plan in a prototype had to rebuild the prototype every time.
+/// Its source stays read-only and it still has no network. None for a
+/// writer, which writes its own snapshot.
+fn scratch_for(task: &Task, agent: &str) -> Result<Option<PathBuf>> {
+    let readonly = task
+        .state()?
+        .runner_workspaces
+        .get(agent)
+        .context("worker source missing")?
+        .readonly;
+    if !readonly {
+        return Ok(None);
     }
+    let folder = task.dir().join("workers").join(agent).join(SCRATCH);
+    fs::create_dir_all(&folder)?;
+    Ok(Some(folder))
+}
+
+fn mount_scratch(arguments: &mut Vec<String>, folder: &Path) -> Result<()> {
+    let folder = folder.canonicalize()?;
+    let path = folder.to_str().context("invalid scratch path")?;
+    ensure!(!path.contains(','), "invalid Docker scratch mount");
+    arguments.splice(
+        2..2,
+        [
+            "--mount".into(),
+            format!("type=bind,src={path},dst=/scratch"),
+            "--env=DEVAGENTICS_SCRATCH=/scratch".into(),
+        ],
+    );
     Ok(())
 }
 
@@ -833,6 +876,12 @@ pub fn bind_order(task: &Task, agent: &str, order: &str) -> Result<()> {
     // A new source generation discards stale tool context without deleting
     // old artifacts, and keeps the identity the worker's panel checks.
     replace_source(task, agent, &source, readonly)?;
+    // Each order starts with an empty scratch folder: the last one's
+    // prototype was built on a source that is gone.
+    let scratch = task.dir().join("workers").join(agent).join(SCRATCH);
+    if scratch.exists() {
+        remove_tree(&scratch)?;
+    }
     task.transaction(|tx| {
         let revision = tx.state.revision(order);
         let workspace = tx
@@ -1282,7 +1331,7 @@ pub(crate) fn run_container_artifacts(
     command: &str,
     artifacts: Option<&Path>,
 ) -> Result<Output> {
-    Ok(run_container_capture(config, source, readonly, command, artifacts, None)?.0)
+    Ok(run_container_capture(config, source, readonly, command, artifacts, None, None)?.0)
 }
 
 /// The containers this host runs at once at `config`'s caps: as many as its
@@ -1365,11 +1414,15 @@ fn run_container_capture(
     readonly: bool,
     command: &str,
     artifacts: Option<&Path>,
+    scratch: Option<&Path>,
     capture: Option<(fs::File, fs::File)>,
 ) -> Result<(Output, Option<[bool; 2]>)> {
     ensure!(command.len() <= 64 * 1024, "command too large");
     let name = format!("devagentics-{}", &token()?[..20]);
     let mut arguments = docker_arguments(config, source, readonly, &name, command)?;
+    if let Some(folder) = scratch {
+        mount_scratch(&mut arguments, folder)?;
+    }
     if let Some(artifacts) = artifacts {
         let artifacts = artifacts.canonicalize()?;
         let path = artifacts.to_str().context("invalid isolated result path")?;
@@ -1460,12 +1513,14 @@ fn execute_capture(
         .as_ref()
         .context("runner missing")?
         .for_lane(container_lane(&state, agent).as_deref());
+    let scratch = scratch_for(task, agent)?;
     run_container_capture(
         &config,
         &workspace.snapshot,
         workspace.readonly,
         command,
         None,
+        scratch.as_deref(),
         capture,
     )
 }
@@ -2362,6 +2417,56 @@ pub mod tests {
             .collect();
         assert_eq!(kept, ["hammer-1", "hammer-2", "hammer-3", "hammer-5"]);
         assert!(prune(&task).unwrap().is_empty(), "nothing left to prune");
+    }
+
+    #[test]
+    fn a_read_only_worker_keeps_a_scratch_folder_across_its_commands() {
+        // Each command runs in a fresh container whose /tmp goes with it: a
+        // planner proving its plan rebuilt its prototype copy every command.
+        let directory = tempfile::TempDir::new().unwrap();
+        let (task, repo) = with_runner(&directory);
+        prepare(&task, "planner-1", repo.path(), true).unwrap();
+        prepare(&task, "hammer-1", repo.path(), false).unwrap();
+
+        let folder = scratch_for(&task, "planner-1").unwrap().unwrap();
+        assert!(folder.is_dir());
+        assert!(
+            scratch_for(&task, "hammer-1").unwrap().is_none(),
+            "a writer writes its own snapshot"
+        );
+
+        let mut arguments = vec!["run".to_string(), "--rm".into(), "image".into()];
+        mount_scratch(&mut arguments, &folder).unwrap();
+        let mount = format!(
+            "type=bind,src={},dst=/scratch",
+            folder.canonicalize().unwrap().display()
+        );
+        assert_eq!(
+            arguments,
+            [
+                "run".to_string(),
+                "--rm".into(),
+                "--mount".into(),
+                mount,
+                "--env=DEVAGENTICS_SCRATCH=/scratch".into(),
+                "image".into()
+            ]
+        );
+
+        fs::write(folder.join("prototype.txt"), "kept").unwrap();
+        bind_order(&task, "planner-1", "o1").unwrap();
+        assert!(
+            !folder.join("prototype.txt").exists(),
+            "a new order starts with an empty folder"
+        );
+        // The order's first command makes it again.
+        assert_eq!(
+            scratch_for(&task, "planner-1").unwrap(),
+            Some(folder.clone())
+        );
+        fs::write(folder.join("prototype.txt"), "kept").unwrap();
+        forget(&task, "planner-1").unwrap();
+        assert!(!folder.exists(), "a forgotten worker's folder goes");
     }
 
     #[test]
