@@ -872,6 +872,9 @@ mod tests {
         assert!(reviewer.contains("every regime"));
         assert!(LEADER.contains("Fix a finding whole, in one round"));
         assert!(LEADER.contains("order a planner step that lists every guarantee"));
+        // A proven plan implements the item twice: only where it pays.
+        assert!(LEADER.contains("prove its plan in a prototype (in its `/scratch`"));
+        assert!(LEADER.contains("a move, a rename or wiring needs"));
     }
 
     #[test]
