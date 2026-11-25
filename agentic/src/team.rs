@@ -850,7 +850,9 @@ impl Team<'_> {
             tx.state.queue.retain(|message| message.to != id);
             tx.log(Kind::Stop, Some(id), None, "stopped");
             Ok(())
-        })
+        })?;
+        // Nothing starts a stopped agent again: a new one gets its own source.
+        crate::runner::forget(self.task, id)
     }
 
     /// The user approves the plan: agents that write may start.
@@ -1297,6 +1299,25 @@ mod tests {
             self.team().approve().unwrap();
             self
         }
+    }
+
+    #[test]
+    fn a_stopped_agent_leaves_no_source_behind() {
+        let f = fixture();
+        let planner = f.team().spawn_agent("planner", None).unwrap();
+        f.task
+            .transaction(|tx| {
+                tx.state.runner = Some(crate::runner::tests::configuration());
+                Ok(())
+            })
+            .unwrap();
+        crate::runner::prepare(&f.task, &planner.id, f.repo.path(), true).unwrap();
+
+        f.team().stop_agent(&planner.id).unwrap();
+
+        let state = f.task.state().unwrap();
+        assert!(!state.runner_workspaces.contains_key(&planner.id));
+        assert!(!state.runner_identities.contains_key(&planner.id));
     }
 
     #[test]
