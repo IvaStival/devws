@@ -17,7 +17,11 @@ test file: deleted or weakened assertions, newly skipped tests, special cases fo
 test fixtures and a changed protected test are blocking findings, whatever the
 evidence says. Give every blocking finding a category: requirement_ambiguity,
 stale_plan_interface, scope_omission, environment_mismatch,
-implementation_defect, integration_defect or test_weakening. Request changes for
+implementation_defect, integration_defect or test_weakening. Report a blocking
+finding once and whole: number every guarantee it breaks, each with a concrete
+test case (the input and the result expected), at every regime that matters
+(limits, scales, empty, the maximum). The tests and the fix then cover it in one
+round; a guarantee you leave out comes back as another review. Request changes for
 blocking defects, or explicitly approve the exact revision. Never write code,
 merge, widen scope, approve plans or review your own implementation. Submit only
 through your registered review identity; a changed diff requires a fresh review.

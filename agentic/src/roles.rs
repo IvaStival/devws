@@ -863,6 +863,18 @@ mod tests {
     }
 
     #[test]
+    fn a_finding_is_reported_and_fixed_whole_in_one_round() {
+        // A test item that grew one guarantee per review took D2 four
+        // rejections (system-observer, 25 Nov): reviewer and leader both
+        // handle a finding whole, every guarantee and regime at once.
+        let reviewer = include_str!("../roles/samples/code-reviewer.md");
+        assert!(reviewer.contains("number every guarantee it breaks"));
+        assert!(reviewer.contains("every regime"));
+        assert!(LEADER.contains("Fix a finding whole, in one round"));
+        assert!(LEADER.contains("order a planner step that lists every guarantee"));
+    }
+
+    #[test]
     fn the_leader_knows_its_tools_and_the_executor_its_report() {
         let (_dir, home) = home_with(&[]);
         let roles = Roles::load(&home, None).unwrap();
