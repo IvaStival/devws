@@ -829,15 +829,11 @@ pub fn bind_order(task: &Task, agent: &str, order: &str) -> Result<()> {
         .context("worker has no isolated source")?;
     let source = worker.source.clone();
     let readonly = worker.readonly;
-    // A new source generation discards stale tool context without deleting old artifacts.
-    let identity = state
-        .runner_identities
-        .get(agent)
-        .cloned()
-        .context("worker identity missing")?;
-    prepare(task, agent, &source, readonly)?;
+    drop(state);
+    // A new source generation discards stale tool context without deleting
+    // old artifacts, and keeps the identity the worker's panel checks.
+    replace_source(task, agent, &source, readonly)?;
     task.transaction(|tx| {
-        tx.state.runner_identities.insert(agent.into(), identity);
         let revision = tx.state.revision(order);
         let workspace = tx
             .state
@@ -2369,6 +2365,36 @@ pub mod tests {
     }
 
     #[test]
+    fn binding_an_order_keeps_the_worker_identity_its_panel_checks() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let (task, repo) = with_runner(&directory);
+        let identity = prepare(&task, "hammer-1", repo.path(), false).unwrap();
+        let identities = || {
+            fs::read_dir(task.dir().join("workers/hammer-1"))
+                .unwrap()
+                .filter(|entry| {
+                    entry
+                        .as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("identity-")
+                })
+                .count()
+        };
+
+        bind_order(&task, "hammer-1", "o7").unwrap();
+
+        let state = task.state().unwrap();
+        assert_eq!(state.runner_identities["hammer-1"], identity);
+        assert_eq!(identities(), 1, "no second identity is issued");
+        assert_eq!(
+            state.runner_workspaces["hammer-1"].order.as_deref(),
+            Some("o7")
+        );
+    }
+
+    #[test]
     fn a_new_source_keeps_the_worker_identity_its_panel_checks() {
         let directory = tempfile::TempDir::new().unwrap();
         let (_home, _devws, task, repo) = crate::board::tests::started(&directory);
@@ -2794,6 +2820,7 @@ mod docker_tests {
         let order = crate::orders::send_order(
             &task,
             OrderRequest {
+                read_lane: None,
                 diagnosis: None,
                 read: Vec::new(),
                 targets: Vec::new(),

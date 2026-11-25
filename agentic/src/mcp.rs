@@ -181,6 +181,7 @@ fn tools() -> Vec<Value> {
                 "profiles": globs("Selected named check profiles; cannot mix with a legacy check"),
                 "check": text("The command that decides it is done; the repo's by default. `true` for an order that changes no files"),
                 "plan": text("For a factory-floor agent (required): the senior's step whose accepted execution plan this order follows"),
+                "read_lane": text("For a read-only agent (a planner): the lane whose work it reads for this order, unmerged work included; otherwise it reads the task branch"),
                 "spec": text("The plan part this step belongs to, as a release version: a new part takes task_status's next_version (1.3.0) and its steps are named 1.3.1, 1.3.2…; the board shows finished work by it. Give it on the first order of a step"),
                 "diagnosis": {
                     "type": "object",
@@ -940,6 +941,7 @@ impl Server<'_> {
                 let id = orders::send_order(
                     self.task,
                     OrderRequest {
+                        read_lane: optional_string(arguments, "read_lane"),
                         diagnosis: if arguments["diagnosis"].is_null() {
                             None
                         } else {
