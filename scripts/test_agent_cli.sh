@@ -233,6 +233,11 @@ test_state_follows_the_agent() {
   [ "$("$SCRIPTS/agent_cli.sh" state "$pane")" = waiting ] || fail "state did not follow waiting"
   "$SCRIPTS/agent_status.sh" state done "$pane"
   [ "$("$SCRIPTS/agent_cli.sh" state "$pane")" = done ] || fail "state did not follow done"
+  # Several panes at once (the board asks for every agent): a line each.
+  local other
+  other="$(create_workspace state-other)"
+  [ "$("$SCRIPTS/agent_cli.sh" state "$pane" "$other" %9999)" = $'done\nidle\ngone' ] ||
+    fail "the state of several panes: $("$SCRIPTS/agent_cli.sh" state "$pane" "$other" %9999)"
   tmux kill-pane -t "$pane"
   [ "$("$SCRIPTS/agent_cli.sh" state "$pane")" = gone ] || fail "a killed pane is not gone"
   [ "$(status_of "$SCRIPTS/agent_cli.sh" state notapane)" = 2 ] || fail "state accepted a name that is not a pane id"
@@ -406,6 +411,9 @@ test_usage_is_what_the_panes_conversation_used() {
     fail "a Codex conversation's usage: $("$SCRIPTS/agent_cli.sh" usage "$pane")"
 
   [ "$(status_of "$SCRIPTS/agent_cli.sh" usage %9999)" = 4 ] || fail "usage of a gone pane is not exit 4"
+  # Several panes at once (the board asks for every agent): a line each, - for one that is gone.
+  [ "$("$SCRIPTS/agent_cli.sh" usage "$pane" %9999 "$pane")" = $'6000 800 4000 0.04 0\n-\n6000 800 4000 0.04 0' ] ||
+    fail "usage of several panes: $("$SCRIPTS/agent_cli.sh" usage "$pane" %9999 "$pane")"
   [ "$(status_of "$SCRIPTS/agent_cli.sh" usage)" = 2 ] || fail "usage accepted no pane"
 }
 
@@ -422,6 +430,12 @@ test_limits_are_the_ones_the_header_shows() {
   printf '{"timestamp":"2026-11-03T12:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":10},"last_token_usage":{"input_tokens":5,"total_tokens":1},"model_context_window":258400},"rate_limits":{"primary":{"used_percent":37.6,"window_minutes":300,"resets_at":4102444800},"secondary":{"used_percent":12.2,"window_minutes":10080,"resets_at":4102444800}}}}\n' \
     > "$logs/rollout-limits.jsonl"
   [ "$("$SCRIPTS/agent_cli.sh" limits codex)" = "37 12" ] || fail "Codex limits are not its log's: $("$SCRIPTS/agent_cli.sh" limits codex)"
+  # Reading Codex's logs takes a second or two: a reading under a minute old
+  # is answered again, and an older one is read anew.
+  sed -i 's/"used_percent":37.6/"used_percent":50.1/' "$logs/rollout-limits.jsonl"
+  [ "$("$SCRIPTS/agent_cli.sh" limits codex)" = "37 12" ] || fail "a fresh Codex reading was read again: $("$SCRIPTS/agent_cli.sh" limits codex)"
+  tmux set-option -g @devws_limits_cache_codex "37 12 $(($(date +%s) - 61))"
+  [ "$("$SCRIPTS/agent_cli.sh" limits codex)" = "50 12" ] || fail "an old Codex reading was answered: $("$SCRIPTS/agent_cli.sh" limits codex)"
 
   [ "$(status_of "$SCRIPTS/agent_cli.sh" limits nobody)" = 1 ] || fail "limits accepted an unregistered agent"
   [ "$(status_of "$SCRIPTS/agent_cli.sh" limits)" = 2 ] || fail "limits accepted no agent"

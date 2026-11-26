@@ -4,8 +4,9 @@
 # A pane is named by its tmux id (%12). Their output and exit codes are stable;
 # docs/guide/commands.md lists them.
 #
-#   agent_cli.sh state <pane>             working, waiting, done or idle; gone
-#                                         when the pane no longer exists
+#   agent_cli.sh state <pane>...          working, waiting, done or idle; gone
+#                                         when the pane no longer exists; a
+#                                         line for each pane
 #   agent_cli.sh send [--force] <pane> <text>
 #                                         types the text (- reads it from
 #                                         stdin) as one message, then Enter,
@@ -19,9 +20,10 @@
 #                                         sets the agent's state as its hooks
 #                                         would: the sidebar and the
 #                                         notification react
-#   agent_cli.sh usage <pane>             what the agent used: "<input> <output>
+#   agent_cli.sh usage <pane>...          what the agent used: "<input> <output>
 #                                         <cache> <US$> <unpriced>" (tokens, API
-#                                         prices), - when not known yet
+#                                         prices), - when not known yet; a line
+#                                         for each pane
 #   agent_cli.sh spawn <session> <agent> [--beside <pane>] [--position right|left|below|above] [--agent-args <file>] [--label <text>] [--place team] [--group <name>] [--folder <dir>]
 #                                         adds an extra agent panel to the
 #                                         workspace and prints its pane id;
@@ -115,10 +117,17 @@ pane_state() {
   printf '%s\n' "${state:-idle}"
 }
 
+# Several panes give a line each: the board asks for every agent in one call,
+# as each `devws` start costs more than the answer.
 state() {
-  [ "$#" -eq 1 ] || usage_fail "usage: devws agent state <pane>"
-  require_pane "$1"
-  pane_state "$1"
+  local pane
+  [ "$#" -ge 1 ] || usage_fail "usage: devws agent state <pane>..."
+  for pane in "$@"; do
+    require_pane "$pane"
+  done
+  for pane in "$@"; do
+    pane_state "$pane"
+  done
 }
 
 # Whether the input box, the last prompt line (❯ for Claude Code, › for
@@ -293,12 +302,29 @@ default_models() {
   done < <(agent_names)
 }
 
+# A program read from its logs (Codex) takes a second or two: its reading is
+# kept a minute in @devws_limits_cache_<agent>, "<5-hour> <week> <when>". One
+# asked live (live_limits) keeps its own, and nothing unknown is kept.
+limits_cache_seconds=60
+
 limits() {
-  local value kind
+  local value kind cached five week at now
   [ "$#" -eq 1 ] || usage_fail "usage: devws agent limits <agent>"
   kind="$(agent_kind "$1" 2>/dev/null)" || fail "unknown agent: $1 (register it in the devws menu)"
+  now="$(date +%s)"
+  if ! agent_defines "$kind" live_limits; then
+    cached="$(tmux show-option -gqv "@devws_limits_cache_$1" 2>/dev/null)"
+    read -r five week at <<<"$cached"
+    if [ -n "${at:-}" ] && [ $((now - at)) -lt "$limits_cache_seconds" ]; then
+      printf '%s %s\n' "$five" "$week"
+      return
+    fi
+  fi
   # Asked live when the program's module can (live_limits).
   value="$(agent_hook "$kind" live_limits "$1")"
+  if [ -n "$value" ] && [ "$value" != "- -" ] && ! agent_defines "$kind" live_limits; then
+    tmux set-option -g "@devws_limits_cache_$1" "$value $now" 2>/dev/null || true
+  fi
   printf '%s\n' "${value:-- -}"
 }
 
@@ -320,14 +346,27 @@ models() {
 # What the pane's agent has used: "<input> <output> <cache> <US$> <unpriced>"
 # (tokens; dollars at API prices), "-" while it has not said which conversation
 # it is in.
+# Several panes give a line each, "-" for one that is gone.
 usage() {
-  local transcript value
-  [ "$#" -eq 1 ] || usage_fail "usage: devws agent usage <pane>"
-  require_pane "$1"
-  pane_exists "$1" || code=4 fail "$1 is gone"
-  transcript="$(tmux show-options -pqv -t "$1" @devws_transcript 2>/dev/null)"
-  value=""
-  [ -z "$transcript" ] || value="$("$script_dir/header_tokens.sh" usage "$transcript")"
+  local pane
+  [ "$#" -ge 1 ] || usage_fail "usage: devws agent usage <pane>..."
+  for pane in "$@"; do
+    require_pane "$pane"
+  done
+  if [ "$#" -eq 1 ]; then
+    pane_exists "$1" || code=4 fail "$1 is gone"
+  fi
+  for pane in "$@"; do
+    pane_usage "$pane"
+  done
+}
+
+pane_usage() {
+  local transcript value=""
+  if pane_exists "$1"; then
+    transcript="$(tmux show-options -pqv -t "$1" @devws_transcript 2>/dev/null)"
+    [ -z "$transcript" ] || value="$("$script_dir/header_tokens.sh" usage "$transcript")"
+  fi
   printf '%s\n' "${value:--}"
 }
 

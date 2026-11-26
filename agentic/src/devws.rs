@@ -146,6 +146,11 @@ pub trait Devws: Send + Sync {
     /// leader's handover): the pane keeps its place and role.
     fn restart_agent(&self, pane: &str, agent: &str, args_file: &Path) -> Result<()>;
     fn pane_state(&self, pane: &str) -> Result<PaneState>;
+    /// Several panes' states, in their order. The board asks for every
+    /// agent at once: devws does it in one call.
+    fn pane_states(&self, panes: &[String]) -> Result<Vec<PaneState>> {
+        panes.iter().map(|pane| self.pane_state(pane)).collect()
+    }
     /// Explicit provider rejection during the opening turn, never visible pane text.
     fn startup_failure(&self, pane: &str) -> Result<Option<crate::worker::StartupFailure>>;
     fn send(&self, pane: &str, text: &str) -> Result<Delivery>;
@@ -158,6 +163,25 @@ pub trait Devws: Send + Sync {
     /// Brings the agent under the board for a look; again, back to its group.
     fn peek(&self, pane: &str) -> Result<()>;
     fn limits(&self, agent: &str) -> Result<Limits>;
+    /// Several accounts' limits, in their order, asked at the same time:
+    /// one program's (Codex's logs) can take seconds, and the others need
+    /// not wait for it.
+    fn limits_of(&self, agents: &[String]) -> Result<Vec<Limits>> {
+        std::thread::scope(|scope| {
+            let asked: Vec<_> = agents
+                .iter()
+                .map(|agent| scope.spawn(move || self.limits(agent)))
+                .collect();
+            asked
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|_| bail!("reading limits failed"))
+                })
+                .collect()
+        })
+    }
     /// The credit of a prepaid account (opencode Zen); `None` when devws does
     /// not know it.
     fn credit(&self, agent: &str) -> Result<Option<Credit>>;
@@ -173,6 +197,10 @@ pub trait Devws: Send + Sync {
     /// What the pane's agent has used; `None` while devws does not know its
     /// conversation yet, or when the pane is gone.
     fn usage(&self, pane: &str) -> Result<Option<Usage>>;
+    /// Several panes' usage, in their order: one devws call.
+    fn usages(&self, panes: &[String]) -> Result<Vec<Option<Usage>>> {
+        panes.iter().map(|pane| self.usage(pane)).collect()
+    }
     /// The pane of a workspace with a devws role (`agent`, `team-log`…).
     fn pane_with_role(&self, session: &str, role: &str) -> Result<Option<String>>;
     /// devAgentics's own markers on a pane (`@devagentics_agent`).
@@ -348,6 +376,26 @@ impl Devws for CommandDevws {
         PaneState::parse(&self.devws(&["agent", "state", pane])?)
     }
 
+    fn pane_states(&self, panes: &[String]) -> Result<Vec<PaneState>> {
+        if panes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut arguments = vec!["agent", "state"];
+        arguments.extend(panes.iter().map(String::as_str));
+        // A devws from before several panes refuses them: one call each then.
+        let batch = self.devws(&arguments).ok().and_then(|text| {
+            text.lines()
+                .map(PaneState::parse)
+                .collect::<Result<Vec<_>>>()
+                .ok()
+                .filter(|states| states.len() == panes.len())
+        });
+        match batch {
+            Some(states) => Ok(states),
+            None => panes.iter().map(|pane| self.pane_state(pane)).collect(),
+        }
+    }
+
     fn startup_failure(&self, pane: &str) -> Result<Option<crate::worker::StartupFailure>> {
         let output = self.run(
             &self.tmux,
@@ -475,6 +523,23 @@ impl Devws for CommandDevws {
             .devws(&["agent", "usage", pane])
             .ok()
             .and_then(|text| Usage::parse(&text)))
+    }
+
+    fn usages(&self, panes: &[String]) -> Result<Vec<Option<Usage>>> {
+        if panes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut arguments = vec!["agent", "usage"];
+        arguments.extend(panes.iter().map(String::as_str));
+        let lines: Vec<Option<Usage>> = self
+            .devws(&arguments)
+            .map(|text| text.lines().map(Usage::parse).collect())
+            .unwrap_or_default();
+        // A devws from before several panes refuses them: one call each then.
+        if lines.len() == panes.len() {
+            return Ok(lines);
+        }
+        panes.iter().map(|pane| self.usage(pane)).collect()
     }
 
     fn pane_with_role(&self, session: &str, role: &str) -> Result<Option<String>> {
@@ -968,7 +1033,8 @@ case "$1 $2" in
   "worktree ensure") echo "/work/$3-$4" ;;
   "open --no-attach") echo "dev-$8" ;;
   "agent spawn") echo "%7" ;;
-  "agent state") case "$3" in %1) echo working ;; %2) echo gone ;; *) echo done ;; esac ;;
+  "agent state") shift 2; for pane in "$@"; do case "$pane" in %1) echo working ;; %2) echo gone ;; *) echo done ;; esac; done ;;
+  "agent usage") shift 2; for pane in "$@"; do case "$pane" in %7) echo "1200 300 4000 0.5 0" ;; *) echo - ;; esac; done ;;
   "agent send") cat >> "{log}.sent"; case "$3" in %1) echo "busy (working)" >&2; exit 3 ;; %2) exit 4 ;; esac ;;
   "agent limits") case "$3" in claude) echo "42 63" ;; *) echo "- -" ;; esac ;;
   "agent credit") case "$3" in opencode) echo "20.00 7.5" ;; esac ;;
@@ -1006,6 +1072,56 @@ esac
             .lines()
             .map(str::to_string)
             .collect()
+    }
+
+    // The board asks for every agent at once: one devws call each, as a
+    // devws start costs more than its answer.
+    #[test]
+    fn every_panes_state_and_usage_come_in_one_call() {
+        let dir = TempDir::new().unwrap();
+        let (devws, log) = command_devws(&dir);
+        let panes = |list: &[&str]| list.iter().map(|pane| pane.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            devws.pane_states(&panes(&["%1", "%2", "%3"])).unwrap(),
+            [PaneState::Working, PaneState::Gone, PaneState::Done]
+        );
+        let usages = devws.usages(&panes(&["%7", "%8"])).unwrap();
+        assert_eq!(usages[0].map(|usage| usage.input), Some(1200));
+        assert_eq!(usages[1], None);
+        assert_eq!(
+            calls(&log),
+            ["devws agent state %1 %2 %3", "devws agent usage %7 %8"]
+        );
+        assert!(devws.pane_states(&[]).unwrap().is_empty());
+        assert!(devws.usages(&[]).unwrap().is_empty());
+        assert_eq!(calls(&log).len(), 2, "nothing to ask, no call");
+
+        let limits = devws
+            .limits_of(&["claude".to_string(), "codex".to_string()])
+            .unwrap();
+        assert_eq!((limits[0].five_hour, limits[0].week), (Some(42), Some(63)));
+        assert_eq!((limits[1].five_hour, limits[1].week), (None, None));
+
+        // A devws that knows one pane only: one call each.
+        write_script(
+            &dir.path().join("devws"),
+            &format!(
+                "#!/bin/sh\necho \"devws $*\" >> \"{}\"\n[ \"$#\" -eq 3 ] || exit 2\ncase \"$3\" in %1) echo working ;; *) echo idle ;; esac\n",
+                log.display()
+            ),
+        );
+        assert_eq!(
+            devws.pane_states(&panes(&["%1", "%5"])).unwrap(),
+            [PaneState::Working, PaneState::Idle]
+        );
+        assert_eq!(
+            &calls(&log)[4..],
+            [
+                "devws agent state %1 %5",
+                "devws agent state %1",
+                "devws agent state %5"
+            ]
+        );
     }
 
     #[test]

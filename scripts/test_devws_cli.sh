@@ -146,6 +146,13 @@ test_open_refuses_what_it_cannot_do() {
 test_agent_commands_are_reached_through_devws() {
   [ "$("$DEVWS" agent state %999)" = gone ] || fail "devws agent state did not reach agent_cli.sh"
   [ "$(status_of "$DEVWS" agent bogus)" = 2 ] || fail "devws agent accepted an unknown command"
+  # Programs call `devws agent` many times a second: it goes straight to
+  # agent_cli.sh, without linking the scripts again, as every other command does.
+  rm "$HOME/.tmuxinator/network.sh"
+  [ "$("$DEVWS" agent state %999)" = gone ] || fail "devws agent state failed without linking"
+  [ ! -e "$HOME/.tmuxinator/network.sh" ] || fail "devws agent linked the scripts again"
+  "$DEVWS" worktree ensure </dev/null >/dev/null 2>&1 || true
+  [ -L "$HOME/.tmuxinator/network.sh" ] || fail "another devws command did not link the scripts"
 }
 
 test_worktree_ensure_makes_a_worktree_and_opens_nothing() {

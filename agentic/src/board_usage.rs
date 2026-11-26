@@ -32,15 +32,26 @@ impl UsageReader {
         }
     }
 
-    fn read(&mut self, devws: &dyn Devws, name: &str, pane: &str) -> Result<Option<Usage>> {
-        if let Some((at, usage)) = self.seen.get(name)
-            && at.elapsed() < self.every
-        {
-            return Ok(*usage);
+    /// Reads again, in one devws call, every (name, pane) whose reading is
+    /// older than `every`.
+    fn refresh(&mut self, devws: &dyn Devws, wanted: &[(String, String)]) -> Result<()> {
+        let stale: Vec<&(String, String)> = wanted
+            .iter()
+            .filter(|(name, _)| {
+                self.seen
+                    .get(name)
+                    .is_none_or(|(at, _)| at.elapsed() >= self.every)
+            })
+            .collect();
+        let panes: Vec<String> = stale.iter().map(|(_, pane)| pane.clone()).collect();
+        for ((name, _), usage) in stale.into_iter().zip(devws.usages(&panes)?) {
+            self.seen.insert(name.clone(), (Instant::now(), usage));
         }
-        let usage = devws.usage(pane)?;
-        self.seen.insert(name.to_string(), (Instant::now(), usage));
-        Ok(usage)
+        Ok(())
+    }
+
+    fn read(&self, name: &str) -> Option<Usage> {
+        self.seen.get(name).and_then(|(_, usage)| *usage)
     }
 
     /// What the team used: the leader and each agent on its own, and the
@@ -51,15 +62,28 @@ impl UsageReader {
         let config = task.config()?;
         let state = task.state()?;
         let mut usages = TeamUsage::default();
-        if let Some(pane) = devws.pane_with_role(&config.workspace, "agent")?
-            && let Some(usage) = self.read(devws, LEADER_NAME, &pane)?
+        let leader = devws.pane_with_role(&config.workspace, "agent")?;
+        let mut wanted: Vec<(String, String)> = leader
+            .iter()
+            .map(|pane| (LEADER_NAME.to_string(), pane.clone()))
+            .collect();
+        wanted.extend(
+            state
+                .agents
+                .iter()
+                .filter(|agent| agent.live && !agent.lost)
+                .map(|agent| (agent.id.clone(), agent.pane.clone())),
+        );
+        self.refresh(devws, &wanted)?;
+        if leader.is_some()
+            && let Some(usage) = self.read(LEADER_NAME)
         {
             usages.by_role.push((LEADER_NAME.to_string(), usage));
             usages.by_agent.insert(LEADER_NAME.to_string(), usage);
         }
         for agent in &state.agents {
             let usage = if agent.live && !agent.lost {
-                self.read(devws, &agent.id, &agent.pane)?
+                self.read(&agent.id)
             } else {
                 agent.usage
             };
