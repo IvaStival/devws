@@ -55,22 +55,38 @@ pub fn held(state: &State, now: u64) -> impl Iterator<Item = &str> {
         .map(|(account, _)| account.as_str())
 }
 
-fn registered(devws: &dyn Devws, account: &str) -> Result<Vec<String>> {
-    let registered: Vec<String> = devws
+#[cfg(test)]
+fn registered(devws: &dyn Devws) -> Result<Vec<String>> {
+    Ok(devws
         .accounts()?
         .into_iter()
         .map(|(name, _)| name)
-        .collect();
+        .collect())
+}
+
+fn ensure_registered(registered: &[String], account: &str) -> Result<()> {
     if !registered.iter().any(|name| name == account) {
         bail!("there is no account {account} in devws");
     }
-    Ok(registered)
+    Ok(())
 }
 
 /// The user turns `account` on or off for this task. The last account that
 /// is on stays on: a team with none could not start anyone.
+#[cfg(test)]
 pub fn set_enabled(task: &Task, devws: &dyn Devws, account: &str, on: bool) -> Result<()> {
-    let registered = registered(devws, account)?;
+    set_enabled_among(task, &registered(devws)?, account, on)
+}
+
+/// `set_enabled` among the `registered` accounts the caller has already:
+/// the board, which a devws call per press made slow.
+pub fn set_enabled_among(
+    task: &Task,
+    registered: &[String],
+    account: &str,
+    on: bool,
+) -> Result<()> {
+    ensure_registered(registered, account)?;
     task.transaction(|tx| {
         if on == is_enabled(&tx.state, account) {
             return Ok(());
@@ -101,9 +117,21 @@ pub fn set_enabled(task: &Task, devws: &dyn Devws, account: &str, on: bool) -> R
 
 /// The user turns `account` on or off for one worker group of this task. The
 /// group keeps at least one account that is on for it.
+#[cfg(test)]
 pub fn set_group_enabled(
     task: &Task,
     devws: &dyn Devws,
+    account: &str,
+    group: Group,
+    on: bool,
+) -> Result<()> {
+    set_group_enabled_among(task, &registered(devws)?, account, group, on)
+}
+
+/// `set_group_enabled` among the `registered` accounts the caller has.
+pub fn set_group_enabled_among(
+    task: &Task,
+    registered: &[String],
     account: &str,
     group: Group,
     on: bool,
@@ -113,7 +141,7 @@ pub fn set_group_enabled(
         "the {} follows the global account switches only",
         group.label()
     );
-    let registered = registered(devws, account)?;
+    ensure_registered(registered, account)?;
     let name = group.name();
     task.transaction(|tx| {
         if on == is_group_switch_on(&tx.state, account, group) {

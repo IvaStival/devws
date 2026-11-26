@@ -297,10 +297,10 @@ case "$1 $2" in
   "agent kind") case "$3" in codex) echo codex ;; *) echo claude ;; esac ;;
   "agent accounts") printf 'claude claude\ncodex codex\n' ;;
   "agent spawn") n=$(cat "$DIR/pane.counter" 2>/dev/null || echo 6); n=$((n+1)); echo $n > "$DIR/pane.counter"; echo "%$n" ;;
-  "agent state") cat "$DIR/state/$3" 2>/dev/null || echo idle ;;
+  "agent state") shift 2; for pane in "$@"; do cat "$DIR/state/$pane" 2>/dev/null || echo idle; done ;;
   "agent send") cat >> "$DIR/sent/$3"; echo >> "$DIR/sent/$3" ;;
   "agent limits") if [ -f "$DIR/limits/$3" ]; then cat "$DIR/limits/$3"; else echo "- -"; fi ;;
-  "agent usage") [ "$3" = "%7" ] && echo "1200 300 4000 0.5 0" || echo - ;;
+  "agent usage") shift 2; for pane in "$@"; do [ "$pane" = "%7" ] && echo "1200 300 4000 0.5 0" || echo -; done ;;
   "agent interrupt") echo done > "$DIR/state/$3" ;;
   "agent mark"|"agent stop") ;;
   *) echo "unexpected: $*" >&2; exit 2 ;;

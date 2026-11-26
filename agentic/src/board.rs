@@ -9,7 +9,7 @@ use crate::roles::{Group, Role, Roles};
 use crate::state::LEADER;
 use crate::state::{Effect, LeaderWait, PermissionStatus, Step, StepStatus};
 use crate::task::Task;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A running preview in one line: its addresses and the time it has left.
@@ -399,11 +399,19 @@ impl Board {
             })
             .collect();
         let mut working = 0;
+        // Every agent's pane in one devws call.
+        let asked: Vec<String> = state
+            .agents
+            .iter()
+            .filter(|agent| agent.live && !agent.lost)
+            .map(|agent| agent.pane.clone())
+            .collect();
+        let mut pane_states = devws.pane_states(&asked)?.into_iter();
         for agent in state.agents.iter().filter(|agent| agent.live) {
             let pane_state = if agent.lost {
                 PaneState::Gone
             } else {
-                devws.pane_state(&agent.pane)?
+                pane_states.next().context("a pane's state is missing")?
             };
             if pane_state == PaneState::Working {
                 working += 1;
@@ -494,11 +502,22 @@ impl Board {
             .leader_agent
             .clone()
             .or_else(|| roles.get("leader").map(|role| role.agent.clone()));
-        let mut limits = std::collections::BTreeMap::new();
+        let registered = devws.accounts()?;
+        // Every account's limits at once: Codex's alone can take seconds.
+        let mut names: Vec<String> = accounts.iter().cloned().collect();
+        for (name, _) in &registered {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
+        let limits: std::collections::BTreeMap<String, crate::devws::Limits> = names
+            .iter()
+            .cloned()
+            .zip(devws.limits_of(&names)?)
+            .collect();
         let mut account_rows = Vec::new();
         for name in accounts {
-            let used = devws.limits(&name)?;
-            limits.insert(name.clone(), used);
+            let used = limits[&name];
             // Informational, as usage: an unreadable credit never stops the board.
             let credit = devws.credit(&name).ok().flatten();
             account_rows.push(Account {
@@ -509,11 +528,8 @@ impl Board {
             });
         }
         let mut switches = Vec::new();
-        for (name, kind) in devws.accounts()? {
-            let used = match limits.get(&name) {
-                Some(used) => *used,
-                None => devws.limits(&name)?,
-            };
+        for (name, kind) in registered {
+            let used = limits[&name];
             switches.push(AccountSwitch {
                 enabled: crate::accounts::is_enabled(&state, &name),
                 leader_on: leader_account.as_deref() == Some(name.as_str()),

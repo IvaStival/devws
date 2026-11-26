@@ -994,51 +994,18 @@ fn screen_loop(
                                 None => Ok(()),
                             }
                         }),
-                    Action::ToggleAccount(account) => {
-                        let enabled = board
-                            .switches
-                            .iter()
-                            .any(|switch| switch.name == account && switch.enabled);
-                        crate::accounts::set_enabled(task, devws, &account, !enabled).map(|()| {
-                            // Shown at once: the reload asks every account for its
-                            // limits, and a switch that lags gets pressed twice.
-                            if let Some(switch) = board
-                                .switches
-                                .iter_mut()
-                                .find(|switch| switch.name == account)
-                            {
-                                switch.enabled = !enabled;
-                            }
+                    Action::ToggleAccount(account) => toggle_account(task, &mut board, &account)
+                        .map(|()| {
+                            entries_dirty = true;
+                            loader.refresh();
+                            refreshed = Instant::now() - REFRESH;
+                        }),
+                    Action::ToggleGroupAccount(group, account) => {
+                        toggle_group_account(task, &mut board, group, &account).map(|()| {
+                            entries_dirty = true;
                             loader.refresh();
                             refreshed = Instant::now() - REFRESH;
                         })
-                    }
-                    Action::ToggleGroupAccount(group, account) => {
-                        let on = !board.switches.iter().any(|switch| {
-                            switch.name == account
-                                && match group {
-                                    Group::Senior => switch.senior,
-                                    _ => switch.floor,
-                                }
-                        });
-                        crate::accounts::set_group_enabled(task, devws, &account, group, on).map(
-                            |()| {
-                                // Shown at once, as the global switch.
-                                if let Some(switch) = board
-                                    .switches
-                                    .iter_mut()
-                                    .find(|switch| switch.name == account)
-                                {
-                                    match group {
-                                        Group::Senior => switch.senior = on,
-                                        _ => switch.floor = on,
-                                    }
-                                }
-                                entries_dirty = true;
-                                loader.refresh();
-                                refreshed = Instant::now() - REFRESH;
-                            },
-                        )
                     }
                     Action::ChooseModel(group, account) => devws.agent_kind(&account).map(|kind| {
                         ui.picker = Some(model_picker(&board, devws, group, &account, kind));
@@ -1190,9 +1157,106 @@ fn pane_of(board: &Board, digit: char) -> Option<String> {
         .map(|agent| agent.pane.clone())
 }
 
+/// The accounts the board shows: a press asks devws nothing.
+fn shown_accounts(board: &Board) -> Vec<String> {
+    board
+        .switches
+        .iter()
+        .map(|switch| switch.name.clone())
+        .collect()
+}
+
+/// Space on a global switch: the task's state, and the board at once. The
+/// reload after it asks every account for its limits; a switch that waited
+/// for it got pressed twice.
+fn toggle_account(task: &Task, board: &mut Board, account: &str) -> Result<()> {
+    let enabled = board
+        .switches
+        .iter()
+        .any(|switch| switch.name == account && switch.enabled);
+    crate::accounts::set_enabled_among(task, &shown_accounts(board), account, !enabled)?;
+    if let Some(switch) = board
+        .switches
+        .iter_mut()
+        .find(|switch| switch.name == account)
+    {
+        switch.enabled = !enabled;
+    }
+    Ok(())
+}
+
+/// Space on a group's switch, shown at once as the global one.
+fn toggle_group_account(task: &Task, board: &mut Board, group: Group, account: &str) -> Result<()> {
+    let on = !board.switches.iter().any(|switch| {
+        switch.name == account
+            && match group {
+                Group::Senior => switch.senior,
+                _ => switch.floor,
+            }
+    });
+    crate::accounts::set_group_enabled_among(task, &shown_accounts(board), account, group, on)?;
+    if let Some(switch) = board
+        .switches
+        .iter_mut()
+        .find(|switch| switch.name == account)
+    {
+        match group {
+            Group::Senior => switch.senior = on,
+            _ => switch.floor = on,
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A press shows at once, from the board's own accounts: before, the global
+    // switch waited for a reload that asks every account for its limits.
+    #[test]
+    fn a_switch_shows_its_new_state_at_once_without_asking_devws() {
+        use crate::board::AccountSwitch;
+        let dir = tempfile::TempDir::new().unwrap();
+        let (_home, devws, task, _repo) = crate::board::tests::started(&dir);
+        let switch = |name: &str| AccountSwitch {
+            name: name.into(),
+            enabled: true,
+            five_hour: None,
+            week: None,
+            leader_on: false,
+            senior: true,
+            floor: true,
+            kind: crate::providers::Kind::Claude,
+        };
+        let mut board = crate::board_view::tests::board();
+        board.switches = vec![switch("claude"), switch("codex")];
+        let asked = devws.calls().len();
+
+        toggle_group_account(&task, &mut board, Group::Floor, "claude").unwrap();
+        assert!(!board.switches[0].floor);
+        assert!(!crate::accounts::is_group_switch_on(
+            &task.state().unwrap(),
+            "claude",
+            Group::Floor
+        ));
+        toggle_account(&task, &mut board, "codex").unwrap();
+        assert!(!board.switches[1].enabled, "the board shows it off at once");
+        assert!(!crate::accounts::is_enabled(
+            &task.state().unwrap(),
+            "codex"
+        ));
+        assert_eq!(devws.calls().len(), asked, "a press asks devws nothing");
+
+        let error = toggle_account(&task, &mut board, "claude")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("last account that is on"), "{error}");
+        assert!(
+            board.switches[0].enabled,
+            "a refused press leaves the board as it was"
+        );
+    }
 
     #[test]
     fn help_is_a_dialog_over_the_real_board_and_closes_without_moving_selection() {
