@@ -103,7 +103,8 @@ repos get their own worktrees the same way, as the leader opens them.
   locked-down worker adapter yet.
 - **The board** beside it opens on **Overview**, under a header with the
   progress bar and each account's limit bars. Each part is a card: what needs
-  you, the CTO (the leader first), the seniors, the floor, the queue, the usage
+  you, what is being built (BUILDING: the part of the plan in progress and its
+  items still to do, in plain words), the CTO (the leader first), the seniors, the floor, the queue, the usage
   (each agent's tokens and cost, then the team's total) and the steps done,
   newest first. Only the Done card scrolls, with its own scrollbar; the others
   stay put. Muted blue frames match the devws menu; green marks successful

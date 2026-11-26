@@ -372,6 +372,66 @@ fn item_state(status: Option<StepStatus>, agent: Option<&str>) -> String {
     }
 }
 
+/// An item's row, and under it what serves it now (its plan, the agent on
+/// it) and, until it is done, its tests.
+fn item_rows(
+    part: &crate::board_plan::PlanPart,
+    item: &crate::board_plan::PlanItem,
+    width: usize,
+) -> Vec<Entry> {
+    let mut rows = vec![plan_item_entry(part, item, width)];
+    for helper in &item.helpers {
+        let who = helper
+            .agent
+            .as_deref()
+            .map_or_else(String::new, |agent| format!(" · {agent}"));
+        rows.push(Entry::note(
+            &format!("{}:{}", item.id, helper.step),
+            &format!("   now: {}{who}", helper.step),
+        ));
+    }
+    if let Some(tests) = &item.tests
+        && !item.is_done()
+    {
+        rows.push(Entry::note(
+            &format!("{}:{}", item.id, tests.id),
+            &format!(
+                "   tests first: {} · {}",
+                tests.id,
+                item_state(tests.status, tests.agent.as_deref())
+            ),
+        ));
+    }
+    rows
+}
+
+/// The overview's BUILDING card: the first part of the plan not done yet,
+/// with its items still to do, so the overview says what the team builds.
+fn building_entries(board: &Board) -> Vec<Entry> {
+    let Some(part) = board
+        .plan
+        .iter()
+        .find(|part| part.items.iter().any(|item| !item.is_done()))
+    else {
+        return Vec::new();
+    };
+    let (done, total) = part.progress();
+    let width = part
+        .items
+        .iter()
+        .filter(|item| !item.is_done())
+        .map(|item| item.id.chars().count())
+        .max()
+        .unwrap_or(0);
+    // The progress before the title: a narrow board cuts the title's end.
+    let title = format!("BUILDING · {} {done}/{total} · {}", part.id, part.title);
+    let mut entries = vec![Entry::section(&title, None)];
+    for item in part.items.iter().filter(|item| !item.is_done()) {
+        entries.extend(item_rows(part, item, width));
+    }
+    entries
+}
+
 /// The PLAN view: each part with its progress, each of its items in plain
 /// words, and under an item what serves it now: its plan, its tests.
 fn plan_entries(board: &Board) -> Vec<Entry> {
@@ -399,29 +459,7 @@ fn plan_entries(board: &Board) -> Vec<Entry> {
             .label
             .push_str(&format!("  {done}/{total}"));
         for item in &part.items {
-            entries.push(plan_item_entry(part, item, width));
-            for helper in &item.helpers {
-                let who = helper
-                    .agent
-                    .as_deref()
-                    .map_or_else(String::new, |agent| format!(" · {agent}"));
-                entries.push(Entry::note(
-                    &format!("{}:{}", item.id, helper.step),
-                    &format!("   now: {}{who}", helper.step),
-                ));
-            }
-            if let Some(tests) = &item.tests
-                && !item.is_done()
-            {
-                entries.push(Entry::note(
-                    &format!("{}:{}", item.id, tests.id),
-                    &format!(
-                        "   tests first: {} · {}",
-                        tests.id,
-                        item_state(tests.status, tests.agent.as_deref())
-                    ),
-                ));
-            }
+            entries.extend(item_rows(part, item, width));
         }
     }
     entries
@@ -1031,6 +1069,7 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
         entries.push(Entry::section("NEEDS YOU", Some(needs_you.len())));
         entries.append(&mut needs_you);
     }
+    entries.extend(building_entries(board));
     if let Some(preview) = &board.preview {
         entries.push(Entry::section("PREVIEW", None));
         entries.push(Entry::text(
@@ -1810,7 +1849,14 @@ fn header(
     }
     rows.push(Line::from(first));
 
-    let tabs: Vec<Span> = if width >= 65 {
+    // Every view's name when they fit: the narrow board beside the leader
+    // hid them, so the views past the first went unseen.
+    let names: usize = View::ALL
+        .iter()
+        .map(|view| view.name().chars().count() + 2)
+        .sum::<usize>()
+        + 2;
+    let tabs: Vec<Span> = if width >= names {
         View::ALL
             .iter()
             .flat_map(|view| {
