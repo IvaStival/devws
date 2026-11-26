@@ -622,6 +622,15 @@ mod tests {
                 && error.contains("frontend/** and frontend/team/**"),
             "{error}"
         );
+        // A step's unmerged work is in its seat's worktree: another seat
+        // starts from the task's branch, without it.
+        let error = order(&two.id, "s1", &["frontend/team/**"])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("s1's work is in seat 1 of the lane front (executor-1"),
+            "{error}"
+        );
         order(&two.id, "s2", &["frontend/history/**"]).unwrap();
         let second_order = task
             .state()

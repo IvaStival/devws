@@ -212,10 +212,22 @@ overall_mood() {
   printf 'idle'
 }
 
-# Every second, in the background: the rows of every attached workspace, and
-# the list of them with the agents' overall mood, which the ghost reads.
+# Removes a session's own rows, so it shows the global ones again.
+unset_rows() {
+  local index
+  for index in 1 2 3; do
+    frame+=(set-option -u -t "$1" "@devws_header_row_$index" \;)
+  done
+}
+
+# Every second, in the background: the rows, laid out once into the global
+# rows every workspace shows, and the list of attached workspaces with the
+# agents' overall mood, which the ghost reads. Only a workspace whose client
+# is another width gets rows of its own, laid out at that width; a copy per
+# workspace went stale in every one not looked at, and showed when switched
+# to.
 lay_out() {
-  local session width mood first_width="" drawn=" " clients="" checksum
+  local session width mood first_width="" drawn=" " own=" " clients="" checksum
   capture_rows clock_rows "$scripts_dir/header_clock.sh"
   capture_rows system_rows source_rows system 3
   capture_rows agent_rows source_rows agents 3
@@ -230,11 +242,23 @@ lay_out() {
     case "$drawn" in *" $session "*) continue ;; esac
     drawn+="$session "
     clients+="$session|$mood|$width"$'\n'
-    add_rows -t "$session" "$width"
+    if [ "$width" != "$first_width" ]; then
+      add_rows -t "$session" "$width"
+      own+="$session "
+    fi
   done < <(tmux list-clients -F '#{session_id}|#{client_width}')
   printf '%s' "$clients" > "$state_dir/clients.new" && mv "$state_dir/clients.new" "$state_dir/clients"
   [ -n "$first_width" ] || return 0
   add_rows -g "" "$first_width"
+  # Rows of its own that no longer apply go. Only a session that still
+  # exists: tmux refuses the whole call over one that is gone.
+  local existing
+  existing=" $(tmux list-sessions -F '#{session_id}' 2>/dev/null | tr '\n' ' ') "
+  for session in $(cat "$state_dir/own_rows" 2>/dev/null); do
+    case "$own" in *" $session "*) continue ;; esac
+    case "$existing" in *" $session "*) unset_rows "$session" ;; esac
+  done
+  printf '%s\n' $own > "$state_dir/own_rows"
   frame+=(set-option -g @devws_jobs_summary "$jobs_summary" \;)
   # Rows the same as those last sent are not sent again: tmux would redraw the
   # status lines for nothing. The data changes every few seconds at most.
@@ -317,7 +341,14 @@ run() {
   load_settings
   [ "$show_pet" = 1 ] && load_ghost
   # A new ticker sends everything once: a restarted tmux server has no rows.
-  rm -f "$state_dir/rows.sent"
+  # Rows a session kept from an older ticker go, so every workspace shows
+  # the global ones until it needs its own.
+  rm -f "$state_dir/rows.sent" "$state_dir/own_rows"
+  frame=()
+  while IFS= read -r session; do
+    unset_rows "$session"
+  done < <(tmux list-sessions -F '#{session_id}' 2>/dev/null)
+  [ "${#frame[@]}" -eq 0 ] || tmux "${frame[@]:0:${#frame[@]}-1}" 2>/dev/null
   ghost_sessions=()
   ghost_shown=()
   while true; do

@@ -12,6 +12,7 @@ CLIENT_SOCKET="devws-header-client-$$"
 
 cleanup() {
   "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server 2>/dev/null || true
+  "$REAL_TMUX" -L "$CLIENT_SOCKET-narrow" kill-server 2>/dev/null || true
   "$REAL_TMUX" -L "$SOCKET" kill-server 2>/dev/null || true
   rm -rf "$TEST_ROOT"
 }
@@ -901,6 +902,55 @@ test_a_client_shows_the_header() {
   wait_until process_gone "$second" || fail "the ticker outlived the tmux server"
 }
 
+own_row() {
+  session_option "$1" @devws_header_row_1
+}
+
+has_global_rows() {
+  [ -n "$(option @devws_header_row_1)" ]
+}
+
+has_own_rows() {
+  [ -n "$(own_row "$1")" ]
+}
+
+has_no_own_rows() {
+  [ -z "$(own_row "$1")" ]
+}
+
+# One header for every workspace: the rows are laid out once, into the
+# global ones, and a workspace has rows of its own only while its client is
+# another width. A copy per workspace went stale in every one not looked at.
+test_every_workspace_shows_the_one_header() {
+  tmux new-session -d -s dev-one -x 200 -y 50 'sleep 600'
+  tmux new-session -d -s dev-two -x 200 -y 50 'sleep 600'
+  grep -E '^(color_[a-z_]+=|wg_[a-z0-9_]+=|set -g (status|status-[a-z]+|status-format\[[0-9]\]|@devws_[a-z_]+) )' \
+    "$ROOT/config/tmux/tmux.conf" > "$TEST_ROOT/status.conf"
+  tmux source-file "$TEST_ROOT/status.conf"
+  # Rows an older ticker left in a workspace nobody looks at.
+  tmux set-option -t dev-two @devws_header_row_1 'stale 09:41'
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" -f /dev/null new-session -d -s client -x 200 -y 50 \
+    "TMUX= $REAL_TMUX -L $SOCKET attach -t dev-one"
+  "$SCRIPTS/header_ticker.sh" --start
+
+  wait_until has_global_rows || fail "no global rows"
+  wait_until has_no_own_rows dev-two || fail "a stale copy stayed in a workspace: $(own_row dev-two)"
+  [ -z "$(own_row dev-one)" ] || fail "the attached workspace got a copy of its own: $(own_row dev-one)"
+  wait_until header_row_shows 3 "$(header_clock_row 1)" || fail "the client does not show the global rows: $(client_header)"
+
+  # A narrower client: its workspace gets rows laid out at its width, which
+  # go once it leaves.
+  "$REAL_TMUX" -L "$CLIENT_SOCKET-narrow" -f /dev/null new-session -d -s client -x 120 -y 40 \
+    "TMUX= $REAL_TMUX -L $SOCKET attach -t dev-two"
+  wait_until has_own_rows dev-two || fail "a client of another width has no rows of its own"
+  [ -z "$(own_row dev-one)" ] || fail "the first width's workspace got a copy: $(own_row dev-one)"
+  "$REAL_TMUX" -L "$CLIENT_SOCKET-narrow" kill-server
+  wait_until has_no_own_rows dev-two || fail "its own rows stayed after its client left: $(own_row dev-two)"
+
+  "$REAL_TMUX" -L "$CLIENT_SOCKET" kill-server
+  tmux kill-server
+}
+
 # SGR mouse report to the client: button;column;row, pressed then released.
 click_client() {
   "$REAL_TMUX" -L "$CLIENT_SOCKET" send-keys -t client -l $'\e[<0;'"$1"';'"$2"'M'
@@ -1075,6 +1125,7 @@ test_the_job_group_spans_the_last_two_groups
 test_the_clock
 test_the_layout_leaves_out_the_clock_when_narrow
 test_a_client_shows_the_header
+test_every_workspace_shows_the_one_header
 test_the_header_redraws_only_changes
 test_the_header_holds_still_under_a_popup
 test_animations_rest_while_unfocused
