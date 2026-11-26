@@ -225,6 +225,26 @@ pub fn overlapping_orders<'s>(
         .collect()
 }
 
+/// The newest order for `step` when its unmerged work is in another seat of
+/// the writer's lane: only that seat's worktree has it.
+fn work_in_another_seat<'s>(
+    state: &'s crate::state::State,
+    writer: &crate::state::Agent,
+    step: &str,
+) -> Option<(&'s crate::state::Order, &'s crate::state::Agent)> {
+    writer.lane.as_ref()?;
+    let order = state.orders.iter().rev().find(|order| order.step == step)?;
+    let author = state.agent(&order.agent)?;
+    let merged = state.steps.iter().any(|found| {
+        found.id == step && matches!(found.status, StepStatus::Accepted | StepStatus::Closed)
+    });
+    (author.writes
+        && author.lane == writer.lane
+        && author.seat.max(1) != writer.seat.max(1)
+        && !merged)
+        .then_some((order, author))
+}
+
 /// The first such work in another seat than the writer's: its own seat's
 /// work is in the same worktree, one step after the other.
 fn overlapping_work<'s>(
@@ -344,6 +364,18 @@ pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
                 "{} still has order {} open: wait for its report",
                 agent.id,
                 open.id
+            );
+        }
+        if let Some((order, author)) = work_in_another_seat(&tx.state, &agent, &request.step) {
+            bail!(
+                "{}'s work is in seat {} of the lane {} ({}, order {}), not in {}'s: a seat starts from the task's branch, without it. Send it to {}",
+                request.step,
+                author.seat.max(1),
+                agent.lane.as_deref().unwrap_or_default(),
+                author.id,
+                order.id,
+                agent.id,
+                author.id
             );
         }
         if let Some(other) = overlapping_work(&tx.state, &agent, &request.step, &allowed) {
