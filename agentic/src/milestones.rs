@@ -143,6 +143,33 @@ fn profiles(
     Ok(selected)
 }
 
+/// Where each check runs: in the image of every lane that defines it, so the
+/// milestone covers the backend as well as the frontend; a check no lane
+/// defines runs in the repo's own image. A lane's tools exist only in its
+/// image (`with-google-fonts` in the frontend's), so a check never runs in
+/// a lane that does not define it, nor again in the repo's image.
+fn placements(
+    definitions: &crate::check_profiles::RepositoryChecks,
+    profiles: &BTreeSet<String>,
+) -> BTreeMap<Option<String>, Vec<String>> {
+    let mut placed: BTreeMap<Option<String>, Vec<String>> = BTreeMap::new();
+    for name in profiles {
+        let lanes: Vec<_> = definitions
+            .lanes
+            .iter()
+            .filter(|(_, own)| own.contains_key(name))
+            .map(|(lane, _)| Some(lane.clone()))
+            .collect();
+        if lanes.is_empty() {
+            placed.entry(None).or_default().push(name.clone());
+        }
+        for lane in lanes {
+            placed.entry(lane).or_default().push(name.clone());
+        }
+    }
+    placed
+}
+
 pub fn validate(task: &Task, id: &str) -> Result<Evidence> {
     let _operation = task.control_lock()?;
     let state = task.state()?;
@@ -194,15 +221,9 @@ pub fn validate(task: &Task, id: &str) -> Result<Evidence> {
             .check_profiles
             .get(&repo_name)
             .context("final named checks are missing")?;
-        // A lane with checks of its own runs them in its own image too: the
-        // milestone covers the backend as well as the frontend.
-        let lanes =
-            std::iter::once(None).chain(definitions.lanes.keys().map(|lane| Some(lane.clone())));
-        for lane in lanes {
+        for (lane, names) in placements(definitions, &profiles) {
             let checks = definitions.for_lane(lane.as_deref());
-            for (name, profile, environment) in
-                crate::check_profiles::named(&checks, profiles.clone())?
-            {
+            for (name, profile, environment) in crate::check_profiles::named(&checks, names)? {
                 let label = lane
                     .as_ref()
                     .map_or_else(|| name.clone(), |lane| format!("{lane}:{name}"));
@@ -316,6 +337,53 @@ mod tests {
             BTreeSet::from(["backend".to_string(), "e2e".to_string()])
         );
         assert!(!selected.contains_key("elsewhere"), "not in this milestone");
+    }
+
+    #[test]
+    fn a_check_runs_only_in_the_images_of_the_lanes_that_define_it() {
+        let profile = |command: &str| crate::check_profiles::Profile {
+            command: command.into(),
+            environment: "testing".into(),
+            timeout_seconds: 60,
+            requires: Vec::new(),
+            test_evidence: false,
+        };
+        let lane = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| (name.to_string(), profile(name)))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let definitions = crate::check_profiles::RepositoryChecks {
+            checks: lane(&["build", "test", "docs"]),
+            lanes: BTreeMap::from([
+                ("back".to_string(), lane(&["test"])),
+                ("front".to_string(), lane(&["build", "test"])),
+            ]),
+            ..Default::default()
+        };
+        let names =
+            |names: &[&str]| -> Vec<String> { names.iter().map(|name| name.to_string()).collect() };
+        let set = |list: &[&str]| -> BTreeSet<String> { names(list).into_iter().collect() };
+        let placed = placements(&definitions, &set(&["build", "docs", "test"]));
+        assert_eq!(
+            placed,
+            BTreeMap::from([
+                (None, names(&["docs"])),
+                (Some("back".to_string()), names(&["test"])),
+                (Some("front".to_string()), names(&["build", "test"])),
+            ]),
+            "build only where its tools are; test in each lane, not again in the repo's image"
+        );
+        let plain = crate::check_profiles::RepositoryChecks {
+            checks: lane(&["test"]),
+            ..Default::default()
+        };
+        assert_eq!(
+            placements(&plain, &set(&["test"])),
+            BTreeMap::from([(None, names(&["test"]))]),
+            "a repo without lanes runs in its own image"
+        );
     }
 
     fn audit() -> State {

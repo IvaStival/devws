@@ -99,7 +99,9 @@ left out when empty: **Needs you**, only what you must act on (the leader's
 question to you, `● leader asks: …`, unanswered questions, leader calls
 waiting for your approval — `⚠ p7 open_prs · external · {…}`, with the
 exact arguments you approve — failed steps, agents waiting or gone,
-a dispatcher problem); **CTO**; **Leader reviewing** (steps reported,
+a dispatcher problem); **Preview**, while the team runs an application for
+you to look at (`◆ http://127.0.0.1:13000 · 3h40 left`, see
+`preview_start`); **CTO**; **Leader reviewing** (steps reported,
 failed, blocked or sent back, which the leader acts on); **Leader backlog**
 (the steps it left); **Seniors** and
 **Floor**, each with what its running agents cost and their tokens in all, and

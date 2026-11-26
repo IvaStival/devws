@@ -360,7 +360,9 @@ named like the repo's, under the check configuration's `lanes`:
 ```
 
 In the back lane, `test` runs that command. Its other profiles and the other
-lanes keep the repo's. A milestone runs every lane's own checks too. A change
+lanes keep the repo's. A milestone runs each check in the image of every
+lane that defines it, and a check no lane defines in the repo's image: the
+front lane's `build` never runs in the back lane's image. A change
 that only adds or edits a lane's image waits for that lane's workers alone;
 the other lanes keep working.
 
@@ -395,6 +397,25 @@ path before importing and committing source changes in the implementation lane.
 It cannot delete database data or mutate another project. Such actions remain
 leader-only after explicit approval; this runner does not expose an arbitrary
 host/database shell to either workers or the reviewed coordinator.
+
+### Previews: an application for you to look at
+
+When the team builds an application image you want to try, the leader starts
+it for you (`preview_start`) after you approve that exact call:
+- the image runs like a check container: no network, a read-only root, capped
+  memory and CPUs, and the task branch's tracked files mounted read-only;
+- the application listens on unix sockets in `/run/preview`
+  (`$PREVIEW_SOCKET_DIR`), and a devAgentics forwarder on your machine opens
+  one `127.0.0.1` port for each. Nothing listens on your network;
+- it runs for the hours you approved (at most 8), until the leader calls
+  `preview_stop`, or until the task is cancelled. Then the container and its
+  data are gone.
+
+The board's overview shows it under PREVIEW: its addresses and the time left.
+Open them with `127.0.0.1`, not `localhost`, when the application only
+accepts that address. When you work on that machine over SSH, forward the same
+ports from your computer (`ssh -N -L 13000:127.0.0.1:13000 <host>`, one `-L`
+per port) so the addresses the application gives out work there too.
 
 ### Plan the whole application with the planner
 

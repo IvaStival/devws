@@ -615,6 +615,7 @@ impl<'a> Dispatcher<'a> {
         max_ticks: Option<u32>,
     ) -> Result<()> {
         let _lock = lock(self.task)?;
+        crate::preview::expire(self.task)?;
         crate::runner::prune_at_start(self.task)?;
         let lines = self.task.log_lines()?;
         let mut printed = lines.len().saturating_sub(BACKLOG);

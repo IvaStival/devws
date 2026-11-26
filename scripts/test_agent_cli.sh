@@ -268,6 +268,43 @@ second line' || fail "send did not deliver the text as typed: $(received send)"
   [ "$(status_of "$SCRIPTS/agent_cli.sh" send "$pane" 'nobody')" = 4 ] || fail "send did not report a missing pane"
 }
 
+# An agent pane whose input box shows `$1` after the prompt, as Claude Code
+# draws it (a no-break space after the glyph); it records what it receives.
+prompt_pane() {
+  local session="$1" input="$2" script="$TEST_ROOT/prompt.$1.sh"
+  printf '#!/usr/bin/env bash\nprintf "%%b" %q\nexec cat > %q\n' \
+    "❯ sent before\n────\n❯\xc2\xa0$input\n────\n  [model] branch" "$TEST_ROOT/received.$session" > "$script"
+  chmod +x "$script"
+  tmux new-session -d -s "$session" -x 100 -y 30 -P -F '#{pane_id}' "$script"
+}
+
+shows() {
+  tmux capture-pane -p -t "$1" | grep -q "$2"
+}
+
+# The user's half-typed text and a typed message would go out as one.
+test_send_waits_while_the_user_types() {
+  local pane
+  pane="$(prompt_pane drafting 'half a sentence')"
+  wait_until shows "$pane" 'half a sentence' || fail "the prompt pane did not draw"
+  [ "$(status_of "$SCRIPTS/agent_cli.sh" send "$pane" 'nudge')" = 3 ] || fail "send typed into an input the user is writing"
+  sleep 0.5
+  ! grep -q nudge "$TEST_ROOT/received.drafting" 2>/dev/null || fail "a refused send reached the agent"
+  "$SCRIPTS/agent_cli.sh" send --force "$pane" 'forced'
+  wait_until grep -q forced "$TEST_ROOT/received.drafting" || fail "send --force did not deliver over a draft"
+
+  pane="$(prompt_pane suggesting '\e[2myes\e[0m')"
+  wait_until shows "$pane" yes || fail "the suggestion pane did not draw"
+  "$SCRIPTS/agent_cli.sh" send "$pane" 'over a suggestion'
+  wait_until grep -q 'over a suggestion' "$TEST_ROOT/received.suggesting" || fail "a dimmed suggestion blocked the send"
+
+  pane="$(prompt_pane empty '')"
+  wait_until shows "$pane" branch || fail "the empty pane did not draw"
+  "$SCRIPTS/agent_cli.sh" send "$pane" 'into an empty input'
+  wait_until grep -q 'into an empty input' "$TEST_ROOT/received.empty" || fail "an empty input blocked the send"
+  tmux kill-session -t drafting; tmux kill-session -t suggesting; tmux kill-session -t empty
+}
+
 test_mark_sets_the_state_the_sidebar_shows() {
   local pane
   pane="$(create_workspace mark)"
@@ -898,6 +935,7 @@ test_antigravity_runs_with_the_devws_plugin_and_the_leader_s_server() {
 
 test_state_follows_the_agent
 test_send_types_into_an_idle_agent_only
+test_send_waits_while_the_user_types
 test_mark_sets_the_state_the_sidebar_shows
 test_stop_ends_the_agent_and_clears_its_state
 test_spawn_adds_an_agent_beside_a_pane_without_taking_the_focus

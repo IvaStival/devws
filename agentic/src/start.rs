@@ -439,8 +439,10 @@ pub fn start_task_with_workflow(
     let (mut leader, mut why) = match (&pick, leader) {
         (Some(agent), Some(_)) => (leader::led_by(role, agent, devws)?, None),
         // Its account may have run out: then its fallback leads (leader.rs).
-        (Some(agent), None) => leader::choose(&leader::led_by(role, agent, devws)?, devws)?,
-        (None, _) => leader::choose(role, devws)?,
+        (Some(agent), None) => {
+            leader::choose(&leader::led_by(role, agent, devws)?, devws, &task.state()?)?
+        }
+        (None, _) => leader::choose(role, devws, &task.state()?)?,
     };
     let codex_team = task.state()?.codex_team;
     if task.state()?.workflow == crate::execution::Workflow::Reviewed

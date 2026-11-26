@@ -115,6 +115,13 @@ pub struct State {
     /// Workers refused that way: the dispatcher restarts each one on its next
     /// account when its panel goes (watch.rs).
     pub restart_on_next_account: std::collections::BTreeSet<String>,
+    /// The application the team started for the user to look at (preview.rs).
+    pub preview: Option<crate::preview::Preview>,
+    /// Fields this build does not know, written by a newer one, kept as they
+    /// are: a process still running the old build after an upgrade saves the
+    /// state too, and would otherwise drop them.
+    #[serde(flatten)]
+    pub newer_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 /// An account held back until `until` (epoch seconds), and why.

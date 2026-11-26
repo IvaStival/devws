@@ -1019,6 +1019,7 @@ impl Team<'_> {
     /// Stops every agent and the task with them; the worktrees stay.
     pub fn cancel(&self) -> Result<()> {
         self.pause()?;
+        crate::preview::stop(self.task, "the task was cancelled")?;
         for agent in self
             .task
             .state()?

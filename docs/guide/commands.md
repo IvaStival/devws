@@ -49,8 +49,9 @@ Arguments files (`--agent-args`) hold the arguments NUL-separated, so one can
 be a prompt with line breaks. A team agent always starts a new conversation.
 
 Exit codes: `0` done, `1` failed (the message says why), `2` wrong use,
-`3` `send` refused because the agent is busy (`busy (working)`), `4` the pane
-is gone.
+`3` `send` refused because the agent is busy (`busy (working)`) or you are
+typing in its input (`busy (typing)`: your text and the message would go out
+as one), `4` the pane is gone.
 
 A task's workspaces are saved with their task. After a restart the task comes
 back, but the panels a program started (`@devws_team`) are left to it: only

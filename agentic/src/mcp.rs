@@ -47,7 +47,7 @@ fn tools() -> Vec<Value> {
     let mut tools = vec![
         tool(
             "application_workflow",
-            "Project application planning. Actions: status (an outline; input.section for one part in full, e.g. runner; section application or proposal with input.items [ids] for those full contracts), proposal_example (validated submission example), guide (input.topic: accounts, reviewed or legacy; a part of your role your prompt leaves out), propose (input.application: the whole next revision; input.reason required), amend (input.changes: only what changes in the next revision, by id, null removes; input.reason), answer, confirm, approve, milestones, preview_adoption, adopt, review_request, provision_roles, runner_configure (input.configuration; its lanes: {lane: {image, image_mounts}} give a lane its own image), image_build (input: name, dockerfile, context_files, repo; builds a runner image on the user's rootless Docker and returns its ID), recover_turn, validate_milestone, leader_inbox (your messages and a line per live agent; input.ack [ids] acknowledges the ones you handled in the same call), inbox_ack, runner_images, project_overview, preflight_retry. provision_roles changes managed storage outside the project and requires exact-call external authorization; so does a runner_configure that changes docker_host. Other runner changes and image builds are yours to decide. When status proposal_approval.needs_user is true, record confirm/approve only after the user's explicit answer for that exact revision; when false (it changes only how steps are carried out, adds steps or adds checks), approve it yourself and tell the user what changed. Material proposals never inherit approval. Preview is read-only; runner enforcement may block adoption.",
+            "Project application planning. Actions: status (an outline; input.section for one part in full, e.g. runner; section application or proposal with input.items [ids] for those full contracts), proposal_example (validated submission example), guide (input.topic: accounts, reviewed or legacy; a part of your role your prompt leaves out), propose (input.application: the whole next revision; input.reason required), amend (input.changes: only what changes in the next revision, by id, null removes; input.reason), answer, confirm, approve, milestones, preview_adoption, adopt, review_request, provision_roles, runner_configure (input.configuration; its lanes: {lane: {image, image_mounts}} give a lane its own image), image_build (input: name, dockerfile, context_files, repo; builds a runner image on the user's rootless Docker and returns its ID), recover_turn, validate_milestone, leader_inbox (your messages and a line per live agent; input.ack [ids] acknowledges the ones you handled in the same call), inbox_ack, runner_images, project_overview, preflight_retry, preview_start (input: image sha256 ID, command [args], sockets {file in /run/preview: port}, hours 1-8, env, workdir: starts the image, no network, for the user to open at http://127.0.0.1:<port>), preview_stop, preview_status. provision_roles changes managed storage outside the project and requires exact-call external authorization; so do preview_start and a runner_configure that changes docker_host. Other runner changes and image builds are yours to decide. When status proposal_approval.needs_user is true, record confirm/approve only after the user's explicit answer for that exact revision; when false (it changes only how steps are carried out, adds steps or adds checks), approve it yourself and tell the user what changed. Material proposals never inherit approval. Preview is read-only; runner enforcement may block adoption.",
             json!({"action":text("Workflow action"),"input":{"type":"object"}}),
             &["action"],
         ),
@@ -632,7 +632,8 @@ impl Server<'_> {
     /// leader decides it.
     fn leaves_project(&self, arguments: &Value) -> Result<bool> {
         Ok(match arguments["action"].as_str() {
-            Some("provision_roles") => true,
+            // It opens ports on the user's machine (127.0.0.1 only).
+            Some("provision_roles" | "preview_start") => true,
             Some("runner_configure") => {
                 let requested = arguments["input"]["configuration"]["docker_host"].as_str();
                 let current = self
@@ -1999,6 +2000,32 @@ mod tests {
         );
         assert!(!failed && text.contains("No action was taken"), "{text}");
         assert_eq!(f.task.state().unwrap().permissions.len(), 2);
+    }
+
+    #[test]
+    fn a_preview_waits_for_the_users_approval_and_stopping_it_does_not() {
+        let f = fixture();
+        let start = json!({"action": "preview_start", "input": {
+            "image": format!("sha256:{}", "e".repeat(64)),
+            "command": ["/opt/v1/bin/v1-hold"],
+            "sockets": {"web.sock": 13000}, "hours": 2,
+        }});
+        let (failed, text) = f.call("application_workflow", start);
+        assert!(!failed && text.contains("No action was taken"), "{text}");
+        let permissions = f.task.state().unwrap().permissions;
+        assert_eq!(permissions.len(), 1);
+        assert_eq!(permissions[0].effect, Effect::External);
+
+        let (_, text) = f.call(
+            "application_workflow",
+            json!({"action": "preview_stop", "input": {}}),
+        );
+        assert!(text.contains("\"stopped\":false"), "{text}");
+        assert_eq!(
+            f.task.state().unwrap().permissions.len(),
+            1,
+            "stopping is the leader's"
+        );
     }
 
     #[test]

@@ -292,6 +292,34 @@ mod tests {
         assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
     }
 
+    // A devagentics still running after an upgrade (a leader's MCP server)
+    // saves the state too: the fields only the new build knows must survive it.
+    #[test]
+    fn a_transaction_keeps_the_fields_a_newer_build_wrote() {
+        let directory = TempDir::new().unwrap();
+        let home = Home::at(directory.path().into());
+        let task = Task::create(&home, &config("newer-fields")).unwrap();
+        let path = task.dir().join("state.json");
+        let mut written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        written["from_a_newer_build"] = serde_json::json!({"container": "c", "until": 9});
+        fs::write(&path, written.to_string()).unwrap();
+
+        task.transaction(|tx| {
+            tx.state.paused = true;
+            Ok(())
+        })
+        .unwrap();
+
+        let saved: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["paused"], true);
+        assert_eq!(
+            saved["from_a_newer_build"],
+            serde_json::json!({"container": "c", "until": 9})
+        );
+    }
+
     #[test]
     fn a_task_toml_from_before_the_attempt_limit_gets_the_default() {
         let config: TaskConfig =

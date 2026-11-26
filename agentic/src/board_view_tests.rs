@@ -17,6 +17,7 @@ pub(crate) fn board() -> Board {
         permissions: vec![],
         steps: vec![],
         plan: vec![],
+        preview: None,
         details: Default::default(),
         phase: "Approved".into(),
         summary: "Plan approved. 1 working.".into(),
@@ -1759,4 +1760,20 @@ fn a_narrow_header_still_names_every_view() {
             view.name()
         );
     }
+}
+#[test]
+fn the_overview_says_where_to_open_the_preview() {
+    let quiet = board();
+    let mut board = board();
+    board.preview = Some("http://127.0.0.1:13000 · 3h40 left".into());
+    let rows = entries(&board, View::Overview, false, &[], None);
+    assert!(rows.iter().any(|entry| entry.id == "heading:PREVIEW"));
+    let preview = rows.iter().find(|entry| entry.id == "preview").unwrap();
+    assert_eq!(preview.label, "◆ http://127.0.0.1:13000 · 3h40 left");
+    assert!(
+        !entries(&quiet, View::Overview, false, &[], None)
+            .iter()
+            .any(|entry| entry.id == "heading:PREVIEW"),
+        "no preview, no section"
+    );
 }

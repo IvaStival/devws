@@ -264,6 +264,17 @@ pub fn call(task: &Task, action: &str, input: &Value) -> Result<Value> {
         "guide" => guide(task, input["topic"].as_str().context("topic required")?),
         "proposal_example" if input["variant"] == "light" => execution::light_proposal_example(),
         "proposal_example" => execution::proposal_example(),
+        "preview_start" => {
+            let request: crate::preview::Request = serde_json::from_value(input.clone())
+                .context("preview_start input: image, command, sockets, hours (env, workdir)")?;
+            let command = crate::executable::own()?.display().to_string();
+            let preview = crate::preview::start(task, &request, &command)?;
+            Ok(json!({"started": true, "urls": preview.urls(), "until": preview.until}))
+        }
+        "preview_stop" => Ok(json!({
+            "stopped": crate::preview::stop(task, "the leader stopped it")?
+        })),
+        "preview_status" => crate::preview::status(task),
         "runner_images" => crate::runner::images(),
         "project_overview" => crate::runner::overview(task),
         "preflight_retry" => {

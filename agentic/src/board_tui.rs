@@ -96,6 +96,11 @@ fn dispatch(
     {
         *slot = Some(format!("pruning: {error:#}"));
     }
+    if let Err(error) = crate::preview::expire(task)
+        && let Ok(mut slot) = problem.lock()
+    {
+        *slot = Some(format!("preview: {error:#}"));
+    }
     let mut dispatcher = Dispatcher::new(task, devws, home, watch::STALL_GRACE);
     let command = crate::executable::own()
         .map(|path| path.display().to_string())

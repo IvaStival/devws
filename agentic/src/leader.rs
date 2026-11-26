@@ -229,7 +229,7 @@ fn take_over(before: &Role, why: &str) -> String {
 /// The program the leader starts on: its role's, or its fallback's when the
 /// role's account has run out and the fallback's may take over
 /// (`reason_to_move`). With a reason for the log when the account has run out.
-pub fn choose(role: &Role, devws: &dyn Devws) -> Result<(Role, Option<String>)> {
+pub fn choose(role: &Role, devws: &dyn Devws, state: &State) -> Result<(Role, Option<String>)> {
     let Some(fallback) = role.on_fallback() else {
         return Ok((role.clone(), None));
     };
@@ -250,6 +250,18 @@ pub fn choose(role: &Role, devws: &dyn Devws) -> Result<(Role, Option<String>)> 
         }
         return Ok((role.clone(), None));
     };
+    // The user turned that account off: run out or not, the leader stays.
+    if !crate::accounts::is_enabled(state, &fallback.agent) {
+        return Ok((
+            role.clone(),
+            Some(format!(
+                "{} has used {out}, but {} is turned off for this task: the leader stays on {}",
+                role.agent,
+                fallback.agent,
+                program(role)
+            )),
+        ));
+    }
     let why = format!(
         "the leader runs on {}: {} has used {out}",
         program(&fallback),
@@ -536,11 +548,13 @@ pub fn hand_over(
     command: &str,
 ) -> Result<Option<String>> {
     let _control = task.control_lock()?;
-    if task.state()?.paused {
+    // A pause holds the moves the board makes on its own; one the user asked
+    // for is still made, so a paused team can be moved off a program.
+    let state = task.state()?;
+    if state.paused && state.leader_switch.is_none() {
         return Ok(None);
     }
     let role = leader_role(home, task, devws)?;
-    let state = task.state()?;
     let Some((now, other, why)) = next_leader(home, &role, &state, devws)? else {
         return Ok(None);
     };
@@ -559,7 +573,9 @@ pub fn hand_over(
     }
     let handoff = match &state.leader_handoff {
         Some(request) if request.saved => "with its handoff",
+        Some(_) if state.paused => "without a handoff: the team is paused",
         Some(_) => "without a handoff: none was saved in time",
+        None if state.paused => "without a handoff: the team is paused",
         None => "without a handoff: there is no memory",
     };
     let memory = handed_memory(task, devws, &why)?;
@@ -699,7 +715,8 @@ const HANDOFF_WAIT: u64 = 10 * 60;
 /// asked once, and the move goes on when the note is saved or the wait is
 /// over. With no memory there is nothing to wait for.
 fn waits_for_handoff(task: &Task, devws: &dyn Devws, state: &State, other: &Role) -> Result<bool> {
-    if !devws.memory().is_on() {
+    // A paused team delivers nothing, so the leader would never read the ask.
+    if !devws.memory().is_on() || state.paused {
         return Ok(false);
     }
     let now = crate::log::now();
@@ -1242,6 +1259,32 @@ mod tests {
     }
 
     #[test]
+    fn a_paused_team_moves_its_leader_only_when_the_user_asks() {
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, _repo) = team(&dir, 96, 14);
+        idle_leader(&devws, &task);
+        devws.set_limits("claude", week(40));
+        devws.set_limits("codex", five_hour(99));
+        task.transaction(|tx| {
+            tx.state.paused = true;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            hand_over(&home, &task, &devws, "d").unwrap(),
+            None,
+            "a pause holds the board's own moves"
+        );
+
+        request_switch(&home, &task, &devws, Some("the user wants Claude")).unwrap();
+        hand_over(&home, &task, &devws, "d")
+            .unwrap()
+            .expect("an asked-for move is made while paused");
+        assert_eq!(leader_agent(&task).as_deref(), Some("claude"));
+        assert!(task.state().unwrap().paused, "and the team stays paused");
+    }
+
+    #[test]
     fn an_asked_for_move_happens_once_the_turn_is_over_with_room_left() {
         let dir = TempDir::new().unwrap();
         let (home, devws, task, _repo) = team(&dir, 96, 14);
@@ -1452,6 +1495,34 @@ mod tests {
     }
 
     #[test]
+    fn a_paused_team_does_not_wait_for_a_handoff_it_cannot_deliver() {
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, _repo) = team(&dir, 40, 14);
+        let devws = devws.with_memory();
+        idle_leader(&devws, &task);
+        request_switch(&home, &task, &devws, None).unwrap();
+        assert_eq!(
+            hand_over(&home, &task, &devws, "d").unwrap(),
+            None,
+            "asked for its handoff"
+        );
+        task.transaction(|tx| {
+            tx.state.paused = true;
+            Ok(())
+        })
+        .unwrap();
+        hand_over(&home, &task, &devws, "d")
+            .unwrap()
+            .expect("moved without waiting out the handoff");
+        assert!(
+            task.log_lines()
+                .unwrap()
+                .iter()
+                .any(|line| line.contains("without a handoff: the team is paused"))
+        );
+    }
+
+    #[test]
     fn an_account_that_cannot_lead_or_is_off_is_refused() {
         let dir = TempDir::new().unwrap();
         let (home, devws, task, _repo) = team(&dir, 40, 14);
@@ -1592,6 +1663,27 @@ mod tests {
         // Run out, the leader would move on its own; not to an account that is off.
         devws.set_limits("claude", five_hour(99));
         assert_eq!(hand_over(&home, &task, &devws, "d").unwrap(), None);
+    }
+
+    #[test]
+    fn a_restarted_leader_never_starts_on_an_account_the_user_turned_off() {
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, repo) = team(&dir, 40, 14);
+        task.transaction(|tx| {
+            tx.state.disabled_accounts.insert("codex".into());
+            Ok(())
+        })
+        .unwrap();
+        devws.set_limits("claude", five_hour(99));
+        start_task(&home, &devws, repo.path(), "/bin/devagentics", None).unwrap();
+        assert_eq!(leader_agent(&task).as_deref(), Some("claude"));
+        assert!(
+            task.log_lines()
+                .unwrap()
+                .iter()
+                .any(|line| line.contains("codex is turned off for this task")),
+            "the log says why it stays"
+        );
     }
 
     #[test]

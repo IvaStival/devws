@@ -12,7 +12,8 @@
 #                                         when the pane's own agent is done or
 #                                         idle; a text with line breaks is
 #                                         pasted, not typed line by line. Exit 3 "busy (<state>)" when it
-#                                         works or waits on you, 4 when the
+#                                         works or waits on you, or while you
+#                                         type in its input, 4 when the
 #                                         pane is gone. --force sends anyway.
 #   agent_cli.sh mark <pane> working|waiting|done
 #                                         sets the agent's state as its hooks
@@ -120,6 +121,22 @@ state() {
   pane_state "$1"
 }
 
+# Whether the input box, the last prompt line (❯ for Claude Code, › for
+# Codex), holds text the user typed: a send would add its own and its Enter
+# would send both as one message. The agent's dimmed suggestion is not typed.
+user_is_typing() {
+  tmux capture-pane -e -p -t "$1" 2>/dev/null | perl -ne '
+    $input = $_ if /^(?:\e\[[0-9;]*m|\s)*(?:❯|›)/;
+    END {
+      exit 1 unless defined $input;
+      $input =~ s/^.*?(?:❯|›)//;
+      $input =~ s/\e\[2m.*?(?:\e\[(?:0|22)?m|$)//g;
+      $input =~ s/\e\[[0-9;?]*[A-Za-z]//g;
+      $input =~ s/\xc2\xa0//g;
+      exit($input =~ /\S/ ? 0 : 1);
+    }'
+}
+
 # One line is typed, as the menu's actions always did. A message with line
 # breaks goes in as a bracketed paste, so it stays one message instead of
 # being sent line by line; its buffer is named, and removed by the paste, so
@@ -143,6 +160,9 @@ send() {
       [ -n "$force" ] || code=3 fail "busy ($current)"
       ;;
   esac
+  if [ -z "$force" ] && user_is_typing "$pane"; then
+    code=3 fail "busy (typing)"
+  fi
 
   case "$text" in
     *$'\n'*)

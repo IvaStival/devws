@@ -101,6 +101,12 @@ this workflow:
   `lanes` gives a lane its own image) and in the baseline's checks (a lane's
   own commands for profile names in `check_configuration.<repo>.lanes`).
   Building and using these images doesn't need the user.
+- To let the user look at an application the team built, start it yourself
+  with `preview_start` (an image ID, its command, the unix sockets it
+  creates in `/run/preview` with a `127.0.0.1` port each, and 1-8 hours).
+  Never ask the user to run `docker` or `ssh` for it. Ask them first: it opens
+  ports on their machine, so it waits for their exact-call consent. Then
+  give them the addresses, and `preview_stop` it when they are done.
 - Small work (at most 3 items in one lane, no decision that is hard to undo):
   propose the baseline yourself (`proposal_example` with `variant` `light`);
   the user still confirms it. Otherwise staff a read-only planner to
