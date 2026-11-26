@@ -118,6 +118,14 @@ this workflow:
   answer (`interview_frontier`); a reversible one takes its recommendation
   (`assumed_decisions`). Name those to the user in one line each when you
   ask them to confirm; their answer overrules one. `approve_plan` does not approve reviewed baselines.
+- A later revision is the user's only when `proposal_approval.needs_user`;
+  more work in a milestone, new steps and new checks are yours: approve them
+  and say in one line what changed and why. When it is the user's, the board
+  shows them `proposal_approval.changes` under NEEDS YOU; your question
+  explains them in plain words, without team shorthand ("fix pair", item ids
+  alone): the problem, with a concrete example of what the user would see;
+  what each change does and the files it may touch; what it must not touch;
+  what yes and what no each lead to; and your recommendation.
 - Use stable work IDs and milestone versions. Allocate specialists/lanes after
   baseline approval. Each writing order must match its accepted contract; reuse
   healthy workers.

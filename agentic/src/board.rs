@@ -13,6 +13,30 @@ use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A running preview in one line: its addresses and the time it has left.
+/// A plan revision only you may approve: why it is yours, and what it changes
+/// (`execution::changes`), so the question never rests on a summary alone.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Approval {
+    pub revision: u64,
+    pub why: String,
+    pub changes: Vec<String>,
+}
+
+/// The revision waiting for you, if one is: a proposal whose approval is
+/// yours (`execution::user_approval_needed`) and not given yet.
+pub fn approval(state: &crate::state::State) -> Option<Approval> {
+    let proposal = state.application_proposal.as_ref()?;
+    if proposal.approved_revision == Some(proposal.revision) {
+        return None;
+    }
+    let why = crate::execution::user_approval_needed(&state.application, proposal)?;
+    Some(Approval {
+        revision: proposal.revision,
+        why,
+        changes: crate::execution::changes(&state.application, proposal),
+    })
+}
+
 pub fn preview_line(preview: &crate::preview::Preview) -> String {
     let minutes = preview.until.saturating_sub(crate::log::now()) / 60;
     format!(
@@ -49,6 +73,8 @@ pub struct Board {
     /// The preview the team started for you: where to open it and how long
     /// it has left (`http://127.0.0.1:13000 · 3h40 left`).
     pub preview: Option<String>,
+    /// The plan revision waiting for your yes or no, with what it changes.
+    pub approval: Option<Approval>,
     /// Full context keyed by stable row identity; presentation never truncates this.
     pub details: BTreeMap<String, String>,
     pub accounts: Vec<Account>,
@@ -746,6 +772,7 @@ impl Board {
             steps: state.steps.iter().map(step_row).collect(),
             plan: crate::board_plan::parts(&state),
             preview: state.preview.as_ref().map(preview_line),
+            approval: approval(&state),
             details,
             task: config.id,
             branch: config.branch,
@@ -1096,6 +1123,56 @@ pub(crate) mod tests {
             None,
             "only a permission"
         );
+    }
+
+    #[test]
+    fn only_a_revision_that_is_yours_waits_on_the_board_with_its_changes() {
+        let mut state = crate::state::State {
+            application: crate::execution::tests::baseline(),
+            ..Default::default()
+        };
+        state.application.revision = 6;
+        state.application.approved_revision = Some(6);
+        let mut proposal = state.application.clone();
+        proposal.revision = 7;
+        proposal.approved_revision = None;
+        let milestone = proposal.milestones.keys().next().unwrap().clone();
+        let mut item = proposal.items.values().next().unwrap().clone();
+        item.title = "One more fix".into();
+        proposal.items.insert("R10".into(), item);
+        proposal
+            .milestones
+            .get_mut(&milestone)
+            .unwrap()
+            .required
+            .push("R10".into());
+        state.application_proposal = Some(proposal.clone());
+        assert_eq!(
+            approval(&state),
+            None,
+            "more work in a milestone is the leader's"
+        );
+
+        proposal.goal = "Another goal".into();
+        state.application_proposal = Some(proposal.clone());
+        let waiting = approval(&state).expect("a new goal is yours");
+        assert_eq!(waiting.revision, 7);
+        assert!(waiting.why.contains("changes the plan"), "{}", waiting.why);
+        assert!(
+            waiting
+                .changes
+                .contains(&"Changes the goal to: Another goal".to_string())
+        );
+        assert!(
+            waiting
+                .changes
+                .iter()
+                .any(|line| line.starts_with("Adds R10 "))
+        );
+
+        proposal.approved_revision = Some(7);
+        state.application_proposal = Some(proposal);
+        assert_eq!(approval(&state), None, "once approved it no longer waits");
     }
 
     #[test]

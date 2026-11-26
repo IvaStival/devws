@@ -429,9 +429,15 @@ scopes, applicable backend/frontend/data work, interfaces, dependencies, tests,
 acceptance criteria, required check definitions and milestones.
 
 You approve the first baseline and every revision that changes the plan: the
-goal, non-goals, decisions, scopes, items or milestones, or a check you
-approved. A revision that only adds checks (a new lane's commands, a new
-repo's) is the leader's to approve, with no confirmation round. It tells you in
+goal, non-goals, decisions or scopes; a milestone added, removed or renamed;
+an item removed or taken out of a milestone; or a check you approved. A
+revision that only adds work (new steps, more items in a milestone) or checks
+(a new lane's commands, a new repo's) is the leader's to approve, with no
+confirmation round. When a revision is yours, the board's NEEDS YOU shows
+"revision N waits for your yes or no", and its details list what it changes,
+item by item: what each adds, the files it may change and what it must not
+do. The leader's question explains the same in plain words, with what yes
+and no lead to. It tells you in
 its next summary, and the log records "the leader approved check-only
 revision N". Workflow status shows which kind a pending proposal is
 (`proposal_approval`).

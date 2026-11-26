@@ -1016,6 +1016,31 @@ fn leader_detail(board: &Board) -> String {
     text
 }
 
+/// The revision only you may approve: its details are what it changes, from
+/// devAgentics, not the leader's words.
+fn approval_entry(approval: &crate::board::Approval) -> Entry {
+    let label = format!(
+        "revision {} waits for your yes or no ({} changes)",
+        approval.revision,
+        approval.changes.len()
+    );
+    let mut detail = format!(
+        "Revision {} needs you: {}.\n\nWhat it changes:\n",
+        approval.revision, approval.why
+    );
+    for change in &approval.changes {
+        detail.push_str(&format!("- {change}\n"));
+    }
+    detail.push_str("\nAnswer the leader: yes or no, and ask it anything you need explained.");
+    Entry::text(
+        format!("approval:{}", approval.revision),
+        String::new(),
+        detail,
+        true,
+    )
+    .toned(vec![("◆ ".into(), Tone::Mark), (label, Tone::Plain)])
+}
+
 /// The Overview: only what needs looking at, as sections the selection moves
 /// through: what needs you, the team (the leader first), the queue's size and
 /// the steps done, newest first. A section with nothing in it is left out.
@@ -1050,6 +1075,9 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
                 (question.clone(), Tone::Plain),
             ]),
         );
+    }
+    if let Some(approval) = &board.approval {
+        needs_you.push(approval_entry(approval));
     }
     needs_you.extend(board.permissions.iter().map(permission_entry));
     let agents = board
