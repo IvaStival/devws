@@ -26,11 +26,11 @@ pub fn read(
             .iter()
             .find(|found| found.id == order)
             .with_context(|| format!("there is no order {order}"))?;
-        let lane = state
+        let author = state
             .agent(&found.agent)
-            .and_then(|agent| agent.lane.clone())
+            .with_context(|| format!("order {order} has no agent"))?;
+        let lane = crate::lanes::of_agent(task, author)?
             .with_context(|| format!("order {order} has no lane, so no merge candidate"))?;
-        let lane = crate::lanes::get(task, &lane)?;
         let merge = crate::integration::candidate(task, &lane)?;
         let evidence = state
             .candidate_evidence

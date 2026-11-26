@@ -104,6 +104,29 @@ pub(crate) fn within(patterns: &[String], addition: &str) -> Result<bool> {
     }
 }
 
+/// Whether no path can match both sets of globs, proved conservatively: two
+/// orders whose globs are disjoint can be written at the same time. A pair is
+/// disjoint when the globs part at a plain path segment before either one
+/// reaches a wildcard. Anything else (an empty set, `**`, braces, `..`, one
+/// glob a prefix of the other) counts as overlapping.
+pub(crate) fn disjoint(first: &[String], second: &[String]) -> bool {
+    !first.is_empty()
+        && !second.is_empty()
+        && first
+            .iter()
+            .all(|one| second.iter().all(|other| globs_part(one, other)))
+}
+
+fn globs_part(one: &str, other: &str) -> bool {
+    let is_literal = |segment: &str| {
+        !segment.is_empty() && segment != ".." && !segment.contains(['*', '?', '[', '{'])
+    };
+    one.split('/')
+        .zip(other.split('/'))
+        .take_while(|(left, right)| is_literal(left) && is_literal(right))
+        .any(|(left, right)| left != right)
+}
+
 /// What an agent's work looks like.
 #[derive(Debug, Default, PartialEq)]
 pub struct Work {
@@ -318,6 +341,33 @@ pub mod tests {
         assert!(!set.is_match("tests/a.rs"));
         assert!(!set.is_match("sub/NOTES.md"), "* stays inside a folder");
         assert!(glob_set(&strings(&["["])).is_err());
+    }
+
+    #[test]
+    fn globs_are_disjoint_only_when_they_part_before_a_wildcard() {
+        let apart = |one: &[&str], other: &[&str]| disjoint(&strings(one), &strings(other));
+        assert!(apart(&["web/Team/**"], &["web/History/**"]));
+        assert!(apart(&["a/x.ts"], &["a/y.ts"]), "two different files");
+        assert!(apart(&["docs/"], &["src/main.rs"]));
+        assert!(apart(&["a/**", "b/**"], &["c/**"]), "every pair parts");
+        assert!(
+            !apart(&["web/**"], &["web/pages/History/**"]),
+            "one holds the other"
+        );
+        assert!(!apart(&["web/constants/layout.ts"], &["web/constants/**"]));
+        assert!(
+            !apart(&["a/*.ts"], &["a/b.ts"]),
+            "a wildcard before they part"
+        );
+        assert!(!apart(&["{a,b}/**"], &["c/**"]), "braces are not read");
+        assert!(
+            !apart(&["a/../b/**"], &["a/x/**"]),
+            ".. is not a plain folder"
+        );
+        assert!(!apart(&["a/**", "c/**"], &["c/x.ts"]), "one pair overlaps");
+        assert!(!apart(&["a/x.ts"], &["a/x.ts"]), "the same file");
+        assert!(!apart(&[], &["a/**"]), "no globs may write anything");
+        assert!(!apart(&["**"], &["a/**"]));
     }
 
     #[test]

@@ -198,6 +198,7 @@ esac
             workspace: "dev-a".into(),
             max_agents: 3,
             max_attempts: crate::task::DEFAULT_MAX_ATTEMPTS,
+            max_seats: crate::task::DEFAULT_MAX_SEATS,
             check_profiles: Default::default(),
             lanes: Vec::new(),
             routing: Default::default(),

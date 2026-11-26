@@ -249,8 +249,13 @@ waiting for you takes it as your answer.
 
 ## Rules devAgentics keeps
 
-- One agent that writes per worktree: per lane when the repo has lanes, and
-  then only in a lane.
+- One agent that writes per worktree: when the repo has lanes, only in a
+  lane, one per seat. A lane's first writer takes the lane's worktree; another
+  takes the lane's next seat, a worktree and branch of its own with the lane's
+  files, image and checks, up to `max_seats` (2, in `task.toml`). Two seats
+  never hold orders whose files may overlap: their `allowed` globs must part
+  at a folder before a wildcard (`web/Team/**` and `web/History/**`), or the
+  order is refused with the other order named.
 - No agent that writes before you approve the plan; a new plan needs approval
   again.
 - At most `max_agents` writers running (6), and as many read-only agents

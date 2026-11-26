@@ -22,6 +22,14 @@ fn default_max_attempts() -> u32 {
     DEFAULT_MAX_ATTEMPTS
 }
 
+/// Writers one lane may have at once, each in a seat of its own
+/// (`lanes::seat`); `max_agents` still caps them all.
+pub const DEFAULT_MAX_SEATS: usize = 2;
+
+fn default_max_seats() -> usize {
+    DEFAULT_MAX_SEATS
+}
+
 /// A task's settings, in `task.toml`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TaskConfig {
@@ -35,6 +43,9 @@ pub struct TaskConfig {
     /// more for one step (`devagentics task attempts`).
     #[serde(default = "default_max_attempts")]
     pub max_attempts: u32,
+    /// Writers one lane may have at once (`lanes::seat`).
+    #[serde(default = "default_max_seats")]
+    pub max_seats: usize,
     #[serde(default)]
     pub check_profiles: std::collections::BTreeMap<String, crate::check_profiles::RepositoryChecks>,
     #[serde(default)]
@@ -265,6 +276,7 @@ mod tests {
             workspace: "dev-app".to_string(),
             max_agents: 3,
             max_attempts: crate::task::DEFAULT_MAX_ATTEMPTS,
+            max_seats: crate::task::DEFAULT_MAX_SEATS,
             check_profiles: Default::default(),
             lanes: Vec::new(),
             routing: Default::default(),
