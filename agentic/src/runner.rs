@@ -114,7 +114,7 @@ fn user_endpoint(runtime_dir: Option<&str>) -> Result<String> {
     Ok(format!("unix://{runtime_dir}/docker.sock"))
 }
 
-fn runtime_dir() -> Option<String> {
+pub(crate) fn runtime_dir() -> Option<String> {
     let uid = unsafe { libc::geteuid() };
     runtime_dir_from(
         std::env::var("XDG_RUNTIME_DIR").ok(),
@@ -635,7 +635,8 @@ pub fn forget(task: &Task, agent: &str) -> Result<()> {
 pub fn prune(task: &Task) -> Result<Vec<String>> {
     let state = task.state()?;
     let can_run = |id: &str| {
-        state.restart_on_next_account.contains(id)
+        (id == crate::preview::WORKER && state.preview.is_some())
+            || state.restart_on_next_account.contains(id)
             || state
                 .agent(id)
                 .is_some_and(|agent| agent.live || agent.lost || agent.unavailable)

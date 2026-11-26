@@ -12,6 +12,17 @@ use crate::task::Task;
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// A running preview in one line: its addresses and the time it has left.
+pub fn preview_line(preview: &crate::preview::Preview) -> String {
+    let minutes = preview.until.saturating_sub(crate::log::now()) / 60;
+    format!(
+        "{} · {}h{:02} left",
+        preview.urls().join(" · "),
+        minutes / 60,
+        minutes % 60
+    )
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Board {
     pub task: String,
@@ -35,6 +46,9 @@ pub struct Board {
     pub steps: Vec<StepRow>,
     /// The plan's parts and their items in plain words: the PLAN view.
     pub plan: Vec<crate::board_plan::PlanPart>,
+    /// The preview the team started for you: where to open it and how long
+    /// it has left (`http://127.0.0.1:13000 · 3h40 left`).
+    pub preview: Option<String>,
     /// Full context keyed by stable row identity; presentation never truncates this.
     pub details: BTreeMap<String, String>,
     pub accounts: Vec<Account>,
@@ -731,6 +745,7 @@ impl Board {
             progress: Progress::of(&state),
             steps: state.steps.iter().map(step_row).collect(),
             plan: crate::board_plan::parts(&state),
+            preview: state.preview.as_ref().map(preview_line),
             details,
             task: config.id,
             branch: config.branch,

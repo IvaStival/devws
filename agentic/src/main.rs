@@ -33,6 +33,7 @@ mod orders;
 mod panel_view;
 mod performance;
 mod plans;
+mod preview;
 mod providers;
 mod prs;
 mod questions;
@@ -90,6 +91,9 @@ enum Command {
         #[arg(long)]
         model: Option<String>,
     },
+    /// A task's preview forwarder: 127.0.0.1 ports to the preview's sockets
+    #[command(hide = true)]
+    PreviewForward { task: String },
     /// A reviewed leader on OpenCode, started by devws's agent runner
     #[command(hide = true)]
     OpencodeLeader {
@@ -576,6 +580,7 @@ fn run() -> Result<()> {
             agent,
             identity,
         } => worker_tools::mcp(&open(&task)?, &agent, &identity)?,
+        Command::PreviewForward { task } => preview::forward(&open(&task)?)?,
         Command::OpencodeLeader {
             task,
             command,

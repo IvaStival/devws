@@ -1031,6 +1031,15 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
         entries.push(Entry::section("NEEDS YOU", Some(needs_you.len())));
         entries.append(&mut needs_you);
     }
+    if let Some(preview) = &board.preview {
+        entries.push(Entry::section("PREVIEW", None));
+        entries.push(Entry::text(
+            "preview".into(),
+            format!("◆ {preview}"),
+            format!("The app the team started for you to look at: {preview}. Open it in your browser; it listens on this machine only (127.0.0.1)."),
+            false,
+        ));
+    }
 
     // The CTO (the leader, and any agent of its group), then the seniors and
     // the floor, each a card of its own. What they cost is in the USAGE card.
