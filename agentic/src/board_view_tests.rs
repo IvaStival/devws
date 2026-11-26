@@ -1685,3 +1685,78 @@ fn the_plan_view_says_what_each_code_builds_and_what_serves_it_now() {
         );
     }
 }
+
+#[test]
+fn the_overview_says_what_is_being_built_now_in_plain_words() {
+    use crate::board_plan::{Helper, PlanItem, PlanPart};
+    let mut board = board();
+    let item = |id: &str, title: &str, status| PlanItem {
+        id: id.into(),
+        title: title.into(),
+        status,
+        agent: None,
+        behavior: vec![],
+        acceptance: vec![],
+        dependencies: vec![],
+        tests: None,
+        helpers: vec![],
+    };
+    let mut e1 = item("E1", "Remove legacy observations UI", None);
+    e1.helpers = vec![Helper {
+        step: "E1-plan-refresh".into(),
+        title: "Re-check the E1 plan".into(),
+        agent: Some("planner-20".into()),
+    }];
+    board.plan = vec![
+        PlanPart {
+            id: "D".into(),
+            version: "1.134.0".into(),
+            title: "Ledger workspaces".into(),
+            items: vec![item("D6", "Ledger runbook", Some(StepStatus::Accepted))],
+        },
+        PlanPart {
+            id: "E".into(),
+            version: "1.135.0".into(),
+            title: "Retire observations UI".into(),
+            items: vec![
+                item("E0", "Already done", Some(StepStatus::Accepted)),
+                e1,
+                item("E2", "Remove dead read APIs", None),
+            ],
+        },
+    ];
+
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let labels: Vec<_> = rows.iter().map(|row| row.label.as_str()).collect();
+    let card = labels
+        .iter()
+        .position(|label| label.starts_with("BUILDING"))
+        .expect("a BUILDING card");
+    assert_eq!(
+        &labels[card..card + 4],
+        [
+            "BUILDING · E 1/3 · Retire observations UI",
+            "· E1  Remove legacy observations UI",
+            "   now: E1-plan-refresh · planner-20",
+            "· E2  Remove dead read APIs",
+        ],
+        "the first unfinished part, its unfinished items only"
+    );
+}
+
+#[test]
+fn a_narrow_header_still_names_every_view() {
+    let board = board();
+    let nav = Navigation::new(View::Overview);
+    let text: String = header(&board, &nav, 63, None)
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+        .collect();
+    for view in View::ALL {
+        assert!(
+            text.contains(view.name()),
+            "{} missing from {text:?}",
+            view.name()
+        );
+    }
+}

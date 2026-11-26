@@ -137,7 +137,9 @@ before the board draws again.
 
 Use Tab / Shift-Tab to move between six views:
 
-- **Overview** shows what needs you, the team and the work done.
+- **Overview** shows what needs you, what is being built (the BUILDING card: the
+  first part of the plan not done yet and its items still to do, in plain
+  words), the team and the work done.
 - **Agents** lists running and lost agents by group. `c` also shows the inactive
   role catalog. Each row distinguishes pane activity from its current order.
 - **Plan** explains the plan's codes: each part (`D`: its release and what it
