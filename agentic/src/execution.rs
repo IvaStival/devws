@@ -1519,11 +1519,11 @@ pub fn user_approval_needed(approved: &Application, proposal: &Application) -> O
         || approved.non_goals != proposal.non_goals
         || approved.decisions != proposal.decisions
         || approved.scopes != proposal.scopes
-        || approved.milestones != proposal.milestones
     {
-        return Some(
-            "it changes the plan (goal, non-goals, decisions, scopes or milestones)".into(),
-        );
+        return Some("it changes the plan (goal, non-goals, decisions or scopes)".into());
+    }
+    if let Some(why) = milestones_changed(&approved.milestones, &proposal.milestones) {
+        return Some(why);
     }
     for (repo, old) in &approved.check_configuration {
         let Some(new) = proposal.check_configuration.get(repo) else {
@@ -1531,6 +1531,191 @@ pub fn user_approval_needed(approved: &Application, proposal: &Application) -> O
         };
         if let Some(why) = weakened(old, new) {
             return Some(format!("it {why} in {repo}"));
+        }
+    }
+    None
+}
+
+/// What a proposal changes from the approved baseline, a line each, in the
+/// words the board and the user read: the items it adds (lane, kind, rigor,
+/// the files it may change and what it must not do), changes or removes, and
+/// the plan, milestone and check changes. The facts behind an approval
+/// question, so it never rests on the leader's summary alone.
+pub fn changes(approved: &Application, proposal: &Application) -> Vec<String> {
+    let mut lines = Vec::new();
+    if approved.goal != proposal.goal {
+        lines.push(format!("Changes the goal to: {}", proposal.goal));
+    }
+    if approved.non_goals != proposal.non_goals {
+        lines.push(format!(
+            "Changes the non-goals to: {}",
+            proposal.non_goals.join("; ")
+        ));
+    }
+    for decision in &proposal.decisions {
+        match approved.decisions.iter().find(|old| old.id == decision.id) {
+            None => lines.push(format!("Adds the decision {}", decision.id)),
+            Some(old) if old != decision => {
+                lines.push(format!("Changes the decision {}", decision.id))
+            }
+            Some(_) => {}
+        }
+    }
+    for decision in &approved.decisions {
+        if !proposal.decisions.iter().any(|new| new.id == decision.id) {
+            lines.push(format!("Removes the decision {}", decision.id));
+        }
+    }
+    if approved.scopes != proposal.scopes {
+        lines.push("Changes the scopes".into());
+    }
+    for (id, item) in &proposal.items {
+        let Some(old) = approved.items.get(id) else {
+            let rigor = proposal
+                .routing(id, 0)
+                .map_or_else(|_| String::new(), |routing| word(&routing.rigor));
+            let mut line = format!(
+                "Adds {id} ({} lane, {}, {rigor}): {}. May change: {}",
+                item.lane,
+                word(&item.kind),
+                item.title,
+                files(&item.allowed)
+            );
+            if !item.non_goals.is_empty() {
+                line.push_str(&format!(". Must not: {}", item.non_goals.join("; ")));
+            }
+            lines.push(line);
+            continue;
+        };
+        let changed: Vec<&str> = [
+            ("title", old.title != item.title),
+            ("files", old.allowed != item.allowed),
+            ("behavior", old.behavior != item.behavior),
+            ("acceptance", old.acceptance != item.acceptance),
+            ("dependencies", old.dependencies != item.dependencies),
+            (
+                "protected tests",
+                old.protected_tests != item.protected_tests,
+            ),
+            ("kind", old.kind != item.kind),
+            ("rigor", old.rigor != item.rigor),
+            ("limits", old.non_goals != item.non_goals),
+        ]
+        .into_iter()
+        .filter_map(|(field, differs)| differs.then_some(field))
+        .collect();
+        if !changed.is_empty() {
+            lines.push(format!(
+                "Changes {id} ({}): its {}",
+                item.title,
+                changed.join(", ")
+            ));
+        }
+    }
+    for (id, item) in &approved.items {
+        if !proposal.items.contains_key(id) {
+            lines.push(format!("Removes {id} ({})", item.title));
+        }
+    }
+    for (id, milestone) in &proposal.milestones {
+        let Some(old) = approved.milestones.get(id) else {
+            lines.push(format!("Adds the milestone {id} ({})", milestone.title));
+            continue;
+        };
+        for item in milestone
+            .required
+            .iter()
+            .filter(|item| !old.required.contains(item))
+        {
+            lines.push(format!(
+                "Adds {item} to the milestone {id} ({})",
+                milestone.title
+            ));
+        }
+        for item in old
+            .required
+            .iter()
+            .filter(|item| !milestone.required.contains(item))
+        {
+            lines.push(format!(
+                "Takes {item} out of the milestone {id} ({})",
+                milestone.title
+            ));
+        }
+        if old.title != milestone.title || old.version != milestone.version {
+            lines.push(format!("Changes the milestone {id} ({})", milestone.title));
+        }
+    }
+    for (id, milestone) in &approved.milestones {
+        if !proposal.milestones.contains_key(id) {
+            lines.push(format!("Removes the milestone {id} ({})", milestone.title));
+        }
+    }
+    for repo in approved
+        .check_configuration
+        .keys()
+        .chain(proposal.check_configuration.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        if approved.check_configuration.get(repo) != proposal.check_configuration.get(repo) {
+            lines.push(format!("Changes {repo}'s checks"));
+        }
+    }
+    lines
+}
+
+/// A kind's or rigor's name as it is written (`bugfix`, `strict`).
+fn word(value: &impl Serialize) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// Up to four file globs, then how many more.
+fn files(globs: &[String]) -> String {
+    if globs.is_empty() {
+        return "any file".into();
+    }
+    let shown = globs.iter().take(4).cloned().collect::<Vec<_>>().join(", ");
+    match globs.len() {
+        0..=4 => shown,
+        count => format!("{shown} and {} more", count - 4),
+    }
+}
+
+/// What a milestone change takes from what you approved, if anything. Items
+/// and dependencies added to a milestone make it harder to finish, like a new
+/// step: those are fine. A milestone added, removed or renamed, or an item
+/// taken out of one, changes what is delivered.
+fn milestones_changed(
+    old: &BTreeMap<String, Milestone>,
+    new: &BTreeMap<String, Milestone>,
+) -> Option<String> {
+    if let Some(id) = new.keys().find(|id| !old.contains_key(*id)) {
+        return Some(format!("it adds the milestone {id}"));
+    }
+    for (id, before) in old {
+        let Some(after) = new.get(id) else {
+            return Some(format!("it removes the milestone {id}"));
+        };
+        if let Some(item) = before
+            .required
+            .iter()
+            .find(|item| !after.required.contains(item))
+        {
+            return Some(format!("it takes {item} out of the milestone {id}"));
+        }
+        let kept = before
+            .dependencies
+            .iter()
+            .all(|dependency| after.dependencies.contains(dependency));
+        if before.version != after.version
+            || before.title != after.title
+            || before.release_record != after.release_record
+            || !kept
+        {
+            return Some(format!("it changes the milestone {id}"));
         }
     }
     None
@@ -1898,6 +2083,116 @@ pub mod tests {
         assert_eq!(user_approval_needed(&approved(), &added), None);
     }
 
+    // More work in a milestone makes it harder to finish, not weaker: like a
+    // new step, it is the leader's. Less, or another milestone, is yours.
+    #[test]
+    fn work_added_to_a_milestone_is_the_leaders_and_work_taken_out_is_the_users() {
+        let milestone = approved().milestones.keys().next().unwrap().clone();
+        let added = next(|proposal| {
+            let mut item = proposal.items["S01-B01"].clone();
+            item.title = "Every event key is on its graph".into();
+            proposal.items.insert("S01-B02".into(), item);
+            let found = proposal.milestones.get_mut(&milestone).unwrap();
+            found.required.push("S01-B02".into());
+            found.dependencies.push("S01-B01".into());
+        });
+        assert_eq!(user_approval_needed(&approved(), &added), None);
+
+        let why = |proposal: Application| user_approval_needed(&approved(), &proposal).unwrap();
+        let taken_out = why(next(|proposal| {
+            proposal
+                .milestones
+                .get_mut(&milestone)
+                .unwrap()
+                .required
+                .clear();
+        }));
+        assert!(
+            taken_out.contains(&format!("takes S01-B01 out of the milestone {milestone}")),
+            "{taken_out}"
+        );
+        let removed = why(next(|proposal| {
+            proposal.milestones.clear();
+        }));
+        assert!(
+            removed.contains(&format!("removes the milestone {milestone}")),
+            "{removed}"
+        );
+        let renamed = why(next(|proposal| {
+            proposal.milestones.get_mut(&milestone).unwrap().title = "Another".into();
+        }));
+        assert!(
+            renamed.contains(&format!("changes the milestone {milestone}")),
+            "{renamed}"
+        );
+        let another = why(next(|proposal| {
+            let copy = proposal.milestones[&milestone].clone();
+            proposal.milestones.insert("9.9.0".into(), copy);
+        }));
+        assert!(another.contains("adds the milestone 9.9.0"), "{another}");
+    }
+
+    #[test]
+    fn a_proposals_changes_are_listed_in_plain_lines() {
+        let milestone = approved().milestones.keys().next().unwrap().clone();
+        let title = approved().milestones[&milestone].title.clone();
+        let proposal = next(|proposal| {
+            let mut item = proposal.items["S01-B01"].clone();
+            item.title = "Every event key is on its graph".into();
+            item.kind = WorkKind::Bugfix;
+            item.allowed = (1..=6)
+                .map(|n| format!("backend/app/Flow/F{n}.php"))
+                .collect();
+            item.non_goals = vec!["No schema change".into()];
+            proposal.items.insert("R10".into(), item);
+            proposal
+                .milestones
+                .get_mut(&milestone)
+                .unwrap()
+                .required
+                .push("R10".into());
+            proposal
+                .items
+                .get_mut("S01-B01")
+                .unwrap()
+                .acceptance
+                .push("One more".into());
+        });
+        let lines = changes(&approved(), &proposal);
+        let added = lines
+            .iter()
+            .find(|line| line.starts_with("Adds R10 "))
+            .unwrap();
+        assert!(added.contains("lane, bugfix, "), "{added}");
+        assert!(
+            added.contains(": Every event key is on its graph."),
+            "{added}"
+        );
+        assert!(
+            added.contains("May change: backend/app/Flow/F1.php, backend/app/Flow/F2.php, backend/app/Flow/F3.php, backend/app/Flow/F4.php and 2 more"),
+            "{added}"
+        );
+        assert!(added.ends_with("Must not: No schema change"), "{added}");
+        assert!(
+            lines.contains(&format!("Adds R10 to the milestone {milestone} ({title})")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("Changes S01-B01 (")
+                    && line.ends_with("its acceptance")),
+            "{lines:?}"
+        );
+        assert_eq!(lines.len(), 3, "nothing else changed: {lines:?}");
+        assert!(changes(&approved(), &approved()).is_empty());
+        let removed = changes(
+            &approved(),
+            &next(|proposal| proposal.goal = "Another".into()),
+        );
+        assert_eq!(removed, ["Changes the goal to: Another"]);
+    }
+
     #[test]
     fn a_plan_change_or_a_weaker_check_is_the_users() {
         let why = |proposal: Application| user_approval_needed(&approved(), &proposal).unwrap();
@@ -1917,7 +2212,7 @@ pub mod tests {
             why(next(|proposal| {
                 proposal.milestones.values_mut().next().unwrap().title = "Another".into();
             }))
-            .contains("changes the plan")
+            .contains("changes the milestone")
         );
         let mut guarded = approved();
         guarded.items.get_mut("S01-B01").unwrap().protected_tests =

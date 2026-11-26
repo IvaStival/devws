@@ -167,10 +167,10 @@ a container on its own snapshot. Its edits become real only through
 | Decision | Who | How |
 |---|---|---|
 | The first baseline | you | the leader asks; `confirm` + `approve` after your yes |
-| Goal, non-goals, decisions, scopes, milestones | you | same |
+| Goal, non-goals, decisions, scopes; a milestone added, removed or renamed, or an item taken out of one | you | same; the board shows what the revision changes under NEEDS YOU |
 | Removing an item, taking protected tests away, changing whether an item writes tests | you | same |
 | Weakening a check (changing or removing one you approved) | you | same |
-| How a step is carried out (its files, behavior, acceptance details, tests), new steps, new checks | leader | approves itself, tells you in its next summary |
+| How a step is carried out (its files, behavior, acceptance details, tests), new steps, more work in a milestone, new checks | leader | approves itself, tells you in its next summary |
 | More attempts for a step | leader | `allow_attempts` with the cause; you can also run `devagentics task attempts` |
 | Retrying a step for the same cause with the same approach | you | `devagentics task attempts` lets one order through; otherwise the leader changes the approach or closes the step |
 | Workers past the 95% usage guard | you | `set_usage_limit_approval` records your answer |

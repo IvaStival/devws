@@ -18,6 +18,7 @@ pub(crate) fn board() -> Board {
         steps: vec![],
         plan: vec![],
         preview: None,
+        approval: None,
         details: Default::default(),
         phase: "Approved".into(),
         summary: "Plan approved. 1 working.".into(),
@@ -1761,6 +1762,52 @@ fn a_narrow_header_still_names_every_view() {
         );
     }
 }
+#[test]
+fn a_revision_waiting_for_you_shows_what_it_changes() {
+    let mut board = board();
+    board.approval = Some(crate::board::Approval {
+        revision: 49,
+        why: "it changes the plan (goal, non-goals, decisions or scopes)".into(),
+        changes: vec![
+            "Adds R10 (back lane, bugfix, strict): Every event key is on its graph. May change: backend/app/Flow/**".into(),
+            "Changes the goal to: Watch every system".into(),
+        ],
+    });
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let row = rows.iter().find(|entry| entry.id == "approval:49").unwrap();
+    assert_eq!(
+        row.label,
+        "◆ revision 49 waits for your yes or no (2 changes)"
+    );
+    assert!(
+        row.detail
+            .contains("Revision 49 needs you: it changes the plan"),
+        "{}",
+        row.detail
+    );
+    assert!(
+        row.detail
+            .contains("- Adds R10 (back lane, bugfix, strict)"),
+        "{}",
+        row.detail
+    );
+    assert!(
+        row.detail
+            .contains("- Changes the goal to: Watch every system"),
+        "{}",
+        row.detail
+    );
+    let heading = rows
+        .iter()
+        .position(|entry| entry.id == "heading:NEEDS YOU")
+        .unwrap();
+    let at = rows
+        .iter()
+        .position(|entry| entry.id == "approval:49")
+        .unwrap();
+    assert!(heading < at, "it is under NEEDS YOU");
+}
+
 #[test]
 fn the_overview_says_where_to_open_the_preview() {
     let quiet = board();
