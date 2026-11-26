@@ -360,7 +360,9 @@ named like the repo's, under the check configuration's `lanes`:
 ```
 
 In the back lane, `test` runs that command. Its other profiles and the other
-lanes keep the repo's. A milestone runs every lane's own checks too. A change
+lanes keep the repo's. A milestone runs each check in the image of every
+lane that defines it, and a check no lane defines in the repo's image: the
+front lane's `build` never runs in the back lane's image. A change
 that only adds or edits a lane's image waits for that lane's workers alone;
 the other lanes keep working.
 
