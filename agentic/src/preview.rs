@@ -387,33 +387,46 @@ pub fn forward(task: &Task) -> Result<()> {
     }
     let endpoint = docker_endpoint(task)?;
     let mut checked = std::time::Instant::now();
+    let mut is_running = true;
     let why = loop {
         for (listener, socket) in &listeners {
             accept(listener, socket);
         }
-        if crate::log::now() >= preview.until {
-            break "its time is up";
-        }
-        // The state is large: it is read now and then, not on every pass.
+        // Docker is asked now and then, not on every pass.
         if checked.elapsed() >= Duration::from_secs(5) {
             checked = std::time::Instant::now();
-            let ours = task
-                .state()?
-                .preview
-                .is_some_and(|now| now.container == preview.container);
-            if !ours {
-                // Stopped by preview_stop or a cancel, which cleaned up.
-                return Ok(());
-            }
-            if !running(&endpoint, &preview.container) {
-                break "its container exited";
-            }
+            is_running = running(&endpoint, &preview.container);
+        }
+        if let Some(why) = reason_to_stop(crate::log::now(), preview.until, is_running) {
+            break why;
         }
         std::thread::sleep(Duration::from_millis(100));
     };
     drop(listeners);
-    stop(task, why)?;
+    if !stop(task, why)? {
+        // The state lost its record: this forwarder still knows the container.
+        let _ = crate::runner::docker(&endpoint)
+            .args(["stop", "--time=10", &preview.container])
+            .output();
+        match std::fs::remove_dir_all(&sockets) {
+            Err(error) if error.kind() != ErrorKind::NotFound => return Err(error.into()),
+            _ => {}
+        }
+    }
     Ok(())
+}
+
+/// The forwarder follows its container, not the task state: preview_stop and
+/// a cancel stop the container, and a state saved without the preview (by an
+/// older build) must not leave a running application with nothing listening.
+fn reason_to_stop(now: u64, until: u64, is_running: bool) -> Option<&'static str> {
+    if now >= until {
+        Some("its time is up")
+    } else if !is_running {
+        Some("its container exited")
+    } else {
+        None
+    }
 }
 
 fn running(endpoint: &str, container: &str) -> bool {
@@ -624,6 +637,13 @@ mod tests {
             error.contains("already runs at http://127.0.0.1:13000"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn the_forwarder_stops_with_its_container_or_its_time_only() {
+        assert_eq!(reason_to_stop(10, 20, true), None);
+        assert_eq!(reason_to_stop(20, 20, true), Some("its time is up"));
+        assert_eq!(reason_to_stop(10, 20, false), Some("its container exited"));
     }
 
     #[test]
