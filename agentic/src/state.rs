@@ -177,6 +177,10 @@ pub struct Agent {
     /// The lane it writes in, when the task has lanes.
     #[serde(default)]
     pub lane: Option<String>,
+    /// Its seat in that lane: 2 and up are worktrees of their own beside the
+    /// lane's (`lanes::seat`); 0 (older states) and 1 are the lane's own.
+    #[serde(default)]
+    pub seat: u32,
     /// Its panel is there.
     pub live: bool,
     /// Startup alternatives were exhausted or rejected; explicit resume may retry.
@@ -318,6 +322,17 @@ pub struct Message {
 }
 
 impl Agent {
+    /// Its lane as people read it: `front`, or `front · seat 2` for a seat
+    /// beside the lane's own worktree.
+    pub fn place(&self) -> Option<String> {
+        let lane = self.lane.as_deref()?;
+        Some(if self.seat > 1 {
+            format!("{lane} · seat {}", self.seat)
+        } else {
+            lane.to_string()
+        })
+    }
+
     pub fn group(&self) -> Group {
         self.group.unwrap_or(if self.writes {
             Group::Floor

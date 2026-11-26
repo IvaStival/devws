@@ -439,7 +439,7 @@ impl Board {
                 number: None,
                 id: agent.id.clone(),
                 pane: agent.pane.clone(),
-                lane: agent.lane.clone(),
+                lane: agent.place(),
                 state: pane_state,
                 now: state
                     .open_order_of(&agent.id)
@@ -638,7 +638,7 @@ impl Board {
                 agent.id,
                 agent.role,
                 agent.repo,
-                agent.lane.as_deref().unwrap_or("—"),
+                agent.place().as_deref().unwrap_or("—"),
                 agent.ready
             );
             if let Some(order) = order {

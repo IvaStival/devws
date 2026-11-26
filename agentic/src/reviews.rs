@@ -190,16 +190,15 @@ fn check_candidate_first(
         .steps
         .iter()
         .any(|step| step.id == order.step && step.status == StepStatus::Reported);
-    let Some(lane) = state
-        .agent(&order.agent)
-        .and_then(|author| author.lane.clone())
-    else {
+    let Some(author) = state.agent(&order.agent) else {
+        return Ok(None);
+    };
+    let Some(lane) = crate::lanes::of_agent(task, author)? else {
         return Ok(None);
     };
     if !reported {
         return Ok(None);
     }
-    let lane = crate::lanes::get(task, &lane)?;
     let candidate = crate::integration::candidate(task, &lane)?;
     let Some(evidence) = crate::integration::check_candidate(
         task,
@@ -419,13 +418,8 @@ fn bind(
         .context("unknown repo")?
         .clone();
     let target = checks::head(&repo.worktree)?;
-    let lane = crate::lanes::get(
-        task,
-        author
-            .lane
-            .as_deref()
-            .context("reviewed implementation requires an isolated lane")?,
-    )?;
+    let lane = crate::lanes::of_agent(task, author)?
+        .context("reviewed implementation requires an isolated lane")?;
     let candidate = crate::integration::candidate(task, &lane)?;
     let candidate_evidence = match checked {
         Some(evidence) => {

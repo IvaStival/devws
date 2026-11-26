@@ -191,6 +191,62 @@ fn read_source(
     ))
 }
 
+/// Work in `lane` not merged yet whose files may overlap `allowed`, with its
+/// writer: two seats write at once only apart. An order for `step` itself
+/// is left out: a new order for that step takes its work over.
+pub fn overlapping_orders<'s>(
+    state: &'s crate::state::State,
+    lane: &str,
+    step: &str,
+    allowed: &[String],
+) -> Vec<(&'s crate::state::Order, &'s crate::state::Agent)> {
+    state
+        .orders
+        .iter()
+        .enumerate()
+        .filter_map(|(index, order)| {
+            let author = state.agent(&order.agent)?;
+            let in_lane = author.writes && author.lane.as_deref() == Some(lane);
+            // A step's newest order holds its work; older ones were retried.
+            let newest = !state.orders[index + 1..]
+                .iter()
+                .any(|later| later.step == order.step);
+            let merged = state.steps.iter().any(|found| {
+                found.id == order.step
+                    && matches!(found.status, StepStatus::Accepted | StepStatus::Closed)
+            });
+            (in_lane
+                && newest
+                && !merged
+                && order.step != step
+                && !checks::disjoint(allowed, &order.allowed))
+            .then_some((order, author))
+        })
+        .collect()
+}
+
+/// The first such work in another seat than the writer's: its own seat's
+/// work is in the same worktree, one step after the other.
+fn overlapping_work<'s>(
+    state: &'s crate::state::State,
+    writer: &crate::state::Agent,
+    step: &str,
+    allowed: &[String],
+) -> Option<&'s crate::state::Order> {
+    overlapping_orders(state, writer.lane.as_deref()?, step, allowed)
+        .into_iter()
+        .find(|(_, author)| author.seat.max(1) != writer.seat.max(1))
+        .map(|(order, _)| order)
+}
+
+fn globs_text(globs: &[String]) -> String {
+    if globs.is_empty() {
+        "any file".to_string()
+    } else {
+        globs.join(", ")
+    }
+}
+
 pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
     validate_paths("read", &request.read)?;
     validate_paths("targets", &request.targets)?;
@@ -230,11 +286,7 @@ pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
     };
     // A lane's agent: its lane takes the other lanes' accepted work first,
     // and its files are the lane's unless the order narrows them.
-    let lane = agent
-        .lane
-        .as_deref()
-        .map(|name| crate::lanes::get(task, name))
-        .transpose()?;
+    let lane = crate::lanes::of_agent(task, &agent)?;
     if let Some(lane) = &lane
         && task.state()?.open_order_of(&agent.id).is_none()
     {
@@ -292,6 +344,19 @@ pub fn send_order(task: &Task, mut request: OrderRequest) -> Result<String> {
                 "{} still has order {} open: wait for its report",
                 agent.id,
                 open.id
+            );
+        }
+        if let Some(other) = overlapping_work(&tx.state, &agent, &request.step, &allowed) {
+            bail!(
+                "{} can't run next to {} ({}, {}) in the lane {}: their files may overlap ({} and {}). Send it after {} is accepted, or narrow the files so they part at a folder",
+                request.step,
+                other.id,
+                other.step,
+                other.agent,
+                agent.lane.as_deref().unwrap_or_default(),
+                globs_text(&allowed),
+                globs_text(&other.allowed),
+                other.step
             );
         }
         // Its snapshot is taken from there when the order is delivered
@@ -464,6 +529,19 @@ pub fn amend(
         added.retain(|path| !order.allowed.contains(path));
         if added.is_empty() {
             return Ok("No change: paths are already allowed.".into());
+        }
+        // Wider files must still be apart from another seat's work.
+        let widened: Vec<String> = order.allowed.iter().chain(&added).cloned().collect();
+        if let Some(other) = overlapping_work(&tx.state, agent, &order.step, &widened) {
+            bail!(
+                "{} can't widen to {} next to {} ({}, {}) in the same lane: their files may overlap. Amend it after {} is accepted",
+                id,
+                globs_text(&added),
+                other.id,
+                other.step,
+                other.agent,
+                other.step
+            );
         }
         let revision = tx.state.revision(id) + 1;
         tx.state.order_revisions.insert(id.into(), revision);
@@ -978,15 +1056,18 @@ pub fn accept_step(task: &Task, step: &str) -> Result<()> {
         .steps
         .iter()
         .any(|found| found.id == step && found.status == StepStatus::Reported);
-    let lane = state
+    let author = state
         .orders
         .iter()
         .rev()
         .find(|order| order.step == step)
-        .and_then(|order| state.agent(&order.agent))
-        .and_then(|agent| agent.lane.as_deref());
+        .and_then(|order| state.agent(&order.agent));
+    let lane = author
+        .map(|author| crate::lanes::of_agent(task, author))
+        .transpose()?
+        .flatten();
     if let (true, Some(lane)) = (reported, lane) {
-        crate::lanes::merge_into_task(task, &crate::lanes::get(task, lane)?, step)?;
+        crate::lanes::merge_into_task(task, &lane, step)?;
     }
     task.transaction(|tx| {
         let found = tx
@@ -1221,6 +1302,7 @@ mod tests {
             workspace: "dev-app".to_string(),
             max_agents: 3,
             max_attempts: 3,
+            max_seats: crate::task::DEFAULT_MAX_SEATS,
             check_profiles: Default::default(),
             lanes: Vec::new(),
             routing: Default::default(),
@@ -1243,6 +1325,7 @@ mod tests {
                 writes: true,
                 group: None,
                 lane: None,
+                seat: 0,
                 live: true,
                 unavailable: false,
                 ready: true,

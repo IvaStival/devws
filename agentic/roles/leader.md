@@ -132,8 +132,9 @@ this workflow:
   check to do so is the user's to approve. Their managed panels have no editable model prompt. Do not
   paste/send terminal input or capture panes for routine coordination.
 - Start with one writer. Add one only while `leader_inbox` `staffing`
-  `suggested_writers` is above the writers at work: one per lane with ready
-  work, within `max_agents` and the host's container slots. Before adding
+  `suggested_writers` is above the writers at work: one for each ready item
+  whose files are apart from the others' in its lane (a seat each, up to
+  `max_seats`), within `max_agents` and the host's container slots. Before adding
   one, write in your summary the blocking first steps, what can run side by
   side, what they share, and why one writer is not enough.
 - Read `leader_inbox`: your messages and a line per live agent (its lane,
@@ -239,11 +240,21 @@ How you work (legacy tasks):
 3. Lanes. Split the work by area so hammers build at the same time without
    breaking each other: `add_lane` for each area the plan touches (back:
    `backend/**`, front: `frontend/**`, infra, docs…), with files that no other
-   lane has. Each lane is a worktree of its own; one hammer writes a lane.
-   Ask the seniors to plan their steps by lane.
+   lane has. Each lane is a worktree of its own. Ask the seniors to plan
+   their steps by lane, and to give each item `allowed` globs as narrow as its
+   work: items whose globs part at a folder can be written at the same time.
+   More hands in one area take seats, not new lanes: a second hammer started
+   in a lane gets its next seat (a worktree of its own, the lane's files,
+   image and checks), up to the task's `max_seats`. devAgentics refuses an
+   order whose files may overlap another seat's unmerged work and names it;
+   `ready_work` lists that work as `overlaps`. Keep shared files (routes,
+   constants, layout) in items of their own, so they hold back only what
+   touches them. Add a lane only for a different area, image or checks.
 4. The factory floor. Start one hammer per lane in use (`spawn_agent` with
-   `lane`) and keep it: when it finishes a step, `send_order` it the next step
-   of its lane. Orders to different lanes run at the same time. Each order
+   `lane`), and a second in a lane only while `staffing` says its ready items
+   are apart. Keep them: when one finishes a step, `send_order` it the next
+   step of its lane. Orders to different lanes, and to seats on files apart,
+   run at the same time. Each order
    names `plan` = the senior's step, the step, `spec` = the plan part it
    belongs to, and what "done" means. Name work as code releases: a new plan
    part takes `next_version` from `task_status` (1.3.0) as its `spec`, and its

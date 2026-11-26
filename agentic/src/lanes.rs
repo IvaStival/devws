@@ -58,20 +58,7 @@ pub fn add(task: &Task, name: &str, globs: &[String], repo_name: Option<&str>) -
     .clone();
     let branch = format!("{}--{name}", config.branch);
     let worktree = task.dir().join("lanes").join(name);
-    if !worktree.exists() {
-        let path = worktree.to_string_lossy().into_owned();
-        let has_branch = !git(&repo.worktree, &["branch", "--list", &branch])?
-            .trim()
-            .is_empty();
-        if has_branch {
-            git(&repo.worktree, &["worktree", "add", &path, &branch])?;
-        } else {
-            git(
-                &repo.worktree,
-                &["worktree", "add", "-b", &branch, &path, "HEAD"],
-            )?;
-        }
-    }
+    open_worktree(&repo.worktree, &branch, &worktree)?;
     let lane = Lane {
         name: name.to_string(),
         repo: repo.name.clone(),
@@ -98,12 +85,67 @@ pub fn add(task: &Task, name: &str, globs: &[String], repo_name: Option<&str>) -
     Ok(lane)
 }
 
+/// A worktree on `branch` at `path`, from the task's branch when the branch
+/// is new; one that is there already is kept as it is.
+fn open_worktree(repo: &Path, branch: &str, path: &Path) -> Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    let path = path.to_string_lossy().into_owned();
+    let has_branch = !git(repo, &["branch", "--list", branch])?.trim().is_empty();
+    if has_branch {
+        git(repo, &["worktree", "add", &path, branch])?;
+    } else {
+        git(repo, &["worktree", "add", "-b", branch, &path, "HEAD"])?;
+    }
+    Ok(())
+}
+
 pub fn get(task: &Task, name: &str) -> Result<Lane> {
     Ok(find(&task.config()?.lanes, name)?.clone())
 }
 
-/// Where an agent works: its lane's worktree, or its repo's. The repo's check
-/// goes with it.
+/// Seat `number` of a lane: one more writer's worktree, on a branch of its
+/// own, with the lane's name, repo and files, so its checks, image and plan
+/// items are the lane's. Seats 0 and 1 are the lane itself. A lane's name
+/// has no dot, so `front.2` is never another lane's.
+pub fn seat(task: &Task, lane: &Lane, number: u32) -> Lane {
+    if number <= 1 {
+        return lane.clone();
+    }
+    Lane {
+        branch: format!("{}.{number}", lane.branch),
+        worktree: task
+            .dir()
+            .join("lanes")
+            .join(format!("{}.{number}", lane.name)),
+        ..lane.clone()
+    }
+}
+
+/// The seat's worktree, made from the task's branch the first time.
+pub fn open_seat(task: &Task, lane: &Lane, number: u32) -> Result<Lane> {
+    let seat = seat(task, lane, number);
+    let config = task.config()?;
+    let repo = config
+        .repos
+        .iter()
+        .find(|repo| repo.name == lane.repo)
+        .with_context(|| format!("the task has no repo {}", lane.repo))?;
+    open_worktree(&repo.worktree, &seat.branch, &seat.worktree)?;
+    Ok(seat)
+}
+
+/// The lane an agent writes in, as its own seat sees it.
+pub fn of_agent(task: &Task, agent: &Agent) -> Result<Option<Lane>> {
+    let Some(name) = &agent.lane else {
+        return Ok(None);
+    };
+    Ok(Some(seat(task, &get(task, name)?, agent.seat)))
+}
+
+/// Where an agent works: its seat's worktree in its lane, or its repo's. The
+/// repo's check goes with it.
 pub fn workplace(task: &Task, agent: &Agent) -> Result<Repo> {
     let config = task.config()?;
     let mut repo = config
@@ -112,8 +154,8 @@ pub fn workplace(task: &Task, agent: &Agent) -> Result<Repo> {
         .find(|repo| repo.name == agent.repo)
         .with_context(|| format!("the task has no repo {}", agent.repo))?
         .clone();
-    if let Some(name) = &agent.lane {
-        repo.worktree = find(&config.lanes, name)?.worktree.clone();
+    if let Some(lane) = of_agent(task, agent)? {
+        repo.worktree = lane.worktree;
     }
     Ok(repo)
 }
@@ -378,11 +420,20 @@ mod tests {
         let two = team
             .spawn_agent_in("executor", None, Some("front"))
             .unwrap();
+        let second = team.spawn_agent_in("executor", None, Some("back")).unwrap();
+        assert_eq!(
+            second.seat, 2,
+            "a second writer in a lane takes its next seat"
+        );
         let error = team
             .spawn_agent_in("executor", None, Some("back"))
             .unwrap_err()
             .to_string();
-        assert!(error.contains("already writes in the lane back"), "{error}");
+        assert!(
+            error.contains("3 writers are running"),
+            "max_agents still caps every writer: {error}"
+        );
+        team.stop_agent(&second.id).unwrap();
         assert!(
             devws
                 .calls()
@@ -479,6 +530,166 @@ mod tests {
         );
     }
 
+    /// Two writers in one lane: each in a seat of its own, orders only on
+    /// files apart, and both steps merge into the task's branch.
+    #[test]
+    fn two_seats_of_a_lane_write_apart_and_both_merge() {
+        use crate::orders::{OrderRequest, Outcome, accept_step, report, send_order};
+        use crate::state::{ExecutionPlan, Step, StepStatus};
+        use crate::team::Team;
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, repo) = started(&dir);
+        let team = Team {
+            task: &task,
+            home: &home,
+            devws: &devws,
+        };
+        team.write_plan("1. p1\n").unwrap();
+        team.approve().unwrap();
+        task.transaction(|tx| {
+            tx.state.steps.push(Step {
+                id: "p1".into(),
+                title: "plan".into(),
+                status: StepStatus::Accepted,
+                attempts: 1,
+                spec: None,
+                review_since: None,
+            });
+            tx.state.plans.push(ExecutionPlan {
+                step: "p1".into(),
+                author: "planner-1".into(),
+            });
+            Ok(())
+        })
+        .unwrap();
+        let front = add(&task, "front", &["frontend/**".into()], None).unwrap();
+        let one = team
+            .spawn_agent_in("executor", None, Some("front"))
+            .unwrap();
+        let two = team
+            .spawn_agent_in("executor", None, Some("front"))
+            .unwrap();
+        assert_eq!((one.seat, two.seat), (1, 2));
+        let second = seat(&task, &front, 2);
+        assert_eq!(
+            second.name, "front",
+            "a seat is its lane for checks and items"
+        );
+        assert_eq!(second.branch, "feat/x--front.2");
+        assert!(
+            second.worktree.join(".git").exists(),
+            "{:?}",
+            second.worktree
+        );
+        assert_ne!(second.worktree, front.worktree);
+        assert!(
+            devws
+                .calls()
+                .iter()
+                .any(|call| call.ends_with(&format!(" in {}", second.worktree.display()))),
+            "the second writer opens in its seat: {:?}",
+            devws.calls()
+        );
+
+        let order = |agent: &str, step: &str, allowed: &[&str]| {
+            send_order(
+                &task,
+                OrderRequest {
+                    read_lane: None,
+                    diagnosis: None,
+                    read: Vec::new(),
+                    targets: Vec::new(),
+                    profiles: Vec::new(),
+                    agent: agent.into(),
+                    step: step.into(),
+                    title: step.into(),
+                    text: "do it".into(),
+                    allowed: allowed.iter().map(|glob| glob.to_string()).collect(),
+                    forbidden: vec![],
+                    check: Some("true".into()),
+                    plan: Some("p1".into()),
+                    spec: None,
+                },
+            )
+        };
+        order(&one.id, "s1", &["frontend/team/**"]).unwrap();
+        let error = order(&two.id, "s2", &["frontend/**"])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("s2 can't run next to")
+                && error.contains("(s1, executor-1)")
+                && error.contains("frontend/** and frontend/team/**"),
+            "{error}"
+        );
+        order(&two.id, "s2", &["frontend/history/**"]).unwrap();
+        let second_order = task
+            .state()
+            .unwrap()
+            .open_order_of(&two.id)
+            .unwrap()
+            .id
+            .clone();
+        let error = crate::orders::amend(
+            &task,
+            &second_order,
+            vec!["frontend/team/shared.ts".into()],
+            "it needs the rail's type",
+            "leader",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("can't widen to frontend/team/shared.ts next to"),
+            "an amendment stays apart from the other seat: {error}"
+        );
+
+        commit_file(&front.worktree, "frontend/team/rail.ts", "rail\n", "rail");
+        commit_file(
+            &second.worktree,
+            "frontend/history/empty.ts",
+            "empty\n",
+            "empty",
+        );
+        let orders = task
+            .transaction(|tx| {
+                for order in &mut tx.state.orders {
+                    order.delivered = true;
+                }
+                Ok(tx.state.orders.clone())
+            })
+            .unwrap();
+        for (agent, summary) in [(&one, "rail"), (&two, "empty")] {
+            let id = &orders
+                .iter()
+                .find(|order| order.agent == agent.id)
+                .unwrap()
+                .id;
+            report(
+                &task,
+                &agent.pane,
+                id,
+                Outcome::Done,
+                summary,
+                std::time::Duration::from_secs(5),
+            )
+            .unwrap();
+        }
+        accept_step(&task, "s1").unwrap();
+        accept_step(&task, "s2").unwrap();
+        assert!(
+            repo.path().join("frontend/team/rail.ts").exists()
+                && repo.path().join("frontend/history/empty.ts").exists(),
+            "both seats merged into the task's branch"
+        );
+
+        order(&one.id, "s3", &["frontend/history/**"]).unwrap();
+        assert!(
+            front.worktree.join("frontend/history/empty.ts").exists(),
+            "work the other seat merged no longer blocks, and is caught up"
+        );
+    }
+
     /// A lane with a step's edits still uncommitted (a retry of the same
     /// step) takes its next order when it has nothing to catch up with; when
     /// the task's branch moved on, it is refused, and its edits stay.
@@ -511,6 +722,51 @@ mod tests {
     /// A reviewed lane holding its candidate takes what the task's branch got
     /// since (history, other lanes' accepted work), but never a file both
     /// changed: git would combine them into code nobody reviewed.
+    /// What a review binds and merges for a seat's writer is its own seat's
+    /// work: its worktree, and the merge candidate made from it.
+    #[test]
+    fn a_seats_writer_is_reviewed_and_merged_from_its_own_seat() {
+        let dir = TempDir::new().unwrap();
+        let (_home, _devws, task, _repo) = started(&dir);
+        let front = add(&task, "front", &["frontend/**".into()], None).unwrap();
+        let second = open_seat(&task, &front, 2).unwrap();
+        commit_file(
+            &second.worktree,
+            "frontend/history.ts",
+            "seat\n",
+            "seat work",
+        );
+        commit_file(&front.worktree, "frontend/team.ts", "lane\n", "lane work");
+        let writer = Agent {
+            id: "executor-2".into(),
+            role: "executor".into(),
+            agent: "claude".into(),
+            repo: front.repo.clone(),
+            session: String::new(),
+            pane: String::new(),
+            writes: true,
+            group: None,
+            lane: Some("front".into()),
+            seat: 2,
+            live: true,
+            unavailable: false,
+            ready: true,
+            lost: false,
+            usage: None,
+        };
+        assert_eq!(of_agent(&task, &writer).unwrap(), Some(second.clone()));
+        assert_eq!(workplace(&task, &writer).unwrap().worktree, second.worktree);
+        let candidate = crate::integration::candidate(&task, &second).unwrap();
+        assert_eq!(candidate.source, checks::head(&second.worktree).unwrap());
+        assert_ne!(candidate.source, checks::head(&front.worktree).unwrap());
+        assert_eq!(
+            open_seat(&task, &front, 2).unwrap(),
+            second,
+            "an open seat is kept as it is"
+        );
+        assert!(second.worktree.join("frontend/history.ts").exists());
+    }
+
     #[test]
     fn a_reviewed_lane_takes_only_the_teams_history_by_merge() {
         let dir = TempDir::new().unwrap();

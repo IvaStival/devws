@@ -6,7 +6,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 /// Each baseline item: its stage, whether it is assigned, and whether it is
 /// ready to start or what blocks it.
@@ -94,7 +94,17 @@ pub fn ready_work(task: &Task) -> Result<Vec<Value>> {
             .application
             .routing(id, crate::failures::work_failures(&state, id))?
             .under(config.routing);
-        items.push(json!({"id":id,"scope":item.scope,"role":item.role,"lane":item.lane,"kind":routing.kind,"rigor":routing.rigor,"required":routing.rigor.required(),"rigor_why":routing.why,"stage":stage,"assigned":assigned,"reusable_worker":reusable,"ready":reason.is_none(),"blocked":reason}));
+        // Unmerged work in its lane it may not run next to (another seat).
+        let overlaps: Vec<Value> = crate::orders::overlapping_orders(
+            &state,
+            &item.lane,
+            id,
+            &item.allowed,
+        )
+        .into_iter()
+        .map(|(order, author)| json!({"order": order.id, "step": order.step, "agent": author.id}))
+        .collect();
+        items.push(json!({"id":id,"scope":item.scope,"role":item.role,"lane":item.lane,"allowed":item.allowed,"overlaps":overlaps,"kind":routing.kind,"rigor":routing.rigor,"required":routing.rigor.required(),"rigor_why":routing.why,"stage":stage,"assigned":assigned,"reusable_worker":reusable,"ready":reason.is_none(),"blocked":reason}));
     }
     Ok(items)
 }
@@ -522,8 +532,7 @@ fn roster(state: &crate::state::State) -> Vec<String> {
                 "idle"
             };
             let lane = agent
-                .lane
-                .as_deref()
+                .place()
                 .map(|lane| format!(" · lane {lane}"))
                 .unwrap_or_default();
             let step = order.map(|step| format!(" · {step}")).unwrap_or_default();
@@ -546,11 +555,13 @@ pub(crate) fn leader_inbox(task: &Task) -> Result<Value> {
     let ready_not_started: Vec<Value> = ready_work(task)?
         .into_iter()
         .filter(|item| item["ready"] == true && item["assigned"] == false)
-        .map(|item| json!({"id": item["id"], "lane": item["lane"], "rigor": item["rigor"]}))
+        .map(|item| json!({"id": item["id"], "lane": item["lane"], "rigor": item["rigor"], "allowed": item["allowed"], "overlaps": item["overlaps"]}))
         .collect();
+    let config = task.config()?;
     let staffing = staffing(
         &ready_not_started,
-        task.config()?.max_agents,
+        config.max_agents,
+        config.max_seats,
         state.runner.as_ref().map(crate::runner::host_slots),
     );
     // Every report, review and question reaches the leader as a message, and
@@ -642,20 +653,53 @@ pub fn attention(state: &crate::state::State) -> Vec<String> {
     lines
 }
 
-/// How many writers the ready work can use: one per lane that has ready
-/// work (a lane takes one writer, and an item waiting on another's interface
-/// is not ready), no more than the task allows or the host's container slots
-/// hold. A suggestion: the leader decides.
-fn staffing(ready: &[Value], max_agents: usize, host_slots: Option<usize>) -> Value {
-    let lanes: BTreeSet<&str> = ready
-        .iter()
-        .filter_map(|item| item["lane"].as_str())
-        .collect();
+/// How many writers the ready work can use: in each lane, as many as it has
+/// ready items whose files are apart (a seat each, up to `max_seats`; an item
+/// waiting on another's interface is not ready), no more than the task allows
+/// or the host's container slots hold. A suggestion: the leader decides.
+fn staffing(
+    ready: &[Value],
+    max_agents: usize,
+    max_seats: usize,
+    host_slots: Option<usize>,
+) -> Value {
+    let globs = |item: &Value| -> Vec<String> {
+        item["allowed"]
+            .as_array()
+            .map(|globs| {
+                globs
+                    .iter()
+                    .filter_map(|glob| glob.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut apart: BTreeMap<&str, Vec<Vec<String>>> = BTreeMap::new();
+    for item in ready {
+        let Some(lane) = item["lane"].as_str() else {
+            continue;
+        };
+        let chosen = apart.entry(lane).or_default();
+        let files = globs(item);
+        // Greedy: good enough for a hint, and the order is the plan's.
+        if chosen.is_empty()
+            || chosen
+                .iter()
+                .all(|other| crate::checks::disjoint(&files, other))
+        {
+            chosen.push(files);
+        }
+    }
+    let writers: usize = apart
+        .values()
+        .map(|chosen| chosen.len().min(max_seats))
+        .sum();
     let slots = host_slots.unwrap_or(1);
     json!({
-        "independent_lanes_ready": lanes.len(),
+        "independent_lanes_ready": apart.len(),
+        "parallel_ready": writers,
         "host_slots": slots,
-        "suggested_writers": lanes.len().min(max_agents).min(slots),
+        "suggested_writers": writers.min(max_agents).min(slots),
     })
 }
 
@@ -807,13 +851,37 @@ mod tests {
             json!({"id": "D1", "lane": "docs"}),
         ];
         let suggested =
-            |max_agents, slots| staffing(&ready, max_agents, slots)["suggested_writers"].clone();
-        assert_eq!(staffing(&ready, 3, Some(8))["independent_lanes_ready"], 3);
+            |max_agents, slots| staffing(&ready, max_agents, 2, slots)["suggested_writers"].clone();
+        assert_eq!(
+            staffing(&ready, 3, 2, Some(8))["independent_lanes_ready"],
+            3
+        );
         assert_eq!(suggested(3, Some(8)), 3);
         assert_eq!(suggested(2, Some(8)), 2, "the task's limit");
         assert_eq!(suggested(3, Some(1)), 1, "the host's container slots");
         assert_eq!(suggested(3, None), 1, "no runner: one at a time");
-        assert_eq!(staffing(&[], 3, Some(8))["suggested_writers"], 0);
+        assert_eq!(staffing(&[], 3, 2, Some(8))["suggested_writers"], 0);
+    }
+
+    #[test]
+    fn staffing_counts_a_seat_for_each_ready_item_apart_in_a_lane() {
+        let item =
+            |id: &str, allowed: &[&str]| json!({"id": id, "lane": "front", "allowed": allowed});
+        let ready = [
+            item("G4", &["web/Team/Rail/**"]),
+            item("R2", &["web/Observe/History/**"]),
+            item("G5", &["web/Team/Records/**"]),
+            item("G7", &["web/app/**", "web/Observe/**"]),
+        ];
+        let suggested =
+            |max_seats| staffing(&ready, 6, max_seats, Some(8))["suggested_writers"].clone();
+        assert_eq!(suggested(2), 2, "two seats");
+        assert_eq!(suggested(3), 3, "G4, R2 and G5 are apart; G7 overlaps R2");
+        let overlapping = [item("A", &["web/**"]), item("B", &["web/x/**"])];
+        assert_eq!(
+            staffing(&overlapping, 6, 3, Some(8))["suggested_writers"],
+            1
+        );
     }
 
     #[test]
@@ -945,6 +1013,7 @@ mod tests {
                 writes: true,
                 group: None,
                 lane: Some("front".into()),
+                seat: 0,
                 live: true,
                 unavailable: false,
                 ready: true,

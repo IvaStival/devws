@@ -191,7 +191,7 @@ impl Team<'_> {
         // The agent is reserved before it starts, so two spawns cannot both
         // pass the rules.
         let task_id = config.id.clone();
-        let id = self.task.transaction(|tx| {
+        let (id, seat) = self.task.transaction(|tx| {
             if tx.state.paused {
                 bail!("the task is paused: `devagentics task resume {task_id}`");
             }
@@ -203,12 +203,11 @@ impl Team<'_> {
                 bail!("{counted} {} are running, the most this task allows: stop one first", kind_of_agents(role.writes));
             }
             let lane_name = lane.as_ref().map(|lane| lane.name.clone());
-            if role.writes
-                && let Some(writer) = tx.state.agents.iter().find(|agent| agent.live && agent.writes && agent.repo == repo.name && agent.lane == lane_name)
-            {
-                let place = lane_name.as_ref().map_or_else(|| repo.name.clone(), |lane| format!("the lane {lane}"));
-                bail!("{} already writes in {place}: one writer per worktree; give it the order, or use another lane", writer.id);
-            }
+            let seat = if role.writes {
+                free_seat(&tx.state, &repo.name, lane_name.as_deref(), config.max_seats)?
+            } else {
+                0
+            };
             let number = tx.state.agents.iter().filter(|agent| agent.role == role.name).count() + 1;
             let id = format!("{}-{number}", role.name);
             tx.state.worker_launches.insert(id.clone(), launch.clone());
@@ -222,21 +221,25 @@ impl Team<'_> {
                 writes: role.writes,
                 group: Some(role.group),
                 lane: lane_name,
+                seat,
                 live: true,
                 unavailable: false,
                 ready: false,
                 lost: false,
                 usage: None,
             });
-            Ok(id)
+            Ok((id, seat))
         })?;
 
-        // Where it works: its lane's worktree, else its repo's.
-        let mut workplace = repo.clone();
-        if let Some(lane) = &lane {
-            workplace.worktree = lane.worktree.clone();
-        }
-        match self.launch_worker(&config, &workplace, &id, &mut launch) {
+        // Where it works: its seat's worktree in its lane, else its repo's.
+        let launched = (|| {
+            let mut workplace = repo.clone();
+            if let Some(lane) = &lane {
+                workplace.worktree = lanes::open_seat(self.task, lane, seat)?.worktree;
+            }
+            self.launch_worker(&config, &workplace, &id, &mut launch)
+        })();
+        match launched {
             Ok((session, pane)) => self.task.transaction(|tx| {
                 let agent = tx
                     .state
@@ -321,6 +324,7 @@ impl Team<'_> {
                             && candidate.writes
                             && candidate.repo == agent.repo
                             && candidate.lane == agent.lane
+                            && candidate.seat.max(1) == agent.seat.max(1)
                     })
                 {
                     bail!(
@@ -1126,6 +1130,41 @@ fn reviewed_adapter(
 }
 
 /// What a capacity place is for: writers and read-only agents count apart.
+/// The seat a new writer takes: the lowest free one of its lane, up to
+/// `max_seats`. A repo without lanes has one worktree, so one writer.
+fn free_seat(
+    state: &crate::state::State,
+    repo: &str,
+    lane: Option<&str>,
+    max_seats: usize,
+) -> Result<u32> {
+    let writers: Vec<&Agent> = state
+        .agents
+        .iter()
+        .filter(|agent| {
+            agent.live && agent.writes && agent.repo == repo && agent.lane.as_deref() == lane
+        })
+        .collect();
+    let Some(lane) = lane else {
+        if let Some(writer) = writers.first() {
+            bail!(
+                "{} already writes in {repo}: one writer per worktree; give it the order, or add a lane",
+                writer.id
+            );
+        }
+        return Ok(0);
+    };
+    let taken: Vec<u32> = writers.iter().map(|agent| agent.seat.max(1)).collect();
+    if let Some(free) = (1..=max_seats as u32).find(|seat| !taken.contains(seat)) {
+        return Ok(free);
+    }
+    let names: Vec<&str> = writers.iter().map(|agent| agent.id.as_str()).collect();
+    bail!(
+        "the lane {lane} has all its {max_seats} seats taken ({}): give one of them the order, stop one, or raise max_seats in task.toml",
+        names.join(", ")
+    )
+}
+
 fn kind_of_agents(writes: bool) -> &'static str {
     if writes {
         "writers"
@@ -1138,6 +1177,68 @@ fn kind_of_agents(writes: bool) -> &'static str {
 mod tests {
     use super::*;
     use crate::providers::Kind as Program;
+
+    #[test]
+    fn a_new_writer_takes_the_lowest_free_seat_of_its_lane() {
+        let writer = |id: &str, lane: Option<&str>, seat: u32, live: bool| Agent {
+            id: id.into(),
+            role: "executor".into(),
+            agent: "claude".into(),
+            repo: "app".into(),
+            session: String::new(),
+            pane: String::new(),
+            writes: true,
+            group: None,
+            lane: lane.map(str::to_string),
+            seat,
+            live,
+            unavailable: false,
+            ready: true,
+            lost: false,
+            usage: None,
+        };
+        let mut state = crate::state::State::default();
+        assert_eq!(free_seat(&state, "app", Some("front"), 2).unwrap(), 1);
+        state
+            .agents
+            .push(writer("executor-1", Some("front"), 0, true));
+        assert_eq!(
+            free_seat(&state, "app", Some("front"), 2).unwrap(),
+            2,
+            "seat 0 of an older state is seat 1"
+        );
+        state
+            .agents
+            .push(writer("executor-2", Some("front"), 2, true));
+        assert_eq!(state.agents[1].place().as_deref(), Some("front · seat 2"));
+        assert_eq!(state.agents[0].place().as_deref(), Some("front"));
+        let full = free_seat(&state, "app", Some("front"), 2)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            full.contains("the lane front has all its 2 seats taken (executor-1, executor-2)"),
+            "{full}"
+        );
+        assert_eq!(free_seat(&state, "app", Some("front"), 3).unwrap(), 3);
+        assert_eq!(
+            free_seat(&state, "app", Some("back"), 2).unwrap(),
+            1,
+            "seats are per lane"
+        );
+        state.agents[0].live = false;
+        assert_eq!(
+            free_seat(&state, "app", Some("front"), 2).unwrap(),
+            1,
+            "a stopped writer frees its seat"
+        );
+
+        state.agents.push(writer("executor-3", None, 0, true));
+        let repo = free_seat(&state, "app", None, 2).unwrap_err().to_string();
+        assert!(
+            repo.contains("one writer per worktree"),
+            "a repo without lanes: {repo}"
+        );
+    }
 
     #[test]
     fn reviewed_floor_and_senior_workers_use_the_managed_opencode_adapter() {

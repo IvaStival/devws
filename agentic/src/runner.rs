@@ -2367,6 +2367,7 @@ pub mod tests {
             writes: true,
             group: None,
             lane: None,
+            seat: 0,
             live,
             unavailable,
             ready: true,

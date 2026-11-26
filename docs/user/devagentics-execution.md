@@ -485,6 +485,13 @@ corrections within approved scope do not add user approval stages.
 ### Execute, review and integrate
 
 Allocate specialists and disjoint lanes from the approved dependency graph.
+A lane with more ready work than one writer can do takes a second writer in
+its next seat (`max_seats` in `task.toml`, 2 by default): a worktree of its
+own, with the lane's files, image and checks. Its orders must write files
+apart from the other seat's unmerged work (`allowed` globs that part at a
+folder), so the two merge without clashing; work they share, such as routes
+or constants, waits. When one seat merges, the other's merge candidate is
+checked again on the new base.
 Starter roles cover backend/data, API/integration, frontend/UI, documentation,
 planning and independent code review. Existing custom roles are not overwritten.
 Their shared standards include SOLID, Object Calisthenics applied idiomatically,
