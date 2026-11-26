@@ -33,17 +33,17 @@ tmux id (`%12`); a state is `working`, `waiting` (needs you), `done` or `idle`.
 | `devws agent go <pane>` | Shows a group's agent: its workspace, focused on it |
 | `devws agent peek <pane>` | Brings a group's agent under the team board for a look; again, or peeking another, sends it back to its group |
 | `devws agent run <pane> <agent> [--agent-args <file>]` | Starts the agent in an agent pane, in place of the one running there. The pane keeps its place and role; a main agent's name is updated |
-| `devws agent state <pane>` | Prints the pane's state; `gone` when the pane no longer exists |
+| `devws agent state <pane>...` | Prints the pane's state; `gone` when the pane no longer exists. Several panes: a line each, in their order |
 | `devws agent send [--force] <pane> <text>` | Types the text and Enter into the pane when its agent is `done` or `idle` (`-` reads the text from stdin). Text with line breaks is pasted, so it stays one message. `--force` sends whatever the state is |
 | `devws agent mark <pane> working\|waiting\|done` | Sets the agent's state as its own hooks would: the sidebar shows it and a notification goes out (`working`: for a managed devAgentics worker, whose provider runs without hooks) |
 | `devws agent stop <pane>` | Asks the agent to exit (`Ctrl-C` twice), closes the pane if it did not, and updates the workspace's state |
 | `devws agent kind <agent>` | The program that agent runs, `claude`, `codex`, `opencode` or `antigravity` (an account such as `claude_work` runs `claude`); exit 1 when it is not registered |
 | `devws agent accounts` | Every account devws can run, `<name> <program>` a line: those in `DEVWS_AGENTS`, then each installed program (Claude Code, Codex, Antigravity) that no listed name runs, by its bare name |
 | `devws agent default-models` | `<name> <model>` a line: the model each account's program starts with when none is named (its config's, else Codex's first listed model, Claude's Opus, agy's Gemini 4 Carbon) |
-| `devws agent limits <agent>` | The share of that account's plan limits used, `<5-hour> <week>` in per cent (`42 63`), a `-` for what is not known |
+| `devws agent limits <agent>` | The share of that account's plan limits used, `<5-hour> <week>` in per cent (`42 63`), a `-` for what is not known. A reading from the program's logs (Codex) is kept a minute |
 | `devws agent credit <agent>` | A prepaid (opencode Zen) account's credit in US$, `<balance> <used>`: the balance entered in the menu and what its responses cost since; nothing when no balance was entered or the account is not opencode |
 | `devws agent models <agent>` | The models an opencode account can run, one `provider/model` a line, as `opencode models` lists them with that account's logins, or an Antigravity account's model ids, as `agy models` lists them; exit 1 for any other agent |
-| `devws agent usage <pane>` | What the pane's agent has used, `<input> <output> <cache> <US$> <unpriced>`: tokens, and the cost at API prices; `-` until the agent has said which conversation it is in. Exit 4 when the pane is gone |
+| `devws agent usage <pane>` | What the pane's agent has used, `<input> <output> <cache> <US$> <unpriced>`: tokens, and the cost at API prices; `-` until the agent has said which conversation it is in. Exit 4 when the pane is gone. Several panes: a line each, `-` for one that is gone |
 
 Arguments files (`--agent-args`) hold the arguments NUL-separated, so one can
 be a prompt with line breaks. A team agent always starts a new conversation.

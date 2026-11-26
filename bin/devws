@@ -11,6 +11,12 @@
 devws_checkout="${0:A:h:h}"
 # For the scripts that call devws back (agentic.sh).
 export DEVWS_BIN="$devws_checkout/bin/devws"
+# `devws agent` is how programs (devAgentics) drive the agents, many times a
+# second: it goes straight to agent_cli.sh. Linking the scripts first took
+# ten times longer than most answers; every other command still links them.
+if [[ "${1:-}" == "agent" && -x "$HOME/.tmuxinator/agent_cli.sh" ]]; then
+  exec "$HOME/.tmuxinator/agent_cli.sh" "${@:2}"
+fi
 "$devws_checkout/config/tmuxinator/link_scripts.sh" >/dev/null 2>&1
 
 devws() {
