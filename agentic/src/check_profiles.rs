@@ -1381,6 +1381,7 @@ mod tests {
                 max_agents: 3,
                 max_attempts: crate::task::DEFAULT_MAX_ATTEMPTS,
                 max_seats: crate::task::DEFAULT_MAX_SEATS,
+                idle_close_minutes: crate::task::DEFAULT_IDLE_CLOSE_MINUTES,
                 check_profiles: Default::default(),
                 repos: vec![],
                 lanes: vec![],

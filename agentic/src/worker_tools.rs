@@ -1286,6 +1286,22 @@ fn worker_prompt(text: &TurnText, full: bool) -> String {
     )
 }
 
+/// Waits on the state as it was at `stamp`: the parsed copy just dropped
+/// goes back to the system, and the next pass reads the state again only
+/// once it changes.
+fn wait_on(
+    waited_on: &mut Option<(std::time::SystemTime, u64)>,
+    stamp: Option<(std::time::SystemTime, u64)>,
+) {
+    *waited_on = stamp;
+    // The allocator keeps a freed big state for the process otherwise.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::malloc_trim(0);
+    }
+    std::thread::sleep(Duration::from_millis(250));
+}
+
 pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> Result<()> {
     let devws = CommandDevws::from_env();
     let pane = std::env::var("TMUX_PANE").context("managed worker requires a pane")?;
@@ -1358,7 +1374,16 @@ pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> 
     } else {
         None
     };
+    // The state a wait was decided on: while it is the same, waiting goes
+    // on without reading it again. A panel that parsed a big state four times
+    // a second used a CPU core and hundreds of MB for nothing.
+    let mut waited_on = None;
     loop {
+        let stamp = task.state_stamp()?;
+        if waited_on.is_some() && waited_on == stamp {
+            std::thread::sleep(Duration::from_millis(250));
+            continue;
+        }
         let state = task.state()?;
         let Some(worker) = state.agent(agent) else {
             break;
@@ -1373,7 +1398,8 @@ pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> 
         }
         runner::authenticate(task, agent, identity)?;
         if state.paused {
-            std::thread::sleep(Duration::from_millis(250));
+            drop(state);
+            wait_on(&mut waited_on, stamp);
             continue;
         }
         if !worker.ready {
@@ -1391,9 +1417,11 @@ pub fn panel(task: &Task, agent: &str, identity: &Path, model: Option<&str>) -> 
             .find(|message| message.to == agent)
             .cloned()
         else {
-            std::thread::sleep(Duration::from_millis(250));
+            drop(state);
+            wait_on(&mut waited_on, stamp);
             continue;
         };
+        waited_on = None;
         let _control = task.control_lock()?;
         let latest = task.state()?;
         if latest.paused || !latest.queue.iter().any(|current| current.id == message.id) {

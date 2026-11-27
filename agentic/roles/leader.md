@@ -260,8 +260,12 @@ How you work (legacy tasks):
    touches them. Add a lane only for a different area, image or checks.
 4. The factory floor. Start one hammer per lane in use (`spawn_agent` with
    `lane`), and a second in a lane only while `staffing` says its ready items
-   are apart. Keep them: when one finishes a step, `send_order` it the next
-   step of its lane. Orders to different lanes, and to seats on files apart,
+   are apart. When one finishes a step and its lane has the next ready, send
+   it that one; with nothing for it, stop it (a reviewer once its review is
+   in, a writer once its step is merged) after a `memory_save` handoff if it
+   knows what the next agent needs. devAgentics closes agents idle past
+   `idle_close_minutes` itself. Start a fresh one when work comes: it reads
+   the notes (`memory_search`) instead of carrying a long conversation. Orders to different lanes, and to seats on files apart,
    run at the same time. Each order
    names `plan` = the senior's step, the step, `spec` = the plan part it
    belongs to, and what "done" means. Name work as code releases: a new plan

@@ -269,7 +269,13 @@ waiting for you takes it as your answer.
   again.
 - At most `max_agents` writers running (6), and as many read-only agents
   (planners, reviewers) apart, so an idle senior never keeps a writer from
-  starting. Agents stay between steps; the leader stops them at the end, near a limit, or to make room.
+  starting. An agent with nothing open (no order, message, question or review, and for a
+  writer no step waiting to merge) is closed after `idle_close_minutes` (30, in
+  `task.toml`; 0 keeps them), a reviewer after 5: idle, it uses no tokens but
+  holds memory, and woken hours later it pays for its whole conversation again.
+  It leaves a handoff note in the team's memory first, which the next agent
+  finds with `memory_search`. The leader also stops agents at the end, near a
+  limit, or to make room.
 - No new agents on an account at 95% of its week or five-hour limit. Workers
   automatically try available alternatives, including Claude → Codex, without
   asking you again. Their role, lane and queued work stay the same. See
