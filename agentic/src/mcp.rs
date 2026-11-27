@@ -216,6 +216,12 @@ fn tools() -> Vec<Value> {
             &["step"],
         ),
         tool(
+            "design_references",
+            "The design references: the images the user gave the designers, and each round a designer showed the user with their answers. With view (u1, or G9/1/r2 from the listing) you see one: an image as itself, an HTML mockup or SVG as its source. Only the user answers a round, on the references page; you never do.",
+            json!({ "view": text("A reference's id to look at; without it, the listing") }),
+            &[],
+        ),
+        tool(
             "answer_question",
             "Answer a factory-floor agent's question (QUESTION q…) that came to you; the answer is typed into that agent.",
             json!({ "question": text("The question's id (q7)"), "text": text("The answer") }),
@@ -381,6 +387,7 @@ fn effect(name: &str) -> Option<Effect> {
         | "send_order"
         | "graph"
         | "read_plan"
+        | "design_references"
         | "answer_question"
         | "accept_step"
         | "reject_step"
@@ -550,6 +557,15 @@ impl Server<'_> {
                     }
                 }
                 success(id, json!({ "tools": catalog }))
+            }
+            "tools/call"
+                if request["params"]["name"] == "design_references"
+                    && request["params"]["arguments"]["view"].is_string() =>
+            {
+                let view = request["params"]["arguments"]["view"]
+                    .as_str()
+                    .unwrap_or("");
+                success(id, reference_content(self.task, view))
             }
             "tools/call" => {
                 let name = request["params"]["name"].as_str().unwrap_or("");
@@ -970,6 +986,9 @@ impl Server<'_> {
                 ))
             }
             "read_plan" => crate::plans::read(self.task, &string(arguments, "step")?),
+            "design_references" => Ok(serde_json::to_string_pretty(&crate::references::listing(
+                &self.task.state()?,
+            ))?),
             "graph" => {
                 let config = self.task.config()?;
                 let repo = match arguments["repo"].as_str() {
@@ -1254,6 +1273,46 @@ pub(crate) fn fitting(name: &str, text: String) -> Result<String> {
         MAX_RESULT_CHARS / 1000
     );
     Ok(text)
+}
+
+/// A reference as the leader sees it: an image as an MCP image, so its
+/// model looks at it; a mockup or an SVG as its source.
+fn reference_content(task: &Task, view: &str) -> Value {
+    match crate::references::view(task, view) {
+        Ok(crate::references::View::Image { note, mime, bytes }) => json!({
+            "content": [
+                { "type": "text", "text": format!("{view}: {note}") },
+                { "type": "image", "data": base64(&bytes), "mimeType": mime },
+            ],
+            "isError": false,
+        }),
+        Ok(crate::references::View::Source { note, text }) => json!({
+            "content": [{ "type": "text", "text": format!("{view}: {note}\n\n{text}") }],
+            "isError": false,
+        }),
+        Err(error) => json!({
+            "content": [{ "type": "text", "text": format!("{error:#}") }],
+            "isError": true,
+        }),
+    }
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let value = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        for (place, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            if place <= chunk.len() {
+                out.push(ALPHABET[(value >> shift & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 fn success(id: Value, result: Value) -> Value {
@@ -1623,6 +1682,7 @@ mod tests {
                 "send_order",
                 "graph",
                 "read_plan",
+                "design_references",
                 "answer_question",
                 "accept_step",
                 "reject_step",
@@ -2261,5 +2321,35 @@ mod tests {
         assert_eq!(responses[0]["id"], 1);
         assert_eq!(responses[1]["error"]["code"], -32700);
         assert_eq!(responses[2]["id"], 2);
+    }
+
+    #[test]
+    fn the_leader_looks_at_an_image_the_user_gave() {
+        let f = fixture();
+        let image = f.task.dir().join("given.png");
+        std::fs::write(&image, b"\x89PNG\r\n\x1a\nMan").unwrap();
+        crate::references::give(&f.task, &image, "calm").unwrap();
+        let (failed, listing) = f.call("design_references", json!({}));
+        assert!(!failed, "{listing}");
+        assert!(listing.contains("\"u1\""), "{listing}");
+        let response = f
+            .server()
+            .handle(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "design_references", "arguments": { "view": "u1" } } }))
+            .unwrap();
+        let content = &response["result"]["content"];
+        assert_eq!(content[0]["text"], "u1: calm");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["mimeType"], "image/png");
+        assert_eq!(content[1]["data"], base64(b"\x89PNG\r\n\x1a\nMan"));
+        let (failed, text) = f.call("design_references", json!({ "view": "u7" }));
+        assert!(failed, "{text}");
+    }
+
+    #[test]
+    fn base64_matches_the_standard() {
+        assert_eq!(base64(b"Man"), "TWFu");
+        assert_eq!(base64(b"Ma"), "TWE=");
+        assert_eq!(base64(b"M"), "TQ==");
+        assert_eq!(base64(b""), "");
     }
 }

@@ -1023,6 +1023,7 @@ mod tests {
                 ready: true,
                 lost: false,
                 usage: None,
+                shows_references: false,
             });
             Ok(())
         })

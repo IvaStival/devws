@@ -227,6 +227,7 @@ impl Team<'_> {
                 ready: false,
                 lost: false,
                 usage: None,
+                shows_references: role.shows_references,
             });
             Ok((id, seat))
         })?;
@@ -1196,6 +1197,7 @@ mod tests {
             ready: true,
             lost: false,
             usage: None,
+            shows_references: false,
         };
         let mut state = crate::state::State::default();
         assert_eq!(free_seat(&state, "app", Some("front"), 2).unwrap(), 1);

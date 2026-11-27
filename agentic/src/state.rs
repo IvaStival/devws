@@ -117,6 +117,14 @@ pub struct State {
     pub restart_on_next_account: std::collections::BTreeSet<String>,
     /// The application the team started for the user to look at (preview.rs).
     pub preview: Option<crate::preview::Preview>,
+    /// The designers' references, round by round, and the user's answers
+    /// (references.rs).
+    pub references: Vec<crate::references::ReferenceSet>,
+    /// Images the user gave the designers.
+    pub user_references: Vec<crate::references::Reference>,
+    /// How many images the user has given in all, removed ones too: a new
+    /// one never takes an old one's id.
+    pub user_references_given: u32,
     /// Fields this build does not know, written by a newer one, kept as they
     /// are: a process still running the old build after an upgrade saves the
     /// state too, and would otherwise drop them.
@@ -194,6 +202,10 @@ pub struct Agent {
     /// What it had used when it stopped (while it runs, devws is asked).
     #[serde(default)]
     pub usage: Option<crate::devws::Usage>,
+    /// Its role shows the user design references before it plans
+    /// (references.rs).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shows_references: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

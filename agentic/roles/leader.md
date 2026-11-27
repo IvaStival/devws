@@ -234,7 +234,14 @@ How you work (legacy tasks):
    never on your own. Agents that write the repo cannot start before.
 2. Execution plans. For each part of the plan, `send_order` the senior fit
    for it (a designer for the interface, a planner for the rest) to plan its
-   execution for the factory floor (`check` `true`). When it reports,
+   execution for the factory floor (`check` `true`). A designer whose role
+   shows references first shows the user 2–3 design directions and plans only
+   from the ones they approve: when you hear it is waiting, tell the user the
+   board's REFERENCES line (or `devagentics references url <task>`). Only the
+   user answers them; never ask for that approval in chat. The user gives
+   images for the design on that page (the board's DESIGN REFERENCES line);
+   you are told of each one, and `design_references view=<id>` shows it to
+   you. Every designer reads them. When it reports,
    `read_plan` its step; `accept_step` approves it, `reject_step` sends it back
    with what to change. You do not ask the user again. A senior reads the
    task branch, where a lane's work is not merged until it is accepted: to

@@ -19,6 +19,9 @@ pub(crate) fn board() -> Board {
         plan: vec![],
         preview: None,
         approval: None,
+        references: Vec::new(),
+        references_page: None,
+        given_references: 0,
         details: Default::default(),
         phase: "Approved".into(),
         summary: "Plan approved. 1 working.".into(),
@@ -1848,5 +1851,86 @@ fn the_overview_says_where_to_open_the_preview() {
             .iter()
             .any(|entry| entry.id == "heading:PREVIEW"),
         "no preview, no section"
+    );
+}
+
+#[test]
+fn references_waiting_for_you_say_where_to_see_them() {
+    let mut board = board();
+    board.references = vec![crate::board::ReferencesRow {
+        step: "G9".into(),
+        agent: "designer-10".into(),
+        round: 2,
+        items: vec![
+            crate::board::ReferenceItem {
+                id: "r1".into(),
+                note: "dense table".into(),
+                file: "/x/r1.png".into(),
+                is_image: true,
+            },
+            crate::board::ReferenceItem {
+                id: "r2".into(),
+                note: "cards".into(),
+                file: "/x/r2.html".into(),
+                is_image: false,
+            },
+        ],
+    }];
+    board.references_page = Some("http://127.0.0.1:13100/r/k/".into());
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let row = rows
+        .iter()
+        .find(|entry| entry.id == "references:G9")
+        .unwrap();
+    assert_eq!(row.label, "◆ references G9 · designer-10 · 2 to review");
+    assert!(
+        row.detail.contains("http://127.0.0.1:13100/r/k/"),
+        "{}",
+        row.detail
+    );
+    assert!(
+        row.detail.contains("- r1 (image): dense table"),
+        "{}",
+        row.detail
+    );
+    assert!(
+        row.detail.contains("- r2 (HTML mockup): cards"),
+        "{}",
+        row.detail
+    );
+    let heading = rows
+        .iter()
+        .position(|entry| entry.id == "heading:NEEDS YOU")
+        .unwrap();
+    let at = rows
+        .iter()
+        .position(|entry| entry.id == "references:G9")
+        .unwrap();
+    assert!(heading < at, "it is under NEEDS YOU");
+}
+
+#[test]
+fn the_overview_always_says_where_to_give_images() {
+    let mut board = board();
+    board.references_page = Some("http://127.0.0.1:13100/r/abc/".into());
+    board.given_references = 2;
+    let rows = entries(&board, View::Overview, false, &[], None);
+    let row = rows
+        .iter()
+        .find(|entry| entry.id == "references-page")
+        .unwrap();
+    assert_eq!(
+        row.label,
+        "◆ http://127.0.0.1:13100 · 2 images of yours · Enter: its address"
+    );
+    assert!(
+        row.detail.contains("http://127.0.0.1:13100/r/abc/"),
+        "{}",
+        row.detail
+    );
+    assert!(
+        row.detail.contains("Drop or paste images"),
+        "{}",
+        row.detail
     );
 }

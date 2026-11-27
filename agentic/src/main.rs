@@ -39,6 +39,8 @@ mod providers;
 mod prs;
 mod questions;
 mod recovery;
+mod references;
+mod references_page;
 mod reviews;
 mod roles;
 mod runner;
@@ -172,6 +174,12 @@ enum Command {
     Plan {
         #[command(subcommand)]
         action: PlanAction,
+    },
+    /// Design references: the user's images, and the designers' directions
+    /// the user approves before a designer plans
+    References {
+        #[command(subcommand)]
+        action: ReferencesAction,
     },
     /// A factory-floor agent asks about its order (in its pane): the senior
     /// who planned it answers, or the leader
@@ -481,6 +489,39 @@ enum PlanAction {
         /// The task; by default the one whose agent runs in this pane
         #[arg(long)]
         task: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReferencesAction {
+    /// The page where you see and answer them
+    Url { task: String },
+    /// What waits for your answer, and what you answered
+    List { task: String },
+    /// Give the designers an image of your own
+    Give {
+        task: String,
+        image: PathBuf,
+        /// What to take from it
+        #[arg(long, default_value = "")]
+        note: String,
+    },
+    /// Answer a step's waiting references: each one approved or rejected
+    Answer {
+        task: String,
+        step: String,
+        /// References you approve (r1,r3)
+        #[arg(long, value_delimiter = ',')]
+        approve: Vec<String>,
+        /// References you reject (r2)
+        #[arg(long, value_delimiter = ',')]
+        reject: Vec<String>,
+        /// A comment on one reference: r2="less shadow"
+        #[arg(long = "comment-on")]
+        comment_on: Vec<String>,
+        /// A comment on the whole round
+        #[arg(long)]
+        comment: Option<String>,
     },
 }
 
@@ -1220,14 +1261,94 @@ fn run() -> Result<()> {
                 board_tui::run(&task, &devws, &home, view)?;
             }
         }
+        Command::References { action } => references_command(&home, action)?,
         Command::Watch { task, once } => {
             let task = open(&task)?;
+            if !once && let Err(error) = references_page::serve_in_background(&task) {
+                eprintln!("devagentics: {error:#}");
+            }
             let mut dispatcher = watch::Dispatcher::new(&task, &devws, &home, watch::STALL_GRACE);
             dispatcher.run(
                 &mut std::io::stdout(),
                 Duration::from_secs(1),
                 once.then_some(1),
             )?;
+        }
+    }
+    Ok(())
+}
+
+fn references_command(home: &Home, action: ReferencesAction) -> Result<()> {
+    match action {
+        ReferencesAction::Url { task } => {
+            println!("{}", references_page::url(&Task::open(home, &task)?)?)
+        }
+        ReferencesAction::List { task } => {
+            let task = Task::open(home, &task)?;
+            let state = task.state()?;
+            for set in &state.references {
+                println!(
+                    "{} round {} by {}: {:?}",
+                    set.step, set.round, set.agent, set.status
+                );
+                for item in &set.items {
+                    let verdict = item.verdict.map_or("-".to_string(), |verdict| {
+                        format!("{verdict:?}").to_lowercase()
+                    });
+                    println!("  {} [{verdict}] {}", item.id, item.note);
+                }
+            }
+            for item in &state.user_references {
+                println!("yours {}: {}", item.id, item.note);
+            }
+            println!("{}", references_page::url(&task)?);
+        }
+        ReferencesAction::Give { task, image, note } => {
+            let id = references::give(&Task::open(home, &task)?, &image, &note)?;
+            println!("Kept as {id}: every designer reads it before showing directions.");
+        }
+        ReferencesAction::Answer {
+            task,
+            step,
+            approve,
+            reject,
+            comment_on,
+            comment,
+        } => {
+            let mut comments = std::collections::BTreeMap::new();
+            for entry in comment_on {
+                let (id, text) = entry
+                    .split_once('=')
+                    .with_context(|| format!("{entry}: write it as r2=\"your comment\""))?;
+                comments.insert(id.trim().to_string(), text.trim_matches('"').to_string());
+            }
+            let mut answers = std::collections::BTreeMap::new();
+            for (ids, verdict) in [
+                (approve, references::Verdict::Approved),
+                (reject, references::Verdict::Rejected),
+            ] {
+                for id in ids {
+                    if answers.contains_key(&id) {
+                        bail!("{id} is both approved and rejected");
+                    }
+                    let comment = comments.get(&id).cloned();
+                    answers.insert(id, references::Answer { verdict, comment });
+                }
+            }
+            let status = references::answer(
+                &Task::open(home, &task)?,
+                &step,
+                &answers,
+                comment.as_deref(),
+            )?;
+            println!(
+                "{}",
+                if status == references::SetStatus::Approved {
+                    "Approved: the designer plans from the ones you approved."
+                } else {
+                    "All rejected: the designer shows a new round."
+                }
+            );
         }
     }
     Ok(())

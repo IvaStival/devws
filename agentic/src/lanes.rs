@@ -762,6 +762,7 @@ mod tests {
             ready: true,
             lost: false,
             usage: None,
+            shows_references: false,
         };
         assert_eq!(of_agent(&task, &writer).unwrap(), Some(second.clone()));
         assert_eq!(workplace(&task, &writer).unwrap().worktree, second.worktree);

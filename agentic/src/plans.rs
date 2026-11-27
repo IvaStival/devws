@@ -55,10 +55,23 @@ pub fn store_execution(task: &Task, agent: &str, text: &str) -> Result<String> {
         bail!("the plan is empty");
     }
     let (step, author) = (order.step.clone(), agent.to_string());
+    if let Some(refusal) = crate::references::plan_refusal(&state, agent, &step) {
+        bail!(refusal);
+    }
+    // The floor and the reviewers read the plan: what the user approved goes
+    // with it.
+    let text = match crate::references::approved_for(&state, &step) {
+        Some(set) => format!(
+            "{}\n{}",
+            text.trim_end(),
+            crate::references::plan_section(set)
+        ),
+        None => text.to_string(),
+    };
     let file = path(task, &step);
     std::fs::create_dir_all(file.parent().unwrap())?;
     let temporary = file.with_extension("tmp");
-    std::fs::write(&temporary, text)?;
+    std::fs::write(&temporary, &text)?;
     std::fs::rename(&temporary, &file)?;
     task.transaction(|tx| {
         tx.state.plans.retain(|plan| plan.step != step);

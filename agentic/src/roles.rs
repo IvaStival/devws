@@ -157,6 +157,10 @@ pub struct Role {
     pub fallback: Option<Fallback>,
     #[serde(default)]
     pub alternatives: Vec<Fallback>,
+    /// Shows the user design references, and plans only from the ones they
+    /// approve (references.rs).
+    #[serde(default)]
+    pub shows_references: bool,
 }
 
 /// Another program for the same role: `[fallback]` in a role's settings.
@@ -263,6 +267,8 @@ struct FrontMatter {
     fallback: Option<Fallback>,
     #[serde(default)]
     alternatives: Vec<Fallback>,
+    #[serde(default)]
+    references: bool,
 }
 
 const FENCE: &str = "+++";
@@ -317,6 +323,7 @@ pub(crate) fn parse(name: &str, text: &str, source: Source, origin: &str) -> Res
         source,
         fallback: front.fallback,
         alternatives: front.alternatives,
+        shows_references: front.references,
     })
 }
 
@@ -643,6 +650,17 @@ mod tests {
         assert!(roles.get("executor").unwrap().writes);
         assert!(!roles.get("planner").unwrap().writes);
         assert_eq!(roles.get("planner").unwrap().source, Source::Home);
+    }
+
+    #[test]
+    fn a_role_may_show_references_before_it_plans() {
+        let (_dir, home) = home_with(&[(
+            "designer.md",
+            "+++\nagent = \"codex\"\ngroup = \"senior\"\nreferences = true\n+++\nPlan the UI.\n",
+        )]);
+        let roles = Roles::load(&home, None).unwrap();
+        assert!(roles.get("designer").unwrap().shows_references);
+        assert!(!roles.get("planner").unwrap().shows_references);
     }
 
     #[test]

@@ -38,6 +38,14 @@ fn default_idle_close_minutes() -> u64 {
     DEFAULT_IDLE_CLOSE_MINUTES
 }
 
+/// The port of the design references page on 127.0.0.1
+/// (`references_page.rs`).
+pub const DEFAULT_REFERENCES_PORT: u16 = 13100;
+
+fn default_references_port() -> u16 {
+    DEFAULT_REFERENCES_PORT
+}
+
 /// A task's settings, in `task.toml`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TaskConfig {
@@ -58,6 +66,9 @@ pub struct TaskConfig {
     /// 0 keeps every agent until the leader stops it.
     #[serde(default = "default_idle_close_minutes")]
     pub idle_close_minutes: u64,
+    /// The port of the design references page on 127.0.0.1.
+    #[serde(default = "default_references_port")]
+    pub references_port: u16,
     #[serde(default)]
     pub check_profiles: std::collections::BTreeMap<String, crate::check_profiles::RepositoryChecks>,
     #[serde(default)]
@@ -306,6 +317,7 @@ mod tests {
             max_attempts: crate::task::DEFAULT_MAX_ATTEMPTS,
             max_seats: crate::task::DEFAULT_MAX_SEATS,
             idle_close_minutes: crate::task::DEFAULT_IDLE_CLOSE_MINUTES,
+            references_port: crate::task::DEFAULT_REFERENCES_PORT,
             check_profiles: Default::default(),
             lanes: Vec::new(),
             routing: Default::default(),

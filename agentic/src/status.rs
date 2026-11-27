@@ -45,6 +45,9 @@ pub fn progress(task: &Task) -> Result<Value> {
             "permissions": state.permissions.iter().filter(|request| request.status == crate::state::PermissionStatus::Pending).count(),
             "questions": state.questions.iter().filter(|question| question.answer.is_none()).count(),
             "recovery": state.recovery.len(),
+            // Steps whose design references wait for the user: only the user
+            // answers them, on the references page.
+            "design_references": crate::references::waiting(&state).iter().map(|set| set.step.clone()).collect::<Vec<_>>(),
             "usage_limit_approval": state.usage_limit_approval,
         },
         "step_count": state.steps.len(),

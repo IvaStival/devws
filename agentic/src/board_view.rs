@@ -1043,6 +1043,41 @@ fn approval_entry(approval: &crate::board::Approval) -> Entry {
     .toned(vec![("◆ ".into(), Tone::Mark), (label, Tone::Plain)])
 }
 
+/// A designer's references waiting for you: where to see them, and what
+/// each one is.
+fn references_entry(row: &crate::board::ReferencesRow, page: Option<&str>) -> Entry {
+    let label = format!(
+        "references {} · {} · {} to review",
+        row.step,
+        row.agent,
+        row.items.len()
+    );
+    let mut detail = format!(
+        "{} shows you {} design directions for step {} (round {}). It plans only from the ones you approve.\n\nSee them at full size: {}\n(over SSH: ssh -L <port>:127.0.0.1:<port>)\n\n",
+        row.agent,
+        row.items.len(),
+        row.step,
+        row.round,
+        page.unwrap_or("devagentics references url <task>")
+    );
+    for item in &row.items {
+        let what = if item.is_image {
+            "image"
+        } else {
+            "HTML mockup"
+        };
+        detail.push_str(&format!("- {} ({what}): {}\n", item.id, item.note));
+    }
+    detail.push_str("\nAnswer on the page, or press Enter on this line to answer here.");
+    Entry::text(
+        format!("references:{}", row.step),
+        String::new(),
+        detail,
+        true,
+    )
+    .toned(vec![("◆ ".into(), Tone::Mark), (label, Tone::Plain)])
+}
+
 /// The Overview: only what needs looking at, as sections the selection moves
 /// through: what needs you, the team (the leader first), the queue's size and
 /// the steps done, newest first. A section with nothing in it is left out.
@@ -1081,6 +1116,12 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
     if let Some(approval) = &board.approval {
         needs_you.push(approval_entry(approval));
     }
+    needs_you.extend(
+        board
+            .references
+            .iter()
+            .map(|row| references_entry(row, board.references_page.as_deref())),
+    );
     needs_you.extend(board.permissions.iter().map(permission_entry));
     let agents = board
         .roles
@@ -1100,6 +1141,25 @@ fn overview(board: &Board, problem: Option<&str>) -> Vec<Entry> {
         entries.append(&mut needs_you);
     }
     entries.extend(building_entries(board));
+    if let Some(page) = &board.references_page {
+        entries.push(Entry::section("DESIGN REFERENCES", None));
+        let images = match board.given_references {
+            0 => "no images of yours yet".to_string(),
+            1 => "1 image of yours".to_string(),
+            count => format!("{count} images of yours"),
+        };
+        entries.push(Entry::text(
+            "references-page".into(),
+            // The address is long (its key): the line names the port, the
+            // detail gives the whole address to copy.
+            format!(
+                "◆ {} · {images} · Enter: its address",
+                page.split("/r/").next().unwrap_or(page)
+            ),
+            format!("The design references page: {page}\n\nDrop or paste images there for the designers (and the leader) to build from; the designers' directions wait for your answer there too. It listens on this machine only (127.0.0.1); over SSH, forward its port: ssh -N -L <port>:127.0.0.1:<port> <host>. Its address carries a key: don't share it.\n\nWithout a browser: devagentics references give <task> <image> --note \"…\""),
+            false,
+        ));
+    }
     if let Some(preview) = &board.preview {
         entries.push(Entry::section("PREVIEW", None));
         entries.push(Entry::text(
