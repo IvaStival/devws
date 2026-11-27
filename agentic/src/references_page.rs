@@ -244,6 +244,10 @@ fn write_response(mut stream: impl Write, response: &Response) -> Result<()> {
 /// The answer to one request. Every path is under `/r/<key>/`.
 pub fn respond(task: &Task, key: &str, request: &Request) -> Response {
     let prefix = format!("/r/{key}/");
+    // An address copied without its last slash still opens the page.
+    if request.path.split('?').next() == Some(prefix.trim_end_matches('/')) {
+        return Response::back_to(prefix);
+    }
     let Some(rest) = request.path.strip_prefix(&prefix) else {
         return Response::not_found();
     };
@@ -668,6 +672,12 @@ mod tests {
         for path in ["/", "/r/", "/r/wrong/", "/r/wrong/file/G9/1/r1.png"] {
             assert_eq!(respond(&task, &key, &get(path)).status, 404, "{path}");
         }
+        let without_slash = respond(&task, &key, &get(&format!("/r/{key}")));
+        assert_eq!(
+            without_slash.status, 303,
+            "the address without its last slash"
+        );
+        assert_eq!(without_slash.location, Some(format!("/r/{key}/")));
         let page = respond(&task, &key, &get(&format!("/r/{key}/")));
         assert_eq!(page.status, 200);
         let text = String::from_utf8(page.body).unwrap();
