@@ -198,10 +198,13 @@ impl Task {
         lock.lock_exclusive().context("locking the task")?;
 
         let state_path = self.dir.join("state.json");
-        let state = match fs::read_to_string(&state_path) {
-            Ok(text) => serde_json::from_str(&text)
-                .with_context(|| format!("parsing {}", state_path.display()))?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => State::default(),
+        let (state, read) = match fs::read_to_string(&state_path) {
+            Ok(text) => (
+                serde_json::from_str(&text)
+                    .with_context(|| format!("parsing {}", state_path.display()))?,
+                Some(text),
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (State::default(), None),
             Err(error) => {
                 return Err(error).with_context(|| format!("reading {}", state_path.display()));
             }
@@ -213,10 +216,12 @@ impl Task {
 
         let value = change(&mut tx)?;
 
-        write_atomically(
-            &state_path,
-            serde_json::to_string_pretty(&tx.state)?.as_bytes(),
-        )?;
+        // The same state is not written again: a check that changed nothing
+        // made every waiting reader (a worker's panel) read it all again.
+        let text = serde_json::to_string_pretty(&tx.state)?;
+        if read.as_deref() != Some(text.as_str()) {
+            write_atomically(&state_path, text.as_bytes())?;
+        }
         if !tx.entries.is_empty() {
             let mut log = OpenOptions::new()
                 .create(true)
@@ -353,6 +358,55 @@ mod tests {
         assert_eq!(
             saved["from_a_newer_build"],
             serde_json::json!({"container": "c", "until": 9})
+        );
+    }
+
+    // Something that looks without changing anything (a panel's check, a
+    // pass with nothing to do) used to write a big state back several times a
+    // second, and every waiting panel then read it all again.
+    #[test]
+    fn a_transaction_that_changes_nothing_writes_nothing() {
+        let directory = TempDir::new().unwrap();
+        let home = Home::at(directory.path().into());
+        let task = Task::create(&home, &config("unchanged")).unwrap();
+        task.transaction(|tx| {
+            tx.state.paused = true;
+            Ok(())
+        })
+        .unwrap();
+        let before = task.state_stamp().unwrap().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        task.transaction(|tx| {
+            tx.state.paused = true;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            task.state_stamp().unwrap().unwrap(),
+            before,
+            "the same state is not written again"
+        );
+        task.transaction(|tx| {
+            tx.log(Kind::Review, None, None, "a log line alone");
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(task.state_stamp().unwrap().unwrap(), before);
+        assert!(
+            task.log_lines()
+                .unwrap()
+                .iter()
+                .any(|line| line.contains("a log line alone"))
+        );
+        task.transaction(|tx| {
+            tx.state.paused = false;
+            Ok(())
+        })
+        .unwrap();
+        assert_ne!(
+            task.state_stamp().unwrap().unwrap(),
+            before,
+            "a change is written"
         );
     }
 
