@@ -11,7 +11,7 @@
 use crate::devws::{Devws, Limits, PaneState};
 use crate::home::Home;
 use crate::log::Kind;
-use crate::roles::{Fallback, Role, Roles};
+use crate::roles::{Fallback, Group, Role, Roles};
 use crate::start::write_leader_args;
 use crate::state::State;
 use crate::task::Task;
@@ -251,11 +251,11 @@ pub fn choose(role: &Role, devws: &dyn Devws, state: &State) -> Result<(Role, Op
         return Ok((role.clone(), None));
     };
     // The user turned that account off: run out or not, the leader stays.
-    if !crate::accounts::is_enabled(state, &fallback.agent) {
+    if let Some(off) = crate::accounts::off_for(state, &fallback.agent, Group::Cto) {
         return Ok((
             role.clone(),
             Some(format!(
-                "{} has used {out}, but {} is turned off for this task: the leader stays on {}",
+                "{} has used {out}, but {} is {off}: the leader stays on {}",
                 role.agent,
                 fallback.agent,
                 program(role)
@@ -296,9 +296,9 @@ pub fn request_switch(
         "the leader cannot move to {}: that program does not lead this task",
         other.agent
     );
-    if !crate::accounts::is_enabled(&task.state()?, &other.agent) {
+    if let Some(off) = crate::accounts::off_for(&task.state()?, &other.agent, Group::Cto) {
         bail!(
-            "{} is turned off for this task: the leader stays on {}",
+            "{} is {off}: the leader stays on {}",
             other.agent,
             program(&now)
         );
@@ -329,6 +329,26 @@ pub fn request_switch(
         "The leader moves to {} once its turn is over.",
         program(&other)
     ))
+}
+
+/// The user turns `account` on or off for the leader (the board's LEADER
+/// ACCOUNTS); `leading` are the accounts that can lead. Off for the account
+/// it leads on now, it moves to its other program once its turn is over
+/// (`request_switch`), and the switch stays on when it cannot move.
+pub fn set_leader_account(
+    home: &Home,
+    task: &Task,
+    devws: &dyn Devws,
+    leading: &[String],
+    account: &str,
+    on: bool,
+) -> Result<()> {
+    let leads_on_it = task.state()?.leader_agent.as_deref() == Some(account);
+    if !on && leads_on_it {
+        let reason = format!("the user turned {account} off for the leader");
+        request_switch(home, task, devws, Some(&reason))?;
+    }
+    crate::accounts::set_group_enabled_among(task, leading, account, Group::Cto, on)
 }
 
 /// The user picks the account that leads, any that can: the leader moves to
@@ -362,8 +382,8 @@ pub fn request_lead(
         "{agent} runs {}, which does not lead a legacy task: it leads reviewed tasks only",
         kind.name()
     );
-    if !crate::accounts::is_enabled(&state, agent) {
-        bail!("{agent} is turned off for this task: turn it on on the board first");
+    if let Some(off) = crate::accounts::off_for(&state, agent, Group::Cto) {
+        bail!("{agent} is {off}: turn it on on the board first");
     }
     if let Some(out) = run_out(devws, agent)? {
         bail!("{agent} has used {out}: pick another account");
@@ -401,8 +421,8 @@ pub fn choices(task: &Task, devws: &dyn Devws) -> Result<Vec<String>> {
         }
         let stands = if state.leader_agent.as_deref() == Some(agent.as_str()) {
             "leads now".to_string()
-        } else if !crate::accounts::is_enabled(&state, &agent) {
-            "turned off for this task".to_string()
+        } else if let Some(off) = crate::accounts::off_for(&state, &agent, Group::Cto) {
+            off
         } else if let Some(out) = run_out(devws, &agent)? {
             format!("has used {out}")
         } else {
@@ -616,9 +636,14 @@ fn next_leader(
         ..role.clone()
     });
     let usable = |candidate: &Role| -> Result<bool> {
-        Ok(crate::accounts::is_enabled(state, &candidate.agent)
-            && (!reviewed
-                || reviewed_leader_allowed(devws.agent_kind(&candidate.agent)?, state.codex_team)))
+        Ok(
+            crate::accounts::is_enabled_for(state, &candidate.agent, Group::Cto)
+                && (!reviewed
+                    || reviewed_leader_allowed(
+                        devws.agent_kind(&candidate.agent)?,
+                        state.codex_team,
+                    )),
+        )
     };
     let moving_to_pick = state.leader_switch.is_some()
         && state.leader_pick.as_deref() == Some(role.agent.as_str())
@@ -1663,6 +1688,102 @@ mod tests {
         // Run out, the leader would move on its own; not to an account that is off.
         devws.set_limits("claude", five_hour(99));
         assert_eq!(hand_over(&home, &task, &devws, "d").unwrap(), None);
+    }
+
+    // Off for the account it leads on now, the leader moves once its turn is
+    // over, onto the model the user picked for it there; with nowhere to go,
+    // the switch stays on.
+    #[test]
+    fn turning_off_the_leaders_account_moves_it_to_its_picked_model() {
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, _repo) = team(&dir, 40, 14);
+        assert_eq!(leader_agent(&task).as_deref(), Some("claude"));
+        let leading = ["claude".to_string(), "codex".to_string()];
+        crate::accounts::set_group_model(
+            &task,
+            &devws,
+            "codex",
+            Group::Cto,
+            Some("gpt-6.2-sol".into()),
+        )
+        .unwrap();
+
+        crate::accounts::set_group_enabled_among(&task, &leading, "codex", Group::Cto, false)
+            .unwrap();
+        let error = set_leader_account(&home, &task, &devws, &leading, "claude", false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("codex is turned off for the leader"),
+            "{error}"
+        );
+        assert!(
+            crate::accounts::is_enabled_for(&task.state().unwrap(), "claude", Group::Cto),
+            "with nowhere to go, the switch stays on"
+        );
+
+        set_leader_account(&home, &task, &devws, &leading, "codex", true).unwrap();
+        set_leader_account(&home, &task, &devws, &leading, "claude", false).unwrap();
+        let state = task.state().unwrap();
+        assert!(!crate::accounts::is_enabled_for(
+            &state,
+            "claude",
+            Group::Cto
+        ));
+        assert_eq!(
+            state.leader_switch.as_deref(),
+            Some("the user turned claude off for the leader")
+        );
+        idle_leader(&devws, &task);
+        hand_over(&home, &task, &devws, "d").unwrap();
+        assert_eq!(leader_agent(&task).as_deref(), Some("codex"));
+        assert!(args(&task).contains("gpt-6.2-sol"), "{}", args(&task));
+    }
+
+    // An account the workers keep using can be one the leader never leads on.
+    #[test]
+    fn the_leader_never_leads_on_an_account_off_for_the_leader_only() {
+        let dir = TempDir::new().unwrap();
+        let (home, devws, task, _repo) = team(&dir, 40, 14);
+        task.transaction(|tx| {
+            tx.state
+                .disabled_group_accounts
+                .entry(Group::Cto)
+                .or_default()
+                .insert("codex".into());
+            Ok(())
+        })
+        .unwrap();
+        let message = format!(
+            "{:#}",
+            request_switch(&home, &task, &devws, None).err().unwrap()
+        );
+        assert_eq!(
+            message,
+            "codex is turned off for the leader: the leader stays on claude (claude-opus-5-5)"
+        );
+        let picked = format!(
+            "{:#}",
+            request_lead(&home, &task, &devws, "codex", None)
+                .err()
+                .unwrap()
+        );
+        assert!(
+            picked.contains("codex is turned off for the leader"),
+            "{picked}"
+        );
+        devws.set_limits("claude", five_hour(99));
+        assert_eq!(
+            hand_over(&home, &task, &devws, "d").unwrap(),
+            None,
+            "run out, it still does not move there"
+        );
+        let state = task.state().unwrap();
+        assert!(crate::accounts::is_enabled_for(
+            &state,
+            "codex",
+            Group::Floor
+        ));
     }
 
     #[test]

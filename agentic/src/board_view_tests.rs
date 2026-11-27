@@ -1287,8 +1287,10 @@ fn the_accounts_card_sits_under_the_leader_with_a_switch_for_each() {
             five_hour: Some(19),
             week: Some(41),
             leader_on: true,
+            leader: true,
             senior: true,
             floor: true,
+            can_lead: true,
             kind: crate::providers::Kind::Claude,
         },
         AccountSwitch {
@@ -1297,8 +1299,10 @@ fn the_accounts_card_sits_under_the_leader_with_a_switch_for_each() {
             five_hour: Some(40),
             week: Some(22),
             leader_on: false,
+            leader: true,
             senior: true,
             floor: false,
+            can_lead: true,
             kind: crate::providers::Kind::Claude,
         },
         AccountSwitch {
@@ -1307,8 +1311,10 @@ fn the_accounts_card_sits_under_the_leader_with_a_switch_for_each() {
             five_hour: None,
             week: None,
             leader_on: true,
+            leader: true,
             senior: true,
             floor: true,
+            can_lead: true,
             kind: crate::providers::Kind::Claude,
         },
     ];
@@ -1367,6 +1373,8 @@ fn each_worker_group_has_its_own_account_switches_and_opencode_is_floor_only() {
             five_hour: None,
             week: None,
             leader_on: false,
+            leader: true,
+            can_lead: !is_opencode,
             senior,
             floor,
             kind: if is_opencode {
@@ -1392,7 +1400,23 @@ fn each_worker_group_has_its_own_account_switches_and_opencode_is_floor_only() {
     };
 
     assert!(place("heading:ACCOUNTS") < place("opencode:global"));
-    assert!(place("opencode:global") < place("heading:SENIOR ACCOUNTS"));
+    assert!(place("opencode:global") < place("heading:LEADER ACCOUNTS"));
+    assert!(place("heading:LEADER ACCOUNTS") < place("group:cto:codex"));
+    assert!(place("group:cto:codex") < place("heading:SENIOR ACCOUNTS"));
+    assert_eq!(place("group:cto:zen"), None, "only accounts that can lead");
+    let leader_row = &rows[place("group:cto:codex").unwrap()];
+    assert!(
+        leader_row.label.starts_with("[━━● on ]  codex"),
+        "{}",
+        leader_row.label
+    );
+    assert!(
+        leader_row
+            .detail
+            .contains("codex is on for the leader of this task: the leader may lead on it."),
+        "{}",
+        leader_row.detail
+    );
     assert!(place("heading:SENIOR ACCOUNTS") < place("group:senior:codex"));
     assert!(place("group:senior:codex") < place("heading:FLOOR ACCOUNTS"));
     assert!(place("heading:FLOOR ACCOUNTS") < place("group:floor:codex"));
@@ -1447,8 +1471,10 @@ fn a_group_account_row_shows_the_model_picked_for_the_task() {
         five_hour: None,
         week: None,
         leader_on: false,
+        leader: true,
         senior: true,
         floor: true,
+        can_lead: true,
         kind: crate::providers::Kind::Codex,
     }];
     board.opencode.floor.model = Some("opencode/glm-5.3-flash-free".into());

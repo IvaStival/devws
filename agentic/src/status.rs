@@ -241,10 +241,13 @@ pub fn summary(task: &Task, devws: &dyn Devws, home: &Home) -> Result<Value> {
             "name": name,
             "kind": kind.name(),
             "enabled": crate::accounts::is_enabled(&state, &name),
-            // Each worker group's own switch, held off when `enabled` is off.
+            // Each group's own switch, held off when `enabled` is off: the
+            // leader leads only on an account with `leader` on.
+            "leader": crate::accounts::is_enabled_for(&state, &name, crate::roles::Group::Cto),
             "senior": crate::accounts::is_enabled_for(&state, &name, crate::roles::Group::Senior),
             "floor": crate::accounts::is_enabled_for(&state, &name, crate::roles::Group::Floor),
             // The model the user picked for the group's agents on it; null: each role's own.
+            "leader_model": crate::accounts::group_model(&state, &name, crate::roles::Group::Cto),
             "senior_model": crate::accounts::group_model(&state, &name, crate::roles::Group::Senior),
             "floor_model": crate::accounts::group_model(&state, &name, crate::roles::Group::Floor),
             // A provider refused a worker on it: no new agents until then.
@@ -358,6 +361,7 @@ mod tests {
                 .unwrap()
                 .iter()
                 .all(|account| account["enabled"] == true
+                    && account["leader"] == true
                     && account["senior"] == true
                     && account["floor"] == true
                     && account["name"].is_string()),

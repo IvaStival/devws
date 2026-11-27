@@ -194,14 +194,21 @@ through to its next program that is on, and the leader never moves to one.
 Agents already running keep running (a leader on an account you turned off
 says `leader still on it`). The last account that is on stays on. The leader
 hears every change and sees the switches in `task_status` (`accounts`, with
-`enabled` for the global switch and `senior`/`floor` for each group's).
+`enabled` for the global switch and `leader`/`senior`/`floor` for each
+group's, with each group's picked model).
 
-These are the global switches. Under them, **SENIOR ACCOUNTS** and **FLOOR
-ACCOUNTS** have a switch per account for that group of this task: a senior or
-floor agent starts only on an account that is on both globally and for its
-group (a group switch that is on while the global one is off reads `held off
-globally`). Each group keeps at least one account on. The leader follows the
-global switches only.
+These are the global switches. Under them, **LEADER ACCOUNTS**, **SENIOR
+ACCOUNTS** and **FLOOR ACCOUNTS** have a switch per account for that group of
+this task: an agent starts only on an account that is on both globally and for
+its group (a group switch that is on while the global one is off reads `held
+off globally`). Each group keeps at least one account on.
+
+LEADER ACCOUNTS lists the accounts that can lead this task. The leader never
+starts on, moves to or is picked onto an account that is off for it, even
+when its own has run out, while the workers may keep using that account.
+Turned off for the account it leads on now, the leader moves to its other
+program once its turn is over; when that one cannot take over, the switch
+stays on and the board says why.
 
 OpenCode is offered to the floor only. The `opencode` row under ACCOUNTS is
 OpenCode's global switch and the one under FLOOR ACCOUNTS its floor switch.
@@ -213,8 +220,10 @@ The accounts are the ones devws runs (`devws agent accounts`): those
 registered in `DEVWS_AGENTS`, then each installed program (Claude Code, Codex,
 Antigravity) that no registered name runs, by its bare name.
 
-Each row under SENIOR and FLOOR ACCOUNTS shows the model that group's agents
-start on that account with. A model marked `*` is a default, nothing picked
+Each row under LEADER, SENIOR and FLOOR ACCOUNTS shows the model that group's
+agents start on that account with. The leader starts on a model picked for it
+the next time it starts on that account, at a handover or a restart, since a
+restart loses its conversation. A model marked `*` is a default, nothing picked
 for this task: each of the group's roles brings its own (the floor's rule
 applied), and a role that names none runs its program's own (`devws agent
 default-models`: the account's config, else Codex's first listed model,
