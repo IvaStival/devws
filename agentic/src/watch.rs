@@ -40,6 +40,9 @@ pub struct Dispatcher<'a> {
     /// The team's usage, read from its panes no more than once a minute.
     usage: crate::board_usage::UsageReader,
     budget_checked: Option<Instant>,
+    /// When each agent was first seen with nothing open (`idle.rs`). Kept
+    /// here only: after a restart an agent gets its full time again.
+    idle_since: HashMap<String, Instant>,
 }
 
 /// How often the budget is checked: usage changes in minutes, not seconds.
@@ -94,6 +97,7 @@ impl<'a> Dispatcher<'a> {
             done_since: HashMap::new(),
             usage: crate::board_usage::UsageReader::new(Duration::from_secs(60)),
             budget_checked: None,
+            idle_since: HashMap::new(),
         }
     }
 
@@ -152,6 +156,7 @@ impl<'a> Dispatcher<'a> {
             self.retry_spent_steps(crate::log::now())?;
             self.remind_left_reviews(crate::log::now())?;
             self.keep_within_budget(crate::log::now())?;
+            self.close_idle_agents(&state, Instant::now())?;
         }
         // The budget may have paused the task in this pass.
         if !self.task.state()?.paused {
@@ -161,6 +166,77 @@ impl<'a> Dispatcher<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Closes each agent that has had nothing open for longer than it may
+    /// (`idle.rs`), after a handoff note in the team's memory. The leader sees
+    /// it in its roster and the log; nothing wakes it.
+    fn close_idle_agents(&mut self, state: &crate::state::State, now: Instant) -> Result<()> {
+        let minutes = self.task.config()?.idle_close_minutes;
+        let live: Vec<&crate::state::Agent> = state
+            .agents
+            .iter()
+            .filter(|agent| agent.live && !agent.lost && agent.ready)
+            .collect();
+        self.idle_since
+            .retain(|id, _| live.iter().any(|agent| &agent.id == id));
+        for agent in live {
+            if !crate::idle::has_nothing_open(state, agent) {
+                self.idle_since.remove(&agent.id);
+                continue;
+            }
+            let Some(allowed) = crate::idle::allowed_idle(agent, minutes) else {
+                continue;
+            };
+            let since = *self.idle_since.entry(agent.id.clone()).or_insert(now);
+            let idle = now.duration_since(since);
+            if idle < allowed {
+                continue;
+            }
+            let report = self.last_report(&agent.id)?;
+            let note = crate::idle::handoff(state, agent, idle, report.as_deref());
+            // The note helps the next agent; a memory that cannot take it
+            // does not keep an idle agent open.
+            let saved = crate::notes::save(self.task, self.devws, &note).unwrap_or_else(|error| {
+                eprintln!("handoff note for {}: {error:#}", agent.id);
+                None
+            });
+            Team {
+                task: self.task,
+                home: self.home,
+                devws: self.devws,
+            }
+            .stop_agent(&agent.id)?;
+            self.task.transaction(|tx| {
+                tx.log(
+                    Kind::Stop,
+                    Some(&agent.id),
+                    None,
+                    &format!(
+                        "closed after {} minutes with nothing open{}",
+                        idle.as_secs() / 60,
+                        if saved.is_some() {
+                            "; its handoff note is in the team's memory"
+                        } else {
+                            ""
+                        }
+                    ),
+                );
+                Ok(())
+            })?;
+            self.idle_since.remove(&agent.id);
+        }
+        Ok(())
+    }
+
+    /// The summary of the agent's latest report, from the log.
+    fn last_report(&self, agent: &str) -> Result<Option<String>> {
+        Ok(self.task.log_lines()?.iter().rev().find_map(|line| {
+            let entry: serde_json::Value = serde_json::from_str(line).ok()?;
+            (entry["kind"] == "report" && entry["agent"] == agent)
+                .then(|| entry["text"].as_str().map(str::to_string))
+                .flatten()
+        }))
     }
 
     /// Tells the leader once at 80% of a limit, and pauses the task at the
@@ -773,6 +849,83 @@ mod tests {
                 .map(|(_, text)| text)
                 .collect()
         }
+    }
+
+    // An agent with nothing open for its whole time is closed, its handoff
+    // note saved; a writer whose worktree holds unmerged work stays.
+    #[test]
+    fn an_agent_with_nothing_open_is_closed_after_its_time_with_a_note() {
+        let f = fixture();
+        f.devws.memory_on();
+        let planner = f.spawn("planner");
+        let hammer = f.spawn("executor");
+        f.task
+            .transaction(|tx| {
+                for agent in &mut tx.state.agents {
+                    agent.ready = true;
+                }
+                tx.state.orders.push(crate::state::Order {
+                    id: "o9".into(),
+                    step: "G1".into(),
+                    agent: hammer.id.clone(),
+                    text: String::new(),
+                    allowed: vec![],
+                    forbidden: vec![],
+                    check: None,
+                    base: String::new(),
+                    status: crate::state::OrderStatus::Closed,
+                    delivered: true,
+                    stalled: false,
+                    plan: None,
+                    read: vec![],
+                    targets: vec![],
+                });
+                tx.state.steps.push(crate::state::Step {
+                    id: "G1".into(),
+                    title: "G1".into(),
+                    status: StepStatus::Reported,
+                    attempts: 1,
+                    spec: None,
+                    review_since: None,
+                });
+                Ok(())
+            })
+            .unwrap();
+        let mut dispatcher = f.dispatcher();
+        let start = Instant::now();
+        let live = |id: &str| f.task.state().unwrap().agent(id).unwrap().live;
+
+        dispatcher
+            .close_idle_agents(&f.task.state().unwrap(), start)
+            .unwrap();
+        dispatcher
+            .close_idle_agents(
+                &f.task.state().unwrap(),
+                start + Duration::from_secs(29 * 60),
+            )
+            .unwrap();
+        assert!(live(&planner.id), "not yet its 30 minutes");
+        dispatcher
+            .close_idle_agents(
+                &f.task.state().unwrap(),
+                start + Duration::from_secs(31 * 60),
+            )
+            .unwrap();
+        assert!(
+            !live(&planner.id),
+            "closed after 30 minutes with nothing open"
+        );
+        assert!(live(&hammer.id), "G1 is still in its worktree");
+        let notes = f.devws.notes();
+        assert!(
+            notes
+                .iter()
+                .any(|(_, _, note)| note.title == format!("{} closed while idle", planner.id)),
+            "{notes:?}"
+        );
+        assert!(f.task.log_lines().unwrap().iter().any(|line| line.contains(
+            "closed after 31 minutes with nothing open; its handoff note is in the team's memory"
+        )));
     }
 
     #[test]

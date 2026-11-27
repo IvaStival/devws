@@ -30,6 +30,14 @@ fn default_max_seats() -> usize {
     DEFAULT_MAX_SEATS
 }
 
+/// Minutes an agent may have nothing open before the dispatcher closes it
+/// (`idle.rs`); 0 keeps them.
+pub const DEFAULT_IDLE_CLOSE_MINUTES: u64 = 30;
+
+fn default_idle_close_minutes() -> u64 {
+    DEFAULT_IDLE_CLOSE_MINUTES
+}
+
 /// A task's settings, in `task.toml`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TaskConfig {
@@ -46,6 +54,10 @@ pub struct TaskConfig {
     /// Writers one lane may have at once (`lanes::seat`).
     #[serde(default = "default_max_seats")]
     pub max_seats: usize,
+    /// Minutes an agent may have nothing open before it is closed (`idle.rs`);
+    /// 0 keeps every agent until the leader stops it.
+    #[serde(default = "default_idle_close_minutes")]
+    pub idle_close_minutes: u64,
     #[serde(default)]
     pub check_profiles: std::collections::BTreeMap<String, crate::check_profiles::RepositoryChecks>,
     #[serde(default)]
@@ -246,6 +258,17 @@ impl Task {
         }
     }
 
+    /// When the state was last written and its size: a reader that waits
+    /// (a worker's panel) parses the state again only when this changes, as
+    /// a big task's state takes a while to read.
+    pub fn state_stamp(&self) -> Result<Option<(std::time::SystemTime, u64)>> {
+        match fs::metadata(self.dir.join("state.json")) {
+            Ok(metadata) => Ok(Some((metadata.modified()?, metadata.len()))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error).context("reading the task state's stamp"),
+        }
+    }
+
     pub fn log_lines(&self) -> Result<Vec<String>> {
         match fs::read_to_string(self.dir.join("log.jsonl")) {
             Ok(text) => Ok(text.lines().map(str::to_string).collect()),
@@ -277,6 +300,7 @@ mod tests {
             max_agents: 3,
             max_attempts: crate::task::DEFAULT_MAX_ATTEMPTS,
             max_seats: crate::task::DEFAULT_MAX_SEATS,
+            idle_close_minutes: crate::task::DEFAULT_IDLE_CLOSE_MINUTES,
             check_profiles: Default::default(),
             lanes: Vec::new(),
             routing: Default::default(),
@@ -329,6 +353,30 @@ mod tests {
         assert_eq!(
             saved["from_a_newer_build"],
             serde_json::json!({"container": "c", "until": 9})
+        );
+    }
+
+    #[test]
+    fn the_state_stamp_moves_with_a_write_and_not_with_a_read() {
+        let directory = TempDir::new().unwrap();
+        let home = Home::at(directory.path().into());
+        let task = Task::create(&home, &config("stamp")).unwrap();
+        let before = task.state_stamp().unwrap().unwrap();
+        task.state().unwrap();
+        assert_eq!(
+            task.state_stamp().unwrap().unwrap(),
+            before,
+            "a read changes nothing"
+        );
+        task.transaction(|tx| {
+            tx.state.paused = true;
+            Ok(())
+        })
+        .unwrap();
+        assert_ne!(
+            task.state_stamp().unwrap().unwrap(),
+            before,
+            "a write moves it"
         );
     }
 

@@ -18,6 +18,7 @@ mod failures;
 mod graph;
 mod history;
 mod home;
+mod idle;
 mod images;
 mod integration;
 mod lanes;
