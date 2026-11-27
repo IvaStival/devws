@@ -13,6 +13,54 @@ use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A running preview in one line: its addresses and the time it has left.
+/// A designer's references waiting for your answer (references.rs).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReferencesRow {
+    pub step: String,
+    pub agent: String,
+    pub round: u32,
+    pub items: Vec<ReferenceItem>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReferenceItem {
+    pub id: String,
+    pub note: String,
+    /// The file on this machine; drawn in the terminal when it is an image.
+    pub file: std::path::PathBuf,
+    pub is_image: bool,
+}
+
+fn references_rows(task: &Task, state: &crate::state::State) -> Vec<ReferencesRow> {
+    crate::references::waiting(state)
+        .into_iter()
+        .map(|set| ReferencesRow {
+            step: set.step.clone(),
+            agent: set.agent.clone(),
+            round: set.round,
+            items: set
+                .items
+                .iter()
+                .map(|item| ReferenceItem {
+                    id: item.id.clone(),
+                    note: item.note.clone(),
+                    file: set.folder(task).join(&item.file),
+                    is_image: item.kind.is_image(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// The references page: its address, or why it is not open.
+fn references_page(task: &Task) -> Option<String> {
+    Some(match crate::references_page::unavailable(task) {
+        Some(reason) => format!("page unavailable: {reason}"),
+        None => crate::references_page::url(task)
+            .unwrap_or_else(|error| format!("page unavailable: {error:#}")),
+    })
+}
+
 /// A plan revision only you may approve: why it is yours, and what it changes
 /// (`execution::changes`), so the question never rests on a summary alone.
 #[derive(Clone, Debug, PartialEq)]
@@ -75,6 +123,13 @@ pub struct Board {
     pub preview: Option<String>,
     /// The plan revision waiting for your yes or no, with what it changes.
     pub approval: Option<Approval>,
+    /// Designers' references waiting for your answer.
+    pub references: Vec<ReferencesRow>,
+    /// The references page, where you give images and answer the
+    /// designers: its address, or why it is not open.
+    pub references_page: Option<String>,
+    /// How many images you gave the designers.
+    pub given_references: usize,
     /// Full context keyed by stable row identity; presentation never truncates this.
     pub details: BTreeMap<String, String>,
     pub accounts: Vec<Account>,
@@ -813,6 +868,9 @@ impl Board {
             plan: crate::board_plan::parts(&state),
             preview: state.preview.as_ref().map(preview_line),
             approval: approval(&state),
+            references: references_rows(task, &state),
+            references_page: references_page(task),
+            given_references: state.user_references.len(),
             details,
             task: config.id,
             branch: config.branch,

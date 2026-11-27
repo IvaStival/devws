@@ -311,6 +311,7 @@ mod tests {
             source: Source::Builtin,
             fallback: None,
             alternatives: Vec::new(),
+            shows_references: false,
         }
     }
 

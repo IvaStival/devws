@@ -17,6 +17,7 @@ use ratatui::crossterm::event::{
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
+use std::collections::BTreeMap;
 use std::process::Command;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -204,6 +205,97 @@ enum Action {
         about: crate::leader::About,
         text: String,
     },
+    /// Open the answer menu of a step's waiting references.
+    AnswerReferences(String),
+    /// Draw an image full screen with chafa, until a key.
+    ViewImage(std::path::PathBuf),
+    /// The user's answer to a step's references, every one of them.
+    SendReferences(String, BTreeMap<String, crate::references::Verdict>),
+}
+
+/// The menu where a step's references are answered without the page: each
+/// one approved or rejected, an image drawn with chafa to recognise it.
+#[derive(Debug, PartialEq)]
+struct ReferencesPicker {
+    row: crate::board::ReferencesRow,
+    verdicts: BTreeMap<String, crate::references::Verdict>,
+    index: usize,
+    note: Option<String>,
+}
+
+impl ReferencesPicker {
+    fn new(row: crate::board::ReferencesRow) -> Self {
+        Self {
+            row,
+            verdicts: BTreeMap::new(),
+            index: 0,
+            note: None,
+        }
+    }
+
+    fn key(&mut self, code: KeyCode) -> Option<Action> {
+        use crate::references::Verdict;
+        let count = self.row.items.len();
+        let item = self.row.items.get(self.index)?.clone();
+        match code {
+            KeyCode::Char('k') | KeyCode::Up => self.index = self.index.saturating_sub(1),
+            KeyCode::Char('j') | KeyCode::Down => self.index = (self.index + 1).min(count - 1),
+            KeyCode::Char('a') | KeyCode::Char('r') => {
+                let verdict = if code == KeyCode::Char('a') {
+                    Verdict::Approved
+                } else {
+                    Verdict::Rejected
+                };
+                self.verdicts.insert(item.id, verdict);
+                self.index = (self.index + 1).min(count - 1);
+            }
+            KeyCode::Char('v') | KeyCode::Enter if item.is_image => {
+                return Some(Action::ViewImage(item.file));
+            }
+            KeyCode::Char('v') | KeyCode::Enter => {
+                self.note = Some(format!(
+                    "{} is an HTML mockup: open it on the page",
+                    item.id
+                ));
+            }
+            KeyCode::Char('s') if self.verdicts.len() == count => {
+                return Some(Action::SendReferences(
+                    self.row.step.clone(),
+                    self.verdicts.clone(),
+                ));
+            }
+            KeyCode::Char('s') => {
+                self.note = Some("approve or reject every reference first".to_string());
+            }
+            KeyCode::Esc | KeyCode::Char('q') => return Some(Action::None),
+            _ => {}
+        }
+        None
+    }
+
+    fn content(&self) -> String {
+        let mut text = format!(
+            "{} shows {} directions for {} (round {}).\nj/k: move · a: approve · r: reject · v: view image · s: send · Esc: cancel\nComments: on the page, or `devagentics references answer`.",
+            self.row.agent,
+            self.row.items.len(),
+            self.row.step,
+            self.row.round
+        );
+        if let Some(note) = &self.note {
+            text.push_str(&format!("\n{note}"));
+        }
+        text.push('\n');
+        for (index, item) in self.row.items.iter().enumerate() {
+            let mark = if index == self.index { "▸" } else { " " };
+            let verdict = match self.verdicts.get(&item.id) {
+                Some(crate::references::Verdict::Approved) => "✓ approve",
+                Some(crate::references::Verdict::Rejected) => "✕ reject ",
+                None => "·        ",
+            };
+            text.push_str(&format!("\n{mark} {verdict} {}: {}", item.id, item.note));
+        }
+        text
+    }
 }
 
 /// The list a group's model on an account is picked from, under its row: the
@@ -364,6 +456,8 @@ struct Interaction {
     help: bool,
     /// The open model picker, over everything else.
     picker: Option<ModelPicker>,
+    /// The open references menu, over everything else.
+    references: Option<ReferencesPicker>,
     /// What the last drawn screen had where, for clicks.
     map: ScreenMap,
 }
@@ -536,6 +630,17 @@ impl Interaction {
                 board_view::Message::None,
             ));
         }
+        if let Some(menu) = &self.references {
+            let area = board_view::draw_dialog(
+                &mut screen,
+                &format!("References · {}", menu.row.step),
+                &menu.content(),
+                0,
+                None,
+                board_view::Message::None,
+            );
+            map.dialog = Some(area);
+        }
         if let Some(picker) = &self.picker {
             let content = picker.content();
             let typing = picker.typing.is_some();
@@ -574,6 +679,7 @@ impl Interaction {
             peeking: false,
             help: false,
             picker: None,
+            references: None,
             map: ScreenMap::default(),
         }
     }
@@ -586,6 +692,15 @@ impl Interaction {
         page: u16,
     ) -> Action {
         self.nav.sent = false;
+        if let Some(menu) = self.references.as_mut() {
+            let Some(action) = menu.key(code) else {
+                return Action::None;
+            };
+            if !matches!(action, Action::ViewImage(_)) {
+                self.references = None;
+            }
+            return action;
+        }
         if let Some(picker) = self.picker.as_mut() {
             let Some(action) = picker.key(code) else {
                 return Action::None;
@@ -650,6 +765,18 @@ impl Interaction {
             KeyCode::Char('c') if matches!(self.nav.view, View::Steps | View::Agents) => {
                 self.nav.expanded = !self.nav.expanded;
                 self.nav.detail = false;
+            }
+            KeyCode::Enter
+                if !self.help
+                    && self
+                        .nav
+                        .selected
+                        .as_deref()
+                        .is_some_and(|id| id.starts_with("references:")) =>
+            {
+                let step = self.nav.selected.as_deref().unwrap()["references:".len()..].to_string();
+                self.nav.detail = false;
+                return Action::AnswerReferences(step);
             }
             KeyCode::Enter
                 if !self.help
@@ -851,6 +978,28 @@ fn show(
 
 /// The screen: draws the latest reading and answers keys and the wheel; it
 /// never reads the team itself (Loader does).
+/// Draws an image with chafa over the whole pane, until Enter. Text
+/// characters only: enough to recognise a direction, not to judge it.
+fn view_image(file: &std::path::Path) -> Result<()> {
+    let (width, height) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
+    let size = format!("{}x{}", width, height.saturating_sub(2).max(1));
+    let drawn = std::process::Command::new("chafa")
+        .args(["--size", &size, "--animate", "off"])
+        .arg(file)
+        .status();
+    match drawn {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            println!("chafa could not draw it ({status}); open it on the references page.")
+        }
+        Err(_) => println!("chafa is not installed; open it on the references page."),
+    }
+    println!("Enter: back to the board");
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(())
+}
+
 fn screen_loop(
     task: &Task,
     devws: &dyn Devws,
@@ -1010,6 +1159,44 @@ fn screen_loop(
                         loader.refresh();
                         refreshed = Instant::now() - REFRESH;
                     }),
+                    Action::AnswerReferences(step) => {
+                        match board.references.iter().find(|row| row.step == step) {
+                            Some(row) => {
+                                ui.references = Some(ReferencesPicker::new(row.clone()));
+                                Ok(())
+                            }
+                            None => {
+                                Err(anyhow::anyhow!("{step}'s references were answered already"))
+                            }
+                        }
+                    }
+                    Action::ViewImage(file) => {
+                        ratatui::restore();
+                        let shown = view_image(&file);
+                        terminal = ratatui::init();
+                        execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
+                        terminal.clear()?;
+                        shown
+                    }
+                    Action::SendReferences(step, verdicts) => {
+                        let answers = verdicts
+                            .into_iter()
+                            .map(|(id, verdict)| {
+                                (
+                                    id,
+                                    crate::references::Answer {
+                                        verdict,
+                                        comment: None,
+                                    },
+                                )
+                            })
+                            .collect();
+                        crate::references::answer(task, &step, &answers, None).map(|_| {
+                            entries_dirty = true;
+                            loader.refresh();
+                            refreshed = Instant::now() - REFRESH;
+                        })
+                    }
                     Action::ChooseModel(group, account) => devws.agent_kind(&account).map(|kind| {
                         ui.picker = Some(model_picker(&board, devws, group, &account, kind));
                     }),
@@ -1886,5 +2073,68 @@ mod tests {
             View::Agents,
             "a click on a view's name shows it"
         );
+    }
+
+    #[test]
+    fn the_references_menu_sends_an_answer_only_when_each_one_has_one() {
+        use crate::references::Verdict;
+        let row = crate::board::ReferencesRow {
+            step: "G9".into(),
+            agent: "designer-1".into(),
+            round: 1,
+            items: vec![
+                crate::board::ReferenceItem {
+                    id: "r1".into(),
+                    note: "dense".into(),
+                    file: "/x/r1.png".into(),
+                    is_image: true,
+                },
+                crate::board::ReferenceItem {
+                    id: "r2".into(),
+                    note: "cards".into(),
+                    file: "/x/r2.html".into(),
+                    is_image: false,
+                },
+            ],
+        };
+        let mut menu = ReferencesPicker::new(row);
+        assert_eq!(
+            menu.key(KeyCode::Char('v')),
+            Some(Action::ViewImage("/x/r1.png".into()))
+        );
+        assert_eq!(menu.key(KeyCode::Char('a')), None);
+        assert_eq!(
+            menu.key(KeyCode::Char('v')),
+            None,
+            "an HTML mockup is not drawn here"
+        );
+        assert!(menu.content().contains("open it on the page"));
+        assert_eq!(menu.key(KeyCode::Char('s')), None, "r2 has no answer yet");
+        assert!(
+            menu.content()
+                .contains("approve or reject every reference first")
+        );
+        assert_eq!(menu.key(KeyCode::Char('r')), None);
+        assert!(
+            menu.content().contains("✓ approve r1: dense"),
+            "{}",
+            menu.content()
+        );
+        assert!(
+            menu.content().contains("✕ reject  r2: cards"),
+            "{}",
+            menu.content()
+        );
+        assert_eq!(
+            menu.key(KeyCode::Char('s')),
+            Some(Action::SendReferences(
+                "G9".into(),
+                BTreeMap::from([
+                    ("r1".into(), Verdict::Approved),
+                    ("r2".into(), Verdict::Rejected)
+                ])
+            ))
+        );
+        assert_eq!(menu.key(KeyCode::Esc), Some(Action::None));
     }
 }

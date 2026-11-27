@@ -417,6 +417,36 @@ accepts that address. When you work on that machine over SSH, forward the same
 ports from your computer (`ssh -N -L 13000:127.0.0.1:13000 <host>`, one `-L`
 per port) so the addresses the application gives out work there too.
 
+### Design references: you approve the look before a designer plans
+
+A role with `references = true` (the sample `designer`) shows you design
+directions before it plans the interface, and devAgentics refuses its plan
+until you approve one:
+- give the designers images of your own on the references page: the board's
+  overview always shows it under DESIGN REFERENCES (Enter gives its address).
+  Drop images on it, paste a screenshot (Ctrl+V), or choose files, with a note
+  on what to take from them; remove one you gave by mistake. Every designer
+  reads them, and the leader is told and can look at each one
+  (`design_references`). Without a browser:
+  `devagentics references give <task> <image> --note "what to take from it"`;
+- the designer shows 2–3 directions (static HTML mockups or images) with a
+  note each. The board's NEEDS YOU shows `references G9 · designer-10 · 3 to
+  review`, with the page's address;
+- on the page you see each one at full size (a mockup runs in a locked frame:
+  no scripts, no network), approve or reject each, and comment. On the board,
+  Enter on the line opens a menu: `a`/`r` per reference, `v` draws an image
+  with chafa (rough: to recognise it, not to judge it), `s` sends;
+- one approved: the designer plans from it, and its plan gets a References
+  section with your answers, which the floor and the reviewers read. None
+  approved: it shows a new round built from your comments.
+
+The page listens on `127.0.0.1:13100` (`references_port` in task.toml) while
+the team's dispatcher runs. Every account on the machine can reach 127.0.0.1,
+so its address carries a random key: without it everything is 404. Over SSH,
+forward the port (`ssh -N -L 13100:127.0.0.1:13100 <host>`). Without the
+page, answer with `devagentics references answer <task> <step> --approve r2
+--reject r1,r3 --comment-on r2="less shadow"`.
+
 ### Plan the whole application with the planner
 
 Have the planner interview you in grilling rounds: currently answerable questions,

@@ -233,6 +233,7 @@ Every worker has one MCP tool, `worker`, with an `action`:
 | `plan_proposal`, `plan_amend`, `application_read` | planners and infra propose; anyone reads | Proposes a baseline revision; reads the baseline |
 | `ask`, `answer` | floor asks, seniors answer | A question about the order goes to the senior who planned it, or the leader |
 | `ask_user` | planners and infra | A product question for you, through the leader |
+| `references_status`, `references_add`, `references_submit` | a role with `references = true` | Your images, copied into its `/scratch/references`; adds a direction (an image or a static HTML mockup) with a note; shows the round to you. Its `plan_write` is refused until you approve one |
 | `review_diff`, `review_submit` | code reviewers | Reads the candidate diff, its plan and check results; submits the verdict |
 | `graph` | all | The code graph, when on |
 | `memory_save`, `memory_search` | all | The team's notes; knowledge of an area (`kind: knowledge`, `area`) |

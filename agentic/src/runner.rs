@@ -2373,6 +2373,7 @@ pub mod tests {
             ready: true,
             lost,
             usage: None,
+            shows_references: false,
         };
         task.transaction(|tx| {
             tx.state.agents = vec![

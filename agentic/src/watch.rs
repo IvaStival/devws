@@ -639,11 +639,13 @@ impl<'a> Dispatcher<'a> {
 
     /// A turn that ended with an order open and no report: after a grace
     /// period, the leader is told once. An agent waiting for the answer to
-    /// its question is not stalled.
+    /// its question, or for the user's answer to its references, is not
+    /// stalled.
     fn watch_for_a_stall(&mut self, agent: &Agent, pane_state: PaneState) -> Result<()> {
         let state = self.task.state()?;
         let idle_with_order = pane_state == PaneState::Done
             && state.open_question_of(&agent.id).is_none()
+            && !crate::references::waits_for_user(&state, &agent.id)
             && state
                 .open_order_of(&agent.id)
                 .is_some_and(|order| order.delivered && !order.stalled);
@@ -1864,6 +1866,56 @@ mod tests {
             "{}",
             sent[0]
         );
+    }
+
+    #[test]
+    fn a_designer_waiting_for_the_users_answer_to_its_references_is_not_stalled() {
+        let f = fixture();
+        let agent = f.spawn("executor");
+        f.task
+            .transaction(|tx| {
+                tx.state.agents[0].ready = true;
+                tx.state.agents[0].shows_references = true;
+                tx.state.orders.push(crate::state::Order {
+                    read: Vec::new(),
+                    targets: Vec::new(),
+                    id: "o1".into(),
+                    step: "s1".into(),
+                    agent: agent.id.clone(),
+                    text: "x".into(),
+                    allowed: vec![],
+                    forbidden: vec![],
+                    check: None,
+                    base: "abc".into(),
+                    status: OrderStatus::Open,
+                    delivered: true,
+                    stalled: false,
+                    plan: None,
+                });
+                tx.state.references.push(crate::references::ReferenceSet {
+                    step: "s1".into(),
+                    agent: agent.id.clone(),
+                    round: 1,
+                    status: crate::references::SetStatus::Waiting,
+                    items: Vec::new(),
+                    comment: None,
+                });
+                Ok(())
+            })
+            .unwrap();
+        f.devws.set_state(&agent.pane, PaneState::Done);
+        f.devws.set_state("%1", PaneState::Done);
+        let mut dispatcher = f.dispatcher();
+        dispatcher.tick().unwrap();
+        dispatcher.tick().unwrap();
+        let sent = f.sent_to("%1");
+        assert!(
+            !sent
+                .iter()
+                .any(|text| text.contains("stopped without reporting")),
+            "{sent:?}"
+        );
+        assert!(!f.task.state().unwrap().orders[0].stalled);
     }
 
     #[test]

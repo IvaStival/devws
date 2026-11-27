@@ -335,6 +335,9 @@ waiting for you takes it as your answer.
 | `devagentics role choices <role> model\|effort\|approvals [--repo <path>]` | The values the role's program takes for a setting |
 | `devagentics plan write` | Store a plan from standard input (a senior runs it): the overall plan until you approve one, then the execution plan of the step it was ordered |
 | `devagentics plan show <step>` | Print a step's execution plan (a hammer runs it) |
+| `devagentics references url\|list <task>` | The design references page's address (with its key); what waits for you and what you answered |
+| `devagentics references give <task> <image> [--note "…"]` | Give the designers an image of your own |
+| `devagentics references answer <task> <step> --approve r1 --reject r2,r3 [--comment-on r1="…"] [--comment "…"]` | Answer a step's waiting references without the page: each one approved or rejected |
 | `devagentics ask "<question>"` | A hammer asks about its order; the senior who planned it is told |
 | `devagentics answer <q…> "<answer>"` | A senior answers; the answer is typed into the hammer |
 | `devagentics report done\|blocked --order <order-id> "<text>"` | An agent reports (run by the agent, in its pane) |
@@ -348,7 +351,7 @@ waiting for you takes it as your answer.
 | `devagentics leader-read <task> guide <topic>` | A part of the leader's role its prompt leaves out (`accounts`, `reviewed`, `legacy`); the same text as `application_workflow action=guide` |
 
 The leader's tools: `task_status`, `approve_plan`, `spawn_agent`, `add_lane`, `add_repo`,
-`send_order`, `read_plan`, `answer_question`, `accept_step`, `reject_step`, `close_step`, `allow_attempts`, `read_check_log`, `snapshot_path`, `read_file`, `search_code`, `git_log`, `git_diff`, `stop_agent`, `set_check`, `read_log`,
+`send_order`, `read_plan`, `design_references`, `answer_question`, `accept_step`, `reject_step`, `close_step`, `allow_attempts`, `read_check_log`, `snapshot_path`, `read_file`, `search_code`, `git_log`, `git_diff`, `stop_agent`, `set_check`, `read_log`,
 `escalate`, `switch_leader`, `open_prs`.
 
 ## Roles
@@ -370,6 +373,8 @@ approvals = "on-request"      # optional: Codex's -a, or Claude's permission mod
                               # Claude runs the leader in auto mode, a role
                               # that writes in acceptEdits, the rest in default
 description = "Writes the tests"   # optional: the board's line for the role
+references = false     # optional: shows the user design references and plans
+                       # only from the ones they approve (a designer)
 +++
 You write the tests for the step you are given…
 ```
