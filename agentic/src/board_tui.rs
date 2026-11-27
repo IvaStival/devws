@@ -102,6 +102,13 @@ fn dispatch(
     {
         *slot = Some(format!("preview: {error:#}"));
     }
+    // The page lives as long as this dispatcher's process: the board runs the
+    // team's dispatcher, so the page has to start here, not only in `watch`.
+    if let Err(error) = crate::references_page::serve_in_background(task)
+        && let Ok(mut slot) = problem.lock()
+    {
+        *slot = Some(format!("{error:#}"));
+    }
     let mut dispatcher = Dispatcher::new(task, devws, home, watch::STALL_GRACE);
     let command = crate::executable::own()
         .map(|path| path.display().to_string())
