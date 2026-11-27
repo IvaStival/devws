@@ -178,12 +178,34 @@ pub struct AccountSwitch {
     pub week: Option<u32>,
     /// The leader runs on it now.
     pub leader_on: bool,
-    /// Each worker group's own switch, whatever `enabled` says.
+    /// Each group's own switch, whatever `enabled` says.
+    pub leader: bool,
     pub senior: bool,
     pub floor: bool,
+    /// Its program may lead this task (LEADER ACCOUNTS lists only those).
+    pub can_lead: bool,
     /// The program it runs. An opencode account is offered to the floor
     /// only, and the home-wide OpenCode switches decide where it runs.
     pub kind: crate::providers::Kind,
+}
+
+impl AccountSwitch {
+    /// The group's own switch.
+    pub fn group_on(&self, group: Group) -> bool {
+        match group {
+            Group::Cto => self.leader,
+            Group::Senior => self.senior,
+            Group::Floor => self.floor,
+        }
+    }
+
+    pub fn set_group_on(&mut self, group: Group, on: bool) {
+        match group {
+            Group::Cto => self.leader = on,
+            Group::Senior => self.senior = on,
+            Group::Floor => self.floor = on,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -315,7 +337,7 @@ fn default_models(
     // Informational: a program whose default cannot be read shows none.
     let program = devws.default_models().unwrap_or_default();
     let mut groups = BTreeMap::new();
-    for group in crate::accounts::WORKER_GROUPS {
+    for group in crate::accounts::GROUPS {
         let mut accounts = BTreeMap::new();
         // A program on its own switches has its model chosen there (its own
         // row).
@@ -559,8 +581,10 @@ impl Board {
             switches.push(AccountSwitch {
                 enabled: crate::accounts::is_enabled(&state, &name),
                 leader_on: leader_account.as_deref() == Some(name.as_str()),
+                leader: crate::accounts::is_group_switch_on(&state, &name, Group::Cto),
                 senior: crate::accounts::is_group_switch_on(&state, &name, Group::Senior),
                 floor: crate::accounts::is_group_switch_on(&state, &name, Group::Floor),
+                can_lead: crate::leader::may_lead(kind, state.workflow, state.codex_team),
                 kind,
                 five_hour: used.five_hour,
                 week: used.week,

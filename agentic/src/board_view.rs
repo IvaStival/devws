@@ -638,7 +638,7 @@ fn account_entries(board: &Board) -> Vec<Entry> {
         if board.opencode.enabled { "on" } else { "off" },
         "OpenCode global switch (every task, as in the devws menu)",
     ));
-    for group in crate::accounts::WORKER_GROUPS {
+    for group in crate::accounts::GROUPS {
         entries.extend(group_account_entries(board, group));
     }
     entries
@@ -673,25 +673,26 @@ fn opencode_entry(key: &str, effective: bool, enabled: bool, status: &str, what:
     ])
 }
 
-/// A worker group's card under ACCOUNTS (`SENIOR ACCOUNTS`): each account's
-/// switch for that group; the floor's also has OpenCode's.
+/// A group's card under ACCOUNTS (`LEADER ACCOUNTS`, `SENIOR ACCOUNTS`):
+/// each account's switch for that group; the floor's also has OpenCode's.
+/// The leader's lists the accounts that can lead this task.
 fn group_account_entries(board: &Board, group: Group) -> Vec<Entry> {
     let name = group.name();
+    let title = match group {
+        Group::Cto => "LEADER ACCOUNTS".to_string(),
+        _ => format!("{} ACCOUNTS", name.to_uppercase()),
+    };
+    let words = crate::accounts::group_words(group);
     let mut entries = vec![
         Entry::gap(&format!("accounts-{name}")),
-        Entry::section(&format!("{} ACCOUNTS", name.to_uppercase()), None),
+        Entry::section(&title, None),
     ];
     // A program on its own switches (OpenCode) is offered to the floor only,
     // through those, below.
-    for switch in board
-        .switches
-        .iter()
-        .filter(|switch| !switch.kind.provider().own_switches())
-    {
-        let group_on = match group {
-            Group::Senior => switch.senior,
-            _ => switch.floor,
-        };
+    for switch in board.switches.iter().filter(|switch| {
+        !switch.kind.provider().own_switches() && (group != Group::Cto || switch.can_lead)
+    }) {
+        let group_on = switch.group_on(group);
         let (pill, tone) = switch_pill(group_on && switch.enabled);
         let status = match (group_on, switch.enabled) {
             (true, true) => "on",
@@ -704,12 +705,13 @@ fn group_account_entries(board: &Board, group: Group) -> Vec<Entry> {
                 format!("group:{name}:{}", switch.name),
                 String::new(),
                 format!(
-                    "{} is {status} for the {name} group of this task: {}\nModel: {model}{}.\nSpace turns it {}; Enter chooses the model.",
+                    "{} is {status} for {words} of this task: {}\nModel: {model}{}.\nSpace turns it {}; Enter chooses the model.",
                     switch.name,
-                    if group_on && switch.enabled {
-                        "new agents of the group may start on it."
-                    } else {
-                        "no new agent of the group starts on it; agents already on it keep running."
+                    match (group, group_on && switch.enabled) {
+                        (Group::Cto, true) => "the leader may lead on it.",
+                        (Group::Cto, false) => "the leader never leads on it; turned off while it leads there, it moves once its turn is over.",
+                        (_, true) => "new agents of the group may start on it.",
+                        (_, false) => "no new agent of the group starts on it; agents already on it keep running.",
                     },
                     if model.ends_with('*') {
                         " (* the default: none picked for this task)"

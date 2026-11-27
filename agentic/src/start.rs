@@ -210,6 +210,15 @@ pub fn write_leader_args(
     let kind = devws.agent_kind(&leader.agent)?;
     crate::leader::refuse_non_leader(&leader.agent, kind)?;
     let state = task.state()?;
+    // The model the user picked for the leader on this account (the board's
+    // LEADER ACCOUNTS), in place of its role's.
+    let picked = crate::accounts::group_model(&state, &leader.agent, crate::roles::Group::Cto).map(
+        |model| Role {
+            model: Some(model.to_string()),
+            ..leader.clone()
+        },
+    );
+    let leader = picked.as_ref().unwrap_or(leader);
     let reviewed = state.workflow == crate::execution::Workflow::Reviewed;
     let leader_cli = reviewed && state.leader_cli && {
         let version = devws.program_version(kind)?;

@@ -348,10 +348,11 @@ impl ModelPicker {
     }
 }
 
-/// The group and account of a SENIOR/FLOOR ACCOUNTS row (`group:floor:codex`).
+/// The group and account of a LEADER/SENIOR/FLOOR ACCOUNTS row
+/// (`group:floor:codex`).
 fn group_row(id: &str) -> Option<(Group, &str)> {
     let (group, account) = id.strip_prefix("group:")?.split_once(':')?;
-    crate::accounts::WORKER_GROUPS
+    crate::accounts::GROUPS
         .into_iter()
         .find(|worker_group| worker_group.name() == group)
         .map(|group| (group, account))
@@ -842,7 +843,7 @@ fn show(
     let loader = Loader::new();
     std::thread::scope(|scope| {
         scope.spawn(|| loader.run(REFRESH, || load(task, devws, home, &mut usage)));
-        let result = screen_loop(task, devws, problem, view, board, &loader);
+        let result = screen_loop(task, devws, home, problem, view, board, &loader);
         loader.stop();
         result
     })
@@ -853,6 +854,7 @@ fn show(
 fn screen_loop(
     task: &Task,
     devws: &dyn Devws,
+    home: &Home,
     problem: &Mutex<Option<String>>,
     view: View,
     mut board: Board,
@@ -1000,13 +1002,14 @@ fn screen_loop(
                             loader.refresh();
                             refreshed = Instant::now() - REFRESH;
                         }),
-                    Action::ToggleGroupAccount(group, account) => {
-                        toggle_group_account(task, &mut board, group, &account).map(|()| {
-                            entries_dirty = true;
-                            loader.refresh();
-                            refreshed = Instant::now() - REFRESH;
-                        })
-                    }
+                    Action::ToggleGroupAccount(group, account) => toggle_group_account(
+                        home, task, devws, &mut board, group, &account,
+                    )
+                    .map(|()| {
+                        entries_dirty = true;
+                        loader.refresh();
+                        refreshed = Instant::now() - REFRESH;
+                    }),
                     Action::ChooseModel(group, account) => devws.agent_kind(&account).map(|kind| {
                         ui.picker = Some(model_picker(&board, devws, group, &account, kind));
                     }),
@@ -1186,24 +1189,44 @@ fn toggle_account(task: &Task, board: &mut Board, account: &str) -> Result<()> {
 }
 
 /// Space on a group's switch, shown at once as the global one.
-fn toggle_group_account(task: &Task, board: &mut Board, group: Group, account: &str) -> Result<()> {
-    let on = !board.switches.iter().any(|switch| {
-        switch.name == account
-            && match group {
-                Group::Senior => switch.senior,
-                _ => switch.floor,
-            }
-    });
-    crate::accounts::set_group_enabled_among(task, &shown_accounts(board), account, group, on)?;
+/// The leader's: among the accounts that can lead, and off for the one it
+/// leads on, it moves once its turn is over (`leader::set_leader_account`).
+fn toggle_group_account(
+    home: &Home,
+    task: &Task,
+    devws: &dyn Devws,
+    board: &mut Board,
+    group: Group,
+    account: &str,
+) -> Result<()> {
+    let on = !board
+        .switches
+        .iter()
+        .any(|switch| switch.name == account && switch.group_on(group));
+    match group {
+        Group::Cto => {
+            let leading: Vec<String> = board
+                .switches
+                .iter()
+                .filter(|switch| switch.can_lead)
+                .map(|switch| switch.name.clone())
+                .collect();
+            crate::leader::set_leader_account(home, task, devws, &leading, account, on)?;
+        }
+        _ => crate::accounts::set_group_enabled_among(
+            task,
+            &shown_accounts(board),
+            account,
+            group,
+            on,
+        )?,
+    }
     if let Some(switch) = board
         .switches
         .iter_mut()
         .find(|switch| switch.name == account)
     {
-        match group {
-            Group::Senior => switch.senior = on,
-            _ => switch.floor = on,
-        }
+        switch.set_group_on(group, on);
     }
     Ok(())
 }
@@ -1225,15 +1248,17 @@ mod tests {
             five_hour: None,
             week: None,
             leader_on: false,
+            leader: true,
             senior: true,
             floor: true,
+            can_lead: true,
             kind: crate::providers::Kind::Claude,
         };
         let mut board = crate::board_view::tests::board();
         board.switches = vec![switch("claude"), switch("codex")];
         let asked = devws.calls().len();
 
-        toggle_group_account(&task, &mut board, Group::Floor, "claude").unwrap();
+        toggle_group_account(&_home, &task, &devws, &mut board, Group::Floor, "claude").unwrap();
         assert!(!board.switches[0].floor);
         assert!(!crate::accounts::is_group_switch_on(
             &task.state().unwrap(),
@@ -1596,8 +1621,8 @@ mod tests {
         ui.key(KeyCode::Char('j'), &board, &entries, 10);
         assert_eq!(
             ui.key(KeyCode::Char(' '), &board, &entries, 1),
-            Action::None,
-            "the leader has no group switch"
+            Action::ToggleGroupAccount(Group::Cto, "claude".into()),
+            "the leader has its own switch"
         );
     }
 

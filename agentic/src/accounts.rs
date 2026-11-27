@@ -1,6 +1,7 @@
 //! Which agent accounts a task may use: the user turns each one on or off on
-//! the board, for the whole task (global) and for each worker group (seniors,
-//! floor); new agents start only on accounts that are on for their group.
+//! the board, for the whole task (global) and for each group (the leader, the
+//! seniors, the floor); new agents start only on accounts that are on for
+//! their group, and the leader leads only on one that is on for it.
 use crate::devws::Devws;
 use crate::log::Kind;
 use crate::roles::Group;
@@ -9,9 +10,20 @@ use crate::task::Task;
 use anyhow::{Result, bail, ensure};
 use std::collections::BTreeSet;
 
-/// The groups an account can be switched for, apart from the global switch.
-/// The leader (CTO) follows the global switch only.
+/// The groups an account can be switched for, apart from the global switch,
+/// in the order the board shows them.
+pub const GROUPS: [Group; 3] = [Group::Cto, Group::Senior, Group::Floor];
+
+/// The groups whose agents are workers: OpenCode's own switches are theirs.
 pub const WORKER_GROUPS: [Group; 2] = [Group::Senior, Group::Floor];
+
+/// The group as messages name it: "the leader", "the floor group".
+pub fn group_words(group: Group) -> String {
+    match group {
+        Group::Cto => "the leader".to_string(),
+        _ => format!("the {} group", group.name()),
+    }
+}
 
 /// Whether new agents of this task may start on `account` (the global switch).
 pub fn is_enabled(state: &State, account: &str) -> bool {
@@ -30,6 +42,18 @@ pub fn is_group_switch_on(state: &State, account: &str, group: Group) -> bool {
 /// and the group's are both on.
 pub fn is_enabled_for(state: &State, account: &str, group: Group) -> bool {
     is_enabled(state, account) && is_group_switch_on(state, account, group)
+}
+
+/// Which switch keeps `group` off `account`, as a message says it: the task's
+/// (global) first, then the group's; None when both are on.
+pub fn off_for(state: &State, account: &str, group: Group) -> Option<String> {
+    if !is_enabled(state, account) {
+        Some("turned off for this task".to_string())
+    } else if !is_group_switch_on(state, account, group) {
+        Some(format!("turned off for {}", group_words(group)))
+    } else {
+        None
+    }
 }
 
 /// Every account a new agent of `group` must not start on: the ones the
@@ -128,7 +152,8 @@ pub fn set_group_enabled(
     set_group_enabled_among(task, &registered(devws)?, account, group, on)
 }
 
-/// `set_group_enabled` among the `registered` accounts the caller has.
+/// `set_group_enabled` among the `registered` accounts the caller has: for
+/// the leader, the ones that may lead, so it always keeps one to lead on.
 pub fn set_group_enabled_among(
     task: &Task,
     registered: &[String],
@@ -136,13 +161,8 @@ pub fn set_group_enabled_among(
     group: Group,
     on: bool,
 ) -> Result<()> {
-    ensure!(
-        WORKER_GROUPS.contains(&group),
-        "the {} follows the global account switches only",
-        group.label()
-    );
     ensure_registered(registered, account)?;
-    let name = group.name();
+    let words = group_words(group);
     task.transaction(|tx| {
         if on == is_group_switch_on(&tx.state, account, group) {
             return Ok(());
@@ -160,21 +180,29 @@ pub fn set_group_enabled_among(
                 .any(|other| other != account && is_enabled_for(&tx.state, other, group));
             ensure!(
                 others_on,
-                "{account} is the last account that is on for the {name} group: turn another one on first"
+                "{account} is the last account that is on for {words}: turn another one on first"
             );
         }
         let word = if on { "on" } else { "off" };
+        let meaning = match group {
+            Group::Cto => {
+                "You lead only on accounts that are on for the leader (task_status accounts)."
+                    .to_string()
+            }
+            _ => format!(
+                "Start new {} agents only on accounts that are on for it (task_status accounts).",
+                group.name()
+            ),
+        };
         tx.state.say(
             LEADER,
-            format!(
-                "The user turned {account} {word} for the {name} group of this task. Start new {name} agents only on accounts that are on for it (task_status accounts)."
-            ),
+            format!("The user turned {account} {word} for {words} of this task. {meaning}"),
         );
         tx.log(
             Kind::Review,
             None,
             None,
-            &format!("the user turned {account} {word} for the {name} group"),
+            &format!("the user turned {account} {word} for {words}"),
         );
         Ok(())
     })
@@ -207,7 +235,9 @@ pub fn opencode_for_task(
 }
 
 /// The user picks the model `group`'s new agents run on `account` for this
-/// task; None goes back to each role's own (or the program's default).
+/// task; None goes back to each role's own (or the program's default). The
+/// leader starts on it the next time it starts on that account: at a
+/// handover or a restart, as a restart loses its conversation.
 pub fn set_group_model(
     task: &Task,
     devws: &dyn Devws,
@@ -215,11 +245,6 @@ pub fn set_group_model(
     group: Group,
     model: Option<String>,
 ) -> Result<()> {
-    ensure!(
-        WORKER_GROUPS.contains(&group),
-        "the {} keeps its own model",
-        group.label()
-    );
     let kind = devws.agent_kind(account)?;
     let model = model
         .map(|model| model.trim().to_string())
@@ -230,7 +255,7 @@ pub fn set_group_model(
             "name the model as provider/model, as `opencode models` lists it: {model}"
         );
     }
-    let name = group.name();
+    let words = group_words(group);
     task.transaction(|tx| {
         if group_model(&tx.state, account, group) == model.as_deref() {
             return Ok(());
@@ -248,17 +273,26 @@ pub fn set_group_model(
             }
         }
         let what = model.as_deref().unwrap_or("each role's own model");
+        let when = match group {
+            Group::Cto => format!(
+                "You start on it the next time you start on {account}: at a handover or a restart."
+            ),
+            _ => format!(
+                "New {} agents on {account} use it (task_status accounts).",
+                group.name()
+            ),
+        };
         tx.state.say(
             LEADER,
             format!(
-                "The user set the {name} group's model on {account} to {what} for this task. New {name} agents on {account} use it (task_status accounts)."
+                "The user set the model of {words} on {account} to {what} for this task. {when}"
             ),
         );
         tx.log(
             Kind::Review,
             None,
             None,
-            &format!("the user set the {name} model on {account} to {what}"),
+            &format!("the user set the model of {words} on {account} to {what}"),
         );
         Ok(())
     })
@@ -384,10 +418,59 @@ mod tests {
         set_group_enabled(&task, &devws, "codex", Group::Floor, false).unwrap();
     }
 
+    // The leader's own switches and model: an account the workers keep
+    // using can be one the leader never leads on.
     #[test]
-    fn the_leader_has_no_group_switch() {
+    fn the_leader_has_its_own_switches_and_model() {
         let (_dir, _repo, task, devws) = task();
-        assert!(set_group_enabled(&task, &devws, "claude", Group::Cto, false).is_err());
+        set_group_enabled(&task, &devws, "codex", Group::Cto, false).unwrap();
+        let state = task.state().unwrap();
+        assert!(!is_enabled_for(&state, "codex", Group::Cto));
+        assert!(
+            is_enabled_for(&state, "codex", Group::Floor),
+            "the workers keep it"
+        );
+        assert_eq!(
+            off_for(&state, "codex", Group::Cto).as_deref(),
+            Some("turned off for the leader")
+        );
+        assert!(state.queue.iter().any(|message| {
+            message.to == LEADER
+                && message
+                    .text
+                    .contains("turned codex off for the leader of this task")
+                && message
+                    .text
+                    .contains("You lead only on accounts that are on for the leader")
+        }));
+        let leading = ["claude".to_string(), "codex".to_string()];
+        let error = set_group_enabled_among(&task, &leading, "claude", Group::Cto, false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("claude is the last account that is on for the leader"),
+            "{error}"
+        );
+
+        set_group_model(
+            &task,
+            &devws,
+            "claude",
+            Group::Cto,
+            Some("claude-fable-5-2".into()),
+        )
+        .unwrap();
+        let state = task.state().unwrap();
+        assert_eq!(
+            group_model(&state, "claude", Group::Cto),
+            Some("claude-fable-5-2")
+        );
+        assert!(state.queue.iter().any(|message| {
+            message
+                .text
+                .contains("model of the leader on claude to claude-fable-5-2")
+                && message.text.contains("the next time you start on claude")
+        }));
     }
 
     #[test]
@@ -411,12 +494,11 @@ mod tests {
             message.to == LEADER
                 && message
                     .text
-                    .contains("floor group's model on codex to gpt-6-luna")
+                    .contains("model of the floor group on codex to gpt-6-luna")
         }));
 
         set_group_model(&task, &devws, "codex", Group::Floor, None).unwrap();
         assert!(task.state().unwrap().group_models.is_empty());
-        assert!(set_group_model(&task, &devws, "codex", Group::Cto, Some("x".into())).is_err());
     }
 
     #[test]
